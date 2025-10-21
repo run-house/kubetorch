@@ -1,0 +1,30 @@
+{{- if .Values.ephemeralLogStorage.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-gateway # Note: for consistency - keeping the same name as distributed loki
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: kubetorch-logging
+  ports:
+    - port: {{ .Values.ephemeralLogStorage.port }}
+      targetPort: {{ .Values.ephemeralLogStorage.port }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubetorch-otel-collector
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app.kubernetes.io/name: opentelemetry-collector
+    component: agent-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+{{- end }}

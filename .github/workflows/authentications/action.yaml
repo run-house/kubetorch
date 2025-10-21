@@ -1,0 +1,31 @@
+name: Set up AWS Auth
+
+description: Set up AWS authentication
+
+inputs:
+  KT_AWS_ACCESS_KEY:
+    description: 'AWS Access Key ID'
+    required: false
+  KT_AWS_SECRET_KEY:
+    description: 'AWS Secret Access Key'
+
+runs:
+  using: composite
+  steps:
+    - name: Setup python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Configure & Authenticate to AWS
+      run: |
+        aws configure set aws_access_key_id ${{ inputs.KT_AWS_ACCESS_KEY }}
+        aws configure set aws_secret_access_key ${{ inputs.KT_AWS_SECRET_KEY }}
+        aws configure set default.region us-east-1
+      shell: bash
+
+    - name: Configure a mock huggingface token
+      run: |
+        mkdir -p $HOME/.cache/huggingface
+        echo "mockingHFToken" > $HOME/.cache/huggingface/token
+      shell: bash

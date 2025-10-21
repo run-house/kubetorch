@@ -1,6 +1,0 @@
-runhouse[aws]
-torch
-datasets
-peft
-transformers
-trl

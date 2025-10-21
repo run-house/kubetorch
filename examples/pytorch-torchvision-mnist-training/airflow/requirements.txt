@@ -1,4 +1,0 @@
-runhouse[aws]
-torch
-torchvision
-airflow

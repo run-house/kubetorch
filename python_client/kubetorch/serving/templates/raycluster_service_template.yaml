@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ name }}
+  namespace: {{ namespace }}
+  annotations: {{ annotations | tojson }}
+  labels: {{ labels | tojson }}
+spec:
+  {% if distributed %}
+  clusterIP: None  # Headless service for Ray pod discovery
+  {% else %}
+  sessionAffinity: ClientIP  # Ensure requests from same client go to same pod
+  {% endif %}
+  selector:
+    kubetorch.com/service: {{ deployment_name }}
+    kubetorch.com/module: {{ module_name }}
+    ray.io/node-type: head  # Only select head node pods
+  ports:
+    - name: http
+      port: 80
+      targetPort: {{ server_port }}
+      protocol: TCP
+    - name: ray-gcs
+      port: 6379
+      targetPort: 6379
+      protocol: TCP
+    - name: ray-object-mgr
+      port: 8076
+      targetPort: 8076
+      protocol: TCP
+    - name: ray-node-mgr
+      port: 8077
+      targetPort: 8077
+      protocol: TCP
+    - name: ray-dashboard
+      port: 8265
+      targetPort: 8265
+      protocol: TCP
+    - name: ray-metrics
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

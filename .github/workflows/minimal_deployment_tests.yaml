@@ -1,0 +1,138 @@
+name: Minimal tests with fixtures
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - 'python_client/kubetorch/docs/**'
+      - 'python_client/tests/test_deploy.py'
+      - '**/*.md'
+      - '**/*.rst'
+      - '**/*.tf'
+      - 'exploratory/**'
+      - 'cluster_setup/**'
+      - '.github/workflows/create_cluster.yaml'
+      - '.github/workflows/deploy_tests.yaml'
+      - '.github/workflows/create_cluster/action.yaml'
+      - '.github/workflows/delete_cluster.yaml'
+
+  pull_request:
+    paths-ignore:
+      - 'python_client/kubetorch/docs/**'
+      - 'python_client/tests/test_deploy.py'
+      - '**/*.md'
+      - '**/*.rst'
+      - '**/*.tf'
+      - 'exploratory/**'
+      - 'cluster_setup/**'
+      - '.github/workflows/create_cluster.yaml'
+      - '.github/workflows/deploy_tests.yaml'
+      - '.github/workflows/create_cluster/action.yaml'
+      - '.github/workflows/delete_cluster.yaml'
+  workflow_dispatch:
+
+env:
+  CI: true
+  KUBETORCH_IGNORE_VERSION_MISMATCH: 1
+
+jobs:
+  imperative-tests:
+    strategy:
+      fail-fast: false  # prevents cancelling other matrix jobs on failure
+      matrix:
+        compute_type: ["deployment", "knative", "ray"]
+    name: Imperative - ${{ matrix.compute_type }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: imperative-${{ github.ref }}-${{ matrix.compute_type }}
+      cancel-in-progress: true
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+
+      - name: Install Dependencies
+        uses: ./.github/workflows/install_dependencies
+
+      - name: Setup authentications
+        uses: ./.github/workflows/gke_authentications
+        with:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_SA_KEY: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+
+      - name: Setup Test Cluster
+        uses: ./.github/workflows/setup_test_cluster
+        with:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials ${{ secrets.CI_CLUSTER_NAME }} \
+            --region ${{ secrets.CI_CLUSTER_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Set Python Source Root
+        run: echo "PYTHONPATH=$(pwd)/python_client" >> $GITHUB_ENV
+
+      - name: Set Test Hash
+        run: |
+          TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)-${{ matrix.compute_type }}"
+          echo "TEST_HASH=$TEST_HASH" >> $GITHUB_ENV
+
+      - name: Run tests with all deployment modes
+        run: |
+          cd python_client
+          pytest -v --durations=100 tests/test_deployment_fixtures.py --level minimal
+        timeout-minutes: 60
+        env:
+          TEST_COMPUTE_TYPE: ${{ matrix.compute_type }}
+          KT_STREAM_LOGS: false
+
+  cleanup:
+    if: ${{ always() }}
+    needs: [imperative-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v3
+
+      - name: Install Dependencies
+        uses: ./.github/workflows/install_dependencies
+
+      - name: Setup authentications
+        uses: ./.github/workflows/gke_authentications
+        with:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_SA_KEY: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+
+      - name: Setup Test Cluster
+        uses: ./.github/workflows/setup_test_cluster
+        with:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials ${{ secrets.CI_CLUSTER_NAME }} \
+            --region ${{ secrets.CI_CLUSTER_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Set Test Hash
+        run: |
+          TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)"
+          echo "TEST_HASH=$TEST_HASH" >> $GITHUB_ENV
+
+      - name: Run Teardown Commands
+        run: |
+          for suffix in -deploy -knative -ray; do
+            echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --force"
+            kt teardown --prefix ${TEST_HASH}${suffix} --force || true
+            echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} --force"
+            kt teardown --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} --force || true
+            echo "Running secrets delete command: kt secrets delete --prefix ${TEST_HASH}${suffix} -y"
+            kt secrets delete --prefix ${TEST_HASH}${suffix} -y || true
+            echo "Running secrets delete command: kt secrets delete --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} -y"
+            kt secrets delete --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} -y || true
+          done

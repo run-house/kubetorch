@@ -1,0 +1,7 @@
+add:
+  valid:
+    - args: [1, 2]
+      expected: 3
+  invalid:
+    - args: ["a", 2]
+      error: TypeError

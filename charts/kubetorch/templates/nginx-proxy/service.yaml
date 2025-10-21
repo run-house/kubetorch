@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubetorch-proxy
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: kubetorch-proxy
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: rsync
+      port: 8873
+      targetPort: 8873
+
+  type: ClusterIP
