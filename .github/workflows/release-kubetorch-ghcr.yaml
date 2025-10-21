@@ -23,7 +23,7 @@ jobs:
         run: |
           cd charts/kubetorch
           helm dependency update .
-          helm package . --destination ../../..  # outputs kubetorch-<ver>.tgz in repo root
+          helm package . --destination ../../
 
       - name: Extract Helm chart version
         id: get_version
@@ -33,7 +33,8 @@ jobs:
 
       - name: Login to GHCR
         run: |
-          helm registry login ghcr.io --username run-house --password-stdin
+          echo "${{ secrets.GH_HELM_TOKEN }}" | helm registry login ghcr.io \
+            --username run-house --password-stdin
 
       - name: Push chart to GHCR
         run: |
