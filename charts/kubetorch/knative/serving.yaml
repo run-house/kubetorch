@@ -1,0 +1,31 @@
+apiVersion: operator.knative.dev/v1beta1
+kind: KnativeServing
+metadata:
+  name: knative-serving-kubetorch
+  namespace: knative-serving
+spec:
+  ingress:
+    kourier:
+      enabled: true
+      service-type: ClusterIP  # internal-only
+  config:
+    network:
+      ingress-class: "kourier.ingress.networking.knative.dev"
+      http-protocol: "enabled"
+    features:
+      kubernetes.podspec-persistent-volume-claim: "enabled"
+      kubernetes.podspec-persistent-volume-write: "enabled"
+      kubernetes.podspec-fieldref: "enabled"
+      kubernetes.podspec-runtimeclassname: "enabled"
+      kubernetes.podspec-affinity: "enabled"
+      kubernetes.podspec-schedulername: "enabled"
+      kubernetes.podspec-nodeselector: "enabled"
+      kubernetes.podspec-tolerations: "enabled"
+      kubernetes.podspec-priorityclassname: "enabled"
+      kubernetes.containerspec-addcapabilities: "enabled"
+    defaults:
+      revision-timeout-seconds: "2592000"
+      max-revision-timeout-seconds: "2592000"
+    deployment:
+      # https://knative.dev/docs/serving/configuration/deployment/
+      registries-skipping-tag-resolving: "kind.local,ko.local,dev.local,docker.io,index.docker.io,ghcr.io,dkr.ecr.amazonaws.com,gcr.io,us.gcr.io,eu.gcr.io,asia.gcr.io,pkg.dev,container-registry.oracle.com,ocir.io" # noqa

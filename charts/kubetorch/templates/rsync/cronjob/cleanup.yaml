@@ -1,0 +1,31 @@
+{{- if .Values.rsync.cleanupCron.enabled }}
+{{- range (.Values.kubetorchConfig.deployment_namespaces | default list | concat (list .Release.Namespace) | uniq) }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rsync-exec-cleanup
+  namespace: {{ . }}
+spec:
+  schedule: "0 3 * * *" # Run daily and remove service directories older than 7 days
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: rsync-cleaner
+          containers:
+            - name: kubectl-cleaner
+              image: bitnami/kubectl:latest
+              command:
+                - sh
+                - -c
+                - |
+                  POD=$(kubectl get pod -l app=kubetorch-rsync -n {{ . }} -o jsonpath='{.items[0].metadata.name}')
+                  echo "Cleaning old dirs inside $POD in namespace {{ . }}..."
+                  kubectl exec -n {{ . }} "$POD" -- \
+                    sh -c 'find /data/{{ . }}/* -maxdepth 0 -type d -mmin +10080 -print -exec rm -rf {} +'
+{{- end }}
+{{- end }}

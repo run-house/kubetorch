@@ -1,0 +1,80 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.env
+.venv
+env.bak/
+venv.bak/
+uv.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Project specific
+*.log
+*.sqlite3
+*.db
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Kubernetes
+kubeconfig
+*.kubeconfig
+
+# Model files and data
+*.pt
+*.pth
+*.onnx
+*.h5
+*.hdf5
+*.pkl
+*.npy
+*.npz
+*.tgz
+*.lock
+
+# Sphinx documentation
+**/docs/_build/

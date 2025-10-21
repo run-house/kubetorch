@@ -1,0 +1,26 @@
+name: Set up Kubeconfig
+
+description: Set up Kubeconfig for EKS cluster
+
+inputs:
+  KUBECONFIG:
+    description: 'Kubeconfig'
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Setup python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Setup Kubeconfig
+      run: |
+        mkdir -p $HOME/.kube
+        echo "${{ inputs.KUBECONFIG }}" > $HOME/.kube/config
+        export KUBECONFIG=$HOME/.kube/config
+        kubectl config view
+        sudo apt-get update
+        sudo apt-get install -y socat netcat-openbsd
+      shell: bash

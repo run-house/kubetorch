@@ -1,0 +1,19 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: {{ name }}
+  namespace: {{ namespace }}
+  annotations: {{ annotations | tojson }}
+  labels: {{ labels | tojson }}
+spec:
+  template:
+    metadata:
+      annotations: {{ template_annotations | tojson }}
+      labels: {{ template_labels | tojson }}
+    spec:
+      {% if container_concurrency is defined %}
+      containerConcurrency: {{ container_concurrency }}
+      {% endif %}
+      {% for key, value in pod_template.items() %}
+      {{ key }}: {{ value | tojson }}
+      {% endfor %}

@@ -1,3 +1,0 @@
-runhouse[aws]
-torch
-torchvision

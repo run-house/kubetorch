@@ -1,0 +1,100 @@
+[tool.poetry]
+name = "kubetorch"
+version = "0.2.0"
+description = "Kubetorch: A Kubernetes-native framework for distributed PyTorch workloads"
+authors = ["Runhouse Team"]
+license = "Apache 2.0"
+readme = "README.md"
+homepage = "https://run.house"
+repository = "https://github.com/run-house/kubetorch"
+documentation = "https://www.run.house/kubetorch/introduction"
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Distributed Computing",
+]
+packages = [{include = "kubetorch"}]
+include = [
+    "kubetorch/**/*.yaml",
+    "kubetorch/**/*.yml",
+    "kubetorch/**/*.sh",
+    "kubetorch/docs/**"
+]
+
+[tool.poetry.dependencies]
+python = ">=3.9,<=3.13"
+jinja2 = ">=3.0"
+kubernetes = ">=20.0.0,!=32.0.0"
+pydantic = ">=2.5.0"
+requests = "^2.32.0"
+websockets = "^15.0"
+httpx = "^0.28.0"
+pyyaml = "^6.0"
+
+# Server extras
+fastapi = {version = "*", optional = true}
+uvicorn = {extras = ["standard"], version = "*", optional = true}
+python-json-logger = {version = "*", optional = true}
+web-pdb = {version = "*", optional = true}
+
+# Client extras
+typer = {version = "*", optional = true}
+rich = {version = "*", optional = true}
+prometheus-api-client = {version = "*", optional = true}
+
+# Docs extras
+myst-parser = {version = "*", optional = true}
+sphinx = {version = "*", optional = true}
+sphinx-autodoc-typehints = {version = "*", optional = true}
+sphinx-book-theme = {version = "*", optional = true}
+
+# Otel extras
+opentelemetry-api = {version = "*", optional = true}
+opentelemetry-sdk = {version = "*", optional = true}
+opentelemetry-distro = {version = "*", optional = true}
+opentelemetry-instrumentation = {version = "*", optional = true}
+opentelemetry-instrumentation-fastapi = {version = "*", optional = true}
+opentelemetry-instrumentation-requests = {version = "*", optional = true}
+opentelemetry-instrumentation-logging = {version = "*", optional = true}
+opentelemetry-exporter-otlp = {version = "*", optional = true}
+opentelemetry-exporter-prometheus = {version = "*", optional = true}
+prometheus-client = {version = "*", optional = true}
+
+[tool.poetry.extras]
+server = ["fastapi", "uvicorn", "python-json-logger", "web-pdb"]
+client = ["typer", "rich", "prometheus-api-client"]
+docs = ["myst-parser", "sphinx", "sphinx-autodoc-typehints", "sphinx-book-theme"]
+otel = [
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-distro",
+    "opentelemetry-instrumentation",
+    "opentelemetry-instrumentation-fastapi",
+    "opentelemetry-instrumentation-requests",
+    "opentelemetry-instrumentation-logging",
+    "opentelemetry-exporter-otlp",
+    "opentelemetry-exporter-prometheus",
+    "prometheus-client"
+]
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.3.5"
+pytest-asyncio = "*"
+fastapi = "*"
+prometheus-api-client = "*"
+uv = "*"
+
+[tool.poetry.scripts]
+kubetorch = "kubetorch.cli:app"
+kt = "kubetorch.cli:app"
+kt_pdb = "kubetorch.servers.http.pdb:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

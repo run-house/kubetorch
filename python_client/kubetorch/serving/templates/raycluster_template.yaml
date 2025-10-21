@@ -1,0 +1,35 @@
+apiVersion: ray.io/v1
+kind: RayCluster
+metadata:
+  name: {{ name }}
+  namespace: {{ namespace }}
+  annotations: {{ annotations | tojson }}
+  labels: {{ labels | tojson }}
+spec:
+  rayVersion: "2.8.0"
+  enableInTreeAutoscaling: false
+  headGroupSpec:
+    rayStartParams:
+      dashboard-host: "0.0.0.0"
+      port: "6379"
+      object-manager-port: "8076"
+      node-manager-port: "8077"
+      dashboard-port: "8265"
+      metrics-export-port: "8080"
+    replicas: 1
+    template:
+      metadata:
+        annotations: {{ template_annotations | tojson }}
+        labels: {{ head_template_labels | tojson }}
+      spec: {{ pod_template | tojson }}
+  workerGroupSpecs:
+  - groupName: worker-group
+    rayStartParams: {}
+    minReplicas: 0
+    maxReplicas: {{ worker_replicas }}
+    replicas: {{ worker_replicas }}
+    template:
+      metadata:
+        annotations: {{ template_annotations | tojson }}
+        labels: {{ worker_template_labels | tojson }}
+      spec: {{ pod_template | tojson }}

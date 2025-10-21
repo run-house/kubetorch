@@ -1,0 +1,194 @@
+{% if service_account_name is not none %}
+serviceAccountName: {{ service_account_name }}
+{% endif %}
+
+{% if priority_class_name is not none %}
+priorityClassName: {{ priority_class_name }}
+{% endif %}
+
+{% if queue_name is not none %}
+schedulerName: {{ scheduler_name }}
+{% endif %}
+
+{% if gpu_anti_affinity is sameas true %}
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: nvidia.com/gpu
+              operator: DoesNotExist
+            - key: eks.amazonaws.com/instance-gpu-count
+              operator: DoesNotExist
+            - key: cloud.google.com/gke-accelerator
+              operator: DoesNotExist
+{% endif %}
+
+{% if node_selector is not none %}
+nodeSelector:
+  {% for key, value in node_selector.items() %}
+  {{ key }}: {{ value }}
+  {% endfor %}
+{% endif %}
+
+{% if tolerations is not none and tolerations|length > 0 %}
+tolerations:
+{% for tol in tolerations %}
+  - key: "{{ tol.key }}"
+    operator: "{{ tol.operator }}"
+    value: "{{ tol.value }}"
+    effect: "{{ tol.effect }}"
+{% endfor %}
+{% endif %}
+
+timeoutSeconds: {{ launch_timeout }}
+containers:
+  - name: kubetorch
+    image: {{ server_image }}
+    {% if image_pull_policy is not none %}
+    imagePullPolicy: {{ image_pull_policy }}
+    {% endif %}
+    {% if working_dir is not none %}
+    workingDir: {{ working_dir }}
+    {% endif %}
+    ports:
+      - name: http1
+        containerPort: {{ server_port }}
+    command: ["/bin/bash", "-c"]
+    {% if not freeze %}
+    securityContext:
+      capabilities:
+        add:
+          - "SYS_PTRACE"
+    {% endif %}
+    args:
+      - |
+{{ setup_script | indent(8, true) }}
+
+    env:
+      # Pod metadata available via the Kubernetes Downward API
+      - name: POD_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.name
+      - name: POD_NAMESPACE
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.namespace
+      - name: POD_IP
+        valueFrom:
+          fieldRef:
+            fieldPath: status.podIP
+      - name: POD_UUID
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.uid
+      - name: MODULE_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.labels['kubetorch.com/module']
+      - name: KUBETORCH_VERSION
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.labels['kubetorch.com/version']
+      - name: UV_LINK_MODE
+        value: "copy"  # Suppress the hardlink warning
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: "kubetorch-otel-opentelemetry-collector.kubetorch-monitoring.svc.cluster.local:4317"
+      - name: OTEL_EXPORTER_OTLP_PROTOCOL
+        value: "grpc"
+      - name: OTEL_TRACES_EXPORTER
+        value: "otlp"
+      - name: OTEL_PROPAGATORS
+        value: "tracecontext,baggage"
+      - name: KT_OTEL_ENABLED
+        value: "{{ otel_enabled }}"
+      - name: KT_SERVER_PORT
+        value: "{{ server_port }}"
+      - name: KT_FREEZE
+        value: "{{ freeze }}"
+      {% if inactivity_ttl is not none %}
+      - name: KT_INACTIVITY_TTL
+        value: "{{ inactivity_ttl }}"
+      {% endif %}
+      {% for key, value in config_env_vars.items() %}
+      - name: {{ key }}
+        value: "{{ value }}"
+      {% endfor %}
+      {% if env_vars is not none and env_vars|length > 0 %}
+      {% for key, value in env_vars.items() %}
+      - name: {{ key }}
+        value: "{{ value }}"
+      {% endfor %}
+      {% endif %}
+      {% for secret in secret_env_vars %}
+      {% for key in secret.env_vars %}
+      - name: {{ key }}
+        valueFrom:
+          secretKeyRef:
+            name: {{ secret.secret_name }}
+            key: {{ key }}
+      {% endfor %}
+      {% endfor %}
+    volumeMounts:
+      - mountPath: /dev/shm
+        name: dshm
+      {% for secret in secret_volumes %}
+      - name: {{ secret.name }}
+        mountPath: {{ secret.path }}
+        readOnly: true
+      {% endfor %}
+      {% if volume_mounts is not none and volume_mounts|length > 0 %}
+      {% for mount in volume_mounts %}
+      - name: {{ mount.name }}
+        mountPath: {{ mount.mountPath }}
+      {% endfor %}
+      {% endif %}
+    resources:
+      {{ resources | tojson }}
+    # TODO: do we want these health checks?
+    # Note: Knative won't consider the service ready to receive traffic until the probe succeeds at least once
+    # Initial readiness check
+    startupProbe:
+      httpGet:
+        path: /health
+        port: {{ server_port }}
+      initialDelaySeconds: 0
+      periodSeconds: 5
+      timeoutSeconds: 2
+      failureThreshold: {{ launch_timeout // 5 }}
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: {{ server_port }}
+      periodSeconds: 3
+      successThreshold: 1
+      failureThreshold: 5
+    # Ongoing health monitoring with less frequent checks
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: {{ server_port }}
+      periodSeconds: 30
+      timeoutSeconds: 1
+      failureThreshold: 3
+
+volumes:
+  - name: dshm
+    emptyDir:
+      medium: Memory
+      {% if shm_size_limit is not none %}
+      sizeLimit: {{ shm_size_limit }}
+      {% endif %}
+  {% for secret in secret_volumes %}
+  - name: {{ secret.name }}
+    secret:
+      secretName: {{ secret.secret_name }}
+  {% endfor %}
+  {% if volume_specs is not none and volume_specs|length > 0 %}
+  {% for spec in volume_specs %}
+  - name: {{ spec.name }}
+    persistentVolumeClaim:
+      claimName: {{ spec.persistentVolumeClaim.claimName }}
+  {% endfor %}
+  {% endif %}

@@ -1,0 +1,8 @@
+# chartsnap: snapshot_version=v3
+---
+apiVersion: helm-chartsnap.jlandowner.dev/v1alpha1
+kind: Unknown
+metadata:
+  name: helm-output
+raw: |
+  Error: non-absolute URLs should be in form of repo_name/path_to_chart, got: kubetorch-otel

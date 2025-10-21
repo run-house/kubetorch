@@ -1,4 +1,0 @@
-beautifulsoup4
-runhouse[aws]
-torch
-tqdm

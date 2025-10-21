@@ -1,44 +1,93 @@
-name: Tests with level "unit"
+name: Unit tests
 
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - 'python_client/kubetorch/docs/**'
+      - 'python_client/tests/test_deploy.py'
+      - '**/*.md'
+      - '**/*.rst'
+      - '**/*.tf'
+      - 'exploratory/**'
+      - 'cluster_setup/**'
+      - '.github/workflows/create_cluster.yaml'
+      - '.github/workflows/deploy_tests.yaml'
+      - '.github/workflows/create_cluster/action.yaml'
+      - '.github/workflows/delete_cluster.yaml'
   pull_request:
+    paths-ignore:
+      - 'python_client/kubetorch/docs/**'
+      - 'python_client/tests/test_deploy.py'
+      - '**/*.md'
+      - '**/*.rst'
+      - '**/*.tf'
+      - 'exploratory/**'
+      - 'cluster_setup/**'
+      - '.github/workflows/create_cluster.yaml'
+      - '.github/workflows/deploy_tests.yaml'
+      - '.github/workflows/create_cluster/action.yaml'
+      - '.github/workflows/delete_cluster.yaml'
+  workflow_dispatch:
+
+env:
+  CI: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  all-tests-logged-out-level-unit:
+  unit-tests:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Check out repository code
         uses: actions/checkout@v3
 
-      - name: Setup Runhouse
-        uses: ./.github/workflows/setup_runhouse
+      - name: Install Dependencies
+        uses: ./.github/workflows/install_dependencies
+
+      - name: Setup authentications
+        uses: ./.github/workflows/gke_authentications
         with:
-          den_tester_ssh_private_key: ${{ secrets.DEN_TESTER_SSH_PRIVATE_KEY }}
-          den_tester_ssh_public_key: ${{ secrets.DEN_TESTER_SSH_PUBLIC_KEY }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_SA_KEY: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
 
-      - name: pytest -v --level unit -k "not secrettest"
-        run: pytest -v --level unit -k "not secrettest"
-        timeout-minutes: 20
+      - name: Install docs requirements
+        run: pip install -r python_client/kubetorch/docs/requirements.txt
 
-#  all-tests-logged-in-level-unit:
-#    runs-on: ubuntu-latest
-#    steps:
-#      - name: Check out repository code
-#        uses: actions/checkout@v3
-#
-#      - name: Setup Runhouse
-#        uses: ./.github/workflows/setup_runhouse
-#
-#      - name: Setup ~/.rh/config.yaml
-#        uses: ./.github/workflows/setup_rh_config
-#        with:
-#          username: ${{ secrets.CI_ACCOUNT_USERNAME }}
-#          token: ${{ secrets.CI_ACCOUNT_TOKEN }}
-#
-#      - name: pytest -v --level unit -k "not den_auth"
-#        env:
-#          TEST_TOKEN: ${{ secrets.TEST_TOKEN }}
-#          TEST_USERNAME: ${{ secrets.TEST_USERNAME }}
-#        run: pytest -v --level unit
+      - name: Setup Test Cluster
+        uses: ./.github/workflows/setup_test_cluster
+        with:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials ${{ secrets.CI_CLUSTER_NAME }} \
+            --region ${{ secrets.CI_CLUSTER_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Set Python Source Root
+        run: echo "PYTHONPATH=$(pwd)/python_client" >> $GITHUB_ENV
+
+      - name: Set Test Hash
+        run: |
+          TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)"
+          echo "TEST_HASH=$TEST_HASH" >> $GITHUB_ENV
+
+      - name: Run tests with level unit
+        run: |
+          cd python_client
+          pytest -v --level unit --detached
+        timeout-minutes: 60
+
+      - name: secrets cleanup
+        if: ${{ always() }}
+        run: |
+          echo "Running teardown command: kt secrets delete -A -y for username ${TEST_HASH}"
+          kt config set username $TEST_HASH
+          kt secrets delete -A -y
+        timeout-minutes: 60

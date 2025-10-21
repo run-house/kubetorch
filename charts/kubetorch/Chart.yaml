@@ -1,0 +1,17 @@
+apiVersion: v2
+name: kubetorch
+description: A Helm chart for kubetorch
+type: application
+version: 0.2.0
+appVersion: 0.2.0
+
+dependencies:
+  - name: nvidia-device-plugin
+    version: "0.14.1"
+    repository: https://nvidia.github.io/k8s-device-plugin
+    condition: gpuSupport.enabled
+
+  - name: opentelemetry-collector
+    version: "0.132.0"
+    repository: https://open-telemetry.github.io/opentelemetry-helm-charts
+    condition: otelCollector.enabled
