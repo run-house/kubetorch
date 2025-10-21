@@ -1,5 +1,4 @@
 import enum
-import importlib.util
 import json
 import os
 import re
@@ -123,30 +122,10 @@ def get_kt_install_url(freeze: bool = False):
     if local_kt_path and (Path(local_kt_path) / "pyproject.toml").exists():
         return local_kt_path, True
     else:
-        # If the user is using uv, sometimes the pip freeze command won't return the full "kubetorch @ ..." install
-        # URL. However, running `uv pip freeze` will return the full URL, even when the user isn't actually in a uv
-        # venv. So we default to using `uv pip freeze` if uv is installed, otherwise we use the regular `pip freeze`.
-        uv_installed = importlib.util.find_spec("uv") is not None
-        # check if installed from presigned url
-        freeze_cmd = (
-            "pip freeze | grep kubetorch"
-            if not uv_installed
-            else "uv pip freeze | grep kubetorch"
-        )
-        output = subprocess.run(
-            freeze_cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-        if not output.startswith("kubetorch @ "):
-            raise Exception(
-                "Could not find kubetorch version to install on the pod. You must either set the "
-                "``install_url`` in the config or ``KT_INSTALL_URL`` env var, have kubetorch installed "
-                "locally, or set ``compute.freeze`` to ``True``."
-            )
-        install_url = output[len("kubetorch @ ") :].strip()
-        return install_url, False
+        import kubetorch as kt
+
+        version = kt.__version__
+        return version, False
 
 
 class LogVerbosity(str, enum.Enum):

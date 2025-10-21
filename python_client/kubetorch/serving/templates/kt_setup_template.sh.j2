@@ -62,9 +62,9 @@ export KT_PIP_INSTALL_CMD="$uv_pip_cmd"
 echo "$uv_pip_cmd" > .kt/kt_pip_install_cmd
 
 {% if install_url %}
-  $uv_pip_cmd "kubetorch[server] @ {{ install_url }}"
+  $uv_pip_cmd "kubetorch[server]=={{ install_url }}"
   {% if install_otel %}
-    $uv_pip_cmd "kubetorch[otel] @ {{ install_url }}"
+    $uv_pip_cmd "kubetorch[otel]=={{ install_url }}"
   {% endif %}
 {% else %}
   {{ rsync_kt_editable_cmd }}

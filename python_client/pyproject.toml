@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "kubetorch"
-version = "0.2.0"
-description = "Kubetorch: A Kubernetes-native framework for distributed PyTorch workloads"
+version = "0.2.1"
+description = "A Python interface for running ML workloads on Kubernetes"
 authors = ["Runhouse Team"]
 license = "Apache 2.0"
 readme = "README.md"
