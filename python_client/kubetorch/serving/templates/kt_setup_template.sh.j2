@@ -1,0 +1,81 @@
+# Increase file descriptor limit for large-scale distributed jobs
+ulimit -n 65536
+
+{% if python_path %}
+export PATH="{{ python_path }}:$PATH"
+if command -v "{{ python_path }}" &> /dev/null; then
+  python_bin="{{ python_path }}"
+fi
+{% endif %}
+# If the user set the python_path to exact executable, then we'll use it directly here but adding it to PATH
+# above will have little effect. If they set it to a directory, then this command check will fail as desired,
+# and we'll then look for python3 or python in PATH (starting with their directory) as desired.
+if [[ -z "$python_bin" ]]; then
+  if command -v python3 &> /dev/null; then
+    python_bin="python3"
+  elif command -v python &> /dev/null; then
+    python_bin="python"
+  else
+    echo "Error: Neither python3 nor python found in PATH. Please set python_path to a valid Python executable."
+    exit 1
+  fi
+fi
+echo "Using Python binary: $python_bin"
+
+{% if not freeze %}
+if ! command -v rsync &> /dev/null; then
+  apt-get update && apt-get install -y rsync
+fi
+if ! command -v nohup &> /dev/null; then
+  apt-get update && apt-get install -y coreutils
+fi
+
+{% if install_cmd %}
+# Use the explicitly provided install command
+uv_pip_cmd="{{ install_cmd }}"
+{% else %}
+
+if $python_bin -c "import sys; exit(0 if sys.prefix != sys.base_prefix else 1)" 2>/dev/null; then
+  install_flags=""
+else
+  install_flags="--system --break-system-packages"
+fi
+
+# Check if uv is available and set the appropriate command
+if command -v uv &> /dev/null; then
+  # Use system-wide uv with the detected Python interpreter
+  uv_pip_cmd="uv pip install $install_flags --python=$python_bin"
+elif $python_bin -m uv --version &> /dev/null; then
+  # Use Python module uv - it inherently uses the right Python
+  uv_pip_cmd="$python_bin -m uv pip install $install_flags"
+else
+  # Install uv as a Python module and use it
+  echo "uv not found, installing it..."
+  $python_bin -m pip install uv
+  uv_pip_cmd="$python_bin -m uv pip install $install_flags"
+fi
+{% endif %}
+
+# Export the install command as an environment variable for use in applications
+echo "Setting KT_PIP_INSTALL_CMD env var to $uv_pip_cmd"
+export KT_PIP_INSTALL_CMD="$uv_pip_cmd"
+echo "$uv_pip_cmd" > .kt/kt_pip_install_cmd
+
+{% if install_url %}
+  $uv_pip_cmd "kubetorch[server] @ {{ install_url }}"
+  {% if install_otel %}
+    $uv_pip_cmd "kubetorch[otel] @ {{ install_url }}"
+  {% endif %}
+{% else %}
+  {{ rsync_kt_editable_cmd }}
+  $uv_pip_cmd -e "python_client[server]"
+  {% if install_otel %}
+    $uv_pip_cmd -e "python_client[otel]"
+  {% endif %}
+{% endif %}
+
+{% endif %}
+
+$python_bin -m uvicorn kubetorch.servers.http.http_server:app \
+    --host 0.0.0.0 \
+    --port {{ server_port }}

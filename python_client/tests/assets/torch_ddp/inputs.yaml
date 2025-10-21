@@ -1,0 +1,8 @@
+torch_ddp:
+  valid:
+    - args: [3]
+      expected: ["Success", "Success", "Success", "Success"]
+  invalid:
+    - args: ["a"]
+      error: TypeError
+      error_code: 422

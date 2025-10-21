@@ -1,0 +1,97 @@
+name: Nightly GPU Tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run every night at 2 AM UTC
+    - cron: '0 2 * * *'
+
+env:
+  CI: true
+  KUBETORCH_IGNORE_VERSION_MISMATCH: 1
+
+jobs:
+  gpu-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+
+      - name: Install Dependencies
+        uses: ./.github/workflows/install_dependencies
+
+      - name: Setup authentications
+        uses: ./.github/workflows/gke_authentications
+        with:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_SA_KEY: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+
+      - name: Setup Test Cluster
+        uses: ./.github/workflows/setup_test_cluster
+        with:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials ${{ secrets.CI_CLUSTER_NAME }} \
+            --region ${{ secrets.CI_CLUSTER_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Set Python Source Root
+        run: echo "PYTHONPATH=$(pwd)/python_client" >> $GITHUB_ENV
+
+      - name: Set Test Hash
+        run: |
+          TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)-gpu"
+          echo "TEST_HASH=$TEST_HASH" >> $GITHUB_ENV
+          echo "Using test hash $TEST_HASH"
+
+      - name: Run tests with level minimal
+        run: |
+          cd python_client
+          pytest -v --durations=25 --level minimal -m "gpu_test"
+        timeout-minutes: 60
+        env:
+          KT_STREAM_LOGS: false
+
+  cleanup:
+    if: ${{ always() }}
+    needs: gpu-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v3
+
+      - name: Install Dependencies
+        uses: ./.github/workflows/install_dependencies
+
+      - name: Setup Test Cluster
+        uses: ./.github/workflows/setup_test_cluster
+        with:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+
+      - name: Setup authentications
+        uses: ./.github/workflows/authentications
+        with:
+          KT_AWS_ACCESS_KEY: ${{ secrets.KT_AWS_ACCESS_KEY }}
+          KT_AWS_SECRET_KEY: ${{ secrets.KT_AWS_SECRET_KEY }}
+
+      - name: Set Test Hash
+        run: |
+          TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)-gpu"
+          echo "TEST_HASH=$TEST_HASH" >> $GITHUB_ENV
+          echo "Using test hash $TEST_HASH"
+
+      - name: Run Teardown Commands
+        run: |
+          echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} -y"
+          kt teardown --prefix ${TEST_HASH}${suffix} -y || true
+          echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} -y"
+          kt teardown --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} -y || true
+          echo "Running secrets delete command: kt secrets delete --prefix ${TEST_HASH}${suffix} -y"
+          kt secrets delete --prefix ${TEST_HASH}${suffix} -y || true
+          echo "Running secrets delete command: kt secrets delete --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} -y"
+          kt secrets delete --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} -y || true

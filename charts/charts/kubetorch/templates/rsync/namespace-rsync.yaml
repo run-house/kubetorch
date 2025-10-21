@@ -1,0 +1,90 @@
+{{- range (.Values.kubetorchConfig.deployment_namespaces | default list | concat (list .Release.Namespace) | uniq) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubetorch-rsyncd-config
+  namespace: {{ . }}
+data:
+  rsyncd.conf: |
+    pid file = /var/run/rsyncd.pid
+    log file = /var/log/rsyncd.log
+    uid = root
+    gid = root
+    use chroot = false
+    max connections = {{ $.Values.rsync.maxConnections | default 100 }}
+    timeout = {{ $.Values.rsync.timeout | default 600 }}
+    # Performance tuning
+    socket options = SO_KEEPALIVE TCP_NODELAY IPTOS_LOWDELAY
+    # Log verbosity (0-4, lower is better for performance)
+    max verbosity = {{ $.Values.rsync.maxVerbosity | default 0 }}
+    [data]
+    path = /data
+    comment = Shared rsync data
+    read only = false
+    mkdir mode = 0777
+    # Per-module connection limit (optional, 0 = use global limit)
+    max connections = {{ $.Values.rsync.maxConnectionsPerModule | default 0 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubetorch-rsync
+  namespace: {{ . }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubetorch-rsync
+  template:
+    metadata:
+      labels:
+        app: kubetorch-rsync
+    spec:
+      containers:
+        - name: rsync
+          image: {{ $.Values.rsync.image }}
+          ports:
+            - containerPort: 873   # rsync daemon
+            - containerPort: 8080  # HTTP/WebSocket tunnel
+          volumeMounts:
+            - name: rsync-data
+              mountPath: /data
+            - name: rsyncd-config
+              mountPath: /etc/rsyncd.conf
+              subPath: rsyncd.conf
+          resources:
+            requests:
+              cpu: {{ $.Values.rsync.cpu.request }}
+              memory: {{ $.Values.rsync.memory.request }}
+              ephemeral-storage: {{ $.Values.rsync.ephemeralStorage.request }}
+            limits:
+              cpu: {{ $.Values.rsync.cpu.limit }}
+              memory: {{ $.Values.rsync.memory.limit }}
+              ephemeral-storage: {{ $.Values.rsync.ephemeralStorage.limit }}
+      volumes:
+        - name: rsync-data
+          emptyDir: {} # Note: data is ephemeral - will be lost from rsync service on restart
+#          persistentVolumeClaim: # replace with your own PVC if you want persistent storage
+#            claimName: kubetorch-juicefs-pvc
+        - name: rsyncd-config
+          configMap:
+            name: kubetorch-rsyncd-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubetorch-rsync
+  namespace: {{ . }}
+spec:
+  selector:
+    app: kubetorch-rsync
+  ports:
+    - name: rsync
+      port: 873
+      targetPort: 873
+    - name: http-tunnel
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP
+{{- end }}

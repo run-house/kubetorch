@@ -1,6 +1,0 @@
-torch
-kubetorch
-boto3
-lightning
-datasets
-torchvision

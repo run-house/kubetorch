@@ -1,0 +1,70 @@
+{{- if .Values.ephemeralLogStorage.enabled }}
+---
+# Loki Logging Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubetorch-logging
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubetorch-logging
+  template:
+    metadata:
+      labels:
+        app: kubetorch-logging
+    spec:
+      containers:
+        - name: loki
+          image: {{ .Values.ephemeralLogStorage.image }}
+          args:
+            - -config.file=/etc/loki/loki.yaml
+          ports:
+            - containerPort: {{ .Values.ephemeralLogStorage.port }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/loki
+          resources:
+            requests:
+              cpu: {{ .Values.ephemeralLogStorage.resources.cpu }}
+              memory: {{ .Values.ephemeralLogStorage.resources.memory }}
+      volumes:
+        - name: config
+          configMap:
+            name: kubetorch-logging-config
+{{- end }}
+{{- if .Values.otelCollector.enabled }}
+---
+# RBAC for existing OpenTelemetry Collector Agent
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubetorch-otel-agent
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - namespaces
+      - nodes
+      - services
+      - events
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubetorch-otel-agent-binding
+subjects:
+  - kind: ServiceAccount
+    name: kubetorch-opentelemetry-collector
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: kubetorch-otel-agent
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

@@ -1,0 +1,8 @@
+torch_summer:
+  valid:
+    - args: [1, 2]
+      expected: [3, 3, 3, 3]
+  invalid:
+    - args: ["a", 2]
+      error: ValueError
+      error_code: 400

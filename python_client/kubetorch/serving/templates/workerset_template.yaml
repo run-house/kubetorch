@@ -1,0 +1,36 @@
+# --- Headless Service selecting all pods with 'app=my-app-name' ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ workerset_name }}
+  namespace: {{ namespace }}
+  annotations: {{ annotations | tojson }}
+  labels: {{ labels | tojson }}
+spec:
+  clusterIP: None # Make it headless
+  selector:
+    app: {{ workerset_name_app }} # Selects pods from any associated StatefulSets
+
+---
+# --- StatefulSet ---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ worker_group_name }}
+  namespace: {{ namespace }}
+  ownerReferences:
+    - apiVersion: v1
+      kind: Pod
+      name: {{ service_pod_name }}
+      uid: {{ service_pod_uid }}
+spec:
+  serviceName: {{ workerset_name }} # Must match the headless service name
+  replicas: {{ replicas }}
+  selector:
+    matchLabels:
+      app: {{ workerset_name_app }} # Matches the service selector
+  template:
+    metadata:
+      labels:
+        app: {{ workerset_name_app }} # Label for the service
+    spec: {{ pod_template | tojson }}

@@ -1,21 +1,28 @@
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.0.1
+    rev: v5.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
 
   - repo: https://github.com/omnilib/ufmt
-    rev: v1.3.2
+    rev: v2.8.0
     hooks:
       - id: ufmt
-        exclude: (runhouse/servers/grpc/unary_pb2.py|runhouse/servers/grpc/unary_pb2_grpc.py|runhouse/resources/hardware/sky/)
         additional_dependencies:
           - black == 22.6.0
           - usort == 1.0.4
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.3.0
+    rev: v0.12.7
     hooks:
       - id: ruff
-        args: [--line-length=120, '--ignore=E402,E721,E722,E731,F821']
+        args: [--line-length=120, '--ignore=E402,E721,E722,E731,F821', '--fix']
+
+  - repo: https://github.com/norwoodj/helm-docs
+    rev: "v1.14.2"
+    hooks:
+      - id: helm-docs
+        args:
+          # Make the tool search for charts only under the `charts` directory
+          - --chart-search-root=charts

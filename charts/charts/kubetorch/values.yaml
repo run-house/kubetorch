@@ -1,0 +1,115 @@
+kubetorchConfig:
+  environment:
+    # PROMETHEUS_URL should be set only if you have an external or custom Prometheus instance.
+    # Example: "http://prometheus.runhouse.svc.cluster.local:9090"
+    # Leave empty if not configured.
+    PROMETHEUS_URL: ""
+
+    # PROMETHEUS_NAMESPACE is optional — set it if your Prometheus runs in a non-default namespace
+    # (e.g., "runhouse"). Leave empty if not configured.
+    PROMETHEUS_NAMESPACE: ""
+  # List of namespaces to allow deploying compute resources to
+  deployment_namespaces:
+    - "default"
+    - "kubetorch"
+  otelEnabled: true # Allows OTEL on the server, necessary for custom metrics collection and TTL
+
+nginx:
+  # if using a custom DNS resolver, update the value below (e.g., "coredns.kube-system.svc.cluster.local")
+  resolver: "kube-dns.kube-system.svc.cluster.local"
+
+gpuSupport:
+  enabled: true # set to `false` to disable GPU support
+
+nvidia-device-plugin:
+  namespaceOverride: "kubetorch"
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: Exists
+
+  tolerations:
+    - key: "nvidia.com/gpu"
+      operator: "Exists"
+      effect: "NoSchedule"
+    - key: "dedicated"
+      operator: "Equal"
+      value: "gpu"
+      effect: "NoSchedule"
+
+rsync:
+  image: ghcr.io/run-house/kubetorch-rsync:v5
+  maxConnections: 500  # Maximum concurrent rsync connections (increase for many worker pods)
+  timeout: 600  # Connection timeout in seconds
+  maxVerbosity: 0  # Log verbosity (0-4, use 0 for production, higher for debugging)
+  maxConnectionsPerModule: 0  # Per-module limit (0 = unlimited, inherits global limit)
+  cpu:
+    request: 2
+    limit: 4
+  memory:
+    request: 4Gi
+    limit: 8Gi
+  ephemeralStorage: # adjust based on expected node disk size
+    request: 5Gi
+    limit: 10Gi
+  cleanupCron:
+    enabled: false # set to true to enable pod cleanup
+
+nginxProxy:
+  image:
+    repository: nginx
+    tag: 1.29.0-alpine
+    pullPolicy: IfNotPresent
+  maxBodySize:
+    rsync: "10G" # 10GB max body size for rsync
+    api: "250M" # 250 MB max body size to all other routes
+  backends:
+    logging:
+      route: "/loki"
+      host: loki-gateway.kubetorch.svc.cluster.local
+    metrics:
+      route: "/prometheus"
+      host: runhouse-kube-prometheus-s-prometheus.runhouse.svc.cluster.local
+      port: 9090
+    health:
+      route: "/health"
+
+ephemeralLogStorage:
+  enabled: true # set to `false` to disable ephemeral log storage
+  retentionPeriod: 24h
+  maxConcurrentTailRequests: 100
+  image: grafana/loki:3.5.3
+  port: 3100
+  resources:
+    cpu: 100m
+    memory: 256Mi
+
+otelCollector:
+  enabled: true # set to `false` to disable opentelemetry collector
+
+opentelemetry-collector:
+  mode: daemonset
+  image:
+    repository: otel/opentelemetry-collector-contrib
+    pullPolicy: IfNotPresent
+  presets:
+    logsCollection:
+      enabled: true
+      includeCollectorLogs: true
+    kubernetesAttributes:
+      enabled: true
+      extractAllPodLabels: true
+    kubernetesEvents:
+      enabled: true
+  configMap:
+    create: false
+    existingName: otel-collector-config
+  tolerations:
+    - operator: "Exists"
+      # This single toleration with operator: Exists and no key/value/effect
+      # means "tolerate all taints" - the collector will run on every node
+      # regardless of any taints, including GPU nodes, spot instances,
+      # preemptible nodes, dedicated nodes, etc.

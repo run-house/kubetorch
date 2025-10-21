@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ name }}
+  namespace: {{ namespace }}
+  annotations: {{ annotations | tojson }}
+  labels: {{ labels | tojson }}
+spec:
+  replicas: {{ replicas }}
+  selector:
+    matchLabels:
+      kubetorch.com/service: {{ name }}
+  template:
+    metadata:
+      annotations: {{ template_annotations | tojson }}
+      labels: {{ template_labels | tojson }}
+    spec: {{ pod_template | tojson }}

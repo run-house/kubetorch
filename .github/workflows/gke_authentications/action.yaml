@@ -1,0 +1,58 @@
+name: Set up GCP Auth
+
+description: Install gcloud CLI and authenticate using a service account key
+
+inputs:
+  GCP_PROJECT_ID:
+    description: 'GCP Project ID'
+    required: true
+  GCP_SA_KEY:
+    description: 'GCP service account key JSON'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Write GCP service account key to file
+      shell: bash
+      run: |
+        mkdir -p $HOME/.config/gcloud
+        echo '${{ inputs.GCP_SA_KEY }}' > $HOME/.config/gcloud/application_default_credentials.json
+        chmod 600 $HOME/.config/gcloud/application_default_credentials.json
+
+    - name: Set up gcloud
+      uses: google-github-actions/setup-gcloud@v2
+      with:
+        project_id: ${{ inputs.GCP_PROJECT_ID }}
+
+    - name: Install gcloud CLI
+      uses: google-github-actions/setup-gcloud@v3
+      with:
+        version: latest
+
+    - name: Authenticate to GCP
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ inputs.GCP_SA_KEY }}
+
+    - name: Install GKE auth plugin
+      shell: bash
+      run: |
+        gcloud components install gke-gcloud-auth-plugin
+        echo "USE_GKE_GCLOUD_AUTH_PLUGIN=True" >> $GITHUB_ENV
+
+    - name: Set gcloud project
+      run: |
+        gcloud config set project ${{ inputs.GCP_PROJECT_ID }}
+      shell: bash
+
+    - name: Configure a mock huggingface token
+      run: |
+        mkdir -p $HOME/.cache/huggingface
+        echo "mockingHFToken" > $HOME/.cache/huggingface/token
+      shell: bash
