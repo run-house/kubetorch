@@ -60,7 +60,7 @@ Contact us ([email](mailto:hello@run.house), [Slack](https://join.slack.com/t/ku
 ## Learn More
 
 - **[Documentation](https://www.run.house/kubetorch/introduction)** - API Reference, concepts, and guides
-- **[Examples](https://www.run.house/kubetorch/examples)** - Real-world usage patterns and tutorials
+- **[Examples](https://www.run.house/examples)** - Real-world usage patterns and tutorials
 - **[Join our Slack](https://join.slack.com/t/kubetorch/shared_invite/zt-3g76q5i4j-uP60AdydxnAmjGVAQhtALA)** - Connect with the community and get support
 
 ---
