@@ -20,7 +20,7 @@ if __name__ == "__main__":
     remote_hello = kt.fn(hello_world).to(compute)
 
     # Runs remotely on your Kubernetes cluster
-    result = hello_world()
+    result = remote_hello()
     print(result)  # "Hello from Kubetorch!"
 ```
 
