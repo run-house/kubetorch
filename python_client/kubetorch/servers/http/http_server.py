@@ -1309,8 +1309,9 @@ async def lifespan(app: FastAPI):
         logger.debug("No TTL annotation found, heartbeat disabled")
 
     try:
-        cached_image_setup()
-        if not os.getenv("KT_CALLABLE_TYPE") == "app":
+        if os.getenv("KT_CALLABLE_TYPE") == "app":
+            cached_image_setup()
+        else:
             load_callable()
 
         logger.info("Kubetorch Server started.")

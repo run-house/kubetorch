@@ -59,6 +59,7 @@ fi
 # Export the install command as an environment variable for use in applications
 echo "Setting KT_PIP_INSTALL_CMD env var to $uv_pip_cmd"
 export KT_PIP_INSTALL_CMD="$uv_pip_cmd"
+mkdir -p .kt
 echo "$uv_pip_cmd" > .kt/kt_pip_install_cmd
 
 {% if install_url %}
