@@ -7,7 +7,7 @@ Kubetorch enables you to run any Python code on Kubernetes at any scale by speci
 ## Hello World
 
 ```python
-from kubetorch import fn
+import kubetorch as kt
 
 def hello_world():
     return "Hello from Kubetorch!"
