@@ -32,12 +32,7 @@ nvidia-device-plugin:
                 operator: Exists
 
   tolerations:
-    - key: "nvidia.com/gpu"
-      operator: "Exists"
-      effect: "NoSchedule"
-    - key: "dedicated"
-      operator: "Equal"
-      value: "gpu"
+    - operator: "Exists"
       effect: "NoSchedule"
 
 rsync:

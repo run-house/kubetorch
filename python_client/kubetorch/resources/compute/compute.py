@@ -196,6 +196,7 @@ class Compute:
         self.labels = labels or {}
         self.annotations = annotations or {}
         self.service_template = service_template or {}
+        self._tolerations = tolerations
         self._gpu_annotations = {}  # Will be populated during init or from_template
 
         # Skip template initialization if loading from existing service
@@ -250,7 +251,7 @@ class Compute:
             "freeze": freeze,
             "gpu_anti_affinity": gpu_anti_affinity,
             "working_dir": working_dir,
-            "tolerations": tolerations,
+            "tolerations": self._get_tolerations(gpus),
             "shm_size_limit": shared_memory_limit,
             "priority_class_name": priority_class_name,
             "launch_timeout": self._get_launch_timeout(launch_timeout),
@@ -1097,48 +1098,6 @@ class Compute:
     # ----------------- GPU Properties ----------------- #
 
     @property
-    def tolerations(self):
-        # First try to get tolerations from pod template
-        template_tolerations = self.pod_template.get("tolerations", [])
-
-        # Note: if nodes are not tainted for GPUs, these tolerations are just ignored
-        required_gpu_tolerations = [
-            {
-                "key": "nvidia.com/gpu",
-                "operator": "Exists",
-                "effect": "NoSchedule",
-            },
-            {
-                "key": "dedicated",
-                "operator": "Equal",
-                "value": "gpu",
-                "effect": "NoSchedule",
-            },
-        ]
-
-        # Use template tolerations if available, otherwise use stored tolerations
-        user_tolerations = template_tolerations if template_tolerations else []
-
-        # Only add required GPU tolerations if this is a GPU workload
-        if (
-            not self._load_gpu_config(self.gpus, self.gpu_memory, self.gpu_type)
-            and not self.gpu_type
-        ):
-            return user_tolerations if user_tolerations else None
-
-        all_tolerations = user_tolerations.copy()
-        for req_tol in required_gpu_tolerations:
-            if not any(
-                t["key"] == req_tol["key"]
-                and t.get("value") == req_tol["value"]
-                and t.get("effect") == req_tol["effect"]
-                for t in all_tolerations
-            ):
-                all_tolerations.append(req_tol)
-
-        return all_tolerations
-
-    @property
     def gpu_annotations(self):
         # GPU annotations for KAI scheduler
         return self._gpu_annotations
@@ -1248,6 +1207,42 @@ class Compute:
         return port
 
     # ----------------- GPU Init Template Setup Helpers ----------------- #
+
+    def _get_tolerations(self, gpus):
+        user_tolerations = self._tolerations if self._tolerations else []
+
+        required_gpu_tolerations = [
+            {
+                "key": "nvidia.com/gpu",
+                "operator": "Exists",
+                "effect": "NoSchedule",
+            },
+            {
+                "key": "dedicated",
+                "operator": "Equal",
+                "value": "gpu",
+                "effect": "NoSchedule",
+            },
+        ]
+
+        # add required GPU tolerations for GPU workloads
+        if gpus:
+            all_tolerations = user_tolerations.copy()
+            for req_tol in required_gpu_tolerations:
+                if not any(
+                    t["key"] == req_tol["key"]
+                    and t.get("operator") == req_tol.get("operator")
+                    and t.get("effect") == req_tol["effect"]
+                    and (
+                        req_tol.get("value") is None
+                        or t.get("value") == req_tol.get("value")
+                    )
+                    for t in all_tolerations
+                ):
+                    all_tolerations.append(req_tol)
+            return all_tolerations
+
+        return user_tolerations if user_tolerations else None
 
     def _get_gpu_annotations(self, gpu_config):
         # https://blog.devops.dev/struggling-with-gpu-waste-on-kubernetes-how-kai-schedulers-sharing-unlocks-efficiency-1029e9bd334b
