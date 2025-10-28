@@ -1,8 +1,6 @@
 import os
-import re
 import time
-from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 from kubernetes import client
 
@@ -18,7 +16,9 @@ logger = get_logger(__name__)
 class RayClusterServiceManager(BaseServiceManager):
     """Service manager for Ray clusters with distributed Ray workload support."""
 
-    def _create_or_update_raycluster(
+    template_label = "raycluster"
+
+    def _create_or_update_resource(
         self,
         name: str,
         module_name: str,
@@ -35,28 +35,15 @@ class RayClusterServiceManager(BaseServiceManager):
         Returns:
             Tuple (created_raycluster, is_new_raycluster)
         """
-        clean_module_name = re.sub(r"[^A-Za-z0-9.-]|^[-.]|[-.]$", "", module_name)
-
-        labels = {
-            **self.base_labels,
-            serving_constants.KT_MODULE_LABEL: clean_module_name,
-            serving_constants.KT_SERVICE_LABEL: name,
-            serving_constants.KT_TEMPLATE_LABEL: "raycluster",  # Mark as source-of-truth
-        }
-        if custom_labels:
-            labels.update(custom_labels)
+        clean_module_name = self._clean_module_name(module_name)
+        labels = self._get_labels(clean_module_name, name, custom_labels)
 
         # Template labels (exclude template label - that's only for the top-level resource)
-        # Add ray-node-type label to distinguish head from worker nodes
-        template_labels = {
-            **self.base_labels,
-            serving_constants.KT_MODULE_LABEL: clean_module_name,
-            serving_constants.KT_SERVICE_LABEL: name,
-        }
-        if custom_labels:
-            template_labels.update(custom_labels)
+        template_labels = labels.copy()
+        template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
 
         # Head node specific labels (for service selector)
+        # Add ray-node-type label to distinguish head from worker nodes
         head_template_labels = {
             **template_labels,
             "ray.io/node-type": "head",  # KubeRay standard label
@@ -68,21 +55,15 @@ class RayClusterServiceManager(BaseServiceManager):
             "ray.io/node-type": "worker",  # KubeRay standard label
         }
 
-        annotations = {
-            "prometheus.io/scrape": "true",
-            "prometheus.io/path": serving_constants.PROMETHEUS_HEALTH_ENDPOINT,
-            "prometheus.io/port": "8080",
-            "ray.io/overwrite-container-cmd": "true",
-        }
-        if custom_annotations:
-            annotations.update(custom_annotations)
+        # Get base annotations and add Ray-specific ones
+        annotations = self._get_annotations(custom_annotations, inactivity_ttl)
+        annotations.update(
+            {
+                "ray.io/overwrite-container-cmd": "true",
+            }
+        )
 
-        deployment_timestamp = datetime.now(timezone.utc).isoformat()
-        template_annotations = {"kubetorch.com/deployment_timestamp": deployment_timestamp}
-
-        if inactivity_ttl:
-            annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
-            logger.info(f"Configuring auto-down after idle timeout ({inactivity_ttl})")
+        template_annotations = {"kubetorch.com/deployment_timestamp": self._get_deployment_timestamp()}
 
         # Create RayCluster
         worker_replicas = max(0, replicas - 1)  # Head node counts as 1 replica
@@ -101,13 +82,8 @@ class RayClusterServiceManager(BaseServiceManager):
         )
 
         # Create Kubernetes Service pointing to head node HTTP server (like Deployments)
-        service_labels = {
-            **self.base_labels,
-            serving_constants.KT_MODULE_LABEL: clean_module_name,
-            serving_constants.KT_SERVICE_LABEL: name,
-        }
-        if custom_labels:
-            service_labels.update(custom_labels)
+        service_labels = labels.copy()
+        service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
 
         # Ray clusters are always distributed, so we need headless services for pod discovery
         # Create regular service for client access (head node only)
@@ -224,7 +200,7 @@ class RayClusterServiceManager(BaseServiceManager):
 
             raise e
 
-    def get_raycluster(self, raycluster_name: str) -> dict:
+    def get_resource(self, service_name: str) -> dict:
         """Retrieve a RayCluster by name."""
         try:
             raycluster = self.objects_api.get_namespaced_custom_object(
@@ -232,31 +208,17 @@ class RayClusterServiceManager(BaseServiceManager):
                 version="v1",
                 namespace=self.namespace,
                 plural="rayclusters",
-                name=raycluster_name,
+                name=service_name,
             )
             return raycluster
         except client.exceptions.ApiException as e:
-            logger.error(f"Failed to load RayCluster '{raycluster_name}': {str(e)}")
+            logger.error(f"Failed to load RayCluster '{service_name}': {str(e)}")
             raise
-
-    def get_deployment_timestamp_annotation(self, service_name: str) -> Optional[str]:
-        """Get deployment timestamp annotation for RayCluster services."""
-        try:
-            raycluster = self.get_raycluster(service_name)
-            if raycluster:
-                return (
-                    raycluster.get("metadata", {})
-                    .get("annotations", {})
-                    .get("kubetorch.com/deployment_timestamp", None)
-                )
-        except client.exceptions.ApiException:
-            pass
-        return None
 
     def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
         """Update deployment timestamp annotation for RayCluster services."""
         try:
-            patch_body = {"metadata": {"annotations": {"kubetorch.com/deployment_timestamp": new_timestamp}}}
+            patch_body = self._create_timestamp_patch_body(new_timestamp)
             self.objects_api.patch_namespaced_custom_object(
                 group="ray.io",
                 version="v1",
@@ -298,7 +260,7 @@ class RayClusterServiceManager(BaseServiceManager):
         """
         logger.info(f"Deploying Kubetorch RayCluster service with name: {service_name}")
         try:
-            created_service, is_new_service = self._create_or_update_raycluster(
+            created_service, is_new_service = self._create_or_update_resource(
                 name=service_name,
                 pod_template=pod_template,
                 module_name=module_name,
@@ -313,21 +275,6 @@ class RayClusterServiceManager(BaseServiceManager):
         except Exception as e:
             logger.error(f"Failed to launch new RayCluster: {str(e)}")
             raise e
-
-    def get_pods_for_service(self, service_name: str, **kwargs) -> List[client.V1Pod]:
-        """Get all pods associated with this RayCluster service.
-
-        Args:
-            service_name (str): Name of the service
-
-        Returns:
-            List[V1Pod]: List of running pods associated with the service.
-        """
-        return self.get_pods_for_service_static(
-            service_name=service_name,
-            namespace=self.namespace,
-            core_api=self.core_api,
-        )
 
     def get_endpoint(self, service_name: str) -> str:
         """Get the endpoint URL for a RayCluster service.
@@ -361,7 +308,7 @@ class RayClusterServiceManager(BaseServiceManager):
         while (time.time() - start_time) < launch_timeout:
             iteration += 1
             try:
-                raycluster = self.get_raycluster(service_name)
+                raycluster = self.get_resource(service_name)
                 status = raycluster.get("status", {})
 
                 # Check RayCluster state

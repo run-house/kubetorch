@@ -1,8 +1,5 @@
 import os
-import re
 import time
-from datetime import datetime, timezone
-from typing import List, Optional
 
 from kubernetes import client
 
@@ -26,7 +23,9 @@ logger = get_logger(__name__)
 class KnativeServiceManager(BaseServiceManager):
     """Service manager for Knative services with autoscaling capabilities."""
 
-    def _create_or_update_knative_service(
+    template_label = "ksvc"
+
+    def _create_or_update_resource(
         self,
         name: str,
         module_name: str,
@@ -46,50 +45,30 @@ class KnativeServiceManager(BaseServiceManager):
         Returns:
             Dict
         """
-        # Clean the module name to remove any invalid characters for labels
-        clean_module_name = re.sub(r"[^A-Za-z0-9.-]|^[-.]|[-.]$", "", module_name)
-
-        labels = {
-            **self.base_labels,
-            serving_constants.KT_MODULE_LABEL: clean_module_name,
-            serving_constants.KT_SERVICE_LABEL: name,
-            serving_constants.KT_TEMPLATE_LABEL: "ksvc",
-        }
-
-        if custom_labels:
-            labels.update(custom_labels)
+        clean_module_name = self._clean_module_name(module_name)
+        labels = self._get_labels(clean_module_name, name, custom_labels, scheduler_name, queue_name)
 
         # Template labels (exclude template label - that's only for the top-level resource)
-        template_labels = {
-            **self.base_labels,
-            serving_constants.KT_MODULE_LABEL: clean_module_name,
-            serving_constants.KT_SERVICE_LABEL: name,
-        }
-
-        if custom_labels:
-            template_labels.update(custom_labels)
+        template_labels = labels.copy()
+        template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
 
         template_annotations = {
             "networking.knative.dev/ingress.class": "kourier.ingress.networking.knative.dev",
         }
 
-        annotations = {
-            "prometheus.io/scrape": "true",
-            "prometheus.io/port": "8080",
-            "prometheus.io/path": serving_constants.PROMETHEUS_HEALTH_ENDPOINT,
-            "serving.knative.dev/container-name": "kubetorch",
-            "serving.knative.dev/probe-path": "/health",
-        }
-        if custom_annotations:
-            annotations.update(custom_annotations)
+        # Get base annotations and add Knative-specific ones
+        annotations = self._get_annotations(custom_annotations, inactivity_ttl)
+        annotations.update(
+            {
+                "serving.knative.dev/container-name": "kubetorch",
+                "serving.knative.dev/probe-path": "/health",
+            }
+        )
 
-        if scheduler_name and queue_name:
-            labels["kai.scheduler/queue"] = queue_name  # Useful for queries, etc
-            template_labels["kai.scheduler/queue"] = queue_name  # Required for KAI to schedule pods
-            # Note: KAI wraps the Knative revision in a podgroup, expecting at least 1 pod to schedule initially
-            # Only set min-scale=1 if user hasn't explicitly provided a min_scale value
-            if autoscaling_config.min_scale is None:
-                template_annotations["autoscaling.knative.dev/min-scale"] = "1"
+        # Note: KAI wraps the Knative revision in a podgroup, expecting at least 1 pod to schedule initially
+        # Only set min-scale=1 if user hasn't explicitly provided a min_scale value
+        if scheduler_name and queue_name and autoscaling_config.min_scale is None:
+            template_annotations["autoscaling.knative.dev/min-scale"] = "1"
 
         # Add autoscaling annotations (config always provided)
         autoscaling_annotations = autoscaling_config.convert_to_annotations()
@@ -99,17 +78,12 @@ class KnativeServiceManager(BaseServiceManager):
         if autoscaling_config.progress_deadline is not None:
             template_annotations["serving.knative.dev/progress-deadline"] = autoscaling_config.progress_deadline
 
-        if inactivity_ttl:
-            annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
-            logger.info(f"Configuring auto-down after idle timeout ({inactivity_ttl})")
-
         template_annotations.update(annotations)
 
         if gpu_annotations:
             template_annotations.update(gpu_annotations)
 
-        deployment_timestamp = datetime.now(timezone.utc).isoformat()
-        template_annotations.update({"kubetorch.com/deployment_timestamp": deployment_timestamp})
+        template_annotations.update({"kubetorch.com/deployment_timestamp": self._get_deployment_timestamp()})
 
         # Set containerConcurrency based on autoscaling config
         # When using concurrency-based autoscaling, set containerConcurrency to match
@@ -155,7 +129,7 @@ class KnativeServiceManager(BaseServiceManager):
         except client.exceptions.ApiException as e:
             if e.status == 409:
                 logger.info(f"Service {name} already exists, updating")
-                existing_service = self.get_knative_service(name)
+                existing_service = self.get_resource(name)
                 return existing_service
             else:
                 logger.error(
@@ -163,7 +137,7 @@ class KnativeServiceManager(BaseServiceManager):
                 )
                 raise e
 
-    def get_knative_service(self, service_name: str) -> dict:
+    def get_resource(self, service_name: str) -> dict:
         """Retrieve a Knative service by name."""
         try:
             service = self.objects_api.get_namespaced_custom_object(
@@ -179,22 +153,10 @@ class KnativeServiceManager(BaseServiceManager):
             logger.error(f"Failed to load Knative service '{service_name}': {str(e)}")
             raise
 
-    def get_deployment_timestamp_annotation(self, service_name: str) -> Optional[str]:
-        """Get deployment timestamp annotation for Knative services."""
-        try:
-            service = self.get_knative_service(service_name)
-            if service:
-                return (
-                    service.get("metadata", {}).get("annotations", {}).get("kubetorch.com/deployment_timestamp", None)
-                )
-        except client.exceptions.ApiException:
-            pass
-        return None
-
     def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
         """Update deployment timestamp annotation for Knative services."""
         try:
-            patch_body = {"metadata": {"annotations": {"kubetorch.com/deployment_timestamp": new_timestamp}}}
+            patch_body = self._create_timestamp_patch_body(new_timestamp)
             self.objects_api.patch_namespaced_custom_object(
                 group="serving.knative.dev",
                 version="v1",
@@ -211,7 +173,7 @@ class KnativeServiceManager(BaseServiceManager):
     def get_knative_service_endpoint(self, service_name: str) -> str:
         """Get the endpoint URL for a Knative service."""
         try:
-            service = self.get_knative_service(service_name)
+            service = self.get_resource(service_name)
 
             # Get the URL from the service status
             status = service.get("status", {})
@@ -247,7 +209,7 @@ class KnativeServiceManager(BaseServiceManager):
         """
         logger.info(f"Deploying Kubetorch autoscaling (Knative) service with name: {service_name}")
         try:
-            created_service = self._create_or_update_knative_service(
+            created_service = self._create_or_update_resource(
                 name=service_name,
                 pod_template=pod_template,
                 module_name=module_name,
@@ -269,14 +231,6 @@ class KnativeServiceManager(BaseServiceManager):
     def get_endpoint(self, service_name: str) -> str:
         """Get the endpoint URL for a Knative service."""
         return self.get_knative_service_endpoint(service_name)
-
-    def get_pods_for_service(self, service_name: str, **kwargs) -> List[client.V1Pod]:
-        """Get all pods associated with this Knative service."""
-        return self.get_pods_for_service_static(
-            service_name=service_name,
-            namespace=self.namespace,
-            core_api=self.core_api,
-        )
 
     def _status_condition_ready(self, status: dict) -> bool:
         """Check if service status conditions indicate ready state."""
