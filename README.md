@@ -1,8 +1,12 @@
 # 📦Kubetorch🔥
 
-**A Python interface for running ML workloads on Kubernetes**
+**A Fast, Pythonic, "Serverless" Interface for Running ML Workloads on Kubernetes**
 
-Kubetorch enables you to run any Python code on Kubernetes at any scale by specifying required resources, distribution, and scaling directly in code. It provides caching and hot redeployment for 1-2 second iteration cycles, handles hardware faults and preemptions programmatically, and orchestrates complex, heterogeneous workloads with built-in observability and fault tolerance.
+Kubetorch lets you programmatically build, iterate, and deploy ML applications on Kubernetes at any scale - directly from Python.
+
+It brings your cluster's compute power into your local development environment, enabling extremely fast iteration (1-2 seconds). Logs, exceptions, and hardware faults are automatically propagated back to you in real-time.
+
+Since Kubetorch has no local runtime or code serialization, you can access large-scale cluster compute from any Python environment - your IDE, notebooks, CI pipelines, or production code - just like you would use a local process pool.
 
 ## Hello World
 
@@ -55,7 +59,7 @@ For detailed setup instructions, see our [Installation Guide](https://www.run.ho
 
 ## Kubetorch Serverless
 
-Contact us ([email](mailto:hello@run.house), [Slack](https://join.slack.com/t/kubetorch/shared_invite/zt-3g76q5i4j-uP60AdydxnAmjGVAQhtALA)) to try out Kubetorch on our fully managed cloud platform.
+Contact us ([email](mailto:hello@run.house), [Slack](https://join.slack.com/t/kubetorch/shared_invite/zt-3g76q5i4j-uP60AdydxnAmjGVAQhtALA)) to try out Kubetorch on our fully managed serverless platform.
 
 ## Learn More
 
