@@ -443,6 +443,7 @@ def kt_deploy(
     @kt.compute in the file or module."""
     from kubetorch.resources.compute.utils import _collect_modules
 
+    os.environ["KT_CLI_DEPLOY_MODE"] = "1"
     to_deploy, target_fn_or_class = _collect_modules(target)
 
     if not target_fn_or_class:
