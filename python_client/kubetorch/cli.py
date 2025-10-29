@@ -16,6 +16,8 @@ import httpx
 from kubernetes.client.rest import ApiException
 from rich.syntax import Syntax
 
+from kubetorch.monitoring.dashboard import open_grafana_dashboard
+
 from kubetorch.servers.http.utils import is_running_in_kubernetes
 
 from .cli_utils import (
@@ -1883,6 +1885,28 @@ def kt_volumes(
         except Exception as e:
             console.print(f"[red]Failed to delete volume {name}: {e}[/red]")
             raise typer.Exit(1)
+
+
+@app.command("metrics")
+def kt_metrics(
+    namespace: str = typer.Option(
+        globals.config.namespace,
+        "-n",
+        "--namespace",
+    ),
+):
+    """Open a local Grafana dashboard"""
+    namespace = namespace or globals.config.namespace
+    v1_api, custom_api, _ = initialize_k8s_clients()
+    console.print(
+        f"Loading Kubetorch dashboard for namespace [blue]{namespace}[/blue]..."
+    )
+
+    try:
+        open_grafana_dashboard(namespace, console=console, v1_api=v1_api)
+    except Exception as e:
+        console.print(f"[red]{str(e)}[/red]")
+        raise typer.Exit(1)
 
 
 @app.callback(invoke_without_command=True, help="Kubetorch CLI")

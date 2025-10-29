@@ -71,9 +71,12 @@ nginxProxy:
       route: "/loki"
       host: loki-gateway.kubetorch.svc.cluster.local
     metrics:
-      route: "/prometheus"
-      host: runhouse-kube-prometheus-s-prometheus.runhouse.svc.cluster.local
-      port: 9090
+      persistent:
+        host: runhouse-kube-prometheus-s-prometheus.runhouse.svc.cluster.local
+        port: 9090
+      ephemeral:
+        host: kubetorch-prometheus.kubetorch.svc.cluster.local
+        port: 9090
     health:
       route: "/health"
 
@@ -86,6 +89,29 @@ ephemeralLogStorage:
   resources:
     cpu: 100m
     memory: 256Mi
+
+ephemeralMonitoring:
+  enabled: true # set to `false` to disable ephemeral monitoring
+  scrapeKubelet: true
+  scrapeNodeExporter: false
+  scrapeKubeStateMetrics: false
+  prometheus:
+    image: prom/prometheus:v3.7.2
+    port: 9090
+    retention: 1h
+    scrapeInterval: 5s
+    resources:
+      cpu: 200m
+      memory: 512Mi
+  grafana:
+    image: grafana/grafana:main
+    prometheusURL: "http://kubetorch-prometheus.kubetorch.svc.cluster.local:9090"
+    # Anonymous, quick-start UX (no credentials needed)
+    anonymous:
+      enabled: true
+      orgRole: Viewer
+      disableLoginForm: true
+      allowEmbedding: true
 
 otelCollector:
   enabled: true # set to `false` to disable opentelemetry collector

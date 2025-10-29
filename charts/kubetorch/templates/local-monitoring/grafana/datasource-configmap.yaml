@@ -1,0 +1,19 @@
+{{- if .Values.ephemeralMonitoring.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubetorch-grafana-datasource
+  namespace: {{ .Release.Namespace }}
+  labels:
+    grafana_datasource: "1"
+data:
+  prometheus.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: {{ .Values.ephemeralMonitoring.grafana.prometheusURL | quote }}
+        isDefault: true
+        editable: false
+{{- end }}
