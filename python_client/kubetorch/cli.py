@@ -1899,7 +1899,7 @@ def kt_metrics(
     namespace = namespace or globals.config.namespace
     v1_api, custom_api, _ = initialize_k8s_clients()
     console.print(
-        f"Loading Kubetorch dashboard for namespace [blue]{namespace}[/blue]..."
+        f"Loading metrics for Kubetorch services in namespace [blue]{namespace}[/blue]..."
     )
 
     try:

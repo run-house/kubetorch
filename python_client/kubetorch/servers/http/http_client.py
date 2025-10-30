@@ -1,12 +1,15 @@
 import asyncio
 import json
+import re
 import threading
 import time
 import urllib.parse
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional, Union
 
 import httpx
+import requests
 import websockets
 
 from kubernetes import client
@@ -28,7 +31,7 @@ from kubetorch.serving.constants import (
     DEFAULT_NGINX_PORT,
     KT_TERMINATION_REASONS,
 )
-from kubetorch.utils import extract_host_port, ServerLogsFormatter
+from kubetorch.utils import ColoredFormatter, extract_host_port, ServerLogsFormatter
 
 logger = get_logger(__name__)
 
@@ -408,6 +411,7 @@ class HTTPClient:
         self,
         endpoint: str,
         stream_logs: Union[bool, None],
+        monitoring: bool,
         headers: dict,
         pdb: Union[bool, int],
         serialization: str,
@@ -438,12 +442,22 @@ class HTTPClient:
             log_thread.daemon = True
             log_thread.start()
 
-        return endpoint, headers, stop_event, log_thread, request_id
+        if monitoring:
+            monitoring_thread = threading.Thread(
+                target=self.stream_metrics, args=(stop_event,)
+            )
+            monitoring_thread.daemon = True
+            monitoring_thread.start()
+        else:
+            monitoring_thread = None
+
+        return endpoint, headers, stop_event, log_thread, monitoring_thread, request_id
 
     def _prepare_request_async(
         self,
         endpoint: str,
         stream_logs: Union[bool, None],
+        monitoring: bool,
         headers: dict,
         pdb: Union[bool, int],
         serialization: str,
@@ -473,7 +487,13 @@ class HTTPClient:
                 self.stream_logs_async(request_id, stop_event)
             )
 
-        return endpoint, headers, stop_event, log_task, request_id
+        monitoring_task = None
+        if monitoring:
+            monitoring_task = asyncio.create_task(
+                self.stream_metrics_async(request_id, stop_event)
+            )
+
+        return endpoint, headers, stop_event, log_task, monitoring_task, request_id
 
     def _make_request(self, method, endpoint, **kwargs):
         response: httpx.Response = getattr(self.session, method)(endpoint, **kwargs)
@@ -619,6 +639,94 @@ class HTTPClient:
         finally:
             loop.close()
 
+    # ----------------- Metrics Helpers ----------------- #
+    async def _collect_metrics(self, stop_event, http_getter, sleeper):
+        """Internal shared helper for metric collection.
+
+        Args:
+            stop_event: threading.Event or asyncio.Event
+            http_getter: callable (url, params) -> response.json() (sync or async)
+            sleeper: callable(seconds) to sleep (sync or async)
+        """
+
+        async def maybe_await(obj):
+            # support sync and async getters
+            if asyncio.iscoroutine(obj):
+                return await obj
+            return obj
+
+        prom_url = f"{service_url()}/prometheus/api/v1/query"
+        safe_service = re.sub(r'([\\."*+?{}()\[\]^$|])', r"\\\1", self.service_name)
+        pod_regex = f"^({safe_service}.*)$"
+
+        # Pull CPU and GPU metrics and group them by pod name
+        metric_queries = {
+            "CPU": f'rate(container_cpu_usage_seconds_total{{container="kubetorch",pod=~"{pod_regex}"}}[2m])',
+            "Mem": f'container_memory_working_set_bytes{{container="kubetorch",pod=~"{pod_regex}"}} / 1024 / 1024',
+            "GPU%": f'avg(DCGM_FI_DEV_GPU_UTIL{{pod=~"{pod_regex}"}}) by (pod)',
+            "GPUMiB": f'avg(DCGM_FI_DEV_FB_USED{{pod=~"{pod_regex}"}}) by (pod) / 1024 / 1024',
+        }
+
+        cyan = ColoredFormatter.get_color("cyan")
+        reset = ColoredFormatter.get_color("reset")
+
+        start_time = time.time()
+        show_gpu = True  # will toggle off if GPUs remain 0 for all pods
+
+        while not stop_event.is_set():
+            pod_data = defaultdict(dict)
+            ts_str = None
+            gpu_values = []  # to check if all GPU metrics are zero
+
+            for name, query in metric_queries.items():
+                try:
+                    data = await maybe_await(http_getter(prom_url, {"query": query}))
+                    if data.get("status") != "success":
+                        continue
+
+                    for result in data["data"]["result"]:
+                        m = result["metric"]
+                        ts, val = result["value"]
+                        pod = m.get("pod", "unknown")
+                        val_f = float(val)
+                        pod_data[pod][name] = val_f
+                        ts_str = datetime.now(timezone.utc).strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        )
+                        if name in ("GPU%", "GPUMiB"):
+                            gpu_values.append(val_f)
+
+                except Exception as e:
+                    logger.error(f"Error loading metrics: {str(e)}")
+                    continue
+
+            # auto-disable GPU display if all readings are zero
+            if not gpu_values:
+                show_gpu = False
+
+            if pod_data:
+                for pod, vals in sorted(pod_data.items()):
+                    cpu = vals.get("CPU", 0.0)
+                    mem = vals.get("Mem", 0.0)
+                    gpu = vals.get("GPU%", 0.0)
+                    gpumem = vals.get("GPUMiB", 0.0)
+
+                    cpu_pct = cpu * 100
+                    line = (
+                        f"{cyan}[METRICS] {ts_str} | pod={pod} | "
+                        f"CPU={cpu:.3f} ({cpu_pct:.1f}%) | Mem={mem:.1f}MiB"
+                    )
+
+                    if show_gpu:
+                        line += f" | GPU-Mem={gpumem:.1f}MiB | GPU={gpu:.1f}%"
+
+                    print(f"{line}{reset}", flush=True)
+
+            # adaptive sampling (faster at start, slower later)
+            elapsed = time.time() - start_time
+            interval = 1 if elapsed < 10 else 5
+            await maybe_await(sleeper(interval))
+
     # ----------------- Core APIs ----------------- #
     def stream_logs(self, request_id, stop_event):
         """Start websocket log streaming in a separate thread"""
@@ -642,17 +750,56 @@ class HTTPClient:
             request_id, stop_event, host=base_host, port=base_port
         )
 
+    async def stream_metrics_async(self, request_id, stop_event):
+        """Async GPU/CPU metrics streaming (uses httpx.AsyncClient)."""
+        logger.debug(
+            f"Starting async metrics for {self.service_name} (request_id={request_id})"
+        )
+
+        async def async_http_get(url, params):
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url, params=params)
+                return resp.json()
+
+        async def async_sleep(seconds):
+            await asyncio.sleep(seconds)
+
+        await self._collect_metrics(stop_event, async_http_get, async_sleep)
+        logger.debug(f"Stopped async metrics for {request_id}")
+
+    def stream_metrics(self, stop_event):
+        """Synchronous GPU/CPU metrics streaming (uses requests)."""
+        logger.debug(f"Starting sync metrics for {self.service_name}")
+
+        def sync_http_get(url, params):
+            resp = requests.get(url, params=params)
+            return resp.json()
+
+        def sync_sleep(seconds):
+            time.sleep(seconds)
+
+        # Run the async helper in a blocking loop
+        asyncio.run(self._collect_metrics(stop_event, sync_http_get, sync_sleep))
+
     def call_method(
         self,
         endpoint: str,
         stream_logs: Union[bool, None] = None,
+        monitoring: bool = False,
         body: dict = None,
         headers: dict = None,
         pdb: Union[bool, int] = None,
         serialization: str = "json",
     ):
-        endpoint, headers, stop_event, log_thread, _ = self._prepare_request(
-            endpoint, stream_logs, headers, pdb, serialization
+        (
+            endpoint,
+            headers,
+            stop_event,
+            log_thread,
+            monitoring_thread,
+            _,
+        ) = self._prepare_request(
+            endpoint, stream_logs, monitoring, headers, pdb, serialization
         )
         try:
             json_data = _serialize_body(body, serialization)
@@ -666,14 +813,22 @@ class HTTPClient:
         self,
         endpoint: str,
         stream_logs: Union[bool, None] = None,
+        monitoring: bool = False,
         body: dict = None,
         headers: dict = None,
         pdb: Union[bool, int] = None,
         serialization: str = "json",
     ):
         """Async version of call_method."""
-        endpoint, headers, stop_event, log_task, _ = self._prepare_request_async(
-            endpoint, stream_logs, headers, pdb, serialization
+        (
+            endpoint,
+            headers,
+            stop_event,
+            log_task,
+            monitoring_task,
+            _,
+        ) = self._prepare_request_async(
+            endpoint, stream_logs, monitoring, headers, pdb, serialization
         )
         try:
             json_data = _serialize_body(body, serialization)
