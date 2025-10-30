@@ -55,6 +55,26 @@ data:
           - targets: ['kube-state-metrics.{{ .Release.Namespace }}.svc.cluster.local:8080']
       {{- end }}
 
+      {{- if (index .Values "dcgm-exporter").enabled }}
+      # NVIDIA DCGM Exporter
+      - job_name: 'dcgm-exporter'
+        kubernetes_sd_configs:
+          - role: service
+        relabel_configs:
+          # Match NVIDIA Helm chart Service
+          - source_labels: [__meta_kubernetes_service_label_app_kubernetes_io_name]
+            regex: dcgm-exporter
+            action: keep
+          # Match service names like kubetorch-dcgm-exporter
+          - source_labels: [__meta_kubernetes_service_name]
+            regex: .*dcgm-exporter.*
+            action: keep
+          # Only scrape port 9400
+          - source_labels: [__meta_kubernetes_service_port_name]
+            regex: metrics
+            action: keep
+      {{- end }}
+
       # allow for namespace filtering
       - job_name: 'pods'
         kubernetes_sd_configs:

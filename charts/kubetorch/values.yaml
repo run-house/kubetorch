@@ -139,3 +139,34 @@ opentelemetry-collector:
       # means "tolerate all taints" - the collector will run on every node
       # regardless of any taints, including GPU nodes, spot instances,
       # preemptible nodes, dedicated nodes, etc.
+
+
+dcgm-exporter:
+  enabled: true # set to `false` to disable GPU metrics collection
+  namespaceOverride: "kubetorch"
+  serviceMonitor:
+    enabled: false  # since kubetorch deploys its own lightweight Prometheus deployment
+
+  image:
+    repository: nvcr.io/nvidia/k8s/dcgm-exporter
+    tag: 4.4.1-4.6.0-ubuntu22.04
+
+  readinessProbe:
+    enabled: false # Disable the broken /health readiness probe
+
+  tolerations:
+    - key: "nvidia.com/gpu"
+      operator: "Exists"
+      effect: "NoSchedule"
+    - key: "dedicated"
+      operator: "Equal"
+      value: "gpu"
+      effect: "NoSchedule"
+
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: Exists
