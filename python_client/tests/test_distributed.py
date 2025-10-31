@@ -500,7 +500,7 @@ def test_ray_package_iteration_flow():
         "ray", workers=2
     )
 
-    name = f"{get_test_fn_name()}_iteration_test"
+    name = f"{get_test_fn_name()}"
 
     # Deploy the initial function
     remote_fn = kt.fn(adaptive_ray_fn_with_bs4, name=name).to(ray_compute)

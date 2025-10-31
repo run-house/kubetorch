@@ -24,11 +24,10 @@ class DeploymentServiceManager(BaseServiceManager):
 
     template_label = "deployment"
 
-    def _create_or_update_resource(
-        self,
-        name: str,
-        module_name: str,
+    @staticmethod
+    def _build_base_manifest(
         pod_template: dict,
+        namespace: str,
         replicas: int = 1,
         inactivity_ttl: str = None,
         custom_labels: dict = None,
@@ -36,38 +35,33 @@ class DeploymentServiceManager(BaseServiceManager):
         custom_template: dict = None,
         scheduler_name: str = None,
         queue_name: str = None,
-        dryrun: bool = False,
-    ) -> Tuple[dict, bool]:
-        """Creates or updates a Deployment for distributed deployments.
+    ) -> dict:
+        """Build a base deployment manifest from pod spec and configuration.
 
         Returns:
-            Tuple (created_deployment, is_new_deployment)
+            Deployment manifest dictionary
         """
-        clean_module_name = self._clean_module_name(module_name)
-        service_name = name  # Use regular service name, not headless
+        labels = BaseServiceManager._get_labels(
+            template_label="deployment",
+            custom_labels=custom_labels,
+            scheduler_name=scheduler_name,
+            queue_name=queue_name,
+        )
 
-        labels = self._get_labels(clean_module_name, name, custom_labels, scheduler_name, queue_name)
-
-        # Template labels (exclude template label - that's only for the top-level resource)
+        # Template labels (exclude kt template label)
         template_labels = labels.copy()
         template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
 
-        # Service labels (also exclude template label - supporting resource, not source-of-truth)
-        service_labels = labels.copy()
-        service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+        annotations = BaseServiceManager._get_annotations(custom_annotations, inactivity_ttl)
 
-        annotations = self._get_annotations(custom_annotations, inactivity_ttl)
-
-        template_annotations = {"kubetorch.com/deployment_timestamp": self._get_deployment_timestamp()}
-
-        # Create Deployment
+        # Create Deployment manifest
         deployment = load_template(
             template_file=serving_constants.DEPLOYMENT_TEMPLATE_FILE,
             template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
-            name=name,
-            namespace=self.namespace,
+            name="",  # Will be set during launch
+            namespace=namespace,
             annotations=annotations,
-            template_annotations=template_annotations,
+            template_annotations={},  # Will be filled in during launch
             labels=labels,
             template_labels=template_labels,
             pod_template=pod_template,
@@ -77,47 +71,77 @@ class DeploymentServiceManager(BaseServiceManager):
         if custom_template:
             nested_override(deployment, custom_template)
 
-        # Check if this is a distributed deployment
-        env_vars = pod_template.get("containers", [{}])[0].get("env", [])
-        is_distributed = any(
-            env.get("name") == "KT_DISTRIBUTED_CONFIG" and env.get("value") != "null" and env.get("value")
-            for env in env_vars
-        )
+        return deployment
 
-        # Create regular service with session affinity
-        service = load_template(
-            template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
-            template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
-            name=service_name,
-            namespace=self.namespace,
-            annotations=annotations,
-            labels=service_labels,
-            deployment_name=name,
-            module_name=clean_module_name,
-            distributed=False,  # Keep regular service for client access
-            server_port=pod_template.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300),
-        )
+    def _update_launchtime_manifest(self, manifest: dict, service_name: str, module_name: str) -> dict:
+        """Update manifest with service name and deployment timestamp."""
+        clean_module_name = self._clean_module_name(module_name)
+        deployment_timestamp = self._get_deployment_timestamp()
 
-        # For distributed deployments, also create a headless service for pod discovery
-        headless_service = None
-        if is_distributed:
-            headless_service = load_template(
-                template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
-                template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
-                name=f"{service_name}-headless",  # Use different name for headless
-                namespace=self.namespace,
-                annotations=annotations,
-                labels=service_labels,
-                deployment_name=name,
-                module_name=clean_module_name,
-                distributed=True,  # Make this one headless
-                server_port=pod_template.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300),
-            )
+        deployment = manifest.copy()
+        deployment["metadata"]["name"] = service_name
+        deployment["metadata"]["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
+        deployment["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
+        deployment["spec"]["selector"]["matchLabels"][serving_constants.KT_SERVICE_LABEL] = service_name
+        deployment["spec"]["selector"]["matchLabels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
+        deployment["spec"]["template"]["metadata"]["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
+        deployment["spec"]["template"]["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
+
+        # Add deployment timestamp
+        deployment["spec"]["template"]["metadata"]["annotations"][
+            "kubetorch.com/deployment_timestamp"
+        ] = deployment_timestamp
+
+        return deployment
+
+    def _is_distributed_deployment(self, pod_template: dict) -> bool:
+        """Check if this is a distributed deployment by looking for distributed environment variables."""
+        containers = pod_template.get("containers")
+        if not containers:
+            return False
+
+        # Check for distributed environment variables in the first container
+        env_vars = containers[0].get("env", [])
+        for env_var in env_vars:
+            if env_var.get("name") == "KT_DISTRIBUTED_CONFIG":
+                return True
+        return False
+
+    def _create_or_update_resource_from_manifest(self, manifest: dict, dryrun: bool = False) -> Tuple[dict, bool]:
+        """Create or update resources from a manifest."""
+        deployment = manifest.copy()
+        service_name = deployment["metadata"]["name"]
+        module_name = deployment["metadata"]["labels"][serving_constants.KT_MODULE_LABEL]
+
+        pod_template = deployment.get("spec", {}).get("template", {}).get("spec", {})
+        is_distributed = self._is_distributed_deployment(pod_template)
+
+        server_port = pod_template.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
+
+        labels = deployment.get("metadata", {}).get("labels", {})
+        annotations = deployment.get("metadata", {}).get("annotations", {})
+
+        # Service labels (exclude kt template label)
+        service_labels = labels.copy()
+        service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
 
         try:
             kwargs = {"dry_run": "All"} if dryrun else {}
 
-            # Create regular service first
+            # Create regular service for client access
+            service = load_template(
+                template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
+                template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
+                name=service_name,
+                namespace=self.namespace,
+                annotations=annotations,
+                labels=service_labels,
+                deployment_name=service_name,
+                module_name=module_name,
+                distributed=False,  # Regular service for client access
+                server_port=server_port,
+            )
+
             try:
                 self.core_api.create_namespaced_service(
                     namespace=self.namespace,
@@ -132,8 +156,21 @@ class DeploymentServiceManager(BaseServiceManager):
                 else:
                     raise
 
-            # Create headless service for distributed pod discovery
-            if headless_service:
+            # Create headless service for distributed pod discovery (only if distributed)
+            if is_distributed:
+                headless_service = load_template(
+                    template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
+                    template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
+                    name=f"{service_name}-headless",
+                    namespace=self.namespace,
+                    annotations=annotations,
+                    labels=service_labels,
+                    deployment_name=service_name,
+                    module_name=module_name,
+                    distributed=True,
+                    server_port=server_port,
+                )
+
                 try:
                     self.core_api.create_namespaced_service(
                         namespace=self.namespace,
@@ -158,26 +195,28 @@ class DeploymentServiceManager(BaseServiceManager):
             if dryrun:
                 return created_deployment, False
 
-            logger.info(f"Created Deployment {name} in namespace {self.namespace}")
+            logger.info(f"Created Deployment {deployment['metadata']['name']} in namespace {self.namespace}")
             return created_deployment, True
 
         except client.exceptions.ApiException as e:
             if e.status == 409:
-                logger.info(f"Deployment {name} already exists, updating")
-                existing_deployment = self.get_resource(name)
+                logger.info(f"Deployment {deployment['metadata']['name']} already exists, updating")
+                existing_deployment = self.get_resource(deployment["metadata"]["name"])
 
                 # Update replicas if different
-                if existing_deployment.spec.replicas != replicas:
-                    patch_body = {"spec": {"replicas": replicas}}
+                if existing_deployment.spec.replicas != deployment["spec"]["replicas"]:
+                    patch_body = {"spec": {"replicas": deployment["spec"]["replicas"]}}
                     try:
                         self.apps_v1_api.patch_namespaced_deployment(
-                            name=name,
+                            name=deployment["metadata"]["name"],
                             namespace=self.namespace,
                             body=patch_body,
                         )
-                        logger.info(f"Updated Deployment {name} replicas to {replicas}")
+                        logger.info(
+                            f"Updated Deployment {deployment['metadata']['name']} replicas to {deployment['spec']['replicas']}"
+                        )
                     except Exception as e:
-                        logger.error(f"Failed to patch Deployment {name}: {e}")
+                        logger.error(f"Failed to patch Deployment {deployment['metadata']['name']}: {e}")
                         raise e
 
                 return existing_deployment, False
@@ -215,16 +254,9 @@ class DeploymentServiceManager(BaseServiceManager):
         self,
         service_name: str,
         module_name: str,
-        pod_template: dict,
-        replicas: int = 1,
-        inactivity_ttl: str = None,
-        custom_labels: dict = None,
-        custom_annotations: dict = None,
-        custom_template: dict = None,
-        scheduler_name: str = None,
-        queue_name: str = None,
+        manifest: dict = None,
         dryrun: bool = False,
-        **kwargs,  # Ignore Knative-specific args like autoscaling_config, inactivity_ttl, etc.
+        **kwargs,
     ):
         """
         Creates a Deployment service.
@@ -232,32 +264,15 @@ class DeploymentServiceManager(BaseServiceManager):
         Args:
             service_name (str): Name for the pod/service.
             module_name (str): Name of the module.
-            pod_template (dict): Template for the pod, including resource requirements.
-            replicas (int): Number of replicas for the service
-            custom_labels (dict, optional): Custom labels to add to the service.
-            custom_annotations (dict, optional): Custom annotations to add to the service.
-            custom_template (dict, optional): Custom template to apply to the service.
-            dryrun (bool, optional): Whether to run in dryrun mode (Default: `False`).
+            manifest (dict): Pre-built manifest dictionary containing all configuration (replicas, labels, annotations, etc.).
+            dryrun (bool): Whether to run in dryrun mode (Default: `False`).
+            **kwargs: Additional arguments (ignored).
         """
         logger.info(f"Deploying Kubetorch service with name: {service_name}")
-        try:
-            created_service, _ = self._create_or_update_resource(
-                name=service_name,
-                pod_template=pod_template,
-                module_name=module_name,
-                replicas=replicas,
-                inactivity_ttl=inactivity_ttl,
-                custom_labels=custom_labels,
-                custom_annotations=custom_annotations,
-                custom_template=custom_template,
-                scheduler_name=scheduler_name,
-                queue_name=queue_name,
-                dryrun=dryrun,
-            )
-            return created_service
-        except Exception as e:
-            logger.error(f"Failed to launch new Deployment: {str(e)}")
-            raise e
+
+        updated_manifest = self._update_launchtime_manifest(manifest, service_name, module_name)
+        created_service, _ = self._create_or_update_resource_from_manifest(updated_manifest, dryrun)
+        return created_service, updated_manifest
 
     def get_endpoint(self, service_name: str) -> str:
         """Get the endpoint URL for a Deployment service."""

@@ -151,3 +151,46 @@ class AutoscalingConfig:
             annotations.update(self.extra_annotations)
 
         return annotations
+
+    @classmethod
+    def from_manifest(cls, manifest: dict) -> "AutoscalingConfig":
+        """Create AutoscalingConfig from a manifest's annotations."""
+        if not manifest.get("kind") == "Service":
+            return {}
+
+        annotations = manifest["spec"]["template"]["metadata"]["annotations"]
+        config_kwargs = {}
+
+        # Map Knative autoscaling annotations to config fields
+        annotation_mapping = {
+            "autoscaling.knative.dev/target": "target",
+            "autoscaling.knative.dev/min-scale": "min_scale",
+            "autoscaling.knative.dev/max-scale": "max_scale",
+            "autoscaling.knative.dev/window": "window",
+            "autoscaling.knative.dev/metric": "metric",
+            "autoscaling.knative.dev/target-utilization-percentage": "target_utilization",
+            "autoscaling.knative.dev/initial-scale": "initial_scale",
+            "autoscaling.knative.dev/scale-to-zero-pod-retention-period": "scale_to_zero_pod_retention_period",
+            "autoscaling.knative.dev/scale-down-delay": "scale_down_delay",
+            "autoscaling.knative.dev/class": "autoscaler_class",
+            "serving.knative.dev/progress-deadline": "progress_deadline",
+        }
+
+        for annotation_key, config_field in annotation_mapping.items():
+            if annotation_key in annotations:
+                value = annotations[annotation_key]
+                # Convert string values to appropriate types
+                if config_field in [
+                    "target",
+                    "min_scale",
+                    "max_scale",
+                    "target_utilization",
+                    "initial_scale",
+                ]:
+                    try:
+                        value = int(value)
+                    except (ValueError, TypeError):
+                        continue
+                config_kwargs[config_field] = value
+
+        return cls(**config_kwargs) if config_kwargs else None

@@ -171,7 +171,6 @@ class Compute:
         self._service_manager = None
         self._autoscaling_config = None
         self._kubeconfig_path = kubeconfig_path
-        self._namespace = namespace or globals.config.namespace
 
         self._objects_api = None
         self._core_api = None
@@ -179,24 +178,19 @@ class Compute:
         self._node_v1_api = None
 
         self._image = image
-        self._service_name = None
         self._secrets = secrets
         self._secrets_client = None
         self._volumes = volumes
-        self._queue = queue
 
-        # service template args to store
-        self.replicas = replicas
-        self.labels = labels or {}
-        self.annotations = annotations or {}
-        self.service_template = service_template or {}
         self._gpu_annotations = {}  # Will be populated during init or from_template
 
         # Skip template initialization if loading from existing service
         if _skip_template_init:
+            self._manifest = None
             return
 
         # determine pod template vars
+        namespace = namespace or globals.config.namespace
         server_port = serving_constants.DEFAULT_KT_SERVER_PORT
         service_account_name = service_account_name or serving_constants.DEFAULT_SERVICE_ACCOUNT_NAME
         otel_enabled = (
@@ -207,13 +201,14 @@ class Compute:
         gpu_config = self._load_gpu_config(gpus, gpu_memory, gpu_type)
         self._gpu_annotations = self._get_gpu_annotations(gpu_config)
         requested_resources = self._get_requested_resources(cpus, memory, disk_size, gpu_config)
-        secret_env_vars, secret_volumes = self._extract_secrets(secrets)
+        secret_env_vars, secret_volumes = self._extract_secrets(secrets, namespace)
         volume_mounts, volume_specs = self._volumes_for_pod_template(volumes)
         scheduler_name = self._get_scheduler_name(queue)
         node_selector = self._get_node_selector(node_selector.copy() if node_selector else {}, gpu_type)
         all_tolerations = self._get_tolerations(gpus, tolerations)
+        queue_name = queue if queue else globals.config.queue
 
-        env_vars = env_vars or {}
+        env_vars = env_vars.copy() if env_vars else {}
         if os.getenv("KT_LOG_LEVEL") and not env_vars.get("KT_LOG_LEVEL"):
             # If KT_LOG_LEVEL is set, add it to env vars so the log level is set on the server
             env_vars["KT_LOG_LEVEL"] = os.getenv("KT_LOG_LEVEL")
@@ -231,7 +226,7 @@ class Compute:
             "service_account_name": service_account_name,
             "config_env_vars": self._get_config_env_vars(allowed_serialization or ["json"]),
             "image_pull_policy": image_pull_policy,
-            "namespace": self._namespace,
+            "namespace": namespace,
             "freeze": freeze,
             "gpu_anti_affinity": gpu_anti_affinity,
             "working_dir": working_dir,
@@ -239,7 +234,7 @@ class Compute:
             "shm_size_limit": shared_memory_limit,
             "priority_class_name": priority_class_name,
             "launch_timeout": self._get_launch_timeout(launch_timeout),
-            "queue_name": self.queue_name(),
+            "queue_name": queue_name,
             "scheduler_name": scheduler_name,
             "inactivity_ttl": inactivity_ttl,
             "otel_enabled": otel_enabled,
@@ -248,7 +243,7 @@ class Compute:
             "setup_script": "",
         }
 
-        self.pod_template = load_template(
+        pod_template = load_template(
             template_file=serving_constants.POD_TEMPLATE_FILE,
             template_dir=os.path.join(
                 os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
@@ -258,47 +253,50 @@ class Compute:
             **template_vars,
         )
 
+        # Build initial manifest based on deployment type
+        from kubetorch.serving.service_manager import DeploymentServiceManager
+
+        manifest_annotations = annotations.copy() if annotations else {}
+        if self._kubeconfig_path is not None:
+            manifest_annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
+
+        self._manifest = DeploymentServiceManager._build_base_manifest(
+            pod_template=pod_template,
+            namespace=namespace,
+            replicas=replicas,
+            inactivity_ttl=inactivity_ttl,
+            custom_labels=labels or {},
+            custom_annotations=manifest_annotations,
+            custom_template=service_template or {},
+            scheduler_name=scheduler_name,
+            queue_name=queue_name,
+        )
+
     @classmethod
     def from_template(cls, service_info: dict):
         """Create a Compute object from a deployed Kubernetes resource."""
         if "resource" not in service_info:
             raise ValueError("service_info missing required key: resource")
 
-        resource = service_info["resource"]
-        kind = resource.get("kind", "Unknown")
-
-        if kind == "RayCluster":
-            template_path = resource["spec"]["headGroupSpec"]["template"]
-        elif kind in ["Deployment", "Service"]:  # Deployment or Knative Service
-            template_path = resource["spec"]["template"]
-        else:
-            raise ValueError(
-                f"Unsupported resource kind: '{kind}'. "
-                f"Supported kinds are: Deployment, Service (Knative), RayCluster"
-            )
-
-        template_metadata = template_path["metadata"]
-        pod_spec = template_path["spec"]
-
-        annotations = template_metadata.get("annotations", {})
-
         compute = cls(_skip_template_init=True)
-        compute.pod_template = pod_spec
-
-        # Set properties from manifest
-        compute._namespace = service_info["namespace"]
-        compute.replicas = resource["spec"].get("replicas")
-        compute.labels = template_metadata.get("labels", {})
-        compute.annotations = annotations
-        compute._autoscaling_config = annotations.get("autoscaling.knative.dev/config", {})
-        compute._queue = template_metadata.get("labels", {}).get("kai.scheduler/queue")
-        compute._kubeconfig_path = annotations.get(serving_constants.KUBECONFIG_PATH_ANNOTATION)
-
-        # Extract GPU annotations directly from template annotations
-        gpu_annotation_keys = ["gpu-memory", "gpu-fraction"]
-        compute._gpu_annotations = {k: v for k, v in annotations.items() if k in gpu_annotation_keys}
-
+        compute._manifest = service_info["resource"]
         return compute
+
+    # ----------------- Helper Methods ----------------- #
+
+    def _get_manifest_metadata(self):
+        """Get metadata from the primary resource in the manifest."""
+        # Return metadata from the manifest itself
+        return self._manifest.get("metadata", {})
+
+    def _update_manifest_metadata(self, key, value):
+        """Update metadata in the primary resource in the manifest."""
+        # Update metadata in the manifest itself
+        if "metadata" not in self._manifest:
+            self._manifest["metadata"] = {}
+        if key not in self._manifest["metadata"]:
+            self._manifest["metadata"][key] = {}
+        self._manifest["metadata"][key].update(value)
 
     # ----------------- Properties ----------------- #
     @property
@@ -331,6 +329,23 @@ class Compute:
         if self._kubeconfig_path is None:
             self._kubeconfig_path = os.getenv("KUBECONFIG") or constants.DEFAULT_KUBECONFIG_PATH
         return str(Path(self._kubeconfig_path).expanduser())
+
+    @property
+    def manifest(self):
+        """Get the current resource manifest."""
+        return self._manifest
+
+    @property
+    def pod_template(self):
+        """Get the pod spec from the manifest."""
+        # Extract pod spec from the appropriate resource in the manifest
+        kind = self._manifest.get("kind")
+        if kind == "RayCluster":
+            # For Ray clusters, extract from head group spec
+            return self._manifest["spec"]["headGroupSpec"]["template"]["spec"]
+        else:
+            # Knative or deployment
+            return self._manifest["spec"]["template"]["spec"]
 
     @property
     def service_manager(self):
@@ -394,7 +409,7 @@ class Compute:
         self._endpoint = endpoint
 
     def _container(self):
-        """Get the container from the pod template."""
+        """Get the container from the pod spec."""
         if "containers" not in self.pod_template:
             raise ValueError("pod_template missing 'containers' field.")
         return self.pod_template["containers"][0]
@@ -538,9 +553,7 @@ class Compute:
     @property
     def gpu_type(self):
         node_selector = self.pod_template.get("nodeSelector")
-        if node_selector and "nvidia.com/gpu.product" in node_selector:
-            return node_selector["nvidia.com/gpu.product"]
-        return None
+        return node_selector.get("nvidia.com/gpu.product")
 
     @gpu_type.setter
     def gpu_type(self, value: str):
@@ -555,9 +568,7 @@ class Compute:
     @property
     def gpu_memory(self):
         annotations = self.pod_template.get("annotations", {})
-        if "gpu-memory" in annotations:
-            return annotations["gpu-memory"]
-        return None
+        return annotations.get("gpu-memory")
 
     @gpu_memory.setter
     def gpu_memory(self, value: str):
@@ -737,11 +748,13 @@ class Compute:
 
     @property
     def namespace(self):
-        return self._namespace
+        return self._manifest.get("metadata", {}).get("namespace")
 
     @namespace.setter
     def namespace(self, value: str):
-        self._namespace = value
+        if "metadata" not in self._manifest:
+            self._manifest["metadata"] = {}
+        self._manifest["metadata"]["namespace"] = value
 
     @property
     def python_path(self):
@@ -857,25 +870,37 @@ class Compute:
         # Convert timeout to failure threshold (launch_timeout // 5)
         container["startupProbe"]["failureThreshold"] = value // 5
 
-    def queue_name(self):
-        if self.queue is not None:
-            return self.queue
+    @property
+    def queue(self):
+        """Get queue name from manifest or stored fallback value."""
+        # Try to extract from pod spec schedulerName
+        if "schedulerName" in self.pod_template:
+            # If schedulerName is set, we have a queue
+            # Extract queue from labels
+            metadata = self._get_manifest_metadata()
+            labels = metadata.get("labels", {})
+            queue_label = labels.get("kai.scheduler/queue")
+            if queue_label:
+                return queue_label
 
         default_queue = globals.config.queue
         if default_queue:
             return default_queue
 
-    @property
-    def queue(self):
-        return self._queue
-
     @queue.setter
     def queue(self, value: str):
-        self._queue = value
+        pod_template = self.pod_template
+        pod_template["schedulerName"] = self._get_scheduler_name(value)
+
+        metadata = self._get_manifest_metadata()
+        if "labels" not in metadata:
+            metadata["labels"] = {}
+
+        metadata["labels"]["kai.scheduler/queue"] = value
 
     @property
     def scheduler_name(self):
-        return self._get_scheduler_name(self.queue_name())
+        return self._get_scheduler_name(self.queue)
 
     @property
     def inactivity_ttl(self):
@@ -884,6 +909,13 @@ class Compute:
             for env_var in container["env"]:
                 if env_var["name"] == "KT_INACTIVITY_TTL" and "value" in env_var:
                     return env_var["value"] if not env_var["value"] == "None" else None
+
+        # Try to extract from manifest
+        metadata = self._get_manifest_metadata()
+        annotations = metadata.get("annotations", {})
+        if "kubetorch.com/inactivity-ttl" in annotations:
+            return annotations["kubetorch.com/inactivity-ttl"]
+
         return None
 
     @inactivity_ttl.setter
@@ -933,7 +965,16 @@ class Compute:
 
     @property
     def autoscaling_config(self):
-        return self._autoscaling_config
+        """Get autoscaling config from manifest or stored value."""
+        if self._autoscaling_config is not None:
+            return self._autoscaling_config
+
+        from kubetorch.serving.autoscaling import AutoscalingConfig
+
+        try:
+            return AutoscalingConfig.from_manifest(self._manifest)
+        except Exception:
+            return {}
 
     @property
     def distributed_config(self):
@@ -951,8 +992,30 @@ class Compute:
                         template_config = env_var["value"]
                     break
 
-        # Return template config if available, otherwise return stored config
-        return template_config
+        if template_config:
+            return template_config
+
+        kind = self._manifest.get("kind")
+        if kind == "RayCluster":
+            return {"distribution_type": "ray"}
+        elif kind == "Deployment":
+            # Check if this is a distributed deployment by looking for distributed env vars
+            pod_template = self.pod_template
+            containers = pod_template.get("containers", [])
+            if containers:
+                env_vars = containers[0].get("env", [])
+                for env_var in env_vars:
+                    if env_var.get("name") == "KT_DISTRIBUTED_CONFIG":
+                        try:
+                            import json
+
+                            distributed_config = json.loads(env_var.get("value", "{}"))
+                            if distributed_config:
+                                return distributed_config
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
+        return {}
 
     @distributed_config.setter
     def distributed_config(self, config: dict):
@@ -1002,40 +1065,27 @@ class Compute:
 
     @property
     def deployment_mode(self):
-        # Determine deployment mode based on distributed config and autoscaling.
-        # For distributed workloads, always use the appropriate deployment mode
-        if self.distributed_config:
-            distribution_type = self.distributed_config.get("distribution_type")
-            if distribution_type == "pytorch":
-                return "deployment"
-            elif distribution_type == "ray":
-                return "raycluster"
-
-        # Use Knative for autoscaling services
-        if self.autoscaling_config:
+        kind = self._manifest.get("kind")
+        if kind == "RayCluster":
+            return "raycluster"
+        elif kind == "Service":
             return "knative"
-
-        # Default to deployment mode for simple workloads
         return "deployment"
 
     # ----------------- Service Level Properties ----------------- #
 
     @property
     def service_name(self):
-        # Get service name from pod template if available, otherwise return stored service name
-        if not self._service_name:
-            for env_var in self._container_env():
-                if env_var["name"] == "KT_SERVICE_NAME" and "value" in env_var:
-                    self._service_name = env_var["value"] if not env_var["value"] == "None" else None
-                    break
-        return self._service_name
+        return self._manifest.get("metadata", {}).get("name")
 
     @service_name.setter
     def service_name(self, value: str):
-        """Set the service name."""
-        if self._service_name and not self._service_name == value:
+        current_name = self._manifest.get("metadata", {}).get("name")
+        if current_name and not current_name == value:
             raise ValueError("Service name cannot be changed after it has been set")
-        self._service_name = value
+        if "metadata" not in self._manifest:
+            self._manifest["metadata"] = {}
+        self._manifest["metadata"]["name"] = value
 
     # ----------------- GPU Properties ----------------- #
 
@@ -1047,6 +1097,47 @@ class Compute:
     def gpu_annotations(self):
         # GPU annotations for KAI scheduler
         return self._gpu_annotations
+
+    @property
+    def replicas(self):
+        kind = self._manifest.get("kind")
+        if kind == "Deployment":
+            return self._manifest["spec"].get("replicas", 1)
+        elif kind == "RayCluster":
+            spec = self._manifest.get("spec", {})
+            head_replicas = spec.get("headGroupSpec", {}).get("replicas", 1)
+            worker_groups = spec.get("workerGroupSpecs", [])
+            worker_replicas = sum(wg.get("replicas", 0) for wg in worker_groups)
+            return head_replicas + worker_replicas
+        return 1
+
+    @replicas.setter
+    def replicas(self, value: int):
+        kind = self._manifest.get("kind")
+        if kind == "Deployment":
+            self._manifest["spec"]["replicas"] = value
+        elif kind == "RayCluster":
+            worker_replicas = max(0, value - 1)  # Head counts as 1
+            spec = self._manifest.get("spec", {})
+            if "workerGroupSpecs" in spec and len(spec["workerGroupSpecs"]) > 0:
+                spec["workerGroupSpecs"][0]["replicas"] = worker_replicas
+            else:
+                if "workerGroupSpecs" not in spec:
+                    spec["workerGroupSpecs"] = []
+                if len(spec["workerGroupSpecs"]) == 0:
+                    # Need to copy head template as base
+                    head_spec = spec.get("headGroupSpec", {})
+                    spec["workerGroupSpecs"].append(
+                        {
+                            "replicas": worker_replicas,
+                            "template": head_spec.get("template", {}),
+                        }
+                    )
+
+    @property
+    def annotations(self):
+        metadata = self._get_manifest_metadata()
+        return metadata.get("annotations", {})
 
     # ----------------- Init Template Setup Helpers ----------------- #
     def _get_server_image(self, image, otel_enabled, inactivity_ttl):
@@ -1319,35 +1410,21 @@ class Compute:
         self._upload_secrets_list()
 
         setup_script = self._get_setup_script(install_url, startup_rsync_command)
-        self._container()["args"][0] = setup_script
 
-        # Handle service template creation
-        # Use the replicas property for deployment scaling
-        replicas = self.replicas
-
-        # Prepare annotations for service creation, including kubeconfig path if provided
-        if self._kubeconfig_path is not None:
-            self.annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
+        container = self._container()
+        if "args" in container and len(container["args"]) > 0:
+            container["args"][0] = setup_script
+        else:
+            container["args"] = [setup_script]
 
         # Create service using the appropriate service manager
-        # KnativeServiceManager will handle autoscaling config, inactivity_ttl, etc.
-        # ServiceManager will handle replicas for deployments and rayclusters
-        created_service = self.service_manager.create_or_update_service(
+        (created_service, updated_manifest,) = self.service_manager.create_or_update_service(
             service_name=service_name,
             module_name=pointer_env_vars["KT_MODULE_NAME"],
-            pod_template=self.pod_template,
-            replicas=replicas,
-            autoscaling_config=self.autoscaling_config,
-            gpu_annotations=self.gpu_annotations,
-            inactivity_ttl=self.inactivity_ttl,
-            custom_labels=self.labels,
-            custom_annotations=self.annotations,
-            custom_template=self.service_template,
-            deployment_mode=self.deployment_mode,
+            manifest=self._manifest,
             dryrun=dryrun,
-            scheduler_name=self.scheduler_name,
-            queue_name=self.queue_name(),
         )
+        self._manifest = updated_manifest
 
         # Handle service creation result based on resource type
         if isinstance(created_service, dict):
@@ -1465,14 +1542,14 @@ class Compute:
                 serialized_vars[key] = value
         return serialized_vars
 
-    def _extract_secrets(self, secrets):
+    def _extract_secrets(self, secrets, namespace):
         if is_running_in_kubernetes():
             return [], []
 
         secret_env_vars = []
         secret_volumes = []
         if secrets:
-            secrets_client = KubernetesSecretsClient(namespace=self.namespace, kubeconfig_path=self.kubeconfig_path)
+            secrets_client = KubernetesSecretsClient(namespace=namespace, kubeconfig_path=self.kubeconfig_path)
             secret_objects = secrets_client.convert_to_secret_objects(secrets=secrets)
             (
                 secret_env_vars,
@@ -1620,7 +1697,7 @@ class Compute:
             launch_timeout=self.launch_timeout,
             objects_api=self.objects_api,
             core_api=self.core_api,
-            queue_name=self.queue_name(),
+            queue_name=self.queue,
             scheduler_name=self.scheduler_name,
         )
 
@@ -2314,11 +2391,22 @@ class Compute:
         if workers:
             if not isinstance(workers, int):
                 raise ValueError("Workers must be an integer. List of <integer, Compute> pairs is not yet supported")
-            # Set replicas property instead of storing in distributed_config
             self.replicas = workers
 
         if distributed_config:
             self.distributed_config = distributed_config
+
+            distribution_type = distributed_config.get("distribution_type")
+            if distribution_type == "ray":
+                # Convert to RayCluster manifest
+                from kubetorch.serving.service_manager import RayClusterServiceManager
+
+                self._manifest = RayClusterServiceManager._convert_manifest(
+                    deployment_manifest=self._manifest,
+                    namespace=self.namespace,
+                    replicas=self.replicas,
+                )
+
             # Invalidate cached service manager so it gets recreated with the right type
             self._service_manager = None
 
@@ -2408,6 +2496,17 @@ class Compute:
         autoscaling_config = AutoscalingConfig(**kwargs)
         if autoscaling_config:
             self._autoscaling_config = autoscaling_config
+
+            # Convert manifest to Knative service manifest
+            from kubetorch.serving.service_manager import KnativeServiceManager
+
+            self._manifest = KnativeServiceManager._convert_manifest(
+                deployment_manifest=self._manifest,
+                namespace=self.namespace,
+                autoscaling_config=autoscaling_config,
+                gpu_annotations=self.gpu_annotations,
+            )
+
             # Invalidate cached service manager so it gets recreated with KnativeServiceManager
             self._service_manager = None
 
