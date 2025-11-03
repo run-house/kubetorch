@@ -56,24 +56,57 @@ data:
       {{- end }}
 
       {{- if (index .Values "dcgm-exporter").enabled }}
-      # NVIDIA DCGM Exporter
+      # Self-managed NVIDIA DCGM Exporter
       - job_name: 'dcgm-exporter'
         kubernetes_sd_configs:
-          - role: service
+          - role: pod
         relabel_configs:
-          # Match NVIDIA Helm chart Service
-          - source_labels: [__meta_kubernetes_service_label_app_kubernetes_io_name]
+          # Only keep dcgm-exporter pods
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
             regex: dcgm-exporter
             action: keep
-          # Match service names like kubetorch-dcgm-exporter
-          - source_labels: [__meta_kubernetes_service_name]
-            regex: .*dcgm-exporter.*
+
+          # Only pods that expose port 9400
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            regex: "9400"
             action: keep
-          # Only scrape port 9400
-          - source_labels: [__meta_kubernetes_service_port_name]
-            regex: metrics
+
+          # These labels come from the exporter metrics themselves
+          # (they refer to workload pods, not exporter pods)
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: exporter_namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: exporter_pod
+      {{- else }}
+      # GKE-managed DCGM Exporter
+      - job_name: 'gke-managed-dcgm-exporter'
+        honor_labels: true
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ['gke-managed-system']
+        relabel_configs:
+          # Match the GKE-managed DCGM pods
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: gke-managed-dcgm-exporter
             action: keep
-      {{- end }}
+
+          # Only containers exposing 9400
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            regex: "9400"
+            action: keep
+
+          # Use pod IP as the scrape target
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: "$1:9400"
+
+          # Add some useful labels
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+        {{- end }}
 
       # allow for namespace filtering
       - job_name: 'pods'

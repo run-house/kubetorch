@@ -35,7 +35,7 @@ spec:
           configMap:
             name: kubetorch-logging-config
 {{- end }}
-{{- if .Values.otelCollector.enabled }}
+{{- if (index .Values "opentelemetry-collector").enabled }}
 ---
 # RBAC for existing OpenTelemetry Collector Agent
 apiVersion: rbac.authorization.k8s.io/v1

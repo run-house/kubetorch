@@ -65,10 +65,7 @@ KAI_SCHEDULER_NAME = "kai-scheduler"
 KAI_SCHEDULER_LABEL = "kai.scheduler/queue"
 
 # URLS
-PROMETHEUS_SERVICE_NAME = "kubetorch-otel-kube-promet-prometheus"
-PROMETHEUS_URL = (
-    f"http://{PROMETHEUS_SERVICE_NAME}.kubetorch-monitoring.svc.cluster.local:9090"
-)
+PROMETHEUS_SERVICE_NAME = "kubetorch-prometheus"
 
 # HTTP Client
 KT_TERMINATION_REASONS = ["OOMKilled", "Evicted", "Not Found"]

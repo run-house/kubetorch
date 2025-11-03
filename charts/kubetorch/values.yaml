@@ -18,10 +18,8 @@ nginx:
   # if using a custom DNS resolver, update the value below (e.g., "coredns.kube-system.svc.cluster.local")
   resolver: "kube-dns.kube-system.svc.cluster.local"
 
-gpuSupport:
-  enabled: true # set to `false` to disable GPU support
-
 nvidia-device-plugin:
+  enabled: true # set to `false` to disable GPU support
   namespaceOverride: "kubetorch"
   affinity:
     nodeAffinity:
@@ -98,11 +96,32 @@ ephemeralMonitoring:
   prometheus:
     image: prom/prometheus:v3.7.2
     port: 9090
-    retention: 1h
+    retention: 24h
     scrapeInterval: 5s
     resources:
       cpu: 200m
       memory: 512Mi
+    additionalScrapeConfigs:
+      - job_name: "gke-managed-dcgm"
+        honor_labels: true
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ["gke-managed-system"]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_name]
+            regex: "dcgm-exporter.*"
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            regex: "9400"
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: "$1:9400"
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
   grafana:
     image: grafana/grafana:main
     prometheusURL: "http://kubetorch-prometheus.kubetorch.svc.cluster.local:9090"
@@ -113,10 +132,8 @@ ephemeralMonitoring:
       disableLoginForm: true
       allowEmbedding: true
 
-otelCollector:
-  enabled: true # set to `false` to disable opentelemetry collector
-
 opentelemetry-collector:
+  enabled: true # set to `false` to disable opentelemetry collector
   mode: daemonset
   image:
     repository: otel/opentelemetry-collector-contrib
@@ -142,31 +159,36 @@ opentelemetry-collector:
 
 
 dcgm-exporter:
-  enabled: true # set to `false` to disable GPU metrics collection
+  enabled: false # set to `true` if deploying an EKS or rolling your own DCGM metrics collection
   namespaceOverride: "kubetorch"
   serviceMonitor:
-    enabled: false  # since kubetorch deploys its own lightweight Prometheus deployment
+    enabled: false  # kubetorch deploys its own service monitoring deployment
 
   image:
     repository: nvcr.io/nvidia/k8s/dcgm-exporter
     tag: 4.4.1-4.6.0-ubuntu22.04
 
   readinessProbe:
-    enabled: false # Disable the broken /health readiness probe
+    enabled: false
 
   tolerations:
     - key: "nvidia.com/gpu"
       operator: "Exists"
-      effect: "NoSchedule"
-    - key: "dedicated"
-      operator: "Equal"
-      value: "gpu"
       effect: "NoSchedule"
 
   affinity:
     nodeAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
         nodeSelectorTerms:
+          # AWS GPUs
           - matchExpressions:
-              - key: nvidia.com/gpu.product
+              - key: karpenter.k8s.aws/instance-gpu-manufacturer
+                operator: In
+                values: ["nvidia"]
+              - key: karpenter.k8s.aws/instance-gpu-name
+                operator: In
+                values: ["a10g", "a100", "t4"]
+          # Fallback: any node with a GPU
+          - matchExpressions:
+              - key: nvidia.com/gpu.present
                 operator: Exists

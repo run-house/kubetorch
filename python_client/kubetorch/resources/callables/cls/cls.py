@@ -63,7 +63,7 @@ class Cls(Module):
         """Synchronous call implementation."""
         client = self._client(method_name=method_name)
         stream_logs = kwargs.pop("stream_logs", None)
-        monitoring = kwargs.pop("monitoring", None)
+        stream_metrics = kwargs.pop("stream_metrics", None)
         pdb = kwargs.pop("pdb", None)
         if pdb:
             logger.info(f"Debugging remote cls {self.name}.{method_name}")
@@ -73,7 +73,7 @@ class Cls(Module):
         response = client.call_method(
             self.endpoint(method_name),
             stream_logs=stream_logs,
-            monitoring=monitoring,
+            stream_metrics=stream_metrics,
             headers=self.request_headers,
             body={"args": list(args), "kwargs": kwargs},
             pdb=pdb,
@@ -85,6 +85,7 @@ class Cls(Module):
         """Asynchronous call implementation."""
         client = self._client(method_name=method_name)
         stream_logs = kwargs.pop("stream_logs", None)
+        stream_metrics = kwargs.pop("stream_metrics", None)
         pdb = kwargs.pop("pdb", None)
         if pdb:
             logger.info(f"Debugging remote cls {self.name}.{method_name} (async)")
@@ -94,6 +95,7 @@ class Cls(Module):
         response = await client.call_method_async(
             self.endpoint(method_name),
             stream_logs=stream_logs,
+            stream_metrics=stream_metrics,
             headers=self.request_headers,
             body={"args": list(args), "kwargs": kwargs},
             pdb=pdb,

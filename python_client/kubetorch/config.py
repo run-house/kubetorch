@@ -17,6 +17,7 @@ ENV_MAPPINGS = {
     "install_namespace": "KT_INSTALL_NAMESPACE",
     "install_url": "KT_INSTALL_URL",
     "stream_logs": "KT_STREAM_LOGS",
+    "stream_metrics": "KT_STREAM_METRICS",
     "log_verbosity": "KT_LOG_VERBOSITY",
     "queue": "KT_QUEUE",
     "tracing_enabled": "KT_TRACING_ENABLED",
@@ -41,6 +42,7 @@ class KubetorchConfig:
         self._namespace = None
         self._queue = None
         self._stream_logs = None
+        self._stream_metrics = None
         self._tracing_enabled = None
         self._username = None
         self._volumes = None
@@ -290,11 +292,13 @@ class KubetorchConfig:
         """Whether to stream logs for Kubetorch services.
 
         When enabled, logs from remote services are streamed back to your local environment
-        in real-time. Verbosity of the streamed logs can be controlled with ``log_verbosity``. Default is ``True``.
+        in real-time. Verbosity of the streamed logs can be controlled with ``log_verbosity``.
+        Default is ``True``
+
+        When disabled, logs remain accessible in-cluster but are not streamed to the client.
 
         Note:
-            Requires `log streaming <https://www.run.house/kubetorch/advanced-installation#log-streaming>`_
-            to be configured in your cluster.
+            Requires logging to be configured in the cluster (`ephemeralLogStorage.enabled: true`` in the Helm chart)
         """
         if self._stream_logs is None:
             if self._get_env_var("stream_logs"):
@@ -322,8 +326,58 @@ class KubetorchConfig:
         if bool_value:
             # Check if the cluster has loki enabled
             if not check_loki_enabled():
-                raise ValueError("Loki is not enabled in the cluster")
+                raise ValueError(
+                    "Log streaming is not enabled in the cluster. Set `stream_logs` to False or "
+                    "re-install the Kubetorch Helm chart with `ephemeralLogStorage.enabled = true`"
+                )
         self._stream_logs = bool_value
+
+    @property
+    def stream_metrics(self):
+        """Whether to stream metrics during execution of Kubetorch services.
+
+        When enabled, real-time CPU, memory, and GPU utilization metrics from remote Kubetorch services
+        are streamed back to the local environment for live monitoring.
+        Default is ``True``.
+
+        When disabled, metrics are not collected.
+
+        Note:
+            Requires monitoring to be configured in the cluster (`ephemeralMonitoring.enabled: true`` in the Helm chart)
+        """
+        if self._stream_metrics is None:
+            if self._get_env_var("stream_metrics"):
+                self._stream_metrics = (
+                    self._get_env_var("stream_metrics").lower() == "true"
+                )
+            else:
+                self._stream_metrics = self.file_cache.get(
+                    "stream_metrics", True
+                )  # Default to True
+        return self._stream_metrics
+
+    @stream_metrics.setter
+    def stream_metrics(self, value):
+        """Set metrics streaming for current process."""
+        from kubetorch.serving.utils import check_prometheus_enabled
+
+        bool_value = value
+
+        if not isinstance(value, bool):
+            if value is None:
+                pass  # case we are unsetting stream_metrics, so None is a valid value
+            elif isinstance(value, str) and value.lower() in ["true", "false"]:
+                bool_value = value.lower() == "true"
+            else:
+                raise ValueError("stream_metrics must be a boolean value")
+        if bool_value:
+            # Check if the cluster has prometheus enabled
+            if not check_prometheus_enabled():
+                raise ValueError(
+                    "Metrics is not enabled in the cluster. Set `stream_metrics` to False or "
+                    "re-install the Kubetorch Helm chart with `ephemeralMonitoring.enabled = true`"
+                )
+        self._stream_metrics = bool_value
 
     @property
     def tracing_enabled(self):

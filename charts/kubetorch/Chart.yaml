@@ -9,12 +9,12 @@ dependencies:
   - name: nvidia-device-plugin
     version: "0.14.1"
     repository: https://nvidia.github.io/k8s-device-plugin
-    condition: gpuSupport.enabled
+    condition: nvidia-device-plugin.enabled
 
   - name: opentelemetry-collector
     version: "0.132.0"
     repository: https://open-telemetry.github.io/opentelemetry-helm-charts
-    condition: otelCollector.enabled
+    condition: opentelemetry-collector.enabled
 
   - name: dcgm-exporter
     version: "4.5.0"

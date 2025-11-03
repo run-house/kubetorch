@@ -11,13 +11,13 @@ data:
     {
       "id": null,
       "uid": "kubetorch-basic",
-      "title": "Kubetorch Pod Metrics",
+      "title": "Metrics",
       "tags": ["kubetorch", "pods"],
       "timezone": "browser",
       "schemaVersion": 36,
-      "version": 2,
+      "version": 6,
       "refresh": "10s",
-      "time": { "from": "now-15m", "to": "now" },
+      "time": { "from": "now-5m", "to": "now" },
       "templating": {
         "list": [
           {
@@ -30,67 +30,117 @@ data:
             "includeAll": false,
             "multi": false,
             "sort": 1
+          },
+          {
+            "type": "query",
+            "name": "pod",
+            "label": "Pod",
+            "datasource": "Prometheus",
+            "query": "label_values(container_cpu_usage_seconds_total{namespace=\"$namespace\", pod!~\"^kubetorch-rsync.*\"}, pod)",
+            "refresh": 1,
+            "includeAll": true,
+            "allValue": ".*",
+            "multi": true,
+            "sort": 1
           }
         ]
       },
       "panels": [
         {
-          "type": "timeseries",
-          "title": "CPU Usage (cores)",
+          "type": "stat",
+          "title": "Average CPU Usage (Cores)",
+          "description": "Shows average CPU usage across all Kubetorch pods (1.0 = 1 full CPU core).",
+          "gridPos": { "x": 0, "y": 0, "w": 8, "h": 6 },
           "targets": [
             {
-              "expr": "rate(container_cpu_usage_seconds_total{container=\"kubetorch\", namespace=\"$namespace\"}[2m])",
-              "legendFormat": "{{"{{"}} pod {{"}}"}}",
-              "interval": ""
+              "expr": "avg(rate(container_cpu_usage_seconds_total{container=\"kubetorch\", namespace=\"$namespace\", pod!~\"^kubetorch-rsync.*\"}[2m]))",
+              "legendFormat": "avg_cpu"
             }
           ],
-          "gridPos": { "x": 0, "y": 0, "w": 24, "h": 12 },
           "fieldConfig": {
-            "defaults": { "unit": "cores" }
+            "defaults": {
+              "unit": "cores",
+              "decimals": 3
+            }
           }
+        },
+        {
+          "type": "stat",
+          "title": "Average GPU Utilization (%)",
+          "description": "Shows average GPU utilization across all GPUs in Kubetorch pods using DCGM metrics.",
+          "gridPos": { "x": 8, "y": 0, "w": 8, "h": 6 },
+          "targets": [
+            {
+              "expr": "avg(DCGM_FI_DEV_GPU_UTIL{namespace=\"$namespace\", pod!~\"^kubetorch-rsync.*\"})",
+              "legendFormat": "avg_gpu_util"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "percent" } }
+        },
+        {
+          "type": "stat",
+          "title": "Average Memory Usage (MiB)",
+          "description": "Shows average working set memory used by Kubetorch pods.",
+          "gridPos": { "x": 16, "y": 0, "w": 8, "h": 6 },
+          "targets": [
+            {
+              "expr": "avg(container_memory_working_set_bytes{container=\"kubetorch\", namespace=\"$namespace\", pod!~\"^kubetorch-rsync.*\"}) / 1024 / 1024",
+              "legendFormat": "avg_mem"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "MiB", "decimals": 1 } }
+        },
+        {
+          "type": "timeseries",
+          "title": "CPU Usage (Cores Used per Pod)",
+          "description": "CPU usage over time (1.0 = 1 CPU core).",
+          "targets": [
+            {
+              "expr": "rate(container_cpu_usage_seconds_total{container=\"kubetorch\", namespace=\"$namespace\", pod=~\"$pod\", pod!~\"^kubetorch-rsync.*\"}[2m])",
+              "legendFormat": "{{`{{pod}}`}}"
+            }
+          ],
+          "gridPos": { "x": 0, "y": 6, "w": 12, "h": 10 },
+          "fieldConfig": { "defaults": { "unit": "cores", "fillOpacity": 60 } }
         },
         {
           "type": "timeseries",
           "title": "Memory Usage (MiB)",
+          "description": "Memory usage per pod over time.",
           "targets": [
             {
-              "expr": "container_memory_working_set_bytes{container=\"kubetorch\", namespace=\"$namespace\"} / 1024 / 1024",
-              "legendFormat": "{{"{{"}} pod {{"}}"}}",
-              "interval": ""
+              "expr": "container_memory_working_set_bytes{container=\"kubetorch\", namespace=\"$namespace\", pod=~\"$pod\", pod!~\"^kubetorch-rsync.*\"} / 1024 / 1024",
+              "legendFormat": "{{`{{pod}}`}}"
             }
           ],
-          "gridPos": { "x": 0, "y": 12, "w": 24, "h": 12 },
-          "fieldConfig": {
-            "defaults": { "unit": "MiB" }
-          }
+          "gridPos": { "x": 12, "y": 6, "w": 12, "h": 10 },
+          "fieldConfig": { "defaults": { "unit": "MiB", "fillOpacity": 60 } }
         },
         {
           "type": "timeseries",
           "title": "GPU Utilization (%)",
+          "description": "Real-time GPU utilization per pod.",
           "targets": [
             {
-              "expr": "avg(DCGM_FI_DEV_GPU_UTIL{namespace=\"$namespace\"}) by (pod)",
+              "expr": "avg(DCGM_FI_DEV_GPU_UTIL{namespace=\"$namespace\", pod=~\"$pod\", pod!~\"^kubetorch-rsync.*\"}) by (pod)",
               "legendFormat": "{{`{{pod}}`}}"
             }
           ],
-          "gridPos": { "x": 0, "y": 24, "w": 24, "h": 12 },
-          "fieldConfig": {
-            "defaults": { "unit": "percent" }
-          }
+          "gridPos": { "x": 0, "y": 16, "w": 12, "h": 10 },
+          "fieldConfig": { "defaults": { "unit": "percent", "fillOpacity": 60 } }
         },
         {
           "type": "timeseries",
-          "title": "GPU Memory Used (MiB)",
+          "title": "GPU Memory Used (MiB per GPU Device)",
+          "description": "GPU frame buffer memory used per pod, based on DCGM_FI_DEV_FB_USED.",
           "targets": [
             {
-              "expr": "avg(DCGM_FI_DEV_FB_USED{namespace=\"$namespace\"}) by (pod) / 1024 / 1024",
+              "expr": "avg(DCGM_FI_DEV_FB_USED{namespace=\"$namespace\", pod=~\"$pod\", pod!~\"^kubetorch-rsync.*\"}) by (pod) / 1024 / 1024",
               "legendFormat": "{{`{{pod}}`}}"
             }
           ],
-          "gridPos": { "x": 0, "y": 36, "w": 24, "h": 12 },
-          "fieldConfig": {
-            "defaults": { "unit": "MiB" }
-          }
+          "gridPos": { "x": 12, "y": 16, "w": 12, "h": 10 },
+          "fieldConfig": { "defaults": { "unit": "MiB", "fillOpacity": 60 } }
         }
       ]
     }
