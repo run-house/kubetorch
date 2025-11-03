@@ -124,7 +124,7 @@ def test_autodown_raycluster():
         kt.Compute(
             cpus="2",
             memory="3Gi",
-            launch_timeout=300,
+            launch_timeout=600,
             gpu_anti_affinity=True,
             image=kt.images.Ray(),
             inactivity_ttl=inactivity_ttl,

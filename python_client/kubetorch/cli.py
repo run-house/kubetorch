@@ -1509,6 +1509,12 @@ def kt_teardown(
     force: bool = typer.Option(
         False, "-f", "--force", help="Force deletion without graceful shutdown"
     ),
+    exact_match: bool = typer.Option(
+        False,
+        "-e",
+        "--exact-match",
+        help="Only delete the exact service name, not the prefixed version",
+    ),
 ):
     """Delete a service and all its associated resources (deployments, configmaps, etc).
 
@@ -1569,6 +1575,7 @@ def kt_teardown(
         custom_api=custom_api,
         prefix=prefix,
         username=config.username if teardown_all else None,
+        exact_match=exact_match,
     )
 
     services = list(resources["services"].keys())
