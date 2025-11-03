@@ -1,18 +1,10 @@
 kubetorchConfig:
   environment:
-    # PROMETHEUS_URL should be set only if you have an external or custom Prometheus instance.
-    # Example: "http://prometheus.runhouse.svc.cluster.local:9090"
-    # Leave empty if not configured.
-    PROMETHEUS_URL: ""
-
-    # PROMETHEUS_NAMESPACE is optional — set it if your Prometheus runs in a non-default namespace
-    # (e.g., "runhouse"). Leave empty if not configured.
-    PROMETHEUS_NAMESPACE: ""
   # List of namespaces to allow deploying compute resources to
   deployment_namespaces:
     - "default"
     - "kubetorch"
-  otelEnabled: true # Allows OTEL on the server, necessary for custom metrics collection and TTL
+  otelEnabled: true # Allows OTEL on the server, necessary for enabling TTL
 
 nginx:
   # if using a custom DNS resolver, update the value below (e.g., "coredns.kube-system.svc.cluster.local")

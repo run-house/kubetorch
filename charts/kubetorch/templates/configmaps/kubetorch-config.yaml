@@ -5,8 +5,6 @@ metadata:
   namespace: {{ .Release.Namespace }}
 data:
   DEFAULT_SERVICE_NAMESPACE: "{{ .Values.kubetorchConfig.environment.DEFAULT_SERVICE_NAMESPACE | default "default" }}"
-  PROMETHEUS_URL: "{{ .Values.kubetorchConfig.environment.PROMETHEUS_URL | default "kubetorch-otel-kube-promet-prometheus.kubetorch-monitoring.svc.cluster.local:9090" }}"
-  PROMETHEUS_NAMESPACE: {{ .Values.kubetorchConfig.environment.PROMETHEUS_NAMESPACE | default "kubetorch-monitoring" }}
   NGINX_RESOLVER: {{ .Values.nginx.resolver | default "kube-dns.kube-system.svc.cluster.local" }}
   COMPUTE_DEFAULTS: |-
 {{- range $key, $value := .Values.kubetorchConfig.computeDefaults }}

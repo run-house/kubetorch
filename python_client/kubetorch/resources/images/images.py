@@ -8,25 +8,15 @@ def debian() -> Image:
     a minimal Debian base.
     """
     import kubetorch.serving.constants as serving_constants
-    from kubetorch.globals import config
 
-    if config.tracing_enabled:
-        image_id = serving_constants.SERVER_IMAGE_WITH_OTEL
-    else:
-        image_id = serving_constants.SERVER_IMAGE_MINIMAL
-    return Image(name="debian", image_id=image_id)
+    return Image(name="debian", image_id=serving_constants.SERVER_IMAGE_MINIMAL)
 
 
 def ubuntu() -> Image:
     """Return a Kubetorch ubuntu image."""
     import kubetorch.serving.constants as serving_constants
-    from kubetorch.globals import config
 
-    if config.tracing_enabled:
-        image_id = serving_constants.UBUNTU_IMAGE_WITH_OTEL
-    else:
-        image_id = serving_constants.UBUNTU_IMAGE_MINIMAL
-    return Image(name="ubuntu", image_id=image_id)
+    return Image(name="ubuntu", image_id=serving_constants.UBUNTU_IMAGE_MINIMAL)
 
 
 def python(version: str) -> Image:

@@ -5,14 +5,13 @@ import time
 import urllib.parse
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Optional, Union
+from typing import Union
 
 import httpx
 import requests
 import websockets
 
 from kubernetes import client
-from kubernetes.client.rest import ApiException
 
 from kubetorch.globals import config, service_url
 from kubetorch.logger import get_logger
@@ -21,15 +20,10 @@ from kubetorch.servers.http.utils import (
     _deserialize_response,
     _serialize_body,
     generate_unique_request_id,
-    PodTerminatedError,
     request_id_ctx_var,
 )
 
-from kubetorch.serving.constants import (
-    DEFAULT_DEBUG_PORT,
-    DEFAULT_NGINX_PORT,
-    KT_TERMINATION_REASONS,
-)
+from kubetorch.serving.constants import DEFAULT_DEBUG_PORT, DEFAULT_NGINX_PORT
 from kubetorch.utils import ColoredFormatter, extract_host_port, ServerLogsFormatter
 
 logger = get_logger(__name__)
@@ -185,7 +179,6 @@ class HTTPClient:
     def __init__(self, base_url, compute, service_name):
         self._core_api = None
         self._objects_api = None
-        self._tracing_enabled = config.tracing_enabled
 
         self.compute = compute
         self.service_name = service_name
@@ -259,152 +252,6 @@ class HTTPClient:
         if self._async_client is None:
             self._async_client = CustomAsyncClient()
         return self._async_client
-
-    # ----------------- Error Handling ----------------- #
-    def _handle_response_errors(self, response):
-        """If we didn't get json back, it could be that the pod is already dead but Knative returns the 500 because
-        the service was mid-termination."""
-        status_code = response.status_code
-        if status_code >= 500 and self._tracing_enabled:
-            request_id = response.request.headers.get("X-Request-ID")
-            pod_name, start_time = self._load_pod_metadata_from_tempo(
-                request_id=request_id
-            )
-            if pod_name:
-                self._handle_500x_error(pod_name, status_code, start_time)
-            else:
-                logger.debug(f"No pod name found for request {request_id}")
-
-    def _handle_500x_error(
-        self, pod_name: str, status_code: int, start_time: float
-    ) -> None:
-        """Handle 500x errors by surfacing container status and kubernetes events."""
-        termination_reason = None
-        try:
-            pod = self.core_api.read_namespaced_pod(
-                name=pod_name, namespace=self.compute.namespace
-            )
-
-            # Check container termination states for better reason
-            for container_status in pod.status.container_statuses or []:
-                state = container_status.state
-                # Note: if pod was killed abruptly kubelet might not have time to set the container state
-                if state.terminated:
-                    termination_reason = state.terminated.reason
-                    error_code = state.terminated.exit_code
-
-                    if (
-                        termination_reason not in KT_TERMINATION_REASONS
-                        and error_code == 137
-                    ):
-                        termination_reason = "OOMKilled"
-                        logger.warning(
-                            "OOM suspected: pod exited with code 137 but no termination reason "
-                            "found in Kubernetes events"
-                        )
-
-                    logger.debug(
-                        f"Pod {pod_name} terminated with reason: {termination_reason}"
-                    )
-                    break
-
-            if termination_reason is None:
-                termination_reason = pod.status.reason
-
-        except ApiException as e:
-            termination_reason = e.reason if e.reason == "Not Found" else None
-
-        # we are updating termination_reason only if the pod is indeed was not found / terminated.
-        if termination_reason in KT_TERMINATION_REASONS:
-            # Convert start_time float to ISO8601 format for comparison
-            start_dt = datetime.fromtimestamp(start_time, tz=timezone.utc)
-
-            # Fetch pod events since request started
-            events = self._get_pod_events_since(pod_name, start_time=start_dt)
-
-            raise PodTerminatedError(
-                pod_name=pod_name,
-                reason=termination_reason,
-                status_code=status_code,
-                events=events,
-            )
-
-    def _get_pod_events_since(self, pod_name: str, start_time: datetime) -> list[dict]:
-        """Fetch all events for a pod since the given start time."""
-        try:
-            events = self.core_api.list_namespaced_event(
-                namespace=self.compute.namespace,
-                field_selector=f"involvedObject.name={pod_name}",
-            )
-            filtered_events = []
-            for event in events.items:
-                if event.first_timestamp and event.first_timestamp > start_time:
-                    filtered_events.append(
-                        {
-                            "timestamp": event.first_timestamp,
-                            "reason": event.reason,
-                            "message": event.message,
-                        }
-                    )
-            return filtered_events
-        except Exception as e:
-            logger.warning(f"Failed to fetch pod events for {pod_name}: {e}")
-            return []
-
-    def _query_tempo_internal(
-        self, tempo_url: str, request_id: str, retries=5, delay=2.0
-    ) -> Optional[tuple[str, float]]:
-        """
-        Query Tempo for the trace with the given request_id and return:
-        - the pod name (`service.instance.id`)
-        - the trace start time in epoch seconds
-
-        Note: retries are used to handle Tempo not being ready yet.
-        """
-        for attempt in range(retries):
-            try:
-                search_url = f"{tempo_url}/api/search"
-                params = {"tags": f"request_id={request_id}"}
-                response = httpx.get(search_url, params=params, timeout=2)
-                response.raise_for_status()
-                traces = response.json().get("traces", [])
-                if traces:
-                    trace_info = traces[0]
-                    trace_id = trace_info["traceID"]
-                    start_time_ns = int(trace_info["startTimeUnixNano"])
-                    start_time_sec = start_time_ns / 1_000_000_000
-
-                    # Fetch pod name from full trace detail
-                    detail_url = f"{tempo_url}/api/traces/{trace_id}"
-                    detail_response = httpx.get(detail_url, timeout=2)
-                    detail_response.raise_for_status()
-                    trace_data = detail_response.json()
-
-                    for batch in trace_data.get("batches", []):
-                        for attr in batch.get("resource", {}).get("attributes", []):
-                            if attr["key"] == "service.instance.id":
-                                pod_name = attr["value"].get("stringValue")
-                                return pod_name, start_time_sec
-
-            except Exception as e:
-                logger.debug(f"Attempt {attempt + 1} failed to query Tempo: {e}")
-
-            if attempt < retries - 1:
-                logger.debug(f"Retrying loading traces in {delay} seconds...")
-                time.sleep(delay)
-
-        logger.warning("Failed to load pod metadata from Tempo")
-        return None, None
-
-    def _load_pod_metadata_from_tempo(self, request_id: str):
-        """Query Tempo for the trace with the given request_id and return the pod name if available.
-        Note there are a few reasons why we may fail to load the data from Tempo:
-        (1) Flush failure: pod was killed (OOM, preempted, etc.) before the OTEL exporter flushed to Tempo
-        (2) Tempo ingestion errors
-        """
-        base_url = service_url()
-        tempo_url = f"{base_url}/tempo"
-        return self._query_tempo_internal(tempo_url, request_id)
 
     def _prepare_request(
         self,
@@ -502,14 +349,12 @@ class HTTPClient:
 
     def _make_request(self, method, endpoint, **kwargs):
         response: httpx.Response = getattr(self.session, method)(endpoint, **kwargs)
-        self._handle_response_errors(response)
         response.raise_for_status()
         return response
 
     async def _make_request_async(self, method, endpoint, **kwargs):
         """Async version of _make_request."""
         response = await getattr(self.async_session, method)(endpoint, **kwargs)
-        self._handle_response_errors(response)
         response.raise_for_status()
         return response
 
