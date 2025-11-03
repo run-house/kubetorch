@@ -142,7 +142,7 @@ class Module:
         if self._remote_pointers:
             return self._remote_pointers
 
-        source_dir = locate_working_dir(self.pointers[0])
+        source_dir, _ = locate_working_dir(self.pointers[0])
         relative_module_path = (
             Path(self.pointers[0]).expanduser().relative_to(source_dir)
         )
@@ -599,17 +599,31 @@ class Module:
                 f"and reload_prefixes={reload_prefixes}: {str(e)}"
             )
 
-    def _rsync_repo_and_image_patches(self, install_url, use_editable, init_args):
-        logger.debug("Rsyncing data to the rsync pod")
-        source_dir = locate_working_dir(self.pointers[0])
+    def _get_rsync_dirs_and_dockerfile(self, install_url, use_editable, init_args):
+        source_dir, has_kt_dir = locate_working_dir(self.pointers[0])
         rsync_dirs = [str(source_dir)]
-        if use_editable and install_url not in rsync_dirs:
+        if not has_kt_dir:
+            # Use the source file (.py) instead of directory
+            source_file = Path(f"{self.pointers[0]}/{self.pointers[1]}.py")
+            rsync_dirs = [str(source_file)]
+            logger.info(f"Package root not found; syncing file {source_file}")
+        else:
+            logger.info(f"Package root identified at {source_dir}; syncing directory")
+
+        if use_editable and install_url != str(source_dir):
             rsync_dirs.append(install_url)
 
         pointer_env_vars = self._get_pointer_env_vars(self.remote_pointers)
         metadata_env_vars = self._get_metadata_env_vars(init_args)
         service_dockerfile = self._get_service_dockerfile(
             {**pointer_env_vars, **metadata_env_vars}
+        )
+        return rsync_dirs, service_dockerfile
+
+    def _rsync_repo_and_image_patches(self, install_url, use_editable, init_args):
+        logger.debug("Rsyncing data to the rsync pod")
+        rsync_dirs, service_dockerfile = self._get_rsync_dirs_and_dockerfile(
+            install_url, use_editable, init_args
         )
         self._construct_and_rsync_files(rsync_dirs, service_dockerfile)
         logger.debug(f"Rsync completed for service {self.service_name}")
@@ -618,15 +632,8 @@ class Module:
         self, install_url, use_editable, init_args
     ):
         logger.debug("Rsyncing data to the rsync pod")
-        source_dir = locate_working_dir(self.pointers[0])
-        rsync_dirs = [str(source_dir)]
-        if use_editable and install_url not in rsync_dirs:
-            rsync_dirs.append(install_url)
-
-        pointer_env_vars = self._get_pointer_env_vars(self.remote_pointers)
-        metadata_env_vars = self._get_metadata_env_vars(init_args)
-        service_dockerfile = self._get_service_dockerfile(
-            {**pointer_env_vars, **metadata_env_vars}
+        rsync_dirs, service_dockerfile = self._get_rsync_dirs_and_dockerfile(
+            install_url, use_editable, init_args
         )
         await self._construct_and_rsync_files_async(rsync_dirs, service_dockerfile)
         logger.debug(f"Rsync completed for service {self.service_name}")

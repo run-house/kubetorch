@@ -1,6 +1,6 @@
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.module import Module
-from kubetorch.resources.callables.utils import _extract_pointers
+from kubetorch.resources.callables.utils import extract_pointers
 
 logger = get_logger(__name__)
 
@@ -108,7 +108,7 @@ def fn(function_obj=None, name: str = None, get_if_exists=True, reload_prefixes=
         result = remote_fn(1, 2)
     """
     if function_obj:
-        fn_pointers = _extract_pointers(function_obj)
+        fn_pointers = extract_pointers(function_obj)
         name = name or (fn_pointers[2] if fn_pointers else function_obj.__name__)
         new_fn = Fn(
             name=name,

@@ -1,6 +1,6 @@
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.module import Module
-from kubetorch.resources.callables.utils import _extract_pointers, SHELL_COMMANDS
+from kubetorch.resources.callables.utils import extract_pointers, SHELL_COMMANDS
 
 logger = get_logger(__name__)
 
@@ -31,7 +31,7 @@ class Cls(Module):
         self._init_args = init_args
         if not pointers:
             # local to the class definition
-            pointers = _extract_pointers(self.__class__)
+            pointers = extract_pointers(self.__class__)
 
         super().__init__(name=name, pointers=pointers)
 
@@ -132,7 +132,7 @@ def cls(class_obj=None, name: str = None, get_if_exists=True, reload_prefixes=No
         result = remote_cls.my_method(1, 2)
     """
     if class_obj:
-        cls_pointers = _extract_pointers(class_obj)
+        cls_pointers = extract_pointers(class_obj)
         name = name or (cls_pointers[2] if cls_pointers else cls.__name__)
         new_cls = Cls(
             name=name,

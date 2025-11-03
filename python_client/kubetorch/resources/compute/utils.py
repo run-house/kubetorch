@@ -183,7 +183,7 @@ def _get_rsync_exclude_options() -> str:
         )
         return os.environ["KT_RSYNC_FILTERS"]
 
-    repo_root = locate_working_dir(os.getcwd())
+    repo_root, _ = locate_working_dir(os.getcwd())
     gitignore_path = os.path.join(repo_root, ".gitignore")
     kt_ignore_path = os.path.join(repo_root, ".ktignore")
 
@@ -854,7 +854,7 @@ def _get_sync_package_paths(
         package_path = (
             Path(package).expanduser()
             if Path(package).expanduser().is_absolute()
-            else Path(locate_working_dir()) / package
+            else Path(locate_working_dir()[0]) / package
         )
         dest_dir = str(package_path.name)
     else:
