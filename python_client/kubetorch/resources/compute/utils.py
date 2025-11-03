@@ -656,6 +656,7 @@ def fetch_resources_for_teardown(
     custom_api: client.CustomObjectsApi,
     prefix: Optional[str] = None,
     username: Optional[str] = None,
+    exact_match: bool = False,
 ) -> dict:
     """Fetchs the resources for a given service.
 
@@ -768,6 +769,10 @@ def fetch_resources_for_teardown(
             services = [mod.service_name for mod in to_down if isinstance(mod, Module)]
         else:
             services = [target]
+            # if the target is not prefixed with the username, add the username prefix
+            username = kubetorch.globals.config.username
+            if username and not exact_match and not target.startswith(username + "-"):
+                services.append(username + "-" + target)
 
     for service_name in services:
         service_type = None
