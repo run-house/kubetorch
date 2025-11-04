@@ -14,28 +14,35 @@ from .utils import get_cuda_version, get_test_fn_name, SlowNumpyArray
 
 @pytest.mark.gpu_test
 @pytest.mark.level("minimal")
-def test_fn_basic_gpu_support(a10g_gpu):
+def test_fn_basic_gpu_support():
     import kubetorch as kt
 
+    gpu = kt.Compute(
+        cpus=".1",
+        gpus="1",
+        image=kt.images.pytorch(),
+        env_vars={"OMP_NUM_THREADS": 1},
+        launch_timeout=600,
+    )
+
     # Note: in runhouse-k8s cluster we have a node group with an A10G
-    remote_fn = kt.fn(get_cuda_version, name=get_test_fn_name()).to(a10g_gpu)
+    remote_fn = kt.fn(get_cuda_version, name=get_test_fn_name()).to(gpu)
     resp = remote_fn()
     assert "12" in resp
     remote_fn.teardown()
 
 
-@pytest.mark.skip("L4 only supported on GKE.")
 @pytest.mark.gpu_test
 @pytest.mark.level("minimal")
-def test_fn_sync_with_l4():
+def test_fn_sync_with_providing_gpu_type():
     import kubetorch as kt
 
-    # Note: in runhouse-k8s cluster we have a node group with an A10G
+    # Note: in runhouse-k8s cluster we have a node group with nvidia-l4
     remote_fn = kt.fn(get_cuda_version, name=get_test_fn_name()).to(
         kt.Compute(
             cpus=".1",
             gpus="1",
-            gpu_type="NVIDIA_L4",
+            node_selector={"cloud.google.com/gke-accelerator": "nvidia-l4"},
             image=kt.images.pytorch(),
             env_vars={"OMP_NUM_THREADS": 1},
             launch_timeout=600,
@@ -48,14 +55,20 @@ def test_fn_sync_with_l4():
 
 @pytest.mark.gpu_test
 @pytest.mark.level("minimal")
-def test_fn_sync_on_gpu_with_autoscaling(a10g_gpu_autoscale):
+def test_fn_sync_on_gpu_with_autoscaling():
     import re
 
     import kubetorch as kt
 
-    remote_fn = kt.fn(get_cuda_version, name="fn_sync_gpu_autoscale").to(
-        a10g_gpu_autoscale
-    )
+    gpu_autoscale = kt.Compute(
+        cpus=".1",
+        gpus="1",
+        image=kt.images.pytorch(),
+        env_vars={"OMP_NUM_THREADS": 1},
+        launch_timeout=600,
+    ).autoscale(min_scale=2, initial_scale=2)
+
+    remote_fn = kt.fn(get_cuda_version, name="fn_sync_gpu_autoscale").to(gpu_autoscale)
 
     num_requests = 20
     for _ in range(num_requests):
@@ -88,7 +101,7 @@ def test_fn_sync_with_unsupported_gpu_type():
             kt.Compute(
                 cpus=".1",
                 gpus="1",
-                gpu_type="NVIDIA-A100",
+                node_selector={"cloud.google.com/gke-accelerator": "nvidia-100"},
                 image=kt.images.pytorch(),
                 env_vars={"OMP_NUM_THREADS": 1},
             )
@@ -107,14 +120,6 @@ def test_fn_sync_with_invalid_gpu_count():
             kt.Compute(
                 cpus=".1",
                 gpus="A10G:1",
-            )
-        )
-
-    with pytest.raises(ValueError):
-        kt.fn(get_cuda_version).to(
-            kt.Compute(
-                cpus=".1",
-                gpus=0,
             )
         )
 

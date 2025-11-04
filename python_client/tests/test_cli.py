@@ -1,4 +1,3 @@
-import datetime
 import os
 import re
 import subprocess
@@ -168,14 +167,10 @@ async def test_status_cli_multi_pod(remote_logs_fn_autoscaled):
 
 @pytest.mark.gpu_test
 @pytest.mark.level("minimal")
-def test_status_cli_gpu_single_pod(a10g_gpu):
+def test_status_cli_gpu_single_pod(remote_logs_fn_gpu):
     import kubetorch as kt
 
-    from .utils import SlowNumpyArray
-
-    remote_cls = kt.cls(SlowNumpyArray).to(compute=a10g_gpu, init_args={"size": 10})
-
-    service_name = remote_cls.service_name
+    service_name = remote_logs_fn_gpu.service_name
 
     result = runner.invoke(app, ["status", service_name], color=False)
     assert result.exit_code == 0
@@ -192,24 +187,18 @@ def test_status_cli_gpu_single_pod(a10g_gpu):
     assert "CPU: " in status_output
     assert "Pods (1):" in status_output
 
-    remote_cls_pod_names = remote_cls.compute.pod_names()
+    remote_cls_pod_names = remote_logs_fn_gpu.compute.pod_names()
     assert remote_cls_pod_names
+    remote_logs_fn_gpu.teardown()
 
 
 @pytest.mark.gpu_test
 @pytest.mark.level("minimal")
-def test_status_cli_gpu_multi_pod(a10g_gpu_autoscale):
+def test_status_cli_gpu_multi_pod(remote_logs_fn_autoscaled_gpu):
     import kubetorch as kt
 
-    from .utils import SlowNumpyArray
+    service_name = remote_logs_fn_autoscaled_gpu.service_name
 
-    service_name = f"status-two-gpu-{datetime.datetime.now().strftime('%H%M%S')}"[:40]
-
-    remote_cls = kt.cls(SlowNumpyArray, name=service_name).to(
-        compute=a10g_gpu_autoscale, init_args={"size": 10}
-    )
-
-    service_name = remote_cls.service_name
     result = runner.invoke(app, ["status", service_name], color=False)
     assert result.exit_code == 0
 
@@ -225,12 +214,13 @@ def test_status_cli_gpu_multi_pod(a10g_gpu_autoscale):
     assert "CPU: " in status_output
     assert "Pods (2):" in status_output
 
-    remote_cls_pod_names = remote_cls.compute.pod_names()
+    remote_cls_pod_names = remote_logs_fn_autoscaled_gpu.compute.pod_names()
     assert remote_cls_pod_names
     assert len(remote_cls_pod_names) == 2
 
     for pod in remote_cls_pod_names:
         assert pod in status_output
+    remote_logs_fn_autoscaled_gpu.teardown()
 
 
 @pytest.mark.level("minimal")
