@@ -225,6 +225,7 @@ class Compute:
         node_selector = self._get_node_selector(
             node_selector.copy() if node_selector else {}, gpu_type
         )
+        all_tolerations = self._get_tolerations(gpus, tolerations)
 
         env_vars = env_vars or {}
         if os.getenv("KT_LOG_LEVEL") and not env_vars.get("KT_LOG_LEVEL"):
@@ -250,7 +251,7 @@ class Compute:
             "freeze": freeze,
             "gpu_anti_affinity": gpu_anti_affinity,
             "working_dir": working_dir,
-            "tolerations": tolerations,
+            "tolerations": all_tolerations,
             "shm_size_limit": shared_memory_limit,
             "priority_class_name": priority_class_name,
             "launch_timeout": self._get_launch_timeout(launch_timeout),
@@ -1098,45 +1099,7 @@ class Compute:
 
     @property
     def tolerations(self):
-        # First try to get tolerations from pod template
-        template_tolerations = self.pod_template.get("tolerations", [])
-
-        # Note: if nodes are not tainted for GPUs, these tolerations are just ignored
-        required_gpu_tolerations = [
-            {
-                "key": "nvidia.com/gpu",
-                "operator": "Exists",
-                "effect": "NoSchedule",
-            },
-            {
-                "key": "dedicated",
-                "operator": "Equal",
-                "value": "gpu",
-                "effect": "NoSchedule",
-            },
-        ]
-
-        # Use template tolerations if available, otherwise use stored tolerations
-        user_tolerations = template_tolerations if template_tolerations else []
-
-        # Only add required GPU tolerations if this is a GPU workload
-        if (
-            not self._load_gpu_config(self.gpus, self.gpu_memory, self.gpu_type)
-            and not self.gpu_type
-        ):
-            return user_tolerations if user_tolerations else None
-
-        all_tolerations = user_tolerations.copy()
-        for req_tol in required_gpu_tolerations:
-            if not any(
-                t["key"] == req_tol["key"]
-                and t.get("value") == req_tol["value"]
-                and t.get("effect") == req_tol["effect"]
-                for t in all_tolerations
-            ):
-                all_tolerations.append(req_tol)
-
-        return all_tolerations
+        return self.pod_template.get("tolerations", [])
 
     @property
     def gpu_annotations(self):
@@ -1248,6 +1211,42 @@ class Compute:
         return port
 
     # ----------------- GPU Init Template Setup Helpers ----------------- #
+
+    def _get_tolerations(self, gpus, tolerations):
+        user_tolerations = tolerations if tolerations else []
+
+        # add required GPU tolerations for GPU workloads
+        if gpus:
+            required_gpu_tolerations = [
+                {
+                    "key": "nvidia.com/gpu",
+                    "operator": "Exists",
+                    "effect": "NoSchedule",
+                },
+                {
+                    "key": "dedicated",
+                    "operator": "Equal",
+                    "value": "gpu",
+                    "effect": "NoSchedule",
+                },
+            ]
+
+            all_tolerations = user_tolerations.copy()
+            for req_tol in required_gpu_tolerations:
+                if not any(
+                    t["key"] == req_tol["key"]
+                    and t.get("operator") == req_tol.get("operator")
+                    and t.get("effect") == req_tol["effect"]
+                    and (
+                        req_tol.get("value") is None
+                        or t.get("value") == req_tol.get("value")
+                    )
+                    for t in all_tolerations
+                ):
+                    all_tolerations.append(req_tol)
+            return all_tolerations
+
+        return user_tolerations if user_tolerations else None
 
     def _get_gpu_annotations(self, gpu_config):
         # https://blog.devops.dev/struggling-with-gpu-waste-on-kubernetes-how-kai-schedulers-sharing-unlocks-efficiency-1029e9bd334b
