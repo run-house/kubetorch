@@ -39,6 +39,7 @@ class Fn(Module):
     def _call_sync(self, *args, **kwargs):
         client = self._client()
         stream_logs = kwargs.pop("stream_logs", None)
+        monitoring = kwargs.pop("monitoring", None)
         pdb = kwargs.pop("pdb", None)
         if pdb:
             logger.info(f"Debugging remote function {self.name}")
@@ -48,6 +49,7 @@ class Fn(Module):
         response = client.call_method(
             self.endpoint(),
             stream_logs=stream_logs,
+            monitoring=monitoring,
             headers=self.request_headers,
             body={"args": list(args), "kwargs": kwargs},
             pdb=pdb,
@@ -59,6 +61,7 @@ class Fn(Module):
         """Asynchronous call implementation."""
         client = self._client()
         stream_logs = kwargs.pop("stream_logs", None)
+        monitoring = kwargs.pop("monitoring", None)
         pdb = kwargs.pop("pdb", None)
         if pdb:
             logger.info(f"Debugging remote function {self.name}")
@@ -68,6 +71,7 @@ class Fn(Module):
         response = await client.call_method_async(
             self.endpoint(),
             stream_logs=stream_logs,
+            monitoring=monitoring,
             headers=self.request_headers,
             body={"args": list(args), "kwargs": kwargs},
             pdb=pdb,
