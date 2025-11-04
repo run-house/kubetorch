@@ -47,11 +47,6 @@ console = Console()
 
 logger = get_logger(__name__)
 
-OTEL_ERROR_MSG = (
-    "[red]Grafana setup failed. Is `kubetorch-otel` installed? See "
-    "https://www.run.house/kubetorch/advanced-installation/#kubetorch-telemetry-helm-chart for more info.[/red]"
-)
-
 
 # ------------------ Billing helpers--------------------
 class UsageData(BaseModel):

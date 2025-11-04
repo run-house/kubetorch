@@ -42,16 +42,31 @@ data:
                 add_header Content-Type text/plain;
             }
 
-            location ^~ {{ .Values.nginxProxy.backends.metrics.route }}/ {
+            ##############################################
+            # METRICS — Prometheus proxy (ephemeral or persistent)
+            ##############################################
+            location ^~ /prometheus/ {
                 resolver {{ .Values.nginx.resolver }} valid=5s;
-                set $prom_host {{ .Values.nginxProxy.backends.metrics.host }}:{{ .Values.nginxProxy.backends.metrics.port }};
-                # Strip the /prometheus/ prefix manually
+                {{- if .Values.ephemeralMonitoring.enabled }}
+                # Route to ephemeral Prometheus inside the same namespace
+                set $prom_host "{{ .Values.nginxProxy.backends.metrics.ephemeral.host }}:{{ .Values.nginxProxy.backends.metrics.ephemeral.port }}";
+                {{- else }}
+                # Route to persistent (Runhouse) Prometheus
+                set $prom_host "{{ .Values.nginxProxy.backends.metrics.persistent.host }}:{{ .Values.nginxProxy.backends.metrics.persistent.port }}";
+                {{- end }}
+                # Strip the /prometheus/ prefix before forwarding
                 rewrite ^/prometheus/(.*)$ /$1 break;
                 proxy_pass http://$prom_host;
-                proxy_set_header Host {{ .Values.nginxProxy.backends.metrics.host }};
                 proxy_http_version 1.1;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_buffering off;
             }
 
+            ##############################################
+            # LOGGING — Loki proxy
+            ##############################################
             location ^~ {{ .Values.nginxProxy.backends.logging.route }}/ {
                 resolver {{ .Values.nginx.resolver }} valid=5s;
                 {{- if .Values.ephemeralLogStorage.enabled }}
@@ -70,14 +85,12 @@ data:
                 proxy_cache_bypass $http_upgrade;
             }
 
-            # Namespace-aware rsync tunnel: /rsync/{namespace}/
+            ##############################################
+            # RSYNC — Namespace-aware tunnel
+            ##############################################
             location ~ ^/rsync/([^/]+)/?(.*)$ {
                 set $namespace $1;
-
-                # Allow very large transfers
                 client_max_body_size {{ .Values.nginxProxy.maxBodySize.rsync }};
-
-                # WebSocket proxy to namespace-specific rsync
                 proxy_pass http://kubetorch-rsync.$namespace.svc.cluster.local:8080;
                 proxy_http_version 1.1;
                 proxy_set_header Upgrade $http_upgrade;
@@ -88,7 +101,9 @@ data:
                 proxy_cache_bypass $http_upgrade;
             }
 
-            # Default service proxy (ex: http://localhost:3200/namespace/svc-name/fn_name)
+            ##############################################
+            # DEFAULT — Namespace + service proxy
+            ##############################################
             location ~ ^/([^/]+)/([^/]+)(/.*)?$ {
                 set $namespace $1;
                 set $service $2;
@@ -106,7 +121,7 @@ data:
                 proxy_buffering off;
                 proxy_request_buffering off;
 
-                # Increase timeouts for long-running operations like model loading
+                # Long-running connections
                 proxy_connect_timeout 300s;
                 proxy_send_timeout 300s;
                 proxy_read_timeout 30d;

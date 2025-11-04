@@ -1,0 +1,73 @@
+{{- if .Values.ephemeralMonitoring.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubetorch-grafana-dashboard-kubetorch
+  namespace: {{ .Release.Namespace }}
+  labels:
+    grafana_dashboard: "1"
+data:
+  kubetorch-dashboard.json: |
+    {
+      "id": null,
+      "uid": "kubetorch-basic",
+      "title": "Kubetorch Pod Metrics",
+      "tags": ["kubetorch", "pods"],
+      "timezone": "browser",
+      "schemaVersion": 36,
+      "version": 2,
+      "refresh": "10s",
+      "time": { "from": "now-15m", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "type": "query",
+            "name": "namespace",
+            "label": "Namespace",
+            "datasource": "Prometheus",
+            "query": "label_values(kube_pod_info, namespace)",
+            "refresh": 1,
+            "includeAll": false,
+            "multi": false,
+            "sort": 1
+          }
+        ]
+      },
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "CPU Usage (cores)",
+          "targets": [
+            {
+              "expr": "rate(container_cpu_usage_seconds_total{container=\"kubetorch\", namespace=\"$namespace\"}[2m])",
+              "legendFormat": "{{"{{"}} pod {{"}}"}}",
+              "interval": ""
+            }
+          ],
+          "gridPos": { "x": 0, "y": 0, "w": 24, "h": 12 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cores"
+            }
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Memory Usage (MiB)",
+          "targets": [
+            {
+              "expr": "container_memory_working_set_bytes{container=\"kubetorch\", namespace=\"$namespace\"} / 1024 / 1024",
+              "legendFormat": "{{"{{"}} pod {{"}}"}}",
+              "interval": ""
+            }
+          ],
+          "gridPos": { "x": 0, "y": 12, "w": 24, "h": 12 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "MiB"
+            }
+          }
+        }
+      ]
+    }
+{{- end }}

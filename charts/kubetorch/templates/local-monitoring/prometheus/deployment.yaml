@@ -1,0 +1,52 @@
+{{- if .Values.ephemeralMonitoring.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubetorch-prometheus
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubetorch-prometheus
+  template:
+    metadata:
+      labels:
+        app: kubetorch-prometheus
+    spec:
+      serviceAccountName: kubetorch-prometheus
+      containers:
+        - name: prometheus
+          image: {{ .Values.ephemeralMonitoring.prometheus.image }}
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+            - "--storage.tsdb.retention.time={{ .Values.ephemeralMonitoring.prometheus.retention }}"
+            - "--web.enable-lifecycle"
+          ports:
+            - containerPort: {{ .Values.ephemeralMonitoring.prometheus.port }}
+          resources:
+            requests:
+              cpu: {{ .Values.ephemeralMonitoring.prometheus.resources.cpu }}
+              memory: {{ .Values.ephemeralMonitoring.prometheus.resources.memory }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            # Add CA certificates so HTTPS to kubernetes.default.svc works
+            - name: k8s-ca-certs
+              mountPath: /etc/ssl/certs
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: kubetorch-prometheus-config
+        # Mount the cluster’s CA cert (auto-created ConfigMap)
+        - name: k8s-ca-certs
+          projected:
+            sources:
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca-certificates.crt
+{{- end }}
