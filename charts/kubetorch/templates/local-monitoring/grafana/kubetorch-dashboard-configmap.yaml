@@ -33,13 +33,25 @@ data:
           },
           {
             "type": "query",
-            "name": "pod",
-            "label": "Pod",
+            "name": "service",
+            "label": "Service",
             "datasource": "Prometheus",
-            "query": "label_values(container_cpu_usage_seconds_total{namespace=\"$namespace\", pod!~\"^kubetorch-rsync.*\"}, pod)",
+            "query": "label_values(up{namespace=\"$namespace\", service!=\"\"}, service)",
             "refresh": 1,
             "includeAll": true,
             "allValue": ".*",
+            "multi": true,
+            "sort": 1
+          },
+          {
+            "type": "query",
+            "name": "pod",
+            "label": "Pod",
+            "datasource": "Prometheus",
+            "query": "label_values(kube_pod_labels{namespace=\"$namespace\", label_kubetorch_com_service=~\"$service\", pod!~\"^kubetorch-rsync.*\"}, pod)",
+            "refresh": 1,
+            "includeAll": true,
+            "allValue": "",
             "multi": true,
             "sort": 1
           }

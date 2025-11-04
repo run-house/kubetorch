@@ -39,6 +39,8 @@ data:
             regex: (.+)
             target_label: __metrics_path__
             replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+          - source_labels: [__meta_kubernetes_pod_label_kubetorch_com_service]
+            target_label: service
       {{- end }}
 
       {{- if .Values.ephemeralMonitoring.scrapeNodeExporter }}
@@ -117,7 +119,10 @@ data:
             target_label: namespace
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
+          # derive "service" from the custom label
+          - source_labels: [__meta_kubernetes_pod_label_kubetorch_com_service]
+            target_label: service
           - source_labels: [__meta_kubernetes_pod_container_port_number]
-            regex: "8080|8000|9090"
+            regex: "32300|8080|8000|9090"
             action: keep
 {{- end }}
