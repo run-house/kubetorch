@@ -457,87 +457,6 @@ def kt_debug(
             console.print("\n[yellow]Debugging session ended.[/yellow]")
             raise typer.Exit(0)
 
-    # Not every environment supports a UI. We should implement a more pdb like solution like this:
-    # https://github.com/ray-project/ray/pull/11739/files
-    # and then connect to it over a pty and kc port-forward instead of telnet.
-
-    # # Create a pseudo-terminal pair for bidirectional communication
-    # # leader: used by this process to communicate with the remote process
-    # # follower: used by the remote process (kubectl exec)
-    # leader, follower = pty.openpty()
-    #
-    # # Start the kubectl exec process, connecting it to the follower end of the pty
-    # # This allows the remote process to behave as if it's running in a real terminal
-    # process = subprocess.Popen(
-    #     ssh_command,
-    #     stdin=follower,
-    #     stdout=follower,
-    #     stderr=follower,
-    #     close_fds=True,  # Prevent file descriptor leaks
-    # )
-    #
-    # # Close the follower end in the parent process since we only need the leader
-    # # The child process (kubectl exec) will still have access to the follower
-    # os.close(follower)
-    #
-    # try:
-    #     import select
-    #     import sys
-    #
-    #     import termios
-    #     import tty
-    #
-    #     # Save the original terminal settings so we can restore them later
-    #     # This is important because we'll be putting the terminal in raw mode
-    #     old_settings = termios.tcgetattr(sys.stdin)
-    #
-    #     try:
-    #         # Put the terminal in raw mode to disable line buffering and echo
-    #         # This allows us to send keystrokes immediately to the remote pdb process
-    #         # without waiting for Enter key or having them echoed locally
-    #         tty.setraw(sys.stdin.fileno())
-    #
-    #         # Main communication loop - continuously monitor both input and output
-    #         while True:
-    #             # Use select to check for data available on stdin (user input) or the pty (remote output)
-    #             # This allows us to handle both directions of communication simultaneously
-    #             rlist, _, _ = select.select([sys.stdin, leader], [], [], 0.1)
-    #
-    #             for fd in rlist:
-    #                 if fd == sys.stdin:
-    #                     # User typed something - read it character by character and send to remote process
-    #                     # Reading character by character is necessary for interactive applications like pdb
-    #                     char = sys.stdin.read(1)
-    #                     if char:
-    #                         os.write(leader, char.encode())
-    #                 elif fd == leader:
-    #                     # Remote process (pdb) sent output - read it and display locally
-    #                     try:
-    #                         output = os.read(leader, 1024)
-    #                         if output:
-    #                             # Display the remote output in real-time
-    #                             sys.stdout.write(output.decode())
-    #                             sys.stdout.flush()
-    #                         else:
-    #                             # No more output means the remote process has ended
-    #                             return
-    #                     except OSError:
-    #                         # Process has ended or connection was closed
-    #                         return
-    #
-    #     finally:
-    #         # Always restore the original terminal settings when we're done
-    #         # This ensures the terminal is left in a usable state
-    #         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-    #
-    # except KeyboardInterrupt:
-    #     print("\nInterrupted by user.")
-    # finally:
-    #     # Clean up resources
-    #     os.close(leader)
-    #     process.terminate()  # Send SIGTERM to the kubectl process
-    #     process.wait()  # Wait for the process to actually terminate
-
 
 @app.command("deploy")
 def kt_deploy(
@@ -547,17 +466,6 @@ def kt_deploy(
         "single function or class to deploy. e.e. `my_module:my_cls`, or "
         "`my_file.py`.",
     ),
-    # TODO
-    # get_if_exists: bool = typer.Option(
-    #     False,
-    #     "--get-if-exists",
-    #     help="Get the existing service if it exists (based on name) instead of redeploying. Local code changes will not be synced.",
-    # ),
-    # hard: bool = typer.Option(
-    #     False,
-    #     "--hard",
-    #     help="Fully teardown each service and redeploy fresh.",
-    # ),
 ):
     """Deploy a Python file or module to Kubetorch. This will deploy all functions and modules decorated with
     @kt.compute in the file or module."""
