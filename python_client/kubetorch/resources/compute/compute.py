@@ -196,7 +196,6 @@ class Compute:
         self.labels = labels or {}
         self.annotations = annotations or {}
         self.service_template = service_template or {}
-        self._tolerations = tolerations
         self._gpu_annotations = {}  # Will be populated during init or from_template
 
         # Skip template initialization if loading from existing service
@@ -226,6 +225,7 @@ class Compute:
         node_selector = self._get_node_selector(
             node_selector.copy() if node_selector else {}, gpu_type
         )
+        all_tolerations = self._get_tolerations(gpus, tolerations)
 
         env_vars = env_vars or {}
         if os.getenv("KT_LOG_LEVEL") and not env_vars.get("KT_LOG_LEVEL"):
@@ -251,7 +251,7 @@ class Compute:
             "freeze": freeze,
             "gpu_anti_affinity": gpu_anti_affinity,
             "working_dir": working_dir,
-            "tolerations": self._get_tolerations(gpus),
+            "tolerations": all_tolerations,
             "shm_size_limit": shared_memory_limit,
             "priority_class_name": priority_class_name,
             "launch_timeout": self._get_launch_timeout(launch_timeout),
@@ -1098,6 +1098,10 @@ class Compute:
     # ----------------- GPU Properties ----------------- #
 
     @property
+    def tolerations(self):
+        return self.pod_template.get("tolerations", [])
+
+    @property
     def gpu_annotations(self):
         # GPU annotations for KAI scheduler
         return self._gpu_annotations
@@ -1208,25 +1212,25 @@ class Compute:
 
     # ----------------- GPU Init Template Setup Helpers ----------------- #
 
-    def _get_tolerations(self, gpus):
-        user_tolerations = self._tolerations if self._tolerations else []
-
-        required_gpu_tolerations = [
-            {
-                "key": "nvidia.com/gpu",
-                "operator": "Exists",
-                "effect": "NoSchedule",
-            },
-            {
-                "key": "dedicated",
-                "operator": "Equal",
-                "value": "gpu",
-                "effect": "NoSchedule",
-            },
-        ]
+    def _get_tolerations(self, gpus, tolerations):
+        user_tolerations = tolerations if tolerations else []
 
         # add required GPU tolerations for GPU workloads
         if gpus:
+            required_gpu_tolerations = [
+                {
+                    "key": "nvidia.com/gpu",
+                    "operator": "Exists",
+                    "effect": "NoSchedule",
+                },
+                {
+                    "key": "dedicated",
+                    "operator": "Equal",
+                    "value": "gpu",
+                    "effect": "NoSchedule",
+                },
+            ]
+
             all_tolerations = user_tolerations.copy()
             for req_tol in required_gpu_tolerations:
                 if not any(
