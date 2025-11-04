@@ -1776,16 +1776,6 @@ class Compute:
                 env_vars[env_var["name"]] = env_var["value"]
         return env_vars
 
-    # def update_env_vars(self, env_vars: Dict):
-    #     updated_env_vars = set()
-    #     for env_var in self._container_env():
-    #         if env_var["name"] in env_vars and env_var["name"]:
-    #             env_var["value"] = env_vars[env_var["name"]]
-    #             updated_env_vars.add(env_var["name"])
-    #     for key, val in env_vars.items():
-    #         if key not in updated_env_vars:
-    #             self._container_env().append({"name": key, "value": val})
-
     # ----------------- Image Related Functionality ----------------- #
 
     def pip_install(
