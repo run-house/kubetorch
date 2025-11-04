@@ -12,7 +12,7 @@ logger = get_logger(__name__)
 SHELL_COMMANDS = {"ssh", "run_bash", "rsync"}
 
 
-def _extract_pointers(raw_cls_or_fn: Union[Type, Callable]):
+def extract_pointers(raw_cls_or_fn: Union[Type, Callable]):
     """Get the path to the module, module name, and function name to be able to import it on the server"""
     if not (isinstance(raw_cls_or_fn, Type) or isinstance(raw_cls_or_fn, Callable)):
         raise TypeError(f"Expected Type or Callable but received {type(raw_cls_or_fn)}")
@@ -82,6 +82,15 @@ def _extract_module_path(raw_cls_or_fn: Union[Type, Callable]):
 
 
 def locate_working_dir(start_dir=None):
+    """
+    Locate the working directory of the project.
+
+    Args:
+        start_dir (str, optional): The directory to start searching from. Defaults to the current working directory.
+
+    Returns:
+        tuple: A tuple containing the working directory and a boolean indicating if a project directory was found.
+    """
     if start_dir is None:
         start_dir = os.getcwd()
 
@@ -97,8 +106,8 @@ def locate_working_dir(start_dir=None):
     dir_with_target = _find_directory_containing_any_file(
         start_dir, target_files, searched_dirs=set()
     )
-
-    return dir_with_target if dir_with_target is not None else start_dir
+    found_project_dir = dir_with_target is not None
+    return (dir_with_target if found_project_dir else start_dir), found_project_dir
 
 
 def _find_directory_containing_any_file(dir_path, files, searched_dirs=None):
