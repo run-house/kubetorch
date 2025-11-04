@@ -29,6 +29,7 @@ from kubetorch.servers.http.utils import (
     generate_unique_request_id,
     is_running_in_kubernetes,
 )
+from kubetorch.serving.utils import has_k8s_credentials, KubernetesCredentialsError
 from kubetorch.utils import (
     extract_host_port,
     get_kt_install_url,
@@ -423,6 +424,11 @@ class Module:
                 stream_logs=True
             )
         """
+        if not has_k8s_credentials():
+            raise KubernetesCredentialsError(
+                "Kubernetes credentials not found. Please ensure you are running in a Kubernetes cluster or have a valid kubeconfig file."
+            )
+
         if get_if_exists:
             try:
                 existing_service = self._get_existing_service(reload_prefixes)

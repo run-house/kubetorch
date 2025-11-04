@@ -4,6 +4,7 @@ import time
 import warnings
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Optional, Union
 
 import httpx
@@ -170,6 +171,27 @@ class RequestedPodResources:
             return float(cpu_value.rstrip("+"))
 
         return float(cpu_value)
+
+
+class KubernetesCredentialsError(Exception):
+    pass
+
+
+def has_k8s_credentials():
+    """
+    Fast check for K8s credentials - works both in-cluster and external.
+    No network calls, no imports needed.
+    """
+    # Check 1: In-cluster service account
+    if (
+        Path("/var/run/secrets/kubernetes.io/serviceaccount/token").exists()
+        and Path("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt").exists()
+    ):
+        return True
+
+    # Check 2: Kubeconfig file
+    kubeconfig_path = os.environ.get("KUBECONFIG", os.path.expanduser("~/.kube/config"))
+    return Path(kubeconfig_path).exists()
 
 
 def check_kubetorch_versions(response):

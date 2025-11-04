@@ -30,6 +30,7 @@ from kubetorch.servers.http.utils import (  # noqa: F401
     StartupError,
     WorkerMembershipChanged,
 )
+from kubetorch.serving.utils import KubernetesCredentialsError
 
 from .resources import images
 
@@ -39,6 +40,7 @@ images = images
 # Registry of all kubetorch exceptions for serialization/deserialization
 EXCEPTION_REGISTRY = {
     "ImagePullError": ImagePullError,
+    "KubernetesCredentialsError": KubernetesCredentialsError,
     "PodContainerError": PodContainerError,
     "ResourceNotAvailableError": ResourceNotAvailableError,
     "ServiceHealthError": ServiceHealthError,
