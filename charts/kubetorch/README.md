@@ -8,6 +8,7 @@ A Helm chart for kubetorch
 
 | Repository | Name | Version |
 |------------|------|---------|
+| https://nvidia.github.io/dcgm-exporter/helm-charts | dcgm-exporter | 4.5.0 |
 | https://nvidia.github.io/k8s-device-plugin | nvidia-device-plugin | 0.14.1 |
 | https://open-telemetry.github.io/opentelemetry-helm-charts | opentelemetry-collector | 0.132.0 |
 
@@ -15,6 +16,21 @@ A Helm chart for kubetorch
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| dcgm-exporter.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key | string | `"nvidia.com/gpu.product"` |  |
+| dcgm-exporter.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator | string | `"Exists"` |  |
+| dcgm-exporter.enabled | bool | `true` |  |
+| dcgm-exporter.image.repository | string | `"nvcr.io/nvidia/k8s/dcgm-exporter"` |  |
+| dcgm-exporter.image.tag | string | `"4.4.1-4.6.0-ubuntu22.04"` |  |
+| dcgm-exporter.namespaceOverride | string | `"kubetorch"` |  |
+| dcgm-exporter.readinessProbe.enabled | bool | `false` |  |
+| dcgm-exporter.serviceMonitor.enabled | bool | `false` |  |
+| dcgm-exporter.tolerations[0].effect | string | `"NoSchedule"` |  |
+| dcgm-exporter.tolerations[0].key | string | `"nvidia.com/gpu"` |  |
+| dcgm-exporter.tolerations[0].operator | string | `"Exists"` |  |
+| dcgm-exporter.tolerations[1].effect | string | `"NoSchedule"` |  |
+| dcgm-exporter.tolerations[1].key | string | `"dedicated"` |  |
+| dcgm-exporter.tolerations[1].operator | string | `"Equal"` |  |
+| dcgm-exporter.tolerations[1].value | string | `"gpu"` |  |
 | ephemeralLogStorage.enabled | bool | `true` |  |
 | ephemeralLogStorage.image | string | `"grafana/loki:3.5.3"` |  |
 | ephemeralLogStorage.maxConcurrentTailRequests | int | `100` |  |

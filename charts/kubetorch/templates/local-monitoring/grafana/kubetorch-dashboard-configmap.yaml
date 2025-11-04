@@ -46,9 +46,7 @@ data:
           ],
           "gridPos": { "x": 0, "y": 0, "w": 24, "h": 12 },
           "fieldConfig": {
-            "defaults": {
-              "unit": "cores"
-            }
+            "defaults": { "unit": "cores" }
           }
         },
         {
@@ -63,9 +61,35 @@ data:
           ],
           "gridPos": { "x": 0, "y": 12, "w": 24, "h": 12 },
           "fieldConfig": {
-            "defaults": {
-              "unit": "MiB"
+            "defaults": { "unit": "MiB" }
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "GPU Utilization (%)",
+          "targets": [
+            {
+              "expr": "avg(DCGM_FI_DEV_GPU_UTIL{namespace=\"$namespace\"}) by (pod)",
+              "legendFormat": "{{`{{pod}}`}}"
             }
+          ],
+          "gridPos": { "x": 0, "y": 24, "w": 24, "h": 12 },
+          "fieldConfig": {
+            "defaults": { "unit": "percent" }
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "GPU Memory Used (MiB)",
+          "targets": [
+            {
+              "expr": "avg(DCGM_FI_DEV_FB_USED{namespace=\"$namespace\"}) by (pod) / 1024 / 1024",
+              "legendFormat": "{{`{{pod}}`}}"
+            }
+          ],
+          "gridPos": { "x": 0, "y": 36, "w": 24, "h": 12 },
+          "fieldConfig": {
+            "defaults": { "unit": "MiB" }
           }
         }
       ]
