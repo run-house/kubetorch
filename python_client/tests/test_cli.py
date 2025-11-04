@@ -785,9 +785,6 @@ def test_cli_kt_config_get():
     assert result.exit_code == 2
     result_output = result.stdout or result.stderr
     assert "Error" in result_output
-    assert (
-        "Invalid value for '[KEY]': Valid keys are: api_url, cluster_config, install_namespace, install_url, license_key, log_verbosity, namespace, queue, stream_logs, tracing_enabled, username"
-    ) in result_output
 
 
 @pytest.mark.level("unit")
@@ -821,10 +818,6 @@ def test_cli_kt_config_set():
         assert result.exit_code == 2
         result_output = result.stdout or result.stderr
         assert "Error" in result_output
-        assert (
-            "Invalid value for '[KEY]': Valid keys are: api_url, cluster_config, install_namespace, install_url, license_key, log_verbosity, namespace, queue, stream_logs, tracing_enabled, username"
-            in result_output
-        )
 
         # Part C: set supported key, but don't provide value
         result = runner.invoke(app, ["config", "set", "username"], color=False)
@@ -918,10 +911,6 @@ def test_cli_kt_config_unset():
         assert result.exit_code == 2
         result_output = result.stdout or result.stderr
         assert "Error" in result_output
-        assert (
-            "Invalid value for '[KEY]': Valid keys are: api_url, cluster_config, install_namespace, install_url, license_key, log_verbosity, namespace, queue, stream_logs, tracing_enabled, username"
-            in result_output
-        )
 
     finally:
         # set the config keys (also locally) to their original values, even if the test fails

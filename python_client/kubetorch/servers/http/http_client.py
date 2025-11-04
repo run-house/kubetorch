@@ -1,6 +1,5 @@
 import asyncio
 import json
-import re
 import threading
 import time
 import urllib.parse
@@ -411,13 +410,16 @@ class HTTPClient:
         self,
         endpoint: str,
         stream_logs: Union[bool, None],
-        monitoring: bool,
+        stream_metrics: Union[bool, None],
         headers: dict,
         pdb: Union[bool, int],
         serialization: str,
     ):
         if stream_logs is None:
             stream_logs = config.stream_logs or False
+
+        if stream_metrics is None:
+            stream_metrics = config.stream_metrics or False
 
         if pdb:
             debug_port = DEFAULT_DEBUG_PORT if isinstance(pdb, bool) else pdb
@@ -442,22 +444,22 @@ class HTTPClient:
             log_thread.daemon = True
             log_thread.start()
 
-        if monitoring:
-            monitoring_thread = threading.Thread(
+        if stream_metrics:
+            metrics_thread = threading.Thread(
                 target=self.stream_metrics, args=(stop_event,)
             )
-            monitoring_thread.daemon = True
-            monitoring_thread.start()
+            metrics_thread.daemon = True
+            metrics_thread.start()
         else:
-            monitoring_thread = None
+            metrics_thread = None
 
-        return endpoint, headers, stop_event, log_thread, monitoring_thread, request_id
+        return endpoint, headers, stop_event, log_thread, metrics_thread, request_id
 
     def _prepare_request_async(
         self,
         endpoint: str,
         stream_logs: Union[bool, None],
-        monitoring: bool,
+        stream_metrics: Union[bool, None],
         headers: dict,
         pdb: Union[bool, int],
         serialization: str,
@@ -465,6 +467,9 @@ class HTTPClient:
         """Async version of _prepare_request that uses asyncio.Event and tasks instead of threads"""
         if stream_logs is None:
             stream_logs = config.stream_logs or False
+
+        if stream_metrics is None:
+            stream_metrics = config.stream_metrics or False
 
         if pdb:
             debug_port = DEFAULT_DEBUG_PORT if isinstance(pdb, bool) else pdb
@@ -487,13 +492,13 @@ class HTTPClient:
                 self.stream_logs_async(request_id, stop_event)
             )
 
-        monitoring_task = None
-        if monitoring:
-            monitoring_task = asyncio.create_task(
+        metrics_task = None
+        if stream_metrics:
+            metrics_task = asyncio.create_task(
                 self.stream_metrics_async(request_id, stop_event)
             )
 
-        return endpoint, headers, stop_event, log_task, monitoring_task, request_id
+        return endpoint, headers, stop_event, log_task, metrics_task, request_id
 
     def _make_request(self, method, endpoint, **kwargs):
         response: httpx.Response = getattr(self.session, method)(endpoint, **kwargs)
@@ -655,9 +660,15 @@ class HTTPClient:
                 return await obj
             return obj
 
+        active_pods = self.compute.pod_names()
+        if not active_pods:
+            logger.warning(
+                "No active pods found for service, skipping metrics collection"
+            )
+            return
+
         prom_url = f"{service_url()}/prometheus/api/v1/query"
-        safe_service = re.sub(r'([\\."*+?{}()\[\]^$|])', r"\\\1", self.service_name)
-        pod_regex = f"^({safe_service}.*)$"
+        pod_regex = "|".join(active_pods)
 
         # Pull CPU and GPU metrics and group them by pod name
         metric_queries = {
@@ -757,9 +768,18 @@ class HTTPClient:
         )
 
         async def async_http_get(url, params):
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(url, params=params)
-                return resp.json()
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(url, params=params)
+                    resp.raise_for_status()
+                    try:
+                        return resp.json()
+                    except json.JSONDecodeError:
+                        logger.debug(f"Non-JSON response from {url}: {resp.text[:100]}")
+                        return {}
+            except Exception as e:
+                logger.debug(f"Async metrics request failed for {url} ({params}): {e}")
+                return {}
 
         async def async_sleep(seconds):
             await asyncio.sleep(seconds)
@@ -769,11 +789,20 @@ class HTTPClient:
 
     def stream_metrics(self, stop_event):
         """Synchronous GPU/CPU metrics streaming (uses requests)."""
-        logger.debug(f"Starting sync metrics for {self.service_name}")
+        logger.debug(f"Streaming metrics for {self.service_name}")
 
         def sync_http_get(url, params):
-            resp = requests.get(url, params=params)
-            return resp.json()
+            try:
+                resp = requests.get(url, params=params, timeout=5.0)
+                resp.raise_for_status()
+                try:
+                    return resp.json()
+                except json.JSONDecodeError:
+                    logger.debug(f"Non-JSON response from {url}: {resp.text[:100]}")
+                    return {}
+            except Exception as e:
+                logger.debug(f"Sync metrics request failed for {url} ({params}): {e}")
+                return {}
 
         def sync_sleep(seconds):
             time.sleep(seconds)
@@ -785,7 +814,7 @@ class HTTPClient:
         self,
         endpoint: str,
         stream_logs: Union[bool, None] = None,
-        monitoring: bool = False,
+        stream_metrics: Union[bool, None] = None,
         body: dict = None,
         headers: dict = None,
         pdb: Union[bool, int] = None,
@@ -796,10 +825,10 @@ class HTTPClient:
             headers,
             stop_event,
             log_thread,
-            monitoring_thread,
+            metrics_thread,
             _,
         ) = self._prepare_request(
-            endpoint, stream_logs, monitoring, headers, pdb, serialization
+            endpoint, stream_logs, stream_metrics, headers, pdb, serialization
         )
         try:
             json_data = _serialize_body(body, serialization)
@@ -813,7 +842,7 @@ class HTTPClient:
         self,
         endpoint: str,
         stream_logs: Union[bool, None] = None,
-        monitoring: bool = False,
+        stream_metrics: Union[bool, None] = None,
         body: dict = None,
         headers: dict = None,
         pdb: Union[bool, int] = None,
@@ -828,7 +857,7 @@ class HTTPClient:
             monitoring_task,
             _,
         ) = self._prepare_request_async(
-            endpoint, stream_logs, monitoring, headers, pdb, serialization
+            endpoint, stream_logs, stream_metrics, headers, pdb, serialization
         )
         try:
             json_data = _serialize_body(body, serialization)

@@ -18,7 +18,6 @@ from kubetorch.serving.constants import (
     KUBETORCH_MONITORING_NAMESPACE,
     LOKI_GATEWAY_SERVICE_NAME,
     PROMETHEUS_SERVICE_NAME,
-    PROMETHEUS_URL,
 )
 from kubetorch.utils import load_kubeconfig
 
@@ -317,49 +316,39 @@ def check_loki_enabled(core_api: CoreV1Api = None) -> bool:
     return True
 
 
-def check_prometheus_enabled(
-    prometheus_url: str, namespace: str, core_api: CoreV1Api = None
-) -> bool:
-    """Check if Prometheus is enabled and reachable."""
-    if prometheus_url and prometheus_url != PROMETHEUS_URL:
-        return True
-
+def check_prometheus_enabled(core_api: CoreV1Api = None) -> bool:
+    """Check if prometheus is enabled"""
     if core_api is None:
         load_kubeconfig()
         core_api = CoreV1Api()
 
-    is_in_kubernetes = is_running_in_kubernetes()
+    kt_namespace = globals.config.install_namespace
 
-    # Check namespace exists
     try:
-        core_api.read_namespace(name=namespace)
-    except ApiException as e:
-        if e.status == 404:
-            logger.debug(f"Prometheus namespace not found: {namespace}")
-            return False
-
-    # Check Prometheus service exists
-    try:
+        # Check if prometheus service exists in the namespace
         core_api.read_namespaced_service(
-            name=PROMETHEUS_SERVICE_NAME, namespace=namespace
+            name=PROMETHEUS_SERVICE_NAME, namespace=kt_namespace
         )
-        logger.debug(f"Prometheus service found in namespace {namespace}")
+        logger.debug(f"Metrics service found in namespace {kt_namespace}")
     except ApiException as e:
         if e.status == 404:
-            logger.debug(f"Prometheus service not found: {PROMETHEUS_SERVICE_NAME}")
+            logger.debug(f"Metrics service not found in namespace {kt_namespace}")
             return False
 
         # If running inside the cluster, try hitting the service directly
-        if is_in_kubernetes:
+        if is_running_in_kubernetes():
             try:
-                response = httpx.get(PROMETHEUS_URL, timeout=2)
+                prom_url = f"http://{PROMETHEUS_SERVICE_NAME}.{kt_namespace}.svc.cluster.local/api/v1/labels"
+                response = httpx.get(prom_url, timeout=2)
                 if response.status_code == 200:
-                    logger.debug("Prometheus is reachable and healthy")
+                    logger.debug("Metrics service is reachable")
                 else:
-                    logger.debug(f"Prometheus returned status {response.status_code}")
+                    logger.debug(
+                        f"Metrics service returned status {response.status_code}"
+                    )
                     return False
             except Exception as e:
-                logger.debug(f"Prometheus is not reachable: {e}")
+                logger.debug(f"Metrics service is not reachable: {e}")
                 return False
 
     return True

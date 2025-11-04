@@ -62,8 +62,8 @@ def open_grafana_dashboard(
         raise RuntimeError(str(e))
 
     url = (
-        f"http://localhost:{DASHBOARD_PORT}/d/kubetorch-basic/kubetorch-pod-metrics"
-        f"?orgId=1&from=now-15m&to=now&timezone=browser&refresh=10s"
+        f"http://localhost:{DASHBOARD_PORT}/d/kubetorch-basic/metrics"
+        f"?orgId=1&from=now-5m&to=now&timezone=browser&refresh=10s"
         f"&var-namespace={user_namespace}"
     )
     proc = port_forward_grafana(v1_api=v1_api)
