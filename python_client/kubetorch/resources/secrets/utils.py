@@ -1,12 +1,14 @@
 import os
-import re
 import time
+from pathlib import Path
 from typing import List, Optional
 
+import yaml
 from kubernetes import client, config
-from kubernetes.client import V1Pod, V1TokenReview, V1TokenReviewSpec
+from kubernetes.client import V1Pod
 from kubernetes.stream import stream
 
+from kubetorch.constants import DEFAULT_KUBECONFIG_PATH
 from kubetorch.globals import config as kt_config
 
 from kubetorch.logger import get_logger
@@ -16,41 +18,66 @@ logger = get_logger(__name__)
 
 
 def get_k8s_identity_name() -> Optional[str]:
+    """Get Kubernetes user identity from kubeconfig file.
+
+    Returns:
+        User identity string (e.g., "user-{name}", "role-{name}", "sa-{name}") or None
+    """
     try:
         if is_running_in_kubernetes():
-            config.load_incluster_config()
-        else:
-            config.load_kube_config()
-        configuration = client.Configuration.get_default_copy()
+            # Get the service account name
+            service_account_name = os.environ.get("SERVICE_ACCOUNT_NAME")
+            if service_account_name:
+                return "sa-" + service_account_name.lower()
+            return None
 
-        token = configuration.api_key.get("authorization", "")
-        token = re.sub(r"^Bearer\s", "", token)
+        # Read from kubeconfig
+        kubeconfig_path = os.getenv("KUBECONFIG") or DEFAULT_KUBECONFIG_PATH
+        kubeconfig_file = Path(kubeconfig_path).expanduser()
+        if not kubeconfig_file.exists():
+            return None
 
-        api = client.AuthenticationV1Api()
-        token_review = V1TokenReview(spec=V1TokenReviewSpec(token=token))
+        with open(kubeconfig_file, "r") as f:
+            kubeconfig = yaml.safe_load(f)
 
-        result = api.create_token_review(token_review)
+        current_context = kubeconfig.get("current-context")
+        if not current_context:
+            return None
 
-        if result.status.authenticated:
-            user = result.status.user
-            # For EKS IAM users/roles
-            if hasattr(user, "username") and user.username.endswith("amazonaws.com"):
-                # ARN format: arn:aws:iam::ACCOUNT_ID:user/USERNAME or
-                # arn:aws:sts::ACCOUNT_ID:assumed-role/ROLE_NAME/SESSION_NAME
-                arn_parts = user.username.split("/")
-                if "assumed-role" in user.username:
-                    return "role-" + arn_parts[-2].lower()  # Returns ROLE_NAME
-                return "user-" + arn_parts[-1].lower()  # Returns USERNAME for IAM users
-            # For Kubernetes service accounts (works for both GKE and EKS)
-            elif (
-                hasattr(user, "username") and "system:serviceaccount:" in user.username
-            ):
-                return (
-                    "sa-" + user.username.split(":")[-1].lower()
-                )  # Returns service account name
+        # Find current context's user
+        for context in kubeconfig.get("contexts", []):
+            if context.get("name") == current_context:
+                user_name = context.get("context", {}).get("user")
+                if not user_name:
+                    return None
+
+                # Parse AWS ARN format (EKS IAM users/roles)
+                if "assumed-role" in user_name:
+                    parts = user_name.split("/")
+                    if len(parts) >= 2:
+                        return "role-" + parts[-2].lower()
+                elif "/" in user_name and (
+                    ".amazonaws.com" in user_name or "arn:aws" in user_name
+                ):
+                    parts = user_name.split("/")
+                    return "user-" + parts[-1].lower()
+
+                # Check for exec-based auth with AWS role
+                for user in kubeconfig.get("users", []):
+                    if user.get("name") == user_name:
+                        exec_config = user.get("user", {}).get("exec", {})
+                        for env_var in exec_config.get("env", []):
+                            if env_var.get("name") == "AWS_ROLE_ARN":
+                                role_arn = env_var.get("value", "")
+                                if "/" in role_arn:
+                                    return "role-" + role_arn.split("/")[-1].lower()
+                        break
+
+                # Default: use user name as-is
+                return "user-" + user_name.lower()
 
     except Exception as e:
-        logger.info(f"Failed to get identity name: {e}")
+        logger.debug(f"Failed to get Kubernetes identity name: {e}")
 
     return None
 

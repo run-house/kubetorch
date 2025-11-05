@@ -91,6 +91,10 @@ containers:
         valueFrom:
           fieldRef:
             fieldPath: metadata.labels['kubetorch.com/version']
+      - name: SERVICE_ACCOUNT_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: spec.serviceAccountName
       - name: UV_LINK_MODE
         value: "copy"  # Suppress the hardlink warning
       - name: OTEL_EXPORTER_OTLP_ENDPOINT

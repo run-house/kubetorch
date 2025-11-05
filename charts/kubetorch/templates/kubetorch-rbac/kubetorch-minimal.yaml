@@ -21,9 +21,6 @@ rules:
 - apiGroups: ["serving.knative.dev"]
   resources: ["services", "routes", "configurations", "revisions"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-- apiGroups: ["authentication.k8s.io"]
-  resources: ["tokenreviews"]
-  verbs: ["create"]
 - apiGroups: [""]
   resources: ["namespaces", "persistentvolumes", "pods", "pods/exec", "pods/log", "services"]
   verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
@@ -122,31 +119,6 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: kubetorch-core-service-reader
-subjects:
-  {{- range $allNamespaces }}
-  - kind: ServiceAccount
-    name: kubetorch-service-account
-    namespace: {{ . }}
-  {{- end }}
-
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: {{ $.Release.Namespace }}-tokenreview-creator
-rules:
-- apiGroups: ["authentication.k8s.io"]
-  resources: ["tokenreviews"]
-  verbs: ["create"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: {{ $.Release.Namespace }}-tokenreview-creator-binding
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: {{ $.Release.Namespace }}-tokenreview-creator
 subjects:
   {{- range $allNamespaces }}
   - kind: ServiceAccount
