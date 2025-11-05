@@ -102,6 +102,28 @@ data:
             }
 
             ##############################################
+            # PROFILING — Pyroscope proxy
+            ##############################################
+            {{- if .Values.profiling.enabled }}
+            location ^~ /pyroscope/ {
+                resolver {{ .Values.nginx.resolver }} valid=5s;
+                set $pyroscope_host "kubetorch-pyroscope.{{ .Release.Namespace }}.svc.cluster.local:4040";
+                rewrite ^/pyroscope/(.*)$ /$1 break;
+                proxy_pass http://$pyroscope_host;
+                proxy_http_version 1.1;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_buffering off;
+
+                # use sub_filter to rewrite base URLs so /pyroscope can still be the prefix
+                sub_filter_once off;
+                sub_filter 'href="/' 'href="/pyroscope/';
+                sub_filter 'src="/' 'src="/pyroscope/';
+            }
+            {{- end }}
+
+            ##############################################
             # DEFAULT — Namespace + service proxy
             ##############################################
             location ~ ^/([^/]+)/([^/]+)(/.*)?$ {

@@ -67,7 +67,7 @@ opentelemetry-exporter-prometheus = {version = "*", optional = true}
 prometheus-client = {version = "*", optional = true}
 
 [tool.poetry.extras]
-server = ["fastapi", "uvicorn", "python-json-logger", "web-pdb"]
+server = ["fastapi", "uvicorn", "python-json-logger", "web-pdb", "pyroscope-io"]
 client = ["typer", "rich", "prometheus-api-client"]
 docs = ["myst-parser", "sphinx", "sphinx-autodoc-typehints", "sphinx-book-theme"]
 otel = [

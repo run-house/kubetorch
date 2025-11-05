@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import time
+import webbrowser
 from contextvars import ContextVar
 from typing import List
 
@@ -21,6 +22,7 @@ import websockets
 import yaml
 
 from kubetorch.constants import LOCALHOST
+from kubetorch.globals import service_url
 from kubetorch.logger import get_logger
 from kubetorch.serving.constants import DEFAULT_DEBUG_PORT
 from kubetorch.utils import ServerLogsFormatter
@@ -558,6 +560,18 @@ def clear_debugging_sessions():
         logger.warning(f"Error clearing debugging session: {e}")
 
 
+def clear_profiling():
+    try:
+        import pyroscope
+
+        logger.info("Shutting down Pyroscope profiler...")
+        pyroscope.shutdown()
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.warning(f"Error shutting down Pyroscope: {e}")
+
+
 # Register cleanup function to run at exit
 atexit.register(clear_debugging_sessions)
 
@@ -665,22 +679,67 @@ def _serialize_body(body: dict, serialization: str):
     return body or {}
 
 
-def _deserialize_response(response, serialization: str):
+def _decode_pickled(obj):
+    encoded_result = obj["data"]
+    pickled_result = base64.b64decode(encoded_result.encode("utf-8"))
+    return pickle.loads(pickled_result)
+
+
+def _deserialize_response(response, serialization: str, module: "Module" = None):
+    """Deserialize a server response.
+
+    - Returns the *user result* (not a wrapped dict).
+    - If the server included profiling metadata, store it on `module.last_profile`.
+    """
+    response_data = response.json()
+
+    def _handle_profile(profile_info):
+        if not isinstance(profile_info, dict):
+            return
+
+        viewer = profile_info.get("viewer")
+        if viewer == "pyroscope":
+            query_url = profile_info.get("url")
+            if query_url:
+                profile_url = f"{service_url()}/pyroscope/{query_url}"
+                logger.info(f"View live profile at: {profile_url}")
+                try:
+                    webbrowser.open(profile_url)
+                except:
+                    pass
+
+        elif viewer == "speedscope":
+            artifact = profile_info.get("artifact")
+            if artifact:
+                logger.info(f"View local profile artifact: {artifact} (open in Speedscope)")
+
+    # -------------------------------
+    # Pickle serialization path
+    # -------------------------------
     if serialization == "pickle":
-        response_data = response.json()
         if isinstance(response_data, list):
-            # If this is a response from an spmd call, it's a list of serialized dicts
-            unpickled_results = []
-            for resp in response_data:
-                if "data" in resp:
-                    encoded_result = resp["data"]
-                    pickled_result = base64.b64decode(encoded_result.encode("utf-8"))
-                    resp = pickle.loads(pickled_result)
-                unpickled_results.append(resp)
-            return unpickled_results
-        if "data" in response_data:
-            encoded_result = response_data["data"]
-            pickled_result = base64.b64decode(encoded_result.encode("utf-8"))
-            return pickle.loads(pickled_result)
+            results = []
+            for item in response_data:
+                if isinstance(item, dict) and "result" in item and "profile" in item:
+                    _handle_profile(item.get("profile"))
+                    results.append(item["result"])
+                else:
+                    results.append(item)
+            return results
+
+        if isinstance(response_data, dict) and "result" in response_data and "profile" in response_data:
+            _handle_profile(response_data.get("profile"))
+            return response_data["result"]
+
         return response_data
-    return response.json()
+
+    # -------------------------------
+    # Default JSON serialization path
+    # -------------------------------
+    if isinstance(response_data, dict) and "result" in response_data:
+        # If the server included profiling metadata
+        if "profile" in response_data:
+            _handle_profile(response_data.get("profile"))
+        return response_data["result"]
+
+    return response_data

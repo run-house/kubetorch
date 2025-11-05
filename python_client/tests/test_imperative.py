@@ -357,6 +357,21 @@ def test_image_update():
 
 
 @pytest.mark.level("minimal")
+def test_module_profiling():
+    import kubetorch as kt
+
+    compute = kt.Compute(
+        cpus=".01",
+        image=kt.images.Debian(),
+        gpu_anti_affinity=True,
+    )
+
+    remote_fn = kt.fn(summer, name="summer-profiler").to(compute)
+    res = remote_fn(1, 2, sleep_time=10, profiler="pyspy")
+    assert res == 3
+
+
+@pytest.mark.level("minimal")
 def test_env_var_expansion():
     """Test that environment variables are properly expanded in Image.set_env_vars()."""
     import kubetorch as kt
