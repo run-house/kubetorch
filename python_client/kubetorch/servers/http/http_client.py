@@ -645,98 +645,171 @@ class HTTPClient:
             loop.close()
 
     # ----------------- Metrics Helpers ----------------- #
-    async def _collect_metrics(self, stop_event, http_getter, sleeper):
-        """Internal shared helper for metric collection.
+    def _collect_metrics_common(
+        self,
+        stop_event,
+        http_getter,
+        sleeper,
+        is_async: bool = False,
+    ):
+        """
+        Internal shared implementation for collecting and printing live resource metrics
+        (CPU, memory, and GPU) for all active pods in the service.
+
+        This function drives both the synchronous (`_collect_metrics`) and asynchronous
+        (`_collect_metrics_async`) metric collectors. It repeatedly queries Prometheus for
+        metrics related to the service’s pods until the given `stop_event` is set.
 
         Args:
-            stop_event: threading.Event or asyncio.Event
-            http_getter: callable (url, params) -> response.json() (sync or async)
-            sleeper: callable(seconds) to sleep (sync or async)
+            stop_event: A threading.Event or asyncio.Event used to stop collection.
+            http_getter: Callable that fetches Prometheus data — either sync (`requests.get`)
+                         or async (`httpx.AsyncClient.get`).
+            sleeper: Callable that sleeps between metric polls — either time.sleep or
+                     asyncio.sleep.
+            is_async (bool): If ``True``, runs in async mode (awaits HTTP + sleep calls).
+                             If ``False``, runs in blocking sync mode.
+
+        Behavior:
+            - Polls Prometheus every 1–5 seconds for CPU, memory, and GPU metrics.
+            - Prints a formatted line per pod to stdout.
+            - Automatically adapts between synchronous and asynchronous execution modes.
+
+        Note:
+            - This function should not be called directly; use `_collect_metrics` or
+              `_collect_metrics_async` instead.
+            - Stops automatically when `stop_event.set()` is triggered.
         """
 
         async def maybe_await(obj):
-            # support sync and async getters
-            if asyncio.iscoroutine(obj):
+            if is_async and asyncio.iscoroutine(obj):
                 return await obj
             return obj
 
-        active_pods = self.compute.pod_names()
-        if not active_pods:
-            logger.warning(
-                "No active pods found for service, skipping metrics collection"
-            )
-            return
+        async def run():
+            active_pods = self.compute.pod_names()
+            if not active_pods:
+                logger.warning(
+                    "No active pods found for service, skipping metrics collection"
+                )
+                return
 
-        prom_url = f"{service_url()}/prometheus/api/v1/query"
-        pod_regex = "|".join(active_pods)
+            prom_url = f"{service_url()}/prometheus/api/v1/query"
+            pod_regex = "|".join(active_pods)
 
-        # Pull CPU and GPU metrics and group them by pod name
-        metric_queries = {
-            "CPU": f'rate(container_cpu_usage_seconds_total{{container="kubetorch",pod=~"{pod_regex}"}}[2m])',
-            "Mem": f'container_memory_working_set_bytes{{container="kubetorch",pod=~"{pod_regex}"}} / 1024 / 1024',
-            "GPU%": f'avg(DCGM_FI_DEV_GPU_UTIL{{pod=~"{pod_regex}"}}) by (pod)',
-            "GPUMiB": f'avg(DCGM_FI_DEV_FB_USED{{pod=~"{pod_regex}"}}) by (pod) / 1024 / 1024',
-        }
+            metric_queries = {
+                "CPU": f'rate(container_cpu_usage_seconds_total{{container="kubetorch",pod=~"{pod_regex}"}}[2m])',
+                "Mem": f'container_memory_working_set_bytes{{container="kubetorch",pod=~"{pod_regex}"}} / 1024 / 1024',
+                "GPU%": f'avg(DCGM_FI_DEV_GPU_UTIL{{pod=~"{pod_regex}"}}) by (pod)',
+                "GPUMiB": f'avg(DCGM_FI_DEV_FB_USED{{pod=~"{pod_regex}"}}) by (pod) / 1024 / 1024',
+            }
 
-        cyan = ColoredFormatter.get_color("cyan")
-        reset = ColoredFormatter.get_color("reset")
+            cyan = ColoredFormatter.get_color("cyan")
+            reset = ColoredFormatter.get_color("reset")
 
-        start_time = time.time()
-        show_gpu = True  # will toggle off if GPUs remain 0 for all pods
+            start_time = time.time()
+            show_gpu = True
 
-        while not stop_event.is_set():
-            pod_data = defaultdict(dict)
-            ts_str = None
-            gpu_values = []  # to check if all GPU metrics are zero
+            while not stop_event.is_set():
+                pod_data = defaultdict(dict)
+                ts_str = None
+                gpu_values = []
 
-            for name, query in metric_queries.items():
-                try:
-                    data = await maybe_await(http_getter(prom_url, {"query": query}))
-                    if data.get("status") != "success":
+                for name, query in metric_queries.items():
+                    try:
+                        data = await maybe_await(
+                            http_getter(prom_url, {"query": query})
+                        )
+                        if data.get("status") != "success":
+                            continue
+
+                        for result in data["data"]["result"]:
+                            m = result["metric"]
+                            ts, val = result["value"]
+                            pod = m.get("pod", "unknown")
+                            val_f = float(val)
+                            pod_data[pod][name] = val_f
+                            ts_str = datetime.now(timezone.utc).strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            )
+                            if name in ("GPU%", "GPUMiB"):
+                                gpu_values.append(val_f)
+                    except Exception as e:
+                        logger.error(f"Error loading metrics: {e}")
                         continue
 
-                    for result in data["data"]["result"]:
-                        m = result["metric"]
-                        ts, val = result["value"]
-                        pod = m.get("pod", "unknown")
-                        val_f = float(val)
-                        pod_data[pod][name] = val_f
-                        ts_str = datetime.now(timezone.utc).strftime(
-                            "%Y-%m-%d %H:%M:%S"
+                if not gpu_values:
+                    show_gpu = False
+
+                if pod_data:
+                    for pod, vals in sorted(pod_data.items()):
+                        cpu = vals.get("CPU", 0.0)
+                        mem = vals.get("Mem", 0.0)
+                        gpu = vals.get("GPU%", 0.0)
+                        gpumem = vals.get("GPUMiB", 0.0)
+                        cpu_pct = cpu * 100
+
+                        line = (
+                            f"{cyan}[METRICS] {ts_str} | pod={pod} | "
+                            f"CPU={cpu:.3f} ({cpu_pct:.1f}%) | Mem={mem:.1f}MiB"
                         )
-                        if name in ("GPU%", "GPUMiB"):
-                            gpu_values.append(val_f)
+                        if show_gpu:
+                            line += f" | GPU-Mem={gpumem:.1f}MiB | GPU={gpu:.1f}%"
 
-                except Exception as e:
-                    logger.error(f"Error loading metrics: {str(e)}")
-                    continue
+                        print(f"{line}{reset}", flush=True)
 
-            # auto-disable GPU display if all readings are zero
-            if not gpu_values:
-                show_gpu = False
+                elapsed = time.time() - start_time
+                interval = 1 if elapsed < 10 else 5
+                await maybe_await(sleeper(interval))
 
-            if pod_data:
-                for pod, vals in sorted(pod_data.items()):
-                    cpu = vals.get("CPU", 0.0)
-                    mem = vals.get("Mem", 0.0)
-                    gpu = vals.get("GPU%", 0.0)
-                    gpumem = vals.get("GPUMiB", 0.0)
+        # run sync or async depending on mode
+        if is_async:
+            return run()
+        else:
+            asyncio.run(run())
 
-                    cpu_pct = cpu * 100
-                    line = (
-                        f"{cyan}[METRICS] {ts_str} | pod={pod} | "
-                        f"CPU={cpu:.3f} ({cpu_pct:.1f}%) | Mem={mem:.1f}MiB"
-                    )
+    def _collect_metrics(self, stop_event, http_getter, sleeper):
+        """
+        Synchronous metrics collector.
 
-                    if show_gpu:
-                        line += f" | GPU-Mem={gpumem:.1f}MiB | GPU={gpu:.1f}%"
+        Invokes `_collect_metrics_common` in blocking mode to stream metrics. Designed for use in background threads
+        where the event loop is *not* running (e.g. standard Python threads).
 
-                    print(f"{line}{reset}", flush=True)
+        Args:
+            stop_event: threading.Event to signal termination of metric collection.
+            http_getter: Synchronous callable that fetches Prometheus query results.
+            sleeper: Blocking sleep callable.
 
-            # adaptive sampling (faster at start, slower later)
-            elapsed = time.time() - start_time
-            interval = 1 if elapsed < 10 else 5
-            await maybe_await(sleeper(interval))
+        Notes:
+            - Runs until `stop_event` is set.
+            - Safe to use in multi-threaded environments.
+            - Should not be invoked from within an asyncio event loop.
+        """
+        asyncio.run(
+            self._collect_metrics_common(
+                stop_event, http_getter, sleeper, is_async=False
+            )
+        )
+
+    async def _collect_metrics_async(self, stop_event, http_getter, sleeper):
+        """
+        Asynchronous metrics collector.
+
+        Invokes `_collect_metrics_common` in fully async mode. Designed for use when the caller is already
+        inside an active asyncio event loop.
+
+        Args:
+            stop_event: asyncio.Event to signal termination of metric collection.
+            http_getter: Asynchronous callable that fetches Prometheus query results.
+            sleeper: Async sleep callable.
+
+        Note:
+            - Should only be called from within an asyncio context.
+            - Automatically terminates once `stop_event` is set.
+            - Prints formatted metrics continuously until stopped.
+        """
+        await self._collect_metrics_common(
+            stop_event, http_getter, sleeper, is_async=True
+        )
 
     # ----------------- Core APIs ----------------- #
     def stream_logs(self, request_id, stop_event):
@@ -784,7 +857,7 @@ class HTTPClient:
         async def async_sleep(seconds):
             await asyncio.sleep(seconds)
 
-        await self._collect_metrics(stop_event, async_http_get, async_sleep)
+        await self._collect_metrics_async(stop_event, async_http_get, async_sleep)
         logger.debug(f"Stopped async metrics for {request_id}")
 
     def stream_metrics(self, stop_event):
@@ -807,8 +880,7 @@ class HTTPClient:
         def sync_sleep(seconds):
             time.sleep(seconds)
 
-        # Run the async helper in a blocking loop
-        asyncio.run(self._collect_metrics(stop_event, sync_http_get, sync_sleep))
+        self._collect_metrics(stop_event, sync_http_get, sync_sleep)
 
     def call_method(
         self,
