@@ -1,0 +1,17 @@
+{{- if and .Values.ephemeralMonitoring.scrapeKubeStateMetrics .Values.ephemeralMonitoring.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-state-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+spec:
+  selector:
+    app.kubernetes.io/name: kube-state-metrics
+  ports:
+    - name: http-metrics
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+{{- end }}

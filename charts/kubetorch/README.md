@@ -72,7 +72,7 @@ A Helm chart for kubetorch
 | ephemeralMonitoring.prometheus.resources.memory | string | `"512Mi"` |  |
 | ephemeralMonitoring.prometheus.retention | string | `"24h"` |  |
 | ephemeralMonitoring.prometheus.scrapeInterval | string | `"5s"` |  |
-| ephemeralMonitoring.scrapeKubeStateMetrics | bool | `false` |  |
+| ephemeralMonitoring.scrapeKubeStateMetrics | bool | `true` |  |
 | ephemeralMonitoring.scrapeKubelet | bool | `true` |  |
 | ephemeralMonitoring.scrapeNodeExporter | bool | `false` |  |
 | kubetorchConfig.deployment_namespaces[0] | string | `"default"` |  |
