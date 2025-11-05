@@ -1,44 +1,49 @@
 {{- if .Values.metrics.enabled }}
+{{- $allNamespaces := .Values.kubetorchConfig.deployment_namespaces | default list }}
+{{- if not (has .Release.Namespace $allNamespaces) }}
+  {{- $allNamespaces = append $allNamespaces .Release.Namespace }}
+{{- end }}
+
+{{- range $allNamespaces }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: kubetorch-metrics
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ . }}
   labels:
     app: kubetorch-metrics
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: kubetorch-metrics
+  namespace: {{ . }}
   labels:
     app: kubetorch-metrics
 rules:
   - apiGroups: [""]
     resources:
-      - nodes
-      - nodes/proxy
-      - nodes/metrics
       - pods
       - services
       - endpoints
-      - namespaces
       - configmaps
       - secrets
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: kubetorch-metrics
+  namespace: {{ . }}
   labels:
     app: kubetorch-metrics
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: kubetorch-metrics
 subjects:
   - kind: ServiceAccount
     name: kubetorch-metrics
-    namespace: {{ .Release.Namespace }}
+    namespace: {{ . }}
+{{- end }}
 {{- end }}

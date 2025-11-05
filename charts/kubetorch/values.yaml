@@ -114,6 +114,9 @@ metrics:
 
 opentelemetry-collector:
   enabled: true # set to `false` to disable opentelemetry collector
+  serviceAccount:
+    create: false # use the SA that kubetorch creates
+    name: kubetorch-opentelemetry-collector
   mode: daemonset
   image:
     repository: otel/opentelemetry-collector-contrib

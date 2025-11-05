@@ -105,6 +105,8 @@ A Helm chart for kubetorch
 | opentelemetry-collector.presets.kubernetesEvents.enabled | bool | `true` |  |
 | opentelemetry-collector.presets.logsCollection.enabled | bool | `true` |  |
 | opentelemetry-collector.presets.logsCollection.includeCollectorLogs | bool | `true` |  |
+| opentelemetry-collector.serviceAccount.create | bool | `false` |  |
+| opentelemetry-collector.serviceAccount.name | string | `"kubetorch-opentelemetry-collector"` |  |
 | opentelemetry-collector.tolerations[0].operator | string | `"Exists"` |  |
 | rsync.cleanupCron.enabled | bool | `false` |  |
 | rsync.cpu.limit | int | `4` |  |
