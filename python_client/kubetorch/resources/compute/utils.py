@@ -900,6 +900,7 @@ def check_pod_status_for_errors(
                     "node affinity mismatch",
                     "unsupported gpu type",
                     "unknown instance type",
+                    "didn't match pod's node affinity/selector",
                 ]
             ):
                 raise ResourceNotAvailableError(
