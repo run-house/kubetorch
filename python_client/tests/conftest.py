@@ -188,42 +188,6 @@ async def remote_logs_fn_autoscaled():
 
 
 @pytest.fixture(scope="session")
-async def remote_logs_fn_gpu():
-    import kubetorch as kt
-
-    from .utils import log_n_messages
-
-    gpu = kt.Compute(
-        cpus=".1",
-        gpus="1",
-        image=kt.images.pytorch(),
-        env_vars={"OMP_NUM_THREADS": 1},
-        launch_timeout=600,
-    )
-
-    remote_fn = await kt.fn(log_n_messages).to_async(gpu)
-    return remote_fn
-
-
-@pytest.fixture(scope="session")
-async def remote_logs_fn_autoscaled_gpu():
-    import kubetorch as kt
-
-    from .utils import log_n_messages
-
-    gpu = kt.Compute(
-        cpus=".1",
-        gpus="1",
-        image=kt.images.pytorch(),
-        env_vars={"OMP_NUM_THREADS": 1},
-        launch_timeout=600,
-    ).autoscale(min_scale=2, initial_scale=2)
-
-    remote_fn = await kt.fn(log_n_messages, name="log-autoscaled").to_async(gpu)
-    return remote_fn
-
-
-@pytest.fixture(scope="session")
 async def remote_cls():
     import kubetorch as kt
 
