@@ -11,6 +11,7 @@ import kubetorch as kt
 import pytest
 from kubetorch.cli import app
 from kubetorch.cli_utils import get_ingress_host, load_ingress
+from kubetorch.resources.secrets.utils import get_k8s_identity_name
 
 from typer.testing import CliRunner
 
@@ -1333,8 +1334,9 @@ def test_cli_secrets_describe_no_show():
         assert "Namespace: default" in output
         assert (
             f"Labels: {{'kubetorch.com/mount-type': 'volume', 'kubetorch.com/provider': 'gcp', "
-            f"'kubetorch.com/secret-name': '{secret_name}', 'kubetorch.com/username': '{kt.config.username}'}}"
-            in output
+            f"'kubetorch.com/secret-name': '{secret_name}', 'kubetorch.com/user-identifier': "
+            f"'{get_k8s_identity_name()}', 'kubetorch.com/username': '{kt.config.username}'}}"
+            in output.replace("\n", "")  # Remove newlines from the output
         )
         assert "Type: Opaque" in output
 
@@ -1359,7 +1361,8 @@ def test_cli_secrets_describe_show():
         assert "Namespace: default" in output
         assert (
             f"Labels: {{'kubetorch.com/mount-type': 'volume', 'kubetorch.com/provider': 'gcp', "
-            f"'kubetorch.com/secret-name': '{secret_name}', 'kubetorch.com/username': '{kt.config.username}'}}"
-            in output
+            f"'kubetorch.com/secret-name': '{secret_name}', 'kubetorch.com/user-identifier': "
+            f"'{get_k8s_identity_name()}', 'kubetorch.com/username': '{kt.config.username}'}}"
+            in output.replace("\n", "")  # Remove newlines from the output
         )
         assert "Type: Opaque" in output
