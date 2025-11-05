@@ -94,9 +94,6 @@ _CALLABLE_LOAD_LOCK = threading.Lock()  # Lock for thread-safe callable loading
 LOKI_HOST = os.environ.get("LOKI_HOST", "loki-gateway.kubetorch.svc.cluster.local")
 LOKI_PORT = int(os.environ.get("LOKI_PORT", 80))  # Default Loki port
 KT_OTEL_ENABLED = os.environ.get("KT_OTEL_ENABLED", "False").lower() == "true"
-KT_TRACING_ENABLED = (
-    os.environ.get("KT_TRACING_ENABLED", "").lower() != "false"
-)  # Defaults to True
 
 # Global termination event that can be checked by running requests
 TERMINATION_EVENT = threading.Event()
@@ -106,47 +103,6 @@ TERMINATION_EVENT = threading.Event()
 os.environ["PYTHONBREAKPOINT"] = "kubetorch.deep_breakpoint"
 
 request_id_ctx_var.set(os.getenv("KT_LAUNCH_ID", "-"))
-
-#####################################
-######### Instrument Traces #########
-#####################################
-instrument_traces = KT_TRACING_ENABLED
-if instrument_traces:
-    try:
-        from opentelemetry import trace
-        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-            OTLPSpanExporter,
-        )
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-        from opentelemetry.instrumentation.logging import LoggingInstrumentor
-        from opentelemetry.instrumentation.requests import RequestsInstrumentor
-        from opentelemetry.sdk.resources import Resource
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    except ImportError:
-        instrument_traces = False
-
-if instrument_traces:
-    logger.info("Configuring OTLP exporter to instrument traces")
-    trace.set_tracer_provider(
-        TracerProvider(
-            resource=Resource.create(
-                {
-                    "service.name": os.environ.get("OTEL_SERVICE_NAME"),
-                    "service.instance.id": os.environ.get("POD_NAME"),
-                }
-            )
-        )
-    )
-    span_processor = BatchSpanProcessor(
-        OTLPSpanExporter(
-            endpoint=os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"),
-            insecure=True,
-        )
-    )
-    trace.get_tracer_provider().add_span_processor(span_processor)
-    RequestsInstrumentor().instrument()
-    LoggingInstrumentor().instrument()
 
 #####################################
 ########### Proxy Helpers ###########
@@ -1043,23 +999,6 @@ class RequestContextFilter(logging.Filter):
     def filter(self, record):
         record.request_id = request_id_ctx_var.get("-")
         record.pod = os.getenv("POD_NAME", "unknown-pod")
-
-        if instrument_traces:
-            from opentelemetry.trace import format_trace_id, get_current_span
-
-            # Add trace_id and span_id for log correlation
-            current_span = get_current_span()
-            if current_span and current_span.get_span_context().is_valid:
-                record.trace_id = format_trace_id(
-                    current_span.get_span_context().trace_id
-                )
-                record.span_id = format_trace_id(
-                    current_span.get_span_context().span_id
-                )
-            else:
-                record.trace_id = "-"
-                record.span_id = "-"
-
         return True
 
 
@@ -1125,44 +1064,12 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         request_id = request.headers.get("X-Request-ID", "-")
         token = request_id_ctx_var.set(request_id)
 
-        if instrument_traces and request_id != "-":
-            span_attributes = {
-                "request_id": request_id,
-                "http.method": request.method,
-                "http.url": str(request.url),
-                "service.name": os.environ.get("OTEL_SERVICE_NAME"),
-                "service.instance.id": os.environ.get("POD_NAME"),
-            }
-            # of the pod crashes (e.g., due to OOM) during execution of run_callable, we'll still have at least
-            # this heartbeat span recorded
-            tracer = trace.get_tracer("heartbeat")
-            try:
-                with tracer.start_as_current_span(
-                    "heartbeat.request", attributes=span_attributes
-                ):
-                    tracer_provider = trace.get_tracer_provider()
-                    if isinstance(tracer_provider, TracerProvider):
-                        tracer_provider.force_flush()
-            except Exception as e:
-                logger.warning(f"Heartbeat span flush failed: {e}")
-
         try:
             response = await call_next(request)
             return response
         finally:
             # Reset the context variable to its default value
             request_id_ctx_var.reset(token)
-
-
-class TraceFlushMiddleware(BaseHTTPMiddleware):
-    """Flush traces after each HTTP Request so we don't lose trace data if the pod is killed"""
-
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        tracer_provider = trace.get_tracer_provider()
-        if isinstance(tracer_provider, TracerProvider):
-            tracer_provider.force_flush()
-        return response
 
 
 class StreamToLogger:
@@ -1331,15 +1238,6 @@ async def lifespan(app: FastAPI):
         yield
 
     finally:
-        # Flush OpenTelemetry traces before shutdown
-        if instrument_traces:
-            from opentelemetry.sdk.trace import TracerProvider
-
-            tracer_provider = trace.get_tracer_provider()
-            if isinstance(tracer_provider, TracerProvider):
-                logger.info("Forcing OpenTelemetry span flush before shutdown")
-                tracer_provider.force_flush()
-
         # Shutdown
         manager = getattr(app.state, "heartbeat_manager", None)
         if manager:
@@ -1373,19 +1271,9 @@ app, meter_provider = (
     setup_otel_metrics(app) if KT_OTEL_ENABLED is True else (app, None)
 )
 
-# Now instrument for traces and metrics together
-if instrument_traces:
-    logger.info("Instrumenting FastAPI app for traces and metrics")
-    FastAPIInstrumentor.instrument_app(
-        app,
-        meter_provider=meter_provider,
-        excluded_urls="/metrics,/health",
-    )
-    logger.info("Adding TraceFlushMiddleware to flush traces")
-    app.add_middleware(TraceFlushMiddleware)
-elif meter_provider is not None:
+# instrument metrics
+if meter_provider is not None:
     try:
-        # Skipped if instrument_traces is False, need to reimplement if we want to use metrics only
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
         logger.info("Instrumenting FastAPI app for metrics only")

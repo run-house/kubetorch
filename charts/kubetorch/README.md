@@ -77,8 +77,7 @@ A Helm chart for kubetorch
 | ephemeralMonitoring.scrapeNodeExporter | bool | `false` |  |
 | kubetorchConfig.deployment_namespaces[0] | string | `"default"` |  |
 | kubetorchConfig.deployment_namespaces[1] | string | `"kubetorch"` |  |
-| kubetorchConfig.environment.PROMETHEUS_NAMESPACE | string | `""` |  |
-| kubetorchConfig.environment.PROMETHEUS_URL | string | `""` |  |
+| kubetorchConfig.environment | string | `nil` |  |
 | kubetorchConfig.otelEnabled | bool | `true` |  |
 | nginx.resolver | string | `"kube-dns.kube-system.svc.cluster.local"` |  |
 | nginxProxy.backends.health.route | string | `"/health"` |  |

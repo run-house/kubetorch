@@ -15,7 +15,6 @@ from kubetorch import globals
 from kubetorch.logger import get_logger
 from kubetorch.servers.http.utils import is_running_in_kubernetes
 from kubetorch.serving.constants import (
-    KUBETORCH_MONITORING_NAMESPACE,
     LOKI_GATEWAY_SERVICE_NAME,
     PROMETHEUS_SERVICE_NAME,
 )
@@ -352,28 +351,6 @@ def check_prometheus_enabled(core_api: CoreV1Api = None) -> bool:
                 return False
 
     return True
-
-
-def check_tempo_enabled(core_api: CoreV1Api = None) -> bool:
-    if core_api is None:
-        load_kubeconfig()
-        core_api = CoreV1Api()
-
-    try:
-        otel = core_api.read_namespaced_service(
-            name="kubetorch-otel-opentelemetry-collector",
-            namespace=KUBETORCH_MONITORING_NAMESPACE,
-        )
-        tempo = core_api.read_namespaced_service(
-            name="kubetorch-otel-tempo-distributor",
-            namespace=KUBETORCH_MONITORING_NAMESPACE,
-        )
-        return otel is not None and tempo is not None
-
-    except ApiException as e:
-        if e.status == 404:
-            return False
-        raise
 
 
 def nested_override(original_dict, override_dict):

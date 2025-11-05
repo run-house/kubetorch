@@ -872,11 +872,6 @@ class Compute:
         self.pod_template["priorityClassName"] = value
 
     @property
-    def tracing_enabled(self):
-        """Whether tracing is enabled based on global config."""
-        return globals.config.tracing_enabled
-
-    @property
     def otel_enabled(self):
         container = self._container()
         if "env" in container:
@@ -1191,7 +1186,7 @@ class Compute:
         return config_env_vars
 
     def _server_should_enable_otel(self, otel_enabled, inactivity_ttl):
-        return self.tracing_enabled or (otel_enabled and inactivity_ttl)
+        return otel_enabled and inactivity_ttl
 
     def _should_install_otel_dependencies(
         self, server_image, otel_enabled, inactivity_ttl
@@ -1592,7 +1587,6 @@ class Compute:
             install_otel=self._should_install_otel_dependencies(
                 self.server_image, self.otel_enabled, self.inactivity_ttl
             ),
-            tracing_enabled=self.tracing_enabled,
             server_image=self.server_image,
             rsync_kt_editable_cmd=startup_rsync_command,
             server_port=self.server_port,

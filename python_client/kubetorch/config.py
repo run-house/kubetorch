@@ -20,7 +20,6 @@ ENV_MAPPINGS = {
     "stream_metrics": "KT_STREAM_METRICS",
     "log_verbosity": "KT_LOG_VERBOSITY",
     "queue": "KT_QUEUE",
-    "tracing_enabled": "KT_TRACING_ENABLED",
     "volumes": "KT_VOLUMES",
     "api_url": "KT_API_URL",
     "cluster_config": "KT_CLUSTER_CONFIG",
@@ -43,7 +42,6 @@ class KubetorchConfig:
         self._queue = None
         self._stream_logs = None
         self._stream_metrics = None
-        self._tracing_enabled = None
         self._username = None
         self._volumes = None
 
@@ -378,51 +376,6 @@ class KubetorchConfig:
                     "re-install the Kubetorch Helm chart with `ephemeralMonitoring.enabled = true`"
                 )
         self._stream_metrics = bool_value
-
-    @property
-    def tracing_enabled(self):
-        """Whether to enable distributed tracing for services.
-
-        When enabled, provides detailed trace information for debugging and monitoring Kubetorch deployments.
-        Default is ``False``.
-
-        Note:
-            Requires telemetry stack to be configured. See
-            `traces <https://www.run.house/kubetorch/advanced-installation#traces>`_ for more info.
-        """
-        if self._tracing_enabled is None:
-            if self._get_env_var("tracing_enabled"):
-                self._tracing_enabled = (
-                    self._get_env_var("tracing_enabled").lower() == "true"
-                )
-            else:
-                self._tracing_enabled = self.file_cache.get(
-                    "tracing_enabled", False
-                )  # Default to False - flip to true successfully only if configured
-        return self._tracing_enabled
-
-    @tracing_enabled.setter
-    def tracing_enabled(self, value):
-        """Set tracing collection."""
-        from kubetorch.serving.utils import check_tempo_enabled
-
-        bool_value = value
-
-        if not isinstance(value, bool):
-            if value is None:
-                pass  # case we are unsetting tracing_enabled, so None is a valid value
-            elif isinstance(value, str) and value.lower() in ["true", "false"]:
-                bool_value = value.lower() == "true"
-            else:
-                raise ValueError("tracing_enabled must be a boolean value")
-        if bool_value:
-            # Check if the cluster has tempo enabled
-            if not check_tempo_enabled():
-                raise ValueError(
-                    "Open telemetry collector and Tempo distributor not found on the cluster. "
-                    "See https://www.run.house/kubetorch/advanced-installation for more info."
-                )
-        self._tracing_enabled = bool_value
 
     @property
     def cluster_config(self):

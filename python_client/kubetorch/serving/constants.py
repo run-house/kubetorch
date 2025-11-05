@@ -10,9 +10,6 @@ DEFAULT_DEBUG_PORT = 5678
 
 # Namespaces
 KUBETORCH_NAMESPACE = "kubetorch"
-KUBETORCH_MONITORING_NAMESPACE = "kubetorch-monitoring"
-KUBETORCH_GRAFANA_SERVICE_NAME = "kubetorch-otel-grafana"
-KUBETORCH_UI_SERVICE_NAME = "kubetorch-ui-service"
 RUNHOUSE_NAMESPACE = "runhouse"
 DEFAULT_NAMESPACE = "default"
 
@@ -56,6 +53,9 @@ RAYCLUSTER_SERVICE_TEMPLATE_FILE = "raycluster_service_template.yaml"
 # Loki
 LOKI_GATEWAY_SERVICE_NAME = "loki-gateway"
 
+# Prometheus
+PROMETHEUS_SERVICE_NAME = "kubetorch-prometheus"
+
 # Grafana
 GRAFANA_HEALTH_ENDPOINT = "/api/health"
 PROMETHEUS_HEALTH_ENDPOINT = "/metrics"
@@ -63,9 +63,6 @@ PROMETHEUS_HEALTH_ENDPOINT = "/metrics"
 # KAI
 KAI_SCHEDULER_NAME = "kai-scheduler"
 KAI_SCHEDULER_LABEL = "kai.scheduler/queue"
-
-# URLS
-PROMETHEUS_SERVICE_NAME = "kubetorch-prometheus"
 
 # HTTP Client
 KT_TERMINATION_REASONS = ["OOMKilled", "Evicted", "Not Found"]
