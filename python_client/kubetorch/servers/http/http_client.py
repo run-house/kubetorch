@@ -4,7 +4,6 @@ import threading
 import time
 import urllib.parse
 from collections import defaultdict
-from datetime import datetime, timezone
 from typing import Union
 
 import httpx
@@ -24,7 +23,7 @@ from kubetorch.servers.http.utils import (
 )
 
 from kubetorch.serving.constants import DEFAULT_DEBUG_PORT, DEFAULT_NGINX_PORT
-from kubetorch.utils import ColoredFormatter, extract_host_port, ServerLogsFormatter
+from kubetorch.utils import extract_host_port, ServerLogsFormatter
 
 logger = get_logger(__name__)
 
@@ -542,40 +541,39 @@ class HTTPClient:
             pod_regex = "|".join(active_pods)
 
             metric_queries = {
-                "CPU": f'rate(container_cpu_usage_seconds_total{{container="kubetorch",pod=~"{pod_regex}"}}[2m])',
-                "Mem": f'container_memory_working_set_bytes{{container="kubetorch",pod=~"{pod_regex}"}} / 1024 / 1024',
+                "CPU": f'sum by (pod) (rate(container_cpu_usage_seconds_total{{container!="",pod=~"{pod_regex}"}}[2m]))',
+                "Mem": f'sum by (pod) (container_memory_working_set_bytes{{container!="",pod=~"{pod_regex}"}}) / 1024 / 1024',
                 "GPU%": f'avg(DCGM_FI_DEV_GPU_UTIL{{pod=~"{pod_regex}"}}) by (pod)',
                 "GPUMiB": f'avg(DCGM_FI_DEV_FB_USED{{pod=~"{pod_regex}"}}) by (pod) / 1024 / 1024',
             }
 
-            cyan = ColoredFormatter.get_color("cyan")
-            reset = ColoredFormatter.get_color("reset")
-
-            start_time = time.time()
             show_gpu = True
+            interval = 1
+            start_time = time.time()
 
             while not stop_event.is_set():
                 pod_data = defaultdict(dict)
-                ts_str = None
                 gpu_values = []
 
                 for name, query in metric_queries.items():
                     try:
                         data = await maybe_await(
-                            http_getter(prom_url, {"query": query})
+                            http_getter(
+                                prom_url,
+                                params={
+                                    "query": query,
+                                    "lookback_delta": interval,
+                                },
+                            )
                         )
                         if data.get("status") != "success":
                             continue
-
                         for result in data["data"]["result"]:
                             m = result["metric"]
                             ts, val = result["value"]
                             pod = m.get("pod", "unknown")
                             val_f = float(val)
                             pod_data[pod][name] = val_f
-                            ts_str = datetime.now(timezone.utc).strftime(
-                                "%Y-%m-%d %H:%M:%S"
-                            )
                             if name in ("GPU%", "GPUMiB"):
                                 gpu_values.append(val_f)
                     except Exception as e:
@@ -594,13 +592,13 @@ class HTTPClient:
                         cpu_pct = cpu * 100
 
                         line = (
-                            f"{cyan}[METRICS] {ts_str} | pod={pod} | "
+                            f"[METRICS] pod={pod} | "
                             f"CPU={cpu:.3f} ({cpu_pct:.1f}%) | Mem={mem:.1f}MiB"
                         )
                         if show_gpu:
                             line += f" | GPU-Mem={gpumem:.1f}MiB | GPU={gpu:.1f}%"
 
-                        print(f"{line}{reset}", flush=True)
+                        print(f"{line}", flush=True)
 
                 elapsed = time.time() - start_time
                 interval = 1 if elapsed < 10 else 5
@@ -629,11 +627,7 @@ class HTTPClient:
             - Safe to use in multi-threaded environments.
             - Should not be invoked from within an asyncio event loop.
         """
-        asyncio.run(
-            self._collect_metrics_common(
-                stop_event, http_getter, sleeper, is_async=False
-            )
-        )
+        self._collect_metrics_common(stop_event, http_getter, sleeper, is_async=False)
 
     async def _collect_metrics_async(self, stop_event, http_getter, sleeper):
         """
