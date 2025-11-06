@@ -1,0 +1,41 @@
+{{- if and .Values.metrics.scrapeKubeStateMetrics .Values.metrics.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-state-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-state-metrics
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-state-metrics
+    spec:
+      serviceAccountName: kube-state-metrics
+      containers:
+        - name: kube-state-metrics
+          image: k8s.gcr.io/kube-state-metrics/kube-state-metrics:v2.12.0
+          args:
+            - '--port=8080'
+            - '--telemetry-port=8081'
+            - '--resources=nodes,namespaces,deployments,replicasets,daemonsets,pods'
+            - '--metric-labels-allowlist=pods=[*]'
+          ports:
+            - name: http-metrics
+              containerPort: 8080
+            - name: http-telemetry
+              containerPort: 8081
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 8080
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+      nodeSelector:
+        kubernetes.io/os: linux
+{{- end }}

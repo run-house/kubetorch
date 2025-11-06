@@ -82,6 +82,7 @@ logStreaming:
 metrics:
   enabled: true # set to `false` to disable metrics collection & streaming
   scrapeKubelet: true
+  scrapeKubeStateMetrics: false # set to `true` to enable streaming metrics by service
   prometheus:
     image: prom/prometheus:v3.7.2
     port: 9090
@@ -91,6 +92,28 @@ metrics:
       cpu: 200m
       memory: 512Mi
     additionalScrapeConfigs:
+      - job_name: "kubernetes-pods"
+        honor_labels: true
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [ __meta_kubernetes_pod_label_kubetorch_com_service ]
+            action: replace
+            target_label: kubetorch_com_service
+          - source_labels: [ __meta_kubernetes_namespace ]
+            target_label: namespace
+          - source_labels: [ __meta_kubernetes_pod_name ]
+            target_label: pod
+      - job_name: "kubelet"
+        honor_labels: true
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - source_labels: [ __meta_kubernetes_node_label_kubetorch_com_service ]
+            action: replace
+            target_label: kubetorch_com_service
+          - source_labels: [ __meta_kubernetes_node_name ]
+            target_label: node
       - job_name: "gke-managed-dcgm"
         honor_labels: true
         kubernetes_sd_configs:
@@ -98,6 +121,9 @@ metrics:
             namespaces:
               names: ["gke-managed-system"]
         relabel_configs:
+          - source_labels: [ __meta_kubernetes_pod_label_kubetorch_com_service ]
+            action: replace
+            target_label: kubetorch_com_service
           - source_labels: [__meta_kubernetes_pod_name]
             regex: "dcgm-exporter.*"
             action: keep

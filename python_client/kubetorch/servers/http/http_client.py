@@ -24,6 +24,7 @@ from kubetorch.servers.http.utils import (
 )
 
 from kubetorch.serving.constants import DEFAULT_DEBUG_PORT, DEFAULT_NGINX_PORT
+from kubetorch.serving.utils import check_kube_state_metrics_enabled
 from kubetorch.utils import extract_host_port, ServerLogsFormatter
 
 logger = get_logger(__name__)
@@ -165,10 +166,14 @@ class HTTPClient:
     """Client for making HTTP requests to a remote service. Port forwards are shared between client
     instances. Each port forward instance is cleaned up when the last reference is closed."""
 
-    def __init__(self, base_url, compute, service_name):
+    def __init__(
+        self,
+        base_url,
+        compute,
+        service_name,
+    ):
         self._core_api = None
         self._objects_api = None
-
         self.compute = compute
         self.service_name = service_name
         self.base_url = base_url.rstrip("/")
@@ -447,6 +452,77 @@ class HTTPClient:
             loop.close()
 
     # ----------------- Metrics Helpers ----------------- #
+
+    def _get_stream_metrics_queries(self, kube_state_enabled: bool) -> dict:
+        if kube_state_enabled:
+            metric_queries = {
+                "CPU": f"""
+                    sum(
+                      rate(container_cpu_usage_seconds_total{{namespace="{self.compute.namespace}"}}[30s])
+                      * on(namespace, pod) group_left()
+                      label_replace(
+                        label_replace(
+                          kube_pod_labels{{label_kubetorch_com_service="{self.service_name}"}},
+                          "namespace", "$1", "exported_namespace", "(.*)"
+                        ),
+                        "pod", "$1", "exported_pod", "(.*)"
+                      )
+                    )
+                """,
+                "Mem": f"""
+                    sum(
+                      container_memory_working_set_bytes{{namespace="{self.compute.namespace}"}}
+                      * on(namespace, pod) group_left()
+                      label_replace(
+                        label_replace(
+                          kube_pod_labels{{label_kubetorch_com_service="{self.service_name}"}},
+                          "namespace", "$1", "exported_namespace", "(.*)"
+                        ),
+                        "pod", "$1", "exported_pod", "(.*)"
+                      )
+                    ) / 1024 / 1024
+                """,
+                "GPU%": f"""
+                    avg(
+                      DCGM_FI_DEV_GPU_UTIL{{namespace="{self.compute.namespace}"}}
+                      * on(namespace, pod) group_left()
+                      label_replace(
+                        label_replace(
+                          kube_pod_labels{{label_kubetorch_com_service="{self.service_name}"}},
+                          "namespace", "$1", "exported_namespace", "(.*)"
+                        ),
+                        "pod", "$1", "exported_pod", "(.*)"
+                      )
+                    )
+                """,
+                "GPUMiB": f"""
+                    avg(
+                      DCGM_FI_DEV_FB_USED{{namespace="{self.compute.namespace}"}}
+                      * on(namespace, pod) group_left()
+                      label_replace(
+                        label_replace(
+                          kube_pod_labels{{label_kubetorch_com_service="{self.service_name}"}},
+                          "namespace", "$1", "exported_namespace", "(.*)"
+                        ),
+                        "pod", "$1", "exported_pod", "(.*)"
+                      )
+                    ) / 1024 / 1024
+                """,
+            }
+        else:
+            active_pods = self.compute.pod_names()
+            if not active_pods:
+                logger.warning("No active pods found for service, skipping metrics collection")
+                return {}
+            pod_regex = "|".join(active_pods)
+            metric_queries = {
+                "CPU": f'sum by (pod) (rate(container_cpu_usage_seconds_total{{container!="",pod=~"{pod_regex}"}}[30s]))',
+                "Mem": f'sum by (pod) (container_memory_working_set_bytes{{container!="",pod=~"{pod_regex}"}}) / 1024 / 1024',
+                "GPU%": f'avg(DCGM_FI_DEV_GPU_UTIL{{pod=~"{pod_regex}"}}) by (pod)',
+                "GPUMiB": f'avg(DCGM_FI_DEV_FB_USED{{pod=~"{pod_regex}"}}) by (pod) / 1024 / 1024',
+            }
+        return metric_queries
+
     def _collect_metrics_common(
         self,
         stop_event,
@@ -494,32 +570,28 @@ class HTTPClient:
                 return
 
             prom_url = f"{service_url()}/prometheus/api/v1/query"
-            pod_regex = "|".join(active_pods)
-
-            metric_queries = {
-                "CPU%": f'sum by (pod, node) (rate(container_cpu_usage_seconds_total{{container!="",pod=~"{pod_regex}"}}[30s])) / on(node) group_left() machine_cpu_cores * 100',
-                "Mem": f'sum by (pod) (container_memory_working_set_bytes{{container!="",pod=~"{pod_regex}"}}) / 1024 / 1024',
-                "GPU%": f'avg(DCGM_FI_DEV_GPU_UTIL{{pod=~"{pod_regex}"}}) by (pod)',
-                "GPUMiB": f'avg(DCGM_FI_DEV_FB_USED{{pod=~"{pod_regex}"}}) by (pod) / 1024 / 1024',
-            }
+            kube_state_enabled = check_kube_state_metrics_enabled()
+            metric_queries = self._get_stream_metrics_queries(kube_state_enabled=kube_state_enabled)
+            if not metric_queries:
+                logger.error("Failed to generate metrics_queries, aborting metrics streaming")
+                return
 
             show_gpu = True
             interval = 5
             start_time = time.time()
 
             while not stop_event.is_set():
+
                 pod_data = defaultdict(dict)
                 gpu_values = []
 
                 for name, query in metric_queries.items():
+                    query_params = {"query": query, "lookback_delta": interval}
                     try:
                         data = await maybe_await(
                             http_getter(
                                 prom_url,
-                                params={
-                                    "query": query,
-                                    "lookback_delta": interval,
-                                },
+                                params=query_params,
                             )
                         )
                         if data.get("status") != "success":
@@ -536,9 +608,6 @@ class HTTPClient:
                         logger.error(f"Error loading metrics: {e}")
                         continue
 
-                if not gpu_values:
-                    show_gpu = False
-
                 if pod_data:
                     for pod, vals in sorted(pod_data.items()):
                         mem = vals.get("Mem", 0.0)
@@ -546,12 +615,17 @@ class HTTPClient:
                         gpumem = vals.get("GPUMiB", 0.0)
                         cpu_pct = vals.get("CPU%", 0.0)
                         now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                        pod_info_to_stream = f" pod={pod} |" if not kube_state_enabled else ""
                         line = (
-                            f"[METRICS] {now_ts} | pod: {pod} | "
+                            f"[METRICS] {now_ts} |{pod_info_to_stream}"
                             f"CPU Utilization: {cpu_pct:.1f}% | Memory: {mem:.3f}MiB"
                         )
                         if show_gpu:
                             line += f" | GPU Utilization: {gpu:.1f}% | GPU Memory: {gpumem:.3f}MiB"
+
+                        if gpu_values and gpumem != 0.0 and gpu != 0.0:
+                            line += f" | GPU-Mem={gpumem:.3f}MiB | GPU={gpu:.3f}%"
 
                         print(f"{line}", flush=True)
 

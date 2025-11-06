@@ -332,6 +332,24 @@ def check_prometheus_enabled(core_api: CoreV1Api = None) -> bool:
     return True
 
 
+def check_kube_state_metrics_enabled(core_api: CoreV1Api = None) -> bool:
+    """Check if prometheus is enabled"""
+    if core_api is None:
+        load_kubeconfig()
+        core_api = CoreV1Api()
+
+    kt_namespace = globals.config.install_namespace
+
+    try:
+        core_api.read_namespaced_service(name="kube-state-metrics", namespace=kt_namespace)
+        return True
+    except ApiException as e:
+        if e.status == 404:
+            return False
+        else:
+            raise e
+
+
 def nested_override(original_dict, override_dict):
     for key, value in override_dict.items():
         if key in original_dict:
