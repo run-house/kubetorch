@@ -16,8 +16,6 @@ import httpx
 from kubernetes.client.rest import ApiException
 from rich.syntax import Syntax
 
-from kubetorch.monitoring.dashboard import open_grafana_dashboard
-
 from kubetorch.servers.http.utils import is_running_in_kubernetes
 
 from .cli_utils import (
