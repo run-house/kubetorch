@@ -43,13 +43,6 @@ data:
             target_label: service
       {{- end }}
 
-      {{- if .Values.metrics.scrapeNodeExporter }}
-      # Node exporter (per-node CPU/mem)
-      - job_name: 'node-exporter'
-        static_configs:
-          - targets: ['node-exporter.{{ .Release.Namespace }}.svc.cluster.local:9100']
-      {{- end }}
-
       {{- if (index .Values "dcgm-exporter").enabled }}
       # Self-managed NVIDIA DCGM Exporter
       - job_name: 'dcgm-exporter'

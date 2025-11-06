@@ -70,7 +70,6 @@ A Helm chart for kubetorch
 | metrics.prometheus.retention | string | `"24h"` |  |
 | metrics.prometheus.scrapeInterval | string | `"5s"` |  |
 | metrics.scrapeKubelet | bool | `true` |  |
-| metrics.scrapeNodeExporter | bool | `false` |  |
 | nginx.resolver | string | `"kube-dns.kube-system.svc.cluster.local"` |  |
 | nginxProxy.backends.health.route | string | `"/health"` |  |
 | nginxProxy.backends.logging.host | string | `"loki-gateway.kubetorch.svc.cluster.local"` |  |

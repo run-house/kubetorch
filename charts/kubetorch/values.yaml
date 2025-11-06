@@ -82,7 +82,6 @@ logStreaming:
 metrics:
   enabled: true # set to `false` to disable ephemeral monitoring
   scrapeKubelet: true
-  scrapeNodeExporter: false
   prometheus:
     image: prom/prometheus:v3.7.2
     port: 9090
