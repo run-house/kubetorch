@@ -2,19 +2,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: kubetorch-prometheus
+  name: kubetorch-metrics
   namespace: {{ .Release.Namespace }}
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: kubetorch-prometheus
+      app: kubetorch-metrics
   template:
     metadata:
       labels:
-        app: kubetorch-prometheus
+        app: kubetorch-metrics
     spec:
-      serviceAccountName: kubetorch-prometheus
+      serviceAccountName: kubetorch-metrics
       containers:
         - name: prometheus
           image: {{ .Values.ephemeralMonitoring.prometheus.image }}
@@ -39,7 +39,7 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: kubetorch-prometheus-config
+            name: kubetorch-metrics-config
         # Mount the cluster’s CA cert (auto-created ConfigMap)
         - name: k8s-ca-certs
           projected:

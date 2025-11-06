@@ -4,7 +4,6 @@ metadata:
   name: kubetorch-config
   namespace: {{ .Release.Namespace }}
 data:
-  DEFAULT_SERVICE_NAMESPACE: "{{ .Values.kubetorchConfig.environment.DEFAULT_SERVICE_NAMESPACE | default "default" }}"
   NGINX_RESOLVER: {{ .Values.nginx.resolver | default "kube-dns.kube-system.svc.cluster.local" }}
   COMPUTE_DEFAULTS: |-
 {{- range $key, $value := .Values.kubetorchConfig.computeDefaults }}

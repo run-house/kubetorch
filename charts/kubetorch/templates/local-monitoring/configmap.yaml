@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: kubetorch-prometheus-config
+  name: kubetorch-metrics-config
   namespace: {{ .Release.Namespace }}
 data:
   prometheus.yml: |
@@ -48,13 +48,6 @@ data:
       - job_name: 'node-exporter'
         static_configs:
           - targets: ['node-exporter.{{ .Release.Namespace }}.svc.cluster.local:9100']
-      {{- end }}
-
-      {{- if .Values.ephemeralMonitoring.scrapeKubeStateMetrics }}
-      # Kube-state-metrics (pods/deployments/state)
-      - job_name: 'kube-state-metrics'
-        static_configs:
-          - targets: ['kube-state-metrics.{{ .Release.Namespace }}.svc.cluster.local:8080']
       {{- end }}
 
       {{- if (index .Values "dcgm-exporter").enabled }}

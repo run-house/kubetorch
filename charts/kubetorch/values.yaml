@@ -1,6 +1,4 @@
 kubetorchConfig:
-  environment:
-  # List of namespaces to allow deploying compute resources to
   deployment_namespaces:
     - "default"
     - "kubetorch"
@@ -65,7 +63,7 @@ nginxProxy:
         host: runhouse-kube-prometheus-s-prometheus.runhouse.svc.cluster.local
         port: 9090
       ephemeral:
-        host: kubetorch-prometheus.kubetorch.svc.cluster.local
+        host: kubetorch-metrics.kubetorch.svc.cluster.local
         port: 9090
     health:
       route: "/health"
@@ -84,7 +82,6 @@ ephemeralMonitoring:
   enabled: true # set to `false` to disable ephemeral monitoring
   scrapeKubelet: true
   scrapeNodeExporter: false
-  scrapeKubeStateMetrics: false
   prometheus:
     image: prom/prometheus:v3.7.2
     port: 9090
