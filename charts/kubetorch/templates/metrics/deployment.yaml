@@ -1,4 +1,4 @@
-{{- if .Values.ephemeralMonitoring.enabled }}
+{{- if .Values.metrics.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,18 +17,18 @@ spec:
       serviceAccountName: kubetorch-metrics
       containers:
         - name: prometheus
-          image: {{ .Values.ephemeralMonitoring.prometheus.image }}
+          image: {{ .Values.metrics.prometheus.image }}
           args:
             - "--config.file=/etc/prometheus/prometheus.yml"
             - "--storage.tsdb.path=/prometheus"
-            - "--storage.tsdb.retention.time={{ .Values.ephemeralMonitoring.prometheus.retention }}"
+            - "--storage.tsdb.retention.time={{ .Values.metrics.prometheus.retention }}"
             - "--web.enable-lifecycle"
           ports:
-            - containerPort: {{ .Values.ephemeralMonitoring.prometheus.port }}
+            - containerPort: {{ .Values.metrics.prometheus.port }}
           resources:
             requests:
-              cpu: {{ .Values.ephemeralMonitoring.prometheus.resources.cpu }}
-              memory: {{ .Values.ephemeralMonitoring.prometheus.resources.memory }}
+              cpu: {{ .Values.metrics.prometheus.resources.cpu }}
+              memory: {{ .Values.metrics.prometheus.resources.memory }}
           volumeMounts:
             - name: config
               mountPath: /etc/prometheus

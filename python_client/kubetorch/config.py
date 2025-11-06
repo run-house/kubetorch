@@ -296,7 +296,7 @@ class KubetorchConfig:
         When disabled, logs remain accessible in-cluster but are not streamed to the client.
 
         Note:
-            Requires logging to be configured in the cluster (`ephemeralLogStorage.enabled: true`` in the Helm chart)
+            Requires logging to be configured in the cluster (`logStreaming.enabled: true`` in the Helm chart)
         """
         if self._stream_logs is None:
             if self._get_env_var("stream_logs"):
@@ -326,7 +326,7 @@ class KubetorchConfig:
             if not check_loki_enabled():
                 raise ValueError(
                     "Log streaming is not enabled in the cluster. Set `stream_logs` to False or "
-                    "re-install the Kubetorch Helm chart with `ephemeralLogStorage.enabled = true`"
+                    "re-install the Kubetorch Helm chart with `logStreaming.enabled = true`"
                 )
         self._stream_logs = bool_value
 
@@ -341,7 +341,7 @@ class KubetorchConfig:
         When disabled, metrics are not collected.
 
         Note:
-            Requires monitoring to be configured in the cluster (`ephemeralMonitoring.enabled: true`` in the Helm chart)
+            Requires monitoring to be configured in the cluster (`metrics.enabled: true`` in the Helm chart)
         """
         if self._stream_metrics is None:
             if self._get_env_var("stream_metrics"):
@@ -373,7 +373,7 @@ class KubetorchConfig:
             if not check_prometheus_enabled():
                 raise ValueError(
                     "Metrics is not enabled in the cluster. Set `stream_metrics` to False or "
-                    "re-install the Kubetorch Helm chart with `ephemeralMonitoring.enabled = true`"
+                    "re-install the Kubetorch Helm chart with `metrics.enabled = true`"
                 )
         self._stream_metrics = bool_value
 

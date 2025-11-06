@@ -47,7 +47,7 @@ data:
             ##############################################
             location ^~ /prometheus/ {
                 resolver {{ .Values.nginx.resolver }} valid=5s;
-                {{- if .Values.ephemeralMonitoring.enabled }}
+                {{- if .Values.metrics.enabled }}
                 # Route to ephemeral Prometheus inside the same namespace
                 set $prom_host "{{ .Values.nginxProxy.backends.metrics.ephemeral.host }}:{{ .Values.nginxProxy.backends.metrics.ephemeral.port }}";
                 {{- else }}
@@ -69,8 +69,8 @@ data:
             ##############################################
             location ^~ {{ .Values.nginxProxy.backends.logging.route }}/ {
                 resolver {{ .Values.nginx.resolver }} valid=5s;
-                {{- if .Values.ephemeralLogStorage.enabled }}
-                set $loki_host "{{ .Values.nginxProxy.backends.logging.host }}:{{ .Values.ephemeralLogStorage.port }}";
+                {{- if .Values.logStreaming.enabled }}
+                set $loki_host "{{ .Values.nginxProxy.backends.logging.host }}:{{ .Values.logStreaming.port }}";
                 {{- else }}
                 set $loki_host "{{ .Values.nginxProxy.backends.logging.host }}:80";
                 {{- end }}

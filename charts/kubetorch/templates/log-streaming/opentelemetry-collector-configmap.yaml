@@ -1,4 +1,4 @@
-{{- if .Values.ephemeralLogStorage.enabled }}
+{{- if .Values.logStreaming.enabled }}
 {{- $allNamespaces := .Values.kubetorchConfig.deployment_namespaces | default list }}
 {{- if not (has .Release.Namespace $allNamespaces) }}
   {{- $allNamespaces = append $allNamespaces .Release.Namespace }}
