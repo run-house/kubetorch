@@ -1,8 +1,8 @@
 # Examples
-In the [Kubetorch Examples repo](https://github.com/run-house/kubetorch-examples), 
+In the [Kubetorch Examples Repo](https://github.com/run-house/kubetorch-examples), 
 there are self-contained examples that use Kubetorch for various use cases 
 (training, inference, data processing, production workflows, etc). 
-Many of the examples contain markdown and are rendered as examples 
+Many of the examples contain Markdown, which are rendered as examples 
 on [our site](https://www.run.house/examples).
 
 Kubetorch supports a broad range of use-cases, including: 
