@@ -33,4 +33,4 @@ spec:
     metadata:
       labels:
         app: {{ workerset_name_app }} # Label for the service
-    spec: {{ pod_template | tojson }}
+    spec: {{ pod_spec | tojson }}

@@ -34,7 +34,7 @@ class KnativeServiceManager(BaseServiceManager):
         gpu_annotations: dict = None,
     ) -> dict:
         """Convert a deployment manifest to a Knative service manifest."""
-        pod_template = deployment_manifest["spec"]["template"]["spec"]
+        pod_spec = deployment_manifest["spec"]["template"]["spec"]
         deployment_labels = deployment_manifest["metadata"]["labels"]
         deployment_annotations = deployment_manifest["metadata"]["annotations"]
 
@@ -85,7 +85,7 @@ class KnativeServiceManager(BaseServiceManager):
             "template_annotations": template_annotations,
             "labels": labels,
             "template_labels": template_labels,
-            "pod_template": pod_template,
+            "pod_spec": pod_spec,
         }
 
         if autoscaling_config and autoscaling_config.concurrency is not None:

@@ -14,4 +14,4 @@ spec:
     metadata:
       annotations: {{ template_annotations | tojson }}
       labels: {{ template_labels | tojson }}
-    spec: {{ pod_template | tojson }}
+    spec: {{ pod_spec | tojson }}

@@ -26,7 +26,7 @@ class DeploymentServiceManager(BaseServiceManager):
 
     @staticmethod
     def _build_base_manifest(
-        pod_template: dict,
+        pod_spec: dict,
         namespace: str,
         replicas: int = 1,
         inactivity_ttl: str = None,
@@ -64,7 +64,7 @@ class DeploymentServiceManager(BaseServiceManager):
             template_annotations={},  # Will be filled in during launch
             labels=labels,
             template_labels=template_labels,
-            pod_template=pod_template,
+            pod_spec=pod_spec,
             replicas=replicas,
         )
 
@@ -94,9 +94,9 @@ class DeploymentServiceManager(BaseServiceManager):
 
         return deployment
 
-    def _is_distributed_deployment(self, pod_template: dict) -> bool:
+    def _is_distributed_deployment(self, pod_spec: dict) -> bool:
         """Check if this is a distributed deployment by looking for distributed environment variables."""
-        containers = pod_template.get("containers")
+        containers = pod_spec.get("containers")
         if not containers:
             return False
 
@@ -113,10 +113,10 @@ class DeploymentServiceManager(BaseServiceManager):
         service_name = deployment["metadata"]["name"]
         module_name = deployment["metadata"]["labels"][serving_constants.KT_MODULE_LABEL]
 
-        pod_template = deployment.get("spec", {}).get("template", {}).get("spec", {})
-        is_distributed = self._is_distributed_deployment(pod_template)
+        pod_spec = deployment.get("spec", {}).get("template", {}).get("spec", {})
+        is_distributed = self._is_distributed_deployment(pod_spec)
 
-        server_port = pod_template.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
+        server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
 
         labels = deployment.get("metadata", {}).get("labels", {})
         annotations = deployment.get("metadata", {}).get("annotations", {})
