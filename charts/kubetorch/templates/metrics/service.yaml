@@ -1,4 +1,4 @@
-{{- if .Values.ephemeralMonitoring.enabled }}
+{{- if .Values.metrics.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -8,7 +8,7 @@ spec:
   selector:
     app: kubetorch-metrics
   ports:
-    - port: {{ .Values.ephemeralMonitoring.prometheus.port }}
-      targetPort: {{ .Values.ephemeralMonitoring.prometheus.port }}
+    - port: {{ .Values.metrics.prometheus.port }}
+      targetPort: {{ .Values.metrics.prometheus.port }}
       name: http
 {{- end }}

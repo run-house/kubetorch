@@ -1,4 +1,4 @@
-{{- if .Values.ephemeralMonitoring.enabled }}
+{{- if .Values.metrics.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -7,16 +7,16 @@ metadata:
 data:
   prometheus.yml: |
     global:
-      scrape_interval: {{ .Values.ephemeralMonitoring.prometheus.scrapeInterval }}
-      evaluation_interval: {{ .Values.ephemeralMonitoring.prometheus.scrapeInterval }}
+      scrape_interval: {{ .Values.metrics.prometheus.scrapeInterval }}
+      evaluation_interval: {{ .Values.metrics.prometheus.scrapeInterval }}
 
     scrape_configs:
       # Prometheus itself
       - job_name: 'self'
         static_configs:
-          - targets: ['localhost:{{ .Values.ephemeralMonitoring.prometheus.port }}']
+          - targets: ['localhost:{{ .Values.metrics.prometheus.port }}']
 
-      {{- if .Values.ephemeralMonitoring.scrapeKubelet }}
+      {{- if .Values.metrics.scrapeKubelet }}
       # Kubelet cAdvisor (container-level metrics)
       - job_name: 'kubelet-cadvisor'
         kubernetes_sd_configs:
@@ -43,7 +43,7 @@ data:
             target_label: service
       {{- end }}
 
-      {{- if .Values.ephemeralMonitoring.scrapeNodeExporter }}
+      {{- if .Values.metrics.scrapeNodeExporter }}
       # Node exporter (per-node CPU/mem)
       - job_name: 'node-exporter'
         static_configs:

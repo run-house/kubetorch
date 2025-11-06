@@ -1,4 +1,4 @@
-{{- if .Values.ephemeralLogStorage.enabled }}
+{{- if .Values.logStreaming.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -8,8 +8,8 @@ spec:
   selector:
     app: kubetorch-logging
   ports:
-    - port: {{ .Values.ephemeralLogStorage.port }}
-      targetPort: {{ .Values.ephemeralLogStorage.port }}
+    - port: {{ .Values.logStreaming.port }}
+      targetPort: {{ .Values.logStreaming.port }}
 ---
 apiVersion: v1
 kind: Service

@@ -68,7 +68,7 @@ nginxProxy:
     health:
       route: "/health"
 
-ephemeralLogStorage:
+logStreaming:
   enabled: true # set to `false` to disable ephemeral log storage
   retentionPeriod: 24h
   maxConcurrentTailRequests: 100
@@ -78,7 +78,7 @@ ephemeralLogStorage:
     cpu: 100m
     memory: 256Mi
 
-ephemeralMonitoring:
+metrics:
   enabled: true # set to `false` to disable ephemeral monitoring
   scrapeKubelet: true
   scrapeNodeExporter: false
