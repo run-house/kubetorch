@@ -43,12 +43,6 @@ A Helm chart for kubetorch
 | ephemeralLogStorage.resources.memory | string | `"256Mi"` |  |
 | ephemeralLogStorage.retentionPeriod | string | `"24h"` |  |
 | ephemeralMonitoring.enabled | bool | `true` |  |
-| ephemeralMonitoring.grafana.anonymous.allowEmbedding | bool | `true` |  |
-| ephemeralMonitoring.grafana.anonymous.disableLoginForm | bool | `true` |  |
-| ephemeralMonitoring.grafana.anonymous.enabled | bool | `true` |  |
-| ephemeralMonitoring.grafana.anonymous.orgRole | string | `"Viewer"` |  |
-| ephemeralMonitoring.grafana.image | string | `"grafana/grafana:main"` |  |
-| ephemeralMonitoring.grafana.prometheusURL | string | `"http://kubetorch-prometheus.kubetorch.svc.cluster.local:9090"` |  |
 | ephemeralMonitoring.prometheus.additionalScrapeConfigs[0].honor_labels | bool | `true` |  |
 | ephemeralMonitoring.prometheus.additionalScrapeConfigs[0].job_name | string | `"gke-managed-dcgm"` |  |
 | ephemeralMonitoring.prometheus.additionalScrapeConfigs[0].kubernetes_sd_configs[0].namespaces.names[0] | string | `"gke-managed-system"` |  |
@@ -72,7 +66,7 @@ A Helm chart for kubetorch
 | ephemeralMonitoring.prometheus.resources.memory | string | `"512Mi"` |  |
 | ephemeralMonitoring.prometheus.retention | string | `"24h"` |  |
 | ephemeralMonitoring.prometheus.scrapeInterval | string | `"5s"` |  |
-| ephemeralMonitoring.scrapeKubeStateMetrics | bool | `true` |  |
+| ephemeralMonitoring.scrapeKubeStateMetrics | bool | `false` |  |
 | ephemeralMonitoring.scrapeKubelet | bool | `true` |  |
 | ephemeralMonitoring.scrapeNodeExporter | bool | `false` |  |
 | kubetorchConfig.deployment_namespaces[0] | string | `"default"` |  |

@@ -84,7 +84,7 @@ ephemeralMonitoring:
   enabled: true # set to `false` to disable ephemeral monitoring
   scrapeKubelet: true
   scrapeNodeExporter: false
-  scrapeKubeStateMetrics: true
+  scrapeKubeStateMetrics: false
   prometheus:
     image: prom/prometheus:v3.7.2
     port: 9090
@@ -114,15 +114,6 @@ ephemeralMonitoring:
             target_label: namespace
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
-  grafana:
-    image: grafana/grafana:main
-    prometheusURL: "http://kubetorch-prometheus.kubetorch.svc.cluster.local:9090"
-    # Anonymous, quick-start UX (no credentials needed)
-    anonymous:
-      enabled: true
-      orgRole: Viewer
-      disableLoginForm: true
-      allowEmbedding: true
 
 opentelemetry-collector:
   enabled: true # set to `false` to disable opentelemetry collector
