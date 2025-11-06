@@ -54,7 +54,7 @@ RAYCLUSTER_SERVICE_TEMPLATE_FILE = "raycluster_service_template.yaml"
 LOKI_GATEWAY_SERVICE_NAME = "loki-gateway"
 
 # Prometheus
-PROMETHEUS_SERVICE_NAME = "kubetorch-prometheus"
+PROMETHEUS_SERVICE_NAME = "kubetorch-metrics"
 
 # Grafana
 GRAFANA_HEALTH_ENDPOINT = "/api/health"
