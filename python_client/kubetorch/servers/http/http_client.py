@@ -14,6 +14,7 @@ from kubernetes import client
 
 from kubetorch.globals import config, service_url
 from kubetorch.logger import get_logger
+from kubetorch.servers.http.metrics_client import K8sMetricsClient
 
 from kubetorch.servers.http.utils import (
     _deserialize_response,
@@ -183,6 +184,10 @@ class HTTPClient:
         self.service_name = service_name
         self.base_url = base_url.rstrip("/")
         self.session = CustomSession()
+        self.metrics_client = K8sMetricsClient(
+            objects_api=self.objects_api, namespace=self.compute.namespace
+        )
+
         self._async_client = None
 
     def __del__(self):
@@ -541,8 +546,6 @@ class HTTPClient:
             pod_regex = "|".join(active_pods)
 
             metric_queries = {
-                "CPU": f'sum by (pod) (rate(container_cpu_usage_seconds_total{{container!="",pod=~"{pod_regex}"}}[2m]))',
-                "Mem": f'sum by (pod) (container_memory_working_set_bytes{{container!="",pod=~"{pod_regex}"}}) / 1024 / 1024',
                 "GPU%": f'avg(DCGM_FI_DEV_GPU_UTIL{{pod=~"{pod_regex}"}}) by (pod)',
                 "GPUMiB": f'avg(DCGM_FI_DEV_FB_USED{{pod=~"{pod_regex}"}}) by (pod) / 1024 / 1024',
             }
@@ -579,6 +582,14 @@ class HTTPClient:
                     except Exception as e:
                         logger.error(f"Error loading metrics: {e}")
                         continue
+
+                try:
+                    # Get CPU/Mem metrics from K8s Metrics API
+                    k8s_metrics_data = self.metrics_client.get_pod_metrics()
+                    for pod, vals in k8s_metrics_data.items():
+                        pod_data[pod].update(vals)
+                except Exception as e:
+                    logger.error(f"Error loading K8s metrics: {e}")
 
                 if not gpu_values:
                     show_gpu = False

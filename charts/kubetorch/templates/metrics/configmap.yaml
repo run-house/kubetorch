@@ -16,31 +16,21 @@ data:
         static_configs:
           - targets: ['localhost:{{ .Values.metrics.prometheus.port }}']
 
-      {{- if .Values.metrics.scrapeKubelet }}
-      # Kubelet cAdvisor (container-level metrics)
-      - job_name: 'kubelet-cadvisor'
-        kubernetes_sd_configs:
-          - role: node
+      # Kubernetes Metrics Server (multi-namespace)
+      {{- $allNamespaces := .Values.kubetorchConfig.deployment_namespaces | default list }}
+      {{- if not (has .Release.Namespace $allNamespaces) }}
+        {{- $allNamespaces = append $allNamespaces .Release.Namespace }}
+      {{- end }}
+      {{- range $allNamespaces }}
+      - job_name: 'metrics-server-{{ . }}'
         scheme: https
+        metrics_path: /apis/metrics.k8s.io/v1beta1/namespaces/{{ . }}/pods
+        static_configs:
+          - targets: ['kubernetes.default.svc:443']
         tls_config:
           ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
           insecure_skip_verify: true
         bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-        metrics_path: /metrics/cadvisor
-        relabel_configs:
-          - action: replace
-            source_labels: [__meta_kubernetes_node_name]
-            target_label: node
-          - action: replace
-            target_label: __address__
-            replacement: kubernetes.default.svc:443
-          - action: replace
-            source_labels: [__meta_kubernetes_node_name]
-            regex: (.+)
-            target_label: __metrics_path__
-            replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
-          - source_labels: [__meta_kubernetes_pod_label_kubetorch_com_service]
-            target_label: service
       {{- end }}
 
       {{- if (index .Values "dcgm-exporter").enabled }}

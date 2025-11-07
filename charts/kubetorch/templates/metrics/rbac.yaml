@@ -29,6 +29,10 @@ rules:
       - configmaps
       - secrets
     verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources:
+      - pods
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -44,6 +48,6 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: kubetorch-metrics
-    namespace: {{ . }}
+    namespace: {{ $.Release.Namespace }}
 {{- end }}
 {{- end }}
