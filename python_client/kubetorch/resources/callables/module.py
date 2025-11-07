@@ -579,7 +579,7 @@ class Module:
         else:
             logger.info(f"Package root identified at {source_dir}; syncing directory")
 
-        if use_editable and install_url != str(source_dir):
+        if install_url.endswith(".whl") or (use_editable and install_url != str(source_dir)):
             rsync_dirs.append(install_url)
 
         pointer_env_vars = self._get_pointer_env_vars(self.remote_pointers)
@@ -637,7 +637,7 @@ class Module:
             log_thread.start()
 
         try:
-            startup_rsync_command = self._startup_rsync_command(use_editable, dryrun)
+            startup_rsync_command = self._startup_rsync_command(use_editable, install_url, dryrun)
 
             # Launch the compute in the form of a service with the requested resources
             service_config = self.compute._launch(
@@ -700,7 +700,7 @@ class Module:
             )
 
         try:
-            startup_rsync_command = self._startup_rsync_command(use_editable, dryrun)
+            startup_rsync_command = self._startup_rsync_command(use_editable, install_url, dryrun)
 
             # Launch the compute in the form of a service with the requested resources
             # Use the async version of _launch
@@ -779,14 +779,17 @@ class Module:
             else:
                 await self.compute.rsync_async(rsync_dirs)
 
-    def _startup_rsync_command(self, use_editable, dryrun):
-        if not use_editable or dryrun:
+    def _startup_rsync_command(self, use_editable, install_url, dryrun):
+        if dryrun:
             return None
 
-        # rsync from the rsync pod's file system directly
-        startup_cmd = self.compute._rsync_svc_url()
-        cmd = f"rsync -av {startup_cmd} ."
-        return cmd
+        if use_editable or (install_url and install_url.endswith(".whl")):
+            # rsync from the rsync pod's file system directly
+            startup_cmd = self.compute._rsync_svc_url()
+            cmd = f"rsync -av {startup_cmd} ."
+            return cmd
+
+        return None
 
     def teardown(self):
         """Delete the service and all associated resources."""
