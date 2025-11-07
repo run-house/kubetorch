@@ -14,10 +14,7 @@ from kubernetes.utils import parse_quantity
 from kubetorch import globals
 from kubetorch.logger import get_logger
 from kubetorch.servers.http.utils import is_running_in_kubernetes
-from kubetorch.serving.constants import (
-    LOKI_GATEWAY_SERVICE_NAME,
-    PROMETHEUS_SERVICE_NAME,
-)
+from kubetorch.serving.constants import LOKI_GATEWAY_SERVICE_NAME, PROMETHEUS_SERVICE_NAME
 from kubetorch.utils import load_kubeconfig
 
 logger = get_logger(__name__)
@@ -41,14 +38,10 @@ class GPUConfig:
 
         if self.sharing_type == "memory":
             if not self.gpu_memory:
-                raise ValueError(
-                    "GPU memory must be specified when using memory sharing"
-                )
+                raise ValueError("GPU memory must be specified when using memory sharing")
         elif self.sharing_type == "fraction":
             if not self.gpu_fraction:
-                raise ValueError(
-                    "GPU fraction must be specified when using fraction sharing"
-                )
+                raise ValueError("GPU fraction must be specified when using fraction sharing")
             try:
                 fraction = float(self.gpu_fraction)
                 if not 0 < fraction <= 1:
@@ -103,14 +96,8 @@ class RequestedPodResources:
         num_gpus: Optional[Union[int, dict]] = None,
     ):
 
-        self.memory = (
-            max(float(memory), self.MIN_MEMORY_GB) if memory is not None else None
-        )
-        self.cpus = (
-            max(self.normalize_cpu_value(cpus), self.MIN_CPU_CORES)
-            if cpus is not None
-            else None
-        )
+        self.memory = max(float(memory), self.MIN_MEMORY_GB) if memory is not None else None
+        self.cpus = max(self.normalize_cpu_value(cpus), self.MIN_CPU_CORES) if cpus is not None else None
         self.disk_size = disk_size
         self.num_gpus = num_gpus
 
@@ -157,9 +144,7 @@ class RequestedPodResources:
         return str(memory_val)
 
     @classmethod
-    def normalize_cpu_value(
-        cls, cpu_value: Optional[Union[int, str, float]]
-    ) -> Optional[float]:
+    def normalize_cpu_value(cls, cpu_value: Optional[Union[int, str, float]]) -> Optional[float]:
         """Convert CPU value to float, handling string values with '+' allowed by Sky and Kubetorch."""
         if cpu_value is None:
             return None
@@ -288,9 +273,7 @@ def check_loki_enabled(core_api: CoreV1Api = None) -> bool:
 
     try:
         # Check if loki-gateway service exists in the namespace
-        core_api.read_namespaced_service(
-            name=LOKI_GATEWAY_SERVICE_NAME, namespace=kt_namespace
-        )
+        core_api.read_namespaced_service(name=LOKI_GATEWAY_SERVICE_NAME, namespace=kt_namespace)
         logger.debug(f"Loki gateway service found in namespace {kt_namespace}")
     except ApiException as e:
         if e.status == 404:
@@ -325,9 +308,7 @@ def check_prometheus_enabled(core_api: CoreV1Api = None) -> bool:
 
     try:
         # Check if prometheus service exists in the namespace
-        core_api.read_namespaced_service(
-            name=PROMETHEUS_SERVICE_NAME, namespace=kt_namespace
-        )
+        core_api.read_namespaced_service(name=PROMETHEUS_SERVICE_NAME, namespace=kt_namespace)
         logger.debug(f"Metrics service found in namespace {kt_namespace}")
     except ApiException as e:
         if e.status == 404:
@@ -342,9 +323,7 @@ def check_prometheus_enabled(core_api: CoreV1Api = None) -> bool:
                 if response.status_code == 200:
                     logger.debug("Metrics service is reachable")
                 else:
-                    logger.debug(
-                        f"Metrics service returned status {response.status_code}"
-                    )
+                    logger.debug(f"Metrics service returned status {response.status_code}")
                     return False
             except Exception as e:
                 logger.debug(f"Metrics service is not reachable: {e}")

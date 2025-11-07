@@ -55,17 +55,13 @@ async def test_fn_sync_reload_by_name_with_prefixes(remote_fn):
     # Note: username prefix required for CI tests where TEST_HASH is set in job yaml
     username_prefix = kt.config.username
 
-    another_reloaded_fn = kt.fn(
-        name=remote_fn.name, reload_prefixes=[branch_prefix, username_prefix]
-    )
+    another_reloaded_fn = kt.fn(name=remote_fn.name, reload_prefixes=[branch_prefix, username_prefix])
     assert another_reloaded_fn(2, 3) == 5
 
     # Note: Different way to load function and using a list of prefixes
     compute_type = os.getenv("TEST_COMPUTE_TYPE")
     compute_prefix = f"{username_prefix}-{compute_type}"
-    reloaded_fn = kt.fn(
-        summer, reload_prefixes=[branch_prefix, username_prefix, compute_prefix]
-    )
+    reloaded_fn = kt.fn(summer, reload_prefixes=[branch_prefix, username_prefix, compute_prefix])
     assert reloaded_fn(2, 2) == 4
 
 
@@ -169,9 +165,7 @@ async def test_serialization_formats(remote_fn, remote_cls):
         remote_fn.serialization = "pickle"
 
         # Now calls should use pickle by default
-        result_pickle = remote_fn(
-            TestModel(name="test_a", value=42), TestModel(name="test_b", value=42)
-        )
+        result_pickle = remote_fn(TestModel(name="test_a", value=42), TestModel(name="test_b", value=42))
         assert isinstance(result_pickle, TestModel)
         assert result_pickle.name == "sum_result"
         assert result_pickle.value == 84
@@ -210,10 +204,7 @@ async def test_serialization_formats(remote_fn, remote_cls):
 @pytest.mark.asyncio
 async def test_cls_sync_basic(remote_cls):
     remote_cpu_count = remote_cls.cpu_count()
-    assert (
-        remote_cls.print_and_log(1)
-        == "Hello from the cluster! [0. 1. 0. 0. 0. 0. 0. 0. 0. 0.]"
-    )
+    assert remote_cls.print_and_log(1) == "Hello from the cluster! [0. 1. 0. 0. 0. 0. 0. 0. 0. 0.]"
     assert remote_cls.size_minus_cpus() == 10 - remote_cpu_count
 
 

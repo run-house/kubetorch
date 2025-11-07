@@ -105,10 +105,7 @@ class Volume:
             # Otherwise, pick the default StorageClass
             for sc in storage_classes:
                 annotations = sc.metadata.annotations or {}
-                if (
-                    annotations.get("storageclass.kubernetes.io/is-default-class")
-                    == "true"
-                ):
+                if annotations.get("storageclass.kubernetes.io/is-default-class") == "true":
                     logger.info(f"Using default storage class: {sc.metadata.name}")
                     return sc.metadata.name
 
@@ -116,9 +113,7 @@ class Volume:
             available_classes = [sc.metadata.name for sc in storage_classes]
             first_sc = available_classes[0]
             if len(available_classes) == 1:
-                logger.info(
-                    f"No default storage class found, using only available one: {first_sc}"
-                )
+                logger.info(f"No default storage class found, using only available one: {first_sc}")
             else:
                 logger.warning(
                     f"No default storage class found, using first available: {first_sc}. "
@@ -151,16 +146,10 @@ class Volume:
 
             storage_class = pvc.spec.storage_class_name
             size = pvc.spec.resources.requests.get("storage")
-            access_mode = (
-                pvc.spec.access_modes[0]
-                if pvc.spec.access_modes
-                else DEFAULT_VOLUME_ACCESS_MODE
-            )
+            access_mode = pvc.spec.access_modes[0] if pvc.spec.access_modes else DEFAULT_VOLUME_ACCESS_MODE
 
             annotations = pvc.metadata.annotations or {}
-            mount_path = annotations.get(
-                "kubetorch.com/mount-path", f"/{KT_MOUNT_FOLDER}/{name}"
-            )
+            mount_path = annotations.get("kubetorch.com/mount-path", f"/{KT_MOUNT_FOLDER}/{name}")
 
             # Create Volume with actual attributes from PVC
             vol = cls(
@@ -173,9 +162,7 @@ class Volume:
                 core_v1=core_v1,
             )
 
-            logger.debug(
-                f"Loaded existing PVC {pvc_name} with storage_class={storage_class}"
-            )
+            logger.debug(f"Loaded existing PVC {pvc_name} with storage_class={storage_class}")
             return vol
 
         except ApiException as e:
@@ -186,9 +173,7 @@ class Volume:
                     vol.create()
                     return vol
                 else:
-                    raise ValueError(
-                        f"Volume '{name}' (PVC: {pvc_name}) does not exist in namespace '{namespace}'"
-                    )
+                    raise ValueError(f"Volume '{name}' (PVC: {pvc_name}) does not exist in namespace '{namespace}'")
             else:
                 # Some other API error
                 raise
@@ -219,9 +204,7 @@ class Volume:
                 existing_pvc = self.core_v1.read_namespaced_persistent_volume_claim(
                     name=self.pvc_name, namespace=self.namespace
                 )
-                logger.debug(
-                    f"PVC {self.pvc_name} already exists in namespace {self.namespace}"
-                )
+                logger.debug(f"PVC {self.pvc_name} already exists in namespace {self.namespace}")
                 return existing_pvc
             except ApiException as e:
                 if e.status != 404:
@@ -234,9 +217,7 @@ class Volume:
 
             pvc_spec = client.V1PersistentVolumeClaimSpec(
                 access_modes=[self.access_mode],
-                resources=client.V1ResourceRequirements(
-                    requests={"storage": self.size}
-                ),
+                resources=client.V1ResourceRequirements(requests={"storage": self.size}),
                 storage_class_name=storage_class_name,
             )
 
@@ -256,9 +237,7 @@ class Volume:
                 spec=pvc_spec,
             )
 
-            created_pvc = self.core_v1.create_namespaced_persistent_volume_claim(
-                namespace=self.namespace, body=pvc
-            )
+            created_pvc = self.core_v1.create_namespaced_persistent_volume_claim(namespace=self.namespace, body=pvc)
 
             logger.info(
                 f"Successfully created PVC {self.pvc_name} in namespace {self.namespace} with "
@@ -273,9 +252,7 @@ class Volume:
     def delete(self) -> None:
         """Delete the PVC"""
         try:
-            self.core_v1.delete_namespaced_persistent_volume_claim(
-                name=self.pvc_name, namespace=self.namespace
-            )
+            self.core_v1.delete_namespaced_persistent_volume_claim(name=self.pvc_name, namespace=self.namespace)
             logger.debug(f"Successfully deleted PVC {self.pvc_name}")
         except ApiException as e:
             if e.status == 404:
@@ -287,9 +264,7 @@ class Volume:
     def exists(self) -> bool:
         """Check if the PVC exists"""
         try:
-            self.core_v1.read_namespaced_persistent_volume_claim(
-                name=self.pvc_name, namespace=self.namespace
-            )
+            self.core_v1.read_namespaced_persistent_volume_claim(name=self.pvc_name, namespace=self.namespace)
             return True
         except ApiException as e:
             if e.status == 404:

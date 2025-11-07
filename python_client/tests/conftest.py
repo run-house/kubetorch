@@ -61,9 +61,7 @@ def pytest_collection_modifyitems(config, items):
         if (
             test_level is not None
             and TEST_LEVEL_HIERARCHY[test_level.args[0]]
-            == TEST_LEVEL_HIERARCHY[
-                request_level
-            ]  # currently we get tests only with the provided label
+            == TEST_LEVEL_HIERARCHY[request_level]  # currently we get tests only with the provided label
         ):
             new_items.append(item)
 
@@ -232,9 +230,7 @@ async def remote_cls():
         ).distribute("ray", workers=2)
 
     name = f"{compute_type}-slow-cls"
-    remote_cls = await kt.cls(SlowNumpyArray, name=name).to_async(
-        compute=compute, init_args={"size": 10}
-    )
+    remote_cls = await kt.cls(SlowNumpyArray, name=name).to_async(compute=compute, init_args={"size": 10})
     return remote_cls
 
 

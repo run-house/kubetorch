@@ -52,9 +52,7 @@ def test_launch_fn_with_queue():
 
     pod = pods[0]
     queue_label = pod.metadata.labels.get("kai.scheduler/queue")
-    assert (
-        queue_label == queue_name
-    ), f"Pod not assigned to expected queue '{queue_name}'. Found: '{queue_label}'"
+    assert queue_label == queue_name, f"Pod not assigned to expected queue '{queue_name}'. Found: '{queue_label}'"
 
 
 # Gang scheduling needs to be migrated to work for deployment instead of knative services,
@@ -72,9 +70,7 @@ def test_launch_fn_with_gang_scheduling():
     core_api = CoreV1Api()
 
     remote_fn = kt.fn(summer).to(
-        compute=kt.Compute(
-            cpus=".01", gpu_anti_affinity=True, launch_timeout=300
-        ).autoscale(
+        compute=kt.Compute(cpus=".01", gpu_anti_affinity=True, launch_timeout=300).autoscale(
             min_scale=3,
             scale_to_zero_pod_retention_period="50m",  # 50 minutes retention period
         ),
@@ -180,11 +176,7 @@ def test_queue_priorities_and_priority_class_affect_scheduling():
     ]
 
     for fn_name, queue, priority in pod_configs:
-        thread = threading.Thread(
-            target=lambda: deployments.update(
-                {fn_name: deploy_fn(fn_name, queue, priority)}
-            )
-        )
+        thread = threading.Thread(target=lambda: deployments.update({fn_name: deploy_fn(fn_name, queue, priority)}))
         thread.start()
         threads.append(thread)
 
@@ -208,18 +200,9 @@ def test_queue_priorities_and_priority_class_affect_scheduling():
         pod_map[fn_name] = matching_pod
 
     # Validate queue labels
-    assert (
-        pod_map[preferred_fn_name].metadata.labels.get("kai.scheduler/queue")
-        == "preferred"
-    )
-    assert (
-        pod_map[low_priority_fn_name].metadata.labels.get("kai.scheduler/queue")
-        == "preferred"
-    )
-    assert (
-        pod_map[high_priority_fn_name].metadata.labels.get("kai.scheduler/queue")
-        == "preferred"
-    )
+    assert pod_map[preferred_fn_name].metadata.labels.get("kai.scheduler/queue") == "preferred"
+    assert pod_map[low_priority_fn_name].metadata.labels.get("kai.scheduler/queue") == "preferred"
+    assert pod_map[high_priority_fn_name].metadata.labels.get("kai.scheduler/queue") == "preferred"
 
     # Validate PriorityClass annotations
     assert pod_map[low_priority_fn_name].spec.priority_class_name == "dev"
@@ -231,9 +214,7 @@ def test_queue_priorities_and_priority_class_affect_scheduling():
 
     assert preferred_fn_phase in ["Running", "Pending"]
     if default_fn_phase == "Pending":
-        default_state = pod_map[preferred_fn_name].metadata.annotations.get(
-            "kai.scheduler/state"
-        )
+        default_state = pod_map[preferred_fn_name].metadata.annotations.get("kai.scheduler/state")
         assert default_state in ["Queued", None]
 
     # high-priority pod runs before low-priority pod
@@ -242,9 +223,7 @@ def test_queue_priorities_and_priority_class_affect_scheduling():
 
     assert high_priority_phase in ["Running", "Pending"]
     if low_priority_phase == "Pending":
-        low_state = pod_map[low_priority_fn_name].metadata.annotations.get(
-            "kai.scheduler/state"
-        )
+        low_state = pod_map[low_priority_fn_name].metadata.annotations.get("kai.scheduler/state")
         assert low_state in ["Queued", None]
 
 

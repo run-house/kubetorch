@@ -31,11 +31,7 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
 try:
-    from server_metrics import (
-        get_inactivity_ttl_annotation,
-        HeartbeatManager,
-        setup_otel_metrics,
-    )
+    from server_metrics import get_inactivity_ttl_annotation, HeartbeatManager, setup_otel_metrics
     from utils import (
         clear_debugging_sessions,
         deep_breakpoint,
@@ -48,11 +44,7 @@ try:
         wait_for_app_start,
     )
 except ImportError:
-    from .server_metrics import (
-        get_inactivity_ttl_annotation,
-        HeartbeatManager,
-        setup_otel_metrics,
-    )
+    from .server_metrics import get_inactivity_ttl_annotation, HeartbeatManager, setup_otel_metrics
     from .utils import (
         clear_debugging_sessions,
         deep_breakpoint,
@@ -125,9 +117,7 @@ async def _http_reverse_proxy(request: Request):
     url = httpx.URL(path=f"/{endpoint_path}", query=request.url.query.encode("utf-8"))
 
     # Build the request to forward to FastAPI
-    rp_req = proxy_client.build_request(
-        request.method, url, headers=request.headers.raw, content=await request.body()
-    )
+    rp_req = proxy_client.build_request(request.method, url, headers=request.headers.raw, content=await request.body())
 
     # Send the request and get streaming response
     rp_resp = await proxy_client.send(rp_req, stream=True)
@@ -354,9 +344,7 @@ def cached_image_setup():
                     # wait for internal app to be healthy/ready if run port is provided
                     try:
                         port = os.getenv("KT_APP_PORT")
-                        logger.debug(
-                            f"Waiting for internal app on port {port} to start:"
-                        )
+                        logger.debug(f"Waiting for internal app on port {port} to start:")
                         wait_for_app_start(
                             port=port,
                             health_check=os.getenv("KT_APP_HEALTHCHECK"),
@@ -384,9 +372,7 @@ def cached_image_setup():
                             return_code = poll_result
                         else:
                             # Process is running in background successfully
-                            logger.info(
-                                f"Background process started successfully (PID: {process.pid})"
-                            )
+                            logger.info(f"Background process started successfully (PID: {process.pid})")
                             return_code = 0  # Indicate success for background start
                     else:
                         # Wait for process to complete
@@ -399,9 +385,7 @@ def cached_image_setup():
                     if return_code != 0 and not is_app_cmd:
                         with stderr_lock:
                             if stderr_lines:
-                                logger.error(
-                                    f"Failed to run command '{command}' with stderr:"
-                                )
+                                logger.error(f"Failed to run command '{command}' with stderr:")
                                 for stderr_line in stderr_lines:
                                     logger.error(stderr_line)
             except subprocess.CalledProcessError as e:
@@ -425,18 +409,12 @@ def cached_image_setup():
             # We only need to look at the deps which were already installed (i.e. lines in start_deps),
             # new ones can't be "stale" inside the current server process
             # We also only use lines with exact pypi versions (has "=="), no editable
-            changed_deps = [
-                line.split("==")[0]
-                for line in start_deps
-                if "==" in line and line not in end_deps
-            ]
+            changed_deps = [line.split("==")[0] for line in start_deps if "==" in line and line not in end_deps]
             imported_changed_deps = [
                 dep for dep in changed_deps if dep in sys.modules
             ]  # Only reload deps which are already imported
             if imported_changed_deps:
-                logger.debug(
-                    f"New dependencies found: {imported_changed_deps}, forcing reload"
-                )
+                logger.debug(f"New dependencies found: {imported_changed_deps}, forcing reload")
 
                 # Don't clear the callable cache here - let load_callable_from_env handle it to preserve __kt_cached_state__
                 if DISTRIBUTED_SUPERVISOR:
@@ -468,9 +446,7 @@ def run_image_setup(deployed_time: Optional[float] = None):
 
     dockerfile_path = kt_directory() / "image.dockerfile"
     if not dockerfile_path.exists():
-        raise FileNotFoundError(
-            f"No image and metadata configuration found in path: {str(dockerfile_path)}"
-        )
+        raise FileNotFoundError(f"No image and metadata configuration found in path: {str(dockerfile_path)}")
     while (
         # May need to give the dockerfile time to rsync over, so wait until the dockerfile timestamp is later than
         # when we started the deployment (recorded in .to and passed here as deployed_time). We also should only
@@ -586,9 +562,7 @@ def load_callable(
             logger.debug("Returning cached callable (found after acquiring lock).")
             return callable_obj
         # Proceed with loading/reloading
-        return _load_callable_internal(
-            deployed_as_of, distributed_subprocess, reload_cleanup_fn, callable_obj
-        )
+        return _load_callable_internal(deployed_as_of, distributed_subprocess, reload_cleanup_fn, callable_obj)
 
 
 def _load_callable_internal(
@@ -616,9 +590,7 @@ def _load_callable_internal(
         reload_cleanup_fn()
 
     deployed_time = (
-        datetime.fromisoformat(deployed_as_of).timestamp()
-        if deployed_as_of
-        else datetime.now(timezone.utc).timestamp()
+        datetime.fromisoformat(deployed_as_of).timestamp() if deployed_as_of else datetime.now(timezone.utc).timestamp()
     )
     if not distributed_subprocess:
         # We don't reload the image in distributed subprocess/es, as we already did it in the
@@ -657,10 +629,7 @@ def load_distributed_supervisor(deployed_as_of: Optional[str] = None):
     # we create a new supervisor if it doesn't exist or if the config has changed.
     # We don't create a supervisor if this is a distributed subprocess.
     config_hash = hash(str(distributed_config))
-    if (
-        DISTRIBUTED_SUPERVISOR is None
-        or config_hash != DISTRIBUTED_SUPERVISOR.config_hash
-    ):
+    if DISTRIBUTED_SUPERVISOR is None or config_hash != DISTRIBUTED_SUPERVISOR.config_hash:
         from .distributed_utils import distributed_supervisor_factory
 
         logger.info(f"Loading distributed supervisor with config: {distributed_config}")
@@ -676,9 +645,7 @@ def load_distributed_supervisor(deployed_as_of: Optional[str] = None):
         # when we call DISTRIBUTED_SUPERVISOR.cleanup() in lifespan).
         DISTRIBUTED_SUPERVISOR.setup(deployed_as_of=deployed_as_of)
     except Exception as e:
-        logger.error(
-            f"Failed to set up distributed supervisor with config {distributed_config}: {e}"
-        )
+        logger.error(f"Failed to set up distributed supervisor with config {distributed_config}: {e}")
         DISTRIBUTED_SUPERVISOR = None
         raise e
     return DISTRIBUTED_SUPERVISOR
@@ -694,9 +661,7 @@ def patch_sys_path():
     # Needed for distributed subprocesses to find the file path
     existing_path = os.environ.get("PYTHONPATH", "")
     if os.environ["KT_FILE_PATH"] not in existing_path:
-        os.environ["PYTHONPATH"] = (
-            f"{abs_path}{os.pathsep}{existing_path}" if existing_path else abs_path
-        )
+        os.environ["PYTHONPATH"] = f"{abs_path}{os.pathsep}{existing_path}" if existing_path else abs_path
         logger.debug(f"Set PYTHONPATH to {os.environ['PYTHONPATH']}")
 
 
@@ -711,9 +676,7 @@ def load_callable_from_env():
 
     if existing_callable and hasattr(existing_callable, "__kt_cached_state__"):
         try:
-            logger.info(
-                f"Extracting cached state from {cls_or_fn_name} via __kt_cached_state__"
-            )
+            logger.info(f"Extracting cached state from {cls_or_fn_name} via __kt_cached_state__")
             cached_state = existing_callable.__kt_cached_state__()
             if cached_state is not None and not isinstance(cached_state, dict):
                 logger.warning(
@@ -841,9 +804,7 @@ def import_from_file(file_path: str, module_name: str):
 
     spec = importlib.util.spec_from_file_location(module_name, file_path)
     if spec is None or spec.loader is None:
-        raise ImportError(
-            f"Could not load spec for module {module_name} from {file_path}"
-        )
+        raise ImportError(f"Could not load spec for module {module_name} from {file_path}")
 
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -915,9 +876,7 @@ def rsync_file_updates():
 
             if is_retryable and attempt < max_retries - 1:
                 # Calculate exponential backoff with jitter
-                delay = min(
-                    base_delay * (2**attempt) + random.uniform(0, 1), max_delay
-                )
+                delay = min(base_delay * (2**attempt) + random.uniform(0, 1), max_delay)
                 logger.warning(
                     f"Rsync {description} failed with retryable error: {resp.stderr.strip()}. "
                     f"Retrying in {delay:.1f} seconds (attempt {attempt + 1}/{max_retries})"
@@ -926,17 +885,11 @@ def rsync_file_updates():
             else:
                 # For non-retryable errors or final attempt, raise immediately
                 if attempt == max_retries - 1:
-                    logger.error(
-                        f"Rsync {description} failed after {max_retries} attempts. Last error: {resp.stderr}"
-                    )
-                raise RuntimeError(
-                    f"Rsync {description} failed with error: {resp.stderr}"
-                )
+                    logger.error(f"Rsync {description} failed after {max_retries} attempts. Last error: {resp.stderr}")
+                raise RuntimeError(f"Rsync {description} failed with error: {resp.stderr}")
 
         # If we exhausted all retries
-        raise RuntimeError(
-            f"Rsync {description} failed after {max_retries} attempts. Last error: {resp.stderr}"
-        )
+        raise RuntimeError(f"Rsync {description} failed after {max_retries} attempts. Last error: {resp.stderr}")
 
     def rsync_regular_files():
         """Rsync regular files (excluding __absolute__*) to working directory."""
@@ -948,17 +901,13 @@ def rsync_file_updates():
         """Rsync absolute path files to their absolute destinations."""
         # First, do a dry-run to see if __absolute__ directory exists
         check_cmd = f"rsync --list-only {rsync_base}__absolute__/"
-        check_resp = subprocess.run(
-            check_cmd, shell=True, capture_output=True, text=True
-        )
+        check_resp = subprocess.run(check_cmd, shell=True, capture_output=True, text=True)
 
         if check_resp.returncode == 0 and check_resp.stdout.strip():
             # __absolute__ directory exists, sync its contents to root
             # The trick is to sync from __absolute__/ to / which places files in their absolute paths
             rsync_cmd_absolute = f"rsync -avL {rsync_base}__absolute__/ /"
-            logger.debug(
-                f"Rsyncing absolute path files with command: {rsync_cmd_absolute}"
-            )
+            logger.debug(f"Rsyncing absolute path files with command: {rsync_cmd_absolute}")
             run_rsync_with_retries(rsync_cmd_absolute, "absolute path files")
         else:
             logger.debug("No absolute path files to sync")
@@ -1019,8 +968,7 @@ class TerminationCheckMiddleware(BaseHTTPMiddleware):
         while not request_task.done():
             # Check if we're terminating
             if TERMINATION_EVENT.is_set() or (
-                hasattr(request.app.state, "terminating")
-                and request.app.state.terminating
+                hasattr(request.app.state, "terminating") and request.app.state.terminating
             ):
                 # Cancel the request task
                 request_task.cancel()
@@ -1047,9 +995,7 @@ class TerminationCheckMiddleware(BaseHTTPMiddleware):
 
             # Wait a bit before checking again or for request to complete
             try:
-                result = await asyncio.wait_for(
-                    asyncio.shield(request_task), timeout=0.5
-                )
+                result = await asyncio.wait_for(asyncio.shield(request_task), timeout=0.5)
                 return result
             except asyncio.TimeoutError:
                 # Request still running after 0.5s, continue loop to check termination again
@@ -1209,9 +1155,7 @@ async def lifespan(app: FastAPI):
             await app.state.heartbeat_manager.start()
             logger.debug(f"Heartbeat manager started with TTL={ttl}s")
     elif ttl:
-        logger.warning(
-            "TTL annotation found, but OTEL is not enabled, heartbeat disabled"
-        )
+        logger.warning("TTL annotation found, but OTEL is not enabled, heartbeat disabled")
     else:
         logger.debug("No TTL annotation found, heartbeat disabled")
 
@@ -1267,9 +1211,7 @@ app.add_middleware(RequestIDMiddleware)
 
 # Configure the FastAPI app for metrics first
 # Method will return None for meter_provider if otel is not enabled
-app, meter_provider = (
-    setup_otel_metrics(app) if KT_OTEL_ENABLED is True else (app, None)
-)
+app, meter_provider = setup_otel_metrics(app) if KT_OTEL_ENABLED is True else (app, None)
 
 # instrument metrics
 if meter_provider is not None:
@@ -1283,9 +1225,7 @@ if meter_provider is not None:
             excluded_urls="/,/metrics,/health",
         )
     except ImportError:
-        logger.info(
-            "OpenTelemetry instrumentation not enabled, skipping metrics instrumentation"
-        )
+        logger.info("OpenTelemetry instrumentation not enabled, skipping metrics instrumentation")
 
 # add route for fastapi app
 if os.getenv("KT_CALLABLE_TYPE") == "app" and os.getenv("KT_APP_PORT"):
@@ -1376,9 +1316,7 @@ def _reload_image(
     """
     global _LAST_DEPLOYED
     deployed_time = (
-        datetime.fromisoformat(deployed_as_of).timestamp()
-        if deployed_as_of
-        else datetime.now(timezone.utc).timestamp()
+        datetime.fromisoformat(deployed_as_of).timestamp() if deployed_as_of else datetime.now(timezone.utc).timestamp()
     )
     run_image_setup(deployed_time)
     _LAST_DEPLOYED = deployed_time
@@ -1409,9 +1347,7 @@ async def run_callable(
     # NOTE: The distributed replica processes (e.g. PyTorchProcess:run) rely on this running here even though
     # they will reconstruct the callable themselves, because they skip image reloading as a performance optimization.
     # Run load_callable in executor since it may do file I/O and other blocking operations
-    callable_obj = await run_in_executor_with_context(
-        None, load_callable, deployed_as_of
-    )
+    callable_obj = await run_in_executor_with_context(None, load_callable, deployed_as_of)
 
     # If this is a distributed call (and not a subcall from a different distributed replica),
     # and the type of distribution which requires a special call method (e.g. SIMD), use the
@@ -1454,9 +1390,7 @@ async def run_callable_internal(
     debug_port: Optional[int] = None,
 ):
     # Check if serialization is allowed
-    allowed_serialization = os.getenv(
-        "KT_ALLOWED_SERIALIZATION", DEFAULT_ALLOWED_SERIALIZATION
-    ).split(",")
+    allowed_serialization = os.getenv("KT_ALLOWED_SERIALIZATION", DEFAULT_ALLOWED_SERIALIZATION).split(",")
     if serialization not in allowed_serialization:
         raise HTTPException(
             status_code=400,
@@ -1500,9 +1434,7 @@ async def run_callable_internal(
     is_async_method = inspect.iscoroutinefunction(user_method)
 
     if debug_port:
-        logger.info(
-            f"Debugging remote callable {cls_or_fn_name}.{method_name} on port {debug_port}"
-        )
+        logger.info(f"Debugging remote callable {cls_or_fn_name}.{method_name} on port {debug_port}")
         deep_breakpoint(debug_port)
         # If using the debugger, step in here ("s") to enter your function/class method.
         if is_async_method:
@@ -1510,9 +1442,7 @@ async def run_callable_internal(
         else:
             # Run sync method in thread pool to avoid blocking
             # Use lambda to properly pass both args and kwargs
-            result = await run_in_executor_with_context(
-                None, lambda: user_method(*args, **kwargs)
-            )
+            result = await run_in_executor_with_context(None, lambda: user_method(*args, **kwargs))
     else:
         logger.debug(f"Calling remote callable {cls_or_fn_name}.{method_name}")
         if is_async_method:
@@ -1520,9 +1450,7 @@ async def run_callable_internal(
         else:
             # Run sync method in thread pool to avoid blocking
             # Use lambda to properly pass both args and kwargs
-            result = await run_in_executor_with_context(
-                None, lambda: user_method(*args, **kwargs)
-            )
+            result = await run_in_executor_with_context(None, lambda: user_method(*args, **kwargs))
 
     # Handle case where sync method returns an awaitable (e.g., from an async framework)
     # This is less common but can happen with some async libraries
@@ -1537,18 +1465,14 @@ async def run_callable_internal(
             result = {"data": encoded_result}
         except Exception as e:
             logger.error(f"Failed to pickle result: {str(e)}")
-            raise SerializationError(
-                f"Result could not be serialized with pickle: {str(e)}"
-            )
+            raise SerializationError(f"Result could not be serialized with pickle: {str(e)}")
     else:
         # Default JSON serialization
         try:
             json.dumps(result)
         except (TypeError, ValueError) as e:
             logger.error(f"Result is not JSON serializable: {str(e)}")
-            raise SerializationError(
-                f"Result could not be serialized to JSON: {str(e)}"
-            )
+            raise SerializationError(f"Result could not be serialized to JSON: {str(e)}")
 
     clear_debugging_sessions()
 
@@ -1568,9 +1492,7 @@ def run_callable_internal_sync(
     import inspect
 
     # Check if serialization is allowed
-    allowed_serialization = os.getenv(
-        "KT_ALLOWED_SERIALIZATION", DEFAULT_ALLOWED_SERIALIZATION
-    ).split(",")
+    allowed_serialization = os.getenv("KT_ALLOWED_SERIALIZATION", DEFAULT_ALLOWED_SERIALIZATION).split(",")
     if serialization not in allowed_serialization:
         raise HTTPException(
             status_code=400,
@@ -1612,9 +1534,7 @@ def run_callable_internal_sync(
     is_async_method = inspect.iscoroutinefunction(user_method)
 
     if debug_port:
-        logger.info(
-            f"Debugging remote callable {cls_or_fn_name}.{method_name} on port {debug_port}"
-        )
+        logger.info(f"Debugging remote callable {cls_or_fn_name}.{method_name} on port {debug_port}")
         deep_breakpoint(debug_port)
         # If using the debugger, step in here ("s") to enter your function/class method.
         if is_async_method:
@@ -1642,18 +1562,14 @@ def run_callable_internal_sync(
             result = {"data": encoded_result}
         except Exception as e:
             logger.error(f"Failed to pickle result: {str(e)}")
-            raise SerializationError(
-                f"Result could not be serialized with pickle: {str(e)}"
-            )
+            raise SerializationError(f"Result could not be serialized with pickle: {str(e)}")
     else:
         # Default JSON serialization
         try:
             json.dumps(result)
         except (TypeError, ValueError) as e:
             logger.error(f"Result is not JSON serializable: {str(e)}")
-            raise SerializationError(
-                f"Result could not be serialized to JSON: {str(e)}"
-            )
+            raise SerializationError(f"Result could not be serialized to JSON: {str(e)}")
 
     clear_debugging_sessions()
 

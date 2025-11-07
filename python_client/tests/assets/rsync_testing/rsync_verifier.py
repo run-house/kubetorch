@@ -16,9 +16,7 @@ class RsyncVerifier:
                     "path": file_path,
                     "exists": True,
                     "content_match": expected_content in actual_content,
-                    "actual_content": actual_content[
-                        :100
-                    ],  # First 100 chars for debugging
+                    "actual_content": actual_content[:100],  # First 100 chars for debugging
                 }
         except FileNotFoundError:
             return {
@@ -28,9 +26,7 @@ class RsyncVerifier:
                 "actual_content": None,
             }
 
-    def verify_directory_structure(
-        self, base_path: str, expected_files: List[str]
-    ) -> Dict:
+    def verify_directory_structure(self, base_path: str, expected_files: List[str]) -> Dict:
         """Verify a directory structure exists with expected files."""
         base = Path(base_path)
         results = {"base_exists": base.exists() and base.is_dir(), "files": {}}
@@ -89,14 +85,10 @@ class RsyncVerifier:
         )
 
         # Test 6: Tilde in destination (treated as relative to home)
-        results["tilde_home"] = self.verify_single_file(
-            "from_home/home_test.txt", "File from home test assets"
-        )
+        results["tilde_home"] = self.verify_single_file("from_home/home_test.txt", "File from home test assets")
 
         # Test 7: No dest specified for a file (should be in cwd with basename)
-        results["no_dest_file"] = self.verify_single_file(
-            "single_file.txt", "This is a single test file"
-        )
+        results["no_dest_file"] = self.verify_single_file("single_file.txt", "This is a single test file")
 
         # Test 8: No dest specified for a directory (should be in cwd with dir name)
         results["no_dest_dir"] = self.verify_directory_structure(

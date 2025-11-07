@@ -37,17 +37,12 @@ class CustomResponse(httpx.Response):
         if "application/json" in self.headers.get("Content-Type", ""):
             try:
                 error_data = self.json()
-                if all(
-                    k in error_data
-                    for k in ["error_type", "message", "traceback", "pod_name"]
-                ):
+                if all(k in error_data for k in ["error_type", "message", "traceback", "pod_name"]):
                     error_type = error_data["error_type"]
                     message = error_data.get("message", "")
                     traceback = error_data["traceback"]
                     pod_name = error_data["pod_name"]
-                    error_state = error_data.get(
-                        "state", {}
-                    )  # Optional serialized state
+                    error_state = error_data.get("state", {})  # Optional serialized state
 
                     # Try to use the actual exception class if it exists
                     exc = None
@@ -77,9 +72,7 @@ class CustomResponse(httpx.Response):
                             else:
                                 exc = error_class(message)
                         except Exception as e:
-                            logger.debug(
-                                f"Could not reconstruct {error_type}: {e}, will use dynamic type"
-                            )
+                            logger.debug(f"Could not reconstruct {error_type}: {e}, will use dynamic type")
                             # Fall back to dynamic creation
                             pass
 
@@ -88,9 +81,7 @@ class CustomResponse(httpx.Response):
 
                         def create_str_method(remote_traceback):
                             def __str__(self):
-                                cleaned_traceback = remote_traceback.encode().decode(
-                                    "unicode_escape"
-                                )
+                                cleaned_traceback = remote_traceback.encode().decode("unicode_escape")
                                 return f"{self.args[0]}\n\n{cleaned_traceback}"
 
                             return __str__
@@ -116,9 +107,7 @@ class CustomResponse(httpx.Response):
                             # Get the original message
                             original_msg = super().__str__()
                             # Clean up the traceback
-                            cleaned_traceback = self.remote_traceback.encode().decode(
-                                "unicode_escape"
-                            )
+                            cleaned_traceback = self.remote_traceback.encode().decode("unicode_escape")
                             return f"{original_msg}\n\n{cleaned_traceback}"
 
                     # Create wrapped instance without calling __init__
@@ -274,9 +263,7 @@ class HTTPClient:
         request_id = request_id_ctx_var.get("-")
         if request_id == "-":
             timestamp = str(time.time())
-            request_id = generate_unique_request_id(
-                endpoint=endpoint, timestamp=timestamp
-            )
+            request_id = generate_unique_request_id(endpoint=endpoint, timestamp=timestamp)
 
         headers = headers or {}
         headers.update({"X-Request-ID": request_id, "X-Serialization": serialization})
@@ -284,16 +271,12 @@ class HTTPClient:
         stop_event = threading.Event()
         log_thread = None
         if stream_logs:
-            log_thread = threading.Thread(
-                target=self.stream_logs, args=(request_id, stop_event)
-            )
+            log_thread = threading.Thread(target=self.stream_logs, args=(request_id, stop_event))
             log_thread.daemon = True
             log_thread.start()
 
         if stream_metrics:
-            metrics_thread = threading.Thread(
-                target=self.stream_metrics, args=(stop_event,)
-            )
+            metrics_thread = threading.Thread(target=self.stream_metrics, args=(stop_event,))
             metrics_thread.daemon = True
             metrics_thread.start()
         else:
@@ -324,9 +307,7 @@ class HTTPClient:
         request_id = request_id_ctx_var.get("-")
         if request_id == "-":
             timestamp = str(time.time())
-            request_id = generate_unique_request_id(
-                endpoint=endpoint, timestamp=timestamp
-            )
+            request_id = generate_unique_request_id(endpoint=endpoint, timestamp=timestamp)
 
         headers = headers or {}
         headers.update({"X-Request-ID": request_id, "X-Serialization": serialization})
@@ -334,15 +315,11 @@ class HTTPClient:
         stop_event = asyncio.Event()
         log_task = None
         if stream_logs:
-            log_task = asyncio.create_task(
-                self.stream_logs_async(request_id, stop_event)
-            )
+            log_task = asyncio.create_task(self.stream_logs_async(request_id, stop_event))
 
         metrics_task = None
         if stream_metrics:
-            metrics_task = asyncio.create_task(
-                self.stream_metrics_async(request_id, stop_event)
-            )
+            metrics_task = asyncio.create_task(self.stream_metrics_async(request_id, stop_event))
 
         return endpoint, headers, stop_event, log_task, metrics_task, request_id
 
@@ -369,9 +346,7 @@ class HTTPClient:
         formatter = ServerLogsFormatter()
         websocket = None
         try:
-            query = (
-                f'{{k8s_container_name="kubetorch"}} | json | request_id="{request_id}"'
-            )
+            query = f'{{k8s_container_name="kubetorch"}} | json | request_id="{request_id}"'
             encoded_query = urllib.parse.quote_plus(query)
             uri = f"ws://{host}:{port}/loki/api/v1/tail?query={encoded_query}"
             # Track the last timestamp we've seen to avoid duplicates
@@ -391,11 +366,7 @@ class HTTPClient:
                 while True:
                     # If stop event is set, start counting down
                     # Handle both threading.Event and asyncio.Event
-                    is_stop_set = (
-                        stop_event.is_set()
-                        if hasattr(stop_event, "is_set")
-                        else stop_event.is_set()
-                    )
+                    is_stop_set = stop_event.is_set() if hasattr(stop_event, "is_set") else stop_event.is_set()
                     if is_stop_set and stop_time is None:
                         stop_time = time.time() + 2  # 2 seconds grace period
 
@@ -406,9 +377,7 @@ class HTTPClient:
                     try:
                         # Use shorter timeout during grace period
                         timeout = 0.1 if stop_time is not None else 1.0
-                        message = await asyncio.wait_for(
-                            websocket.recv(), timeout=timeout
-                        )
+                        message = await asyncio.wait_for(websocket.recv(), timeout=timeout)
                         data = json.loads(message)
 
                         if data.get("streams"):
@@ -417,10 +386,7 @@ class HTTPClient:
                                 service_name = labels.get("kubetorch_com_service")
 
                                 # Determine if this is a Knative service by checking for Knative-specific labels
-                                is_knative = (
-                                    labels.get("serving_knative_dev_configuration")
-                                    is not None
-                                )
+                                is_knative = labels.get("serving_knative_dev_configuration") is not None
 
                                 for value in stream["values"]:
                                     # Skip if we've already seen this timestamp
@@ -428,10 +394,7 @@ class HTTPClient:
                                     log_name = log_line.get("name")
                                     log_message = log_line.get("message")
                                     current_timestamp = value[0]
-                                    if (
-                                        last_timestamp is not None
-                                        and current_timestamp <= last_timestamp
-                                    ):
+                                    if last_timestamp is not None and current_timestamp <= last_timestamp:
                                         continue
                                     last_timestamp = value[0]
 
@@ -448,9 +411,7 @@ class HTTPClient:
                                         )
                                     elif log_name != "uvicorn.access":
                                         formatted_log = f"({log_prefix}) {log_line.get('asctime')} | {log_line.get('levelname')} | {log_message}"
-                                        print(
-                                            f"{formatter.start_color}{formatted_log}{formatter.reset_color}"
-                                        )
+                                        print(f"{formatter.start_color}{formatted_log}{formatter.reset_color}")
                     except asyncio.TimeoutError:
                         # Timeout is expected, just continue the loop
                         continue
@@ -480,11 +441,7 @@ class HTTPClient:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(
-                self._stream_logs_websocket(
-                    request_id, stop_event, host=host, port=port
-                )
-            )
+            loop.run_until_complete(self._stream_logs_websocket(request_id, stop_event, host=host, port=port))
         finally:
             loop.close()
 
@@ -532,9 +489,7 @@ class HTTPClient:
         async def run():
             active_pods = self.compute.pod_names()
             if not active_pods:
-                logger.warning(
-                    "No active pods found for service, skipping metrics collection"
-                )
+                logger.warning("No active pods found for service, skipping metrics collection")
                 return
 
             prom_url = f"{service_url()}/prometheus/api/v1/query"
@@ -591,10 +546,7 @@ class HTTPClient:
                         gpumem = vals.get("GPUMiB", 0.0)
                         cpu_pct = cpu * 100
 
-                        line = (
-                            f"[METRICS] pod={pod} | "
-                            f"CPU={cpu:.3f} ({cpu_pct:.1f}%) | Mem={mem:.1f}MiB"
-                        )
+                        line = f"[METRICS] pod={pod} | " f"CPU={cpu:.3f} ({cpu_pct:.1f}%) | Mem={mem:.1f}MiB"
                         if show_gpu:
                             line += f" | GPU-Mem={gpumem:.1f}MiB | GPU={gpu:.1f}%"
 
@@ -646,16 +598,12 @@ class HTTPClient:
             - Automatically terminates once `stop_event` is set.
             - Prints formatted metrics continuously until stopped.
         """
-        await self._collect_metrics_common(
-            stop_event, http_getter, sleeper, is_async=True
-        )
+        await self._collect_metrics_common(stop_event, http_getter, sleeper, is_async=True)
 
     # ----------------- Core APIs ----------------- #
     def stream_logs(self, request_id, stop_event):
         """Start websocket log streaming in a separate thread"""
-        logger.debug(
-            f"Streaming logs for service {self.service_name} (request_id: {request_id})"
-        )
+        logger.debug(f"Streaming logs for service {self.service_name} (request_id: {request_id})")
 
         base_url = service_url()
         base_host, base_port = extract_host_port(base_url)
@@ -663,21 +611,15 @@ class HTTPClient:
 
     async def stream_logs_async(self, request_id, stop_event):
         """Async version of stream_logs. Start websocket log streaming as an async task"""
-        logger.debug(
-            f"Streaming logs for service {self.service_name} (request_id: {request_id})"
-        )
+        logger.debug(f"Streaming logs for service {self.service_name} (request_id: {request_id})")
 
         base_url = service_url()
         base_host, base_port = extract_host_port(base_url)
-        await self._stream_logs_websocket(
-            request_id, stop_event, host=base_host, port=base_port
-        )
+        await self._stream_logs_websocket(request_id, stop_event, host=base_host, port=base_port)
 
     async def stream_metrics_async(self, request_id, stop_event):
         """Async GPU/CPU metrics streaming (uses httpx.AsyncClient)."""
-        logger.debug(
-            f"Starting async metrics for {self.service_name} (request_id={request_id})"
-        )
+        logger.debug(f"Starting async metrics for {self.service_name} (request_id={request_id})")
 
         async def async_http_get(url, params):
             try:
@@ -738,9 +680,7 @@ class HTTPClient:
             log_thread,
             metrics_thread,
             _,
-        ) = self._prepare_request(
-            endpoint, stream_logs, stream_metrics, headers, pdb, serialization
-        )
+        ) = self._prepare_request(endpoint, stream_logs, stream_metrics, headers, pdb, serialization)
         try:
             json_data = _serialize_body(body, serialization)
             response = self.post(endpoint=endpoint, json=json_data, headers=headers)
@@ -767,14 +707,10 @@ class HTTPClient:
             log_task,
             monitoring_task,
             _,
-        ) = self._prepare_request_async(
-            endpoint, stream_logs, stream_metrics, headers, pdb, serialization
-        )
+        ) = self._prepare_request_async(endpoint, stream_logs, stream_metrics, headers, pdb, serialization)
         try:
             json_data = _serialize_body(body, serialization)
-            response = await self.post_async(
-                endpoint=endpoint, json=json_data, headers=headers
-            )
+            response = await self.post_async(endpoint=endpoint, json=json_data, headers=headers)
             response.raise_for_status()
             result = _deserialize_response(response, serialization)
 
@@ -807,19 +743,13 @@ class HTTPClient:
         return self._make_request("get", endpoint, headers=headers)
 
     async def post_async(self, endpoint, json=None, headers=None):
-        return await self._make_request_async(
-            "post", endpoint, json=json, headers=headers
-        )
+        return await self._make_request_async("post", endpoint, json=json, headers=headers)
 
     async def put_async(self, endpoint, json=None, headers=None):
-        return await self._make_request_async(
-            "put", endpoint, json=json, headers=headers
-        )
+        return await self._make_request_async("put", endpoint, json=json, headers=headers)
 
     async def delete_async(self, endpoint, json=None, headers=None):
-        return await self._make_request_async(
-            "delete", endpoint, json=json, headers=headers
-        )
+        return await self._make_request_async("delete", endpoint, json=json, headers=headers)
 
     async def get_async(self, endpoint, headers=None):
         return await self._make_request_async("get", endpoint, headers=headers)

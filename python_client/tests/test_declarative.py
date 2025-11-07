@@ -31,11 +31,7 @@ async def test_declarative_fn():
     os.environ["KT_USERNAME"] = config.username
 
     import tests.assets.decorated_modules.decorated_modules
-    from tests.assets.decorated_modules.decorated_modules import (
-        get_pod_id_1,
-        get_pod_id_async,
-        RemoteArray,
-    )
+    from tests.assets.decorated_modules.decorated_modules import get_pod_id_1, get_pod_id_async, RemoteArray
 
     # Single module deployment time
     single_module_file = __file__
@@ -84,9 +80,7 @@ async def test_declarative_fn():
     # from kubetorch.cli import teardown
     # teardown(tests.assets.decorated_modules.decorated_modules.__file__, yes=True)
 
-    teardown_cmd = (
-        f"kt teardown {tests.assets.decorated_modules.decorated_modules.__file__} --yes"
-    )
+    teardown_cmd = f"kt teardown {tests.assets.decorated_modules.decorated_modules.__file__} --yes"
     subprocess.run(teardown_cmd, shell=True, check=True)
     teardown_single = f"kt teardown {single_module_file} --yes"
     subprocess.run(teardown_single, shell=True, check=True)

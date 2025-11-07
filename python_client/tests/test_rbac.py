@@ -13,8 +13,6 @@ def test_fn_to_incorrect_namespace():
     fn_name = f"{create_random_name_prefix()}-summer-new-ns"
 
     with pytest.raises(kt.RsyncError) as e:
-        kt.fn(simple_summer, name=fn_name).to(
-            kt.Compute(cpus=".01", namespace=namespace_name, gpu_anti_affinity=True)
-        )
+        kt.fn(simple_summer, name=fn_name).to(kt.Compute(cpus=".01", namespace=namespace_name, gpu_anti_affinity=True))
     assert e.value.returncode == 12  # rsync protocol data stream
     assert "Connection reset" in e.value.stderr

@@ -16,9 +16,7 @@ def get_test_logger(name=None):
     # Avoid adding handlers if they already exist
     if not logger.handlers:
         handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         handler.setFormatter(formatter)
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
@@ -38,9 +36,7 @@ def summer(a, b):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--nested", action="store_true", help="Whether to run nested instead of base."
-    )
+    parser.add_argument("--nested", action="store_true", help="Whether to run nested instead of base.")
     parser.add_argument("arg1", type=int)
     parser.add_argument("arg2", type=int)
     args = parser.parse_args()

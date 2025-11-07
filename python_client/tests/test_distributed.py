@@ -93,9 +93,7 @@ def test_spmd_distributed_cls():
 
     # Test that redeploying with .to() resets state
     compute = kt.Compute(cpus="0.5", memory="512Mi").distribute(workers=2, num_proc=2)
-    remote_cls_redeployed = kt.cls(DistributedTestClass, name=get_test_fn_name()).to(
-        compute
-    )
+    remote_cls_redeployed = kt.cls(DistributedTestClass, name=get_test_fn_name()).to(compute)
 
     # State should be reset after redeployment
     reset_call = remote_cls_redeployed.increment_and_return()
@@ -114,9 +112,7 @@ def test_spmd_distributed_cls():
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         test_start_time = time.time()
         futures = [executor.submit(make_concurrent_slow_call) for _ in range(3)]
-        parallel_results = [
-            future.result() for future in concurrent.futures.as_completed(futures)
-        ]
+        parallel_results = [future.result() for future in concurrent.futures.as_completed(futures)]
         test_end_time = time.time()
 
     # All 3 calls should have completed
@@ -164,9 +160,7 @@ def test_spmd_distributed_cls():
 
     # Total execution time should be much less than 3 * 2 = 6 seconds if running in parallel
     total_execution_time = test_end_time - test_start_time
-    assert (
-        total_execution_time < 4
-    ), f"Execution took {total_execution_time}s, expected < 4s for parallel execution"
+    assert total_execution_time < 4, f"Execution took {total_execution_time}s, expected < 4s for parallel execution"
 
     # Verify different thread IDs were used (proves multithreading)
     thread_ids = {exec["thread_id"] for exec in all_executions}
@@ -187,9 +181,7 @@ def test_spmd_distributed_cls():
 
     # Test invalid worker index (should raise error)
     with pytest.raises(Exception, match="Worker index 10 out of range"):
-        remote_cls_redeployed.increment_and_return(
-            workers=[10]
-        )  # Only have workers 0 and 1
+        remote_cls_redeployed.increment_and_return(workers=[10])  # Only have workers 0 and 1
 
     # Test invalid worker specification
     with pytest.raises(Exception, match="Invalid worker specification"):
@@ -411,9 +403,7 @@ def test_distributed_exception_handling():
         kt.Compute(cpus="0.5", memory="512Mi").distribute(workers=2, num_proc=2)
     )
 
-    with pytest.raises(
-        ValueError, match="Test exception from distributed worker"
-    ) as exc:
+    with pytest.raises(ValueError, match="Test exception from distributed worker") as exc:
         remote_fn()
 
     # Verify we get proper traceback
@@ -443,19 +433,14 @@ async def test_mixed_distribution_types():
         else:
             compute = compute.distribute(workers=1, num_proc=2)
 
-        remote_fn = await kt.fn(
-            verify_distributed_env, name=f"{get_test_fn_name()}_{expected_name}"
-        ).to_async(compute)
+        remote_fn = await kt.fn(verify_distributed_env, name=f"{get_test_fn_name()}_{expected_name}").to_async(compute)
         return remote_fn
 
     import asyncio
 
     # Use asyncio.gather directly instead of asyncio.run
     remote_fns = await asyncio.gather(
-        *[
-            launch_distributed_fns(dist_type, expected_name)
-            for dist_type, expected_name in configs
-        ]
+        *[launch_distributed_fns(dist_type, expected_name) for dist_type, expected_name in configs]
     )
 
     for remote_fn in remote_fns:
@@ -482,9 +467,9 @@ def test_ray_distributed_fn():
     """Test Ray distributed functionality."""
     from .assets.ray_tune.ray_tune_hpo import ray_tune_hpo
 
-    ray_compute = kt.Compute(
-        cpus="2", memory="3Gi", image=kt.Image(image_id="rayproject/ray")
-    ).distribute("ray", workers=2)
+    ray_compute = kt.Compute(cpus="2", memory="3Gi", image=kt.Image(image_id="rayproject/ray")).distribute(
+        "ray", workers=2
+    )
 
     remote_fn = kt.fn(ray_tune_hpo, name=get_test_fn_name()).to(ray_compute)
 
@@ -511,9 +496,9 @@ def test_ray_package_iteration_flow():
     """
 
     # Step 1: Create Ray compute with 2 workers, no additional dependencies
-    ray_compute = kt.Compute(
-        cpus="1", memory="2Gi", image=kt.Image(image_id="rayproject/ray")
-    ).distribute("ray", workers=2)
+    ray_compute = kt.Compute(cpus="1", memory="2Gi", image=kt.Image(image_id="rayproject/ray")).distribute(
+        "ray", workers=2
+    )
 
     name = f"{get_test_fn_name()}_iteration_test"
 
@@ -528,14 +513,10 @@ def test_ray_package_iteration_flow():
     assert result1["unique_hostnames"] >= 2
 
     # KEY TEST: Verify beautifulsoup4 is NOT available initially
-    assert (
-        result1["bs4_available"] is False
-    ), "beautifulsoup4 should not be available in base rayproject/ray image"
+    assert result1["bs4_available"] is False, "beautifulsoup4 should not be available in base rayproject/ray image"
 
     # Verify basic calculations work
-    expected_sum = (
-        0 + 10 + 20 + 30 + 40 + 50 + 60 + 70
-    )  # 0*10 + 1*10 + 2*10 + 3*10 + 4*10 + 5*10 + 6*10 + 7*10
+    expected_sum = 0 + 10 + 20 + 30 + 40 + 50 + 60 + 70  # 0*10 + 1*10 + 2*10 + 3*10 + 4*10 + 5*10 + 6*10 + 7*10
     assert result1["sum_calculations"] == expected_sum
 
     # Step 3: Update the image to include beautifulsoup4 package
@@ -546,9 +527,7 @@ def test_ray_package_iteration_flow():
     ).distribute("ray", workers=2)
 
     # Step 4: Deploy the SAME function with SAME service name but updated image
-    updated_remote_fn = kt.fn(adaptive_ray_fn_with_bs4, name=name).to(
-        ray_compute_with_bs4
-    )
+    updated_remote_fn = kt.fn(adaptive_ray_fn_with_bs4, name=name).to(ray_compute_with_bs4)
 
     # Step 5: Test the updated function (should now have beautifulsoup4 package)
     result2 = updated_remote_fn()
@@ -562,18 +541,12 @@ def test_ray_package_iteration_flow():
         assert False, f"Function execution failed: {result2['error']}"
 
     # KEY TEST: Verify beautifulsoup4 is NOW available on all workers
-    assert (
-        result2["bs4_available"] is True
-    ), "beautifulsoup4 should be available after image update"
+    assert result2["bs4_available"] is True, "beautifulsoup4 should be available after image update"
 
     # Verify all workers report having beautifulsoup4
     for task_result in result2["task_results"]:
-        assert (
-            task_result["bs4_available"] is True
-        ), f"Worker {task_result['worker_id']} missing beautifulsoup4"
-        assert (
-            task_result["bs4_version"] is not None
-        ), f"Worker {task_result['worker_id']} missing bs4 version"
+        assert task_result["bs4_available"] is True, f"Worker {task_result['worker_id']} missing beautifulsoup4"
+        assert task_result["bs4_version"] is not None, f"Worker {task_result['worker_id']} missing bs4 version"
 
     # Verify calculations still work
     assert result2["sum_calculations"] == expected_sum

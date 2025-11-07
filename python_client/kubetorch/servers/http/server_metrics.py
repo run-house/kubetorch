@@ -81,9 +81,7 @@ class HeartbeatManager:
         try:
             from prometheus_client import Counter, Gauge
         except ImportError:
-            logger.info(
-                "Prometheus client not installed, heartbeat metrics not enabled"
-            )
+            logger.info("Prometheus client not installed, heartbeat metrics not enabled")
             return None
 
         self.ttl_seconds = ttl_seconds
@@ -107,9 +105,7 @@ class HeartbeatManager:
             ["service_name", "kubetorch_version", "service_namespace", "service_type"],
         )
 
-        logger.info(
-            f"Heartbeat Manager initialized: TTL={self.ttl_seconds}s, Interval={self.heartbeat_interval}s"
-        )
+        logger.info(f"Heartbeat Manager initialized: TTL={self.ttl_seconds}s, Interval={self.heartbeat_interval}s")
 
     @property
     def labels(self):
@@ -162,16 +158,12 @@ class HeartbeatManager:
                     await self._send_heartbeat()
                 else:
                     # Check if we should still send based on recent activity
-                    time_since_activity = (
-                        datetime.now() - self.last_activity
-                    ).total_seconds()
+                    time_since_activity = (datetime.now() - self.last_activity).total_seconds()
                     if time_since_activity < self.heartbeat_interval:
                         # Recent activity, send heartbeat even if no current requests
                         await self._send_heartbeat()
                     else:
-                        logger.debug(
-                            "Skipping heartbeat - no active requests or recent activity"
-                        )
+                        logger.debug("Skipping heartbeat - no active requests or recent activity")
 
             except asyncio.CancelledError:
                 break
@@ -186,12 +178,7 @@ def setup_otel_metrics(app: FastAPI):
         from opentelemetry.metrics import set_meter_provider
         from opentelemetry.sdk.metrics import MeterProvider
         from opentelemetry.sdk.resources import Resource
-        from prometheus_client import (
-            CollectorRegistry,
-            CONTENT_TYPE_LATEST,
-            generate_latest,
-            Info,
-        )
+        from prometheus_client import CollectorRegistry, CONTENT_TYPE_LATEST, generate_latest, Info
     except ImportError as e:
         logger.info(f"OpenTelemetry metrics not enabled: {e}")
         return app, None
@@ -199,9 +186,7 @@ def setup_otel_metrics(app: FastAPI):
     logger.info("Instrumenting FastAPI app for metrics")
 
     # Get service info from environment
-    service_name = os.getenv(
-        "KT_SERVICE_NAME", os.getenv("OTEL_SERVICE_NAME", "unknown-service")
-    )
+    service_name = os.getenv("KT_SERVICE_NAME", os.getenv("OTEL_SERVICE_NAME", "unknown-service"))
     service_version = os.getenv("KUBETORCH_VERSION", "0.0.0")
     namespace = os.getenv("POD_NAMESPACE", "default")
     service_type = os.getenv("KT_DEPLOYMENT_MODE", "deployment")
@@ -223,9 +208,7 @@ def setup_otel_metrics(app: FastAPI):
     )
 
     # Create meter provider with the resource and prometheus reader
-    meter_provider = MeterProvider(
-        resource=resource, metric_readers=[prometheus_reader]
-    )
+    meter_provider = MeterProvider(resource=resource, metric_readers=[prometheus_reader])
 
     # Set the global meter provider
     set_meter_provider(meter_provider)
@@ -239,9 +222,7 @@ def setup_otel_metrics(app: FastAPI):
         manager = getattr(request.app.state, "heartbeat_manager", None)
         if manager:
             # Add heartbeat configuration info
-            heartbeat_info = Info(
-                "heartbeat", "Heartbeat configuration info", registry=registry
-            )
+            heartbeat_info = Info("heartbeat", "Heartbeat configuration info", registry=registry)
             heartbeat_info.info(
                 {
                     "ttl_seconds": str(manager.ttl_seconds),
@@ -251,13 +232,9 @@ def setup_otel_metrics(app: FastAPI):
 
         # Get all metrics from default registry (includes our heartbeat metrics)
         base_metrics = generate_latest().decode("utf-8")
-        additional_metrics = (
-            generate_latest(registry).decode("utf-8") if manager else ""
-        )
+        additional_metrics = generate_latest(registry).decode("utf-8") if manager else ""
 
-        return Response(
-            content=base_metrics + additional_metrics, media_type=CONTENT_TYPE_LATEST
-        )
+        return Response(content=base_metrics + additional_metrics, media_type=CONTENT_TYPE_LATEST)
 
     # Add middleware to track active requests
     @app.middleware("http")

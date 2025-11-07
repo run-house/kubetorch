@@ -25,9 +25,7 @@ class PartialModule:
 # @kubetorch.compute decorator that the user can use to wrap a function they want to deploy to a cluster,
 # and then deploy it with `kt deploy my_app.py` (we collect all the decorated functions imported in the file
 # to deploy them).
-def compute(
-    get_if_exists: bool = False, reload_prefixes: Union[str, List[str]] = [], **kwargs
-):
+def compute(get_if_exists: bool = False, reload_prefixes: Union[str, List[str]] = [], **kwargs):
     def decorator(func_or_cls):
         from kubetorch.globals import disable_decorators
 
@@ -112,9 +110,7 @@ def distribute(*args, **kwargs):
 
         # This is a partial so the order of decorator chaining can be reversed for best aesthetics
         # the deploy method will actually call .distribute on the function or class after it's been deployed
-        partial_module = PartialModule(
-            fn_or_cls=func_or_cls, distribute_args=(args, kwargs)
-        )
+        partial_module = PartialModule(fn_or_cls=func_or_cls, distribute_args=(args, kwargs))
         update_wrapper(partial_module, func_or_cls)
         return partial_module
 
@@ -130,9 +126,7 @@ def autoscale(*args, **kwargs):
 
         # This is a partial so the order of decorator chaining can be reversed for best aesthetics
         # the deploy method will actually call .distribute on the function or class after it's been deployed
-        partial_module = PartialModule(
-            fn_or_cls=func_or_cls, autoscale_args=(args, kwargs)
-        )
+        partial_module = PartialModule(fn_or_cls=func_or_cls, autoscale_args=(args, kwargs))
         update_wrapper(partial_module, func_or_cls)
         return partial_module
 

@@ -25,9 +25,7 @@ def test_autodown_annotation():
     inactivity_ttl = "10m"
 
     remote_fn = kt.fn(simple_summer, name=name).to(
-        kt.Compute(
-            cpus=".01", inactivity_ttl=inactivity_ttl, namespace=namespace
-        ).autoscale(min_scale=1)
+        kt.Compute(cpus=".01", inactivity_ttl=inactivity_ttl, namespace=namespace).autoscale(min_scale=1)
     )
 
     assert remote_fn(1, 2) == 3
@@ -38,17 +36,12 @@ def test_autodown_annotation():
         config.load_incluster_config()
     except config.ConfigException:
         config.load_kube_config()
-    service = core_api.read_namespaced_service(
-        name=remote_fn.service_name, namespace=namespace
-    )
+    service = core_api.read_namespaced_service(name=remote_fn.service_name, namespace=namespace)
     assert service
 
     # Check that the service has the autodown annotation
     assert service.metadata.labels[serving_constants.KT_MODULE_LABEL] is not None
-    assert (
-        service.metadata.annotations[serving_constants.INACTIVITY_TTL_ANNOTATION]
-        == inactivity_ttl
-    )
+    assert service.metadata.annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
 
     # Check that the namespace is in the watch namespaces
     cronjob_configmap = core_api.read_namespaced_config_map(
@@ -78,9 +71,7 @@ def test_autodown_deployment():
         config.load_incluster_config()
     except config.ConfigException:
         config.load_kube_config()
-    service = core_api.read_namespaced_service(
-        name=remote_fn.service_name, namespace=namespace
-    )
+    service = core_api.read_namespaced_service(name=remote_fn.service_name, namespace=namespace)
     assert service
 
     # Get the env vars on the service pod and check that KT_OTEL_ENABLED is True
@@ -92,17 +83,12 @@ def test_autodown_deployment():
 
     pod = pods.items[0]
     container = next((x for x in pod.spec.containers if x.name == "kubetorch"), None)
-    kt_otel_env = next(
-        (env for env in container.env if env.name == "KT_OTEL_ENABLED"), None
-    )
+    kt_otel_env = next((env for env in container.env if env.name == "KT_OTEL_ENABLED"), None)
     assert kt_otel_env.value == "True"
 
     # Check that the service has the autodown annotation
     assert service.metadata.labels[serving_constants.KT_MODULE_LABEL] is not None
-    assert (
-        service.metadata.annotations[serving_constants.INACTIVITY_TTL_ANNOTATION]
-        == inactivity_ttl
-    )
+    assert service.metadata.annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
 
     # Check that the namespace is in the watch namespaces
     cronjob_configmap = core_api.read_namespaced_config_map(
@@ -140,9 +126,7 @@ def test_autodown_raycluster():
         config.load_incluster_config()
     except config.ConfigException:
         config.load_kube_config()
-    service = core_api.read_namespaced_service(
-        name=remote_fn.service_name, namespace=namespace
-    )
+    service = core_api.read_namespaced_service(name=remote_fn.service_name, namespace=namespace)
     assert service
 
     # Get the env vars on the service pod and check that KT_OTEL_ENABLED is True
@@ -154,17 +138,12 @@ def test_autodown_raycluster():
 
     pod = pods.items[0]
     container = next((x for x in pod.spec.containers if x.name == "kubetorch"), None)
-    kt_otel_env = next(
-        (env for env in container.env if env.name == "KT_OTEL_ENABLED"), None
-    )
+    kt_otel_env = next((env for env in container.env if env.name == "KT_OTEL_ENABLED"), None)
     assert kt_otel_env.value == "True"
 
     # Check that the service has the autodown annotation
     assert service.metadata.labels[serving_constants.KT_MODULE_LABEL] is not None
-    assert (
-        service.metadata.annotations[serving_constants.INACTIVITY_TTL_ANNOTATION]
-        == inactivity_ttl
-    )
+    assert service.metadata.annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
 
 
 @pytest.mark.skip("Long running test, skipping for now")
@@ -194,9 +173,7 @@ def test_autodown_custom_image():
         config.load_incluster_config()
     except config.ConfigException:
         config.load_kube_config()
-    service = core_api.read_namespaced_service(
-        name=remote_fn.service_name, namespace=namespace
-    )
+    service = core_api.read_namespaced_service(name=remote_fn.service_name, namespace=namespace)
     assert service
 
     # Get the env vars on the service pod and check that KT_OTEL_ENABLED is True
@@ -208,15 +185,10 @@ def test_autodown_custom_image():
 
     pod = pods.items[0]
     container = next((x for x in pod.spec.containers if x.name == "kubetorch"), None)
-    kt_otel_env = next(
-        (env for env in container.env if env.name == "KT_OTEL_ENABLED"), None
-    )
+    kt_otel_env = next((env for env in container.env if env.name == "KT_OTEL_ENABLED"), None)
     assert kt_otel_env.value == "True"
 
     # Check that the service has the autodown annotation
     assert service.metadata.labels[serving_constants.KT_MODULE_LABEL] is not None
     assert service.metadata.labels["KT_OTEL_ENABLED"] == "True"
-    assert (
-        service.metadata.annotations[serving_constants.INACTIVITY_TTL_ANNOTATION]
-        == inactivity_ttl
-    )
+    assert service.metadata.annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl

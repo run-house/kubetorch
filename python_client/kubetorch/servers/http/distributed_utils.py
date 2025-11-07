@@ -27,10 +27,7 @@ from .utils import clear_debugging_sessions, is_running_in_kubernetes
 # Try to import Monarch components at module level if available
 # This helps avoid threading issues with Monarch's Rust bindings
 try:
-    from monarch._src.actor.allocator import (
-        RemoteAllocator,
-        StaticRemoteAllocInitializer,
-    )
+    from monarch._src.actor.allocator import RemoteAllocator, StaticRemoteAllocInitializer
 
     MONARCH_AVAILABLE = True
 except ImportError:
@@ -78,9 +75,7 @@ class RemoteWorkerPool:
         self.process.start()
 
         # Start router thread for handling responses
-        self._router_thread = threading.Thread(
-            target=self._response_router, daemon=True
-        )
+        self._router_thread = threading.Thread(target=self._response_router, daemon=True)
         self._router_thread.start()
 
         logger.debug("Started RemoteWorkerPool process and router thread")
@@ -143,15 +138,11 @@ class RemoteWorkerPool:
         with self._response_lock:
             self._response_events[request_id] = (event, None)
 
-        logger.debug(
-            f"RemoteWorkerPool: Submitting request {request_id} to queue for {len(worker_ips)} workers"
-        )
+        logger.debug(f"RemoteWorkerPool: Submitting request {request_id} to queue for {len(worker_ips)} workers")
         self.request_queue.put(("CALL", request_data))
 
         # Wait for response with a timeout to prevent hanging forever
-        logger.debug(
-            f"RemoteWorkerPool: Waiting for response for request {request_id} from {len(worker_ips)} workers"
-        )
+        logger.debug(f"RemoteWorkerPool: Waiting for response for request {request_id} from {len(worker_ips)} workers")
         # Wait indefinitely for the response (no timeout for long-running jobs)
         event.wait()
 
@@ -159,9 +150,7 @@ class RemoteWorkerPool:
         with self._response_lock:
             _, result = self._response_events.pop(request_id)
 
-        logger.debug(
-            f"RemoteWorkerPool: Got response for request {request_id}, type: {type(result).__name__}"
-        )
+        logger.debug(f"RemoteWorkerPool: Got response for request {request_id}, type: {type(result).__name__}")
 
         if isinstance(result, Exception):
             raise result
@@ -177,17 +166,13 @@ class RemoteWorkerPool:
                     break
 
                 request_id = response.get("request_id")
-                logger.debug(
-                    f"Response router received response for request {request_id}"
-                )
+                logger.debug(f"Response router received response for request {request_id}")
                 with self._response_lock:
                     if request_id in self._response_events:
                         event, _ = self._response_events[request_id]
                         # Store the result (either results list or exception)
                         if "error" in response:
-                            logger.debug(
-                                f"Response router: Setting error for request {request_id}"
-                            )
+                            logger.debug(f"Response router: Setting error for request {request_id}")
                             self._response_events[request_id] = (
                                 event,
                                 response["error"],
@@ -201,9 +186,7 @@ class RemoteWorkerPool:
                                 response["results"],
                             )
                         event.set()
-                        logger.debug(
-                            f"Response router: Event set for request {request_id}"
-                        )
+                        logger.debug(f"Response router: Event set for request {request_id}")
                     else:
                         logger.warning(
                             f"Response router: No event found for request {request_id}, registered events: {list(self._response_events.keys())}"
@@ -215,9 +198,7 @@ class RemoteWorkerPool:
                 continue
 
     @staticmethod
-    def _run_async_worker(
-        request_queue, response_queue, quorum_timeout, max_workers=2000
-    ):
+    def _run_async_worker(request_queue, response_queue, quorum_timeout, max_workers=2000):
         """Worker process that handles async HTTP calls.
 
         Architecture:
@@ -237,9 +218,7 @@ class RemoteWorkerPool:
 
         import httpx
 
-        async def wait_for_worker_health(
-            client, worker_ip, workers_arg, quorum_timeout
-        ):
+        async def wait_for_worker_health(client, worker_ip, workers_arg, quorum_timeout):
             """Wait for a worker to become healthy within timeout."""
             port = os.environ["KT_SERVER_PORT"]
             worker_url = f"http://{worker_ip}:{port}"
@@ -290,17 +269,13 @@ class RemoteWorkerPool:
             max_retries = 3
             for attempt in range(max_retries):
                 try:
-                    resp = await client.post(
-                        call_url, json=params, headers=request_headers
-                    )
+                    resp = await client.post(call_url, json=params, headers=request_headers)
                     result = resp.json()
                     break  # Success, exit retry loop
                 except httpx.ReadError as e:
                     # Check if this is due to server shutdown (connection reset)
                     if "Connection reset" in str(e) or "Connection closed" in str(e):
-                        logger.warning(
-                            f"Worker {worker_ip} appears to be shutting down: {e}"
-                        )
+                        logger.warning(f"Worker {worker_ip} appears to be shutting down: {e}")
                         raise  # Don't retry on shutdown
                     if attempt < max_retries - 1:
                         wait_time = (attempt + 1) * 2  # Exponential backoff: 2s, 4s
@@ -320,9 +295,7 @@ class RemoteWorkerPool:
                         )
                         await asyncio.sleep(1)
                     else:
-                        logger.error(
-                            f"Timeout calling {worker_ip} after {max_retries} attempts: {e}"
-                        )
+                        logger.error(f"Timeout calling {worker_ip} after {max_retries} attempts: {e}")
                         raise
                 except Exception as e:
                     logger.error(f"Unexpected error calling {worker_ip}: {e}")
@@ -346,13 +319,8 @@ class RemoteWorkerPool:
 
             # With tree topology limiting fanout, we don't need to batch health checks
             # Each node only calls its direct children in the tree
-            logger.info(
-                f"Waiting for {len(worker_ips)} workers to become ready (timeout={quorum_timeout}s)"
-            )
-            health_tasks = [
-                wait_for_worker_health(client, ip, workers_arg, quorum_timeout)
-                for ip in worker_ips
-            ]
+            logger.info(f"Waiting for {len(worker_ips)} workers to become ready (timeout={quorum_timeout}s)")
+            health_tasks = [wait_for_worker_health(client, ip, workers_arg, quorum_timeout) for ip in worker_ips]
             health_results = await asyncio.gather(*health_tasks)
 
             # Process results
@@ -367,9 +335,7 @@ class RemoteWorkerPool:
             if unhealthy_workers:
                 if workers_arg == "ready":
                     # For "ready" mode, just skip unhealthy workers
-                    logger.info(
-                        f"Skipping {len(unhealthy_workers)} workers that didn't respond (ready mode)"
-                    )
+                    logger.info(f"Skipping {len(unhealthy_workers)} workers that didn't respond (ready mode)")
                 else:
                     # For normal mode, fail if any worker didn't become ready
                     logger.error(
@@ -381,9 +347,7 @@ class RemoteWorkerPool:
                         f"Consider increasing quorum_timeout in .distribute() call."
                     )
 
-            logger.info(
-                f"All {len(healthy_workers)} workers are ready, making distributed calls"
-            )
+            logger.info(f"All {len(healthy_workers)} workers are ready, making distributed calls")
 
             # Now make the actual calls to ready workers
             # Create tasks (not just coroutines)
@@ -498,9 +462,7 @@ class RemoteWorkerPool:
                         logger.debug(
                             f"Async worker: Successfully got {len(results)} results for request {request_id}, sending response"
                         )
-                        response_queue.put(
-                            {"request_id": request_id, "results": results}
-                        )
+                        response_queue.put({"request_id": request_id, "results": results})
                     except Exception as e:
                         logger.error(f"Error processing request {request_id}: {e}")
                         response_queue.put({"request_id": request_id, "error": e})
@@ -509,16 +471,12 @@ class RemoteWorkerPool:
                 while not shutdown_event.is_set():
                     try:
                         # Check queue without blocking event loop
-                        cmd, request_data = await asyncio.to_thread(
-                            request_queue.get, block=True, timeout=0.1
-                        )
+                        cmd, request_data = await asyncio.to_thread(request_queue.get, block=True, timeout=0.1)
 
                         if cmd == "SHUTDOWN" or shutdown_event.is_set():
                             # Cancel all active tasks immediately for quick cleanup
                             if active_tasks:
-                                logger.debug(
-                                    f"Cancelling {len(active_tasks)} active tasks for shutdown"
-                                )
+                                logger.debug(f"Cancelling {len(active_tasks)} active tasks for shutdown")
                                 for task in active_tasks:
                                     task.cancel()
                             break
@@ -548,15 +506,11 @@ class RemoteWorkerPool:
 class DistributedProcessPool:
     """Unified pool managing distributed processes with single router thread."""
 
-    def __init__(
-        self, process_class, num_processes, max_threads_per_proc=10, **process_kwargs
-    ):
+    def __init__(self, process_class, num_processes, max_threads_per_proc=10, **process_kwargs):
         self.process_class = process_class
         self.num_processes = num_processes
         self.max_threads_per_proc = max_threads_per_proc
-        self.process_kwargs = (
-            process_kwargs  # Additional kwargs to pass to process constructor
-        )
+        self.process_kwargs = process_kwargs  # Additional kwargs to pass to process constructor
 
         # Processes and queues
         self.processes = []
@@ -587,13 +541,9 @@ class DistributedProcessPool:
 
         # Start single response router thread for entire pool
         self._running = True
-        self._router_thread = threading.Thread(
-            target=self._response_router, daemon=True, name="PoolResponseRouter"
-        )
+        self._router_thread = threading.Thread(target=self._response_router, daemon=True, name="PoolResponseRouter")
         self._router_thread.start()
-        logger.debug(
-            f"Started {self.num_processes} processes with single router thread"
-        )
+        logger.debug(f"Started {self.num_processes} processes with single router thread")
 
     def _create_and_start_process(self, local_rank):
         """Helper to create and start a single process."""
@@ -669,9 +619,7 @@ class DistributedProcessPool:
     ):
         """Call a specific process by index."""
         if idx >= len(self.processes):
-            raise ValueError(
-                f"Process index {idx} out of range (have {len(self.processes)} processes)"
-            )
+            raise ValueError(f"Process index {idx} out of range (have {len(self.processes)} processes)")
 
         request_unique_id = str(uuid.uuid4())
 
@@ -723,9 +671,7 @@ class DistributedProcessPool:
     ):
         """Call all processes in parallel and return results."""
         if len(params_list) != self.num_processes:
-            raise ValueError(
-                f"Expected {self.num_processes} param sets, got {len(params_list)}"
-            )
+            raise ValueError(f"Expected {self.num_processes} param sets, got {len(params_list)}")
 
         with ThreadPoolExecutor(max_workers=self.num_processes) as executor:
             futures = []
@@ -764,9 +710,7 @@ class DistributedProcessPool:
                         self._response_events[request_id] = (event, response["result"])
                         event.set()
                     else:
-                        logger.warning(
-                            f"Received response for unknown request: {request_id}"
-                        )
+                        logger.warning(f"Received response for unknown request: {request_id}")
 
             except Exception as e:
                 if "Empty" not in str(e.__class__.__name__):
@@ -871,9 +815,7 @@ class DistributedSupervisor:
                 if not pod_ips:
                     logger.debug(f"No pod IPs found for service {service_dns}")
                 else:
-                    logger.debug(
-                        f"Found {len(pod_ips)} pod IPs via DNS for {service_dns}: {pod_ips}"
-                    )
+                    logger.debug(f"Found {len(pod_ips)} pod IPs via DNS for {service_dns}: {pod_ips}")
 
             except socket.gaierror as e:
                 logger.debug(f"DNS lookup failed for {service_dns}: {e}")
@@ -884,17 +826,13 @@ class DistributedSupervisor:
 
             # If we have the expected count, we're done
             if expected_workers and len(pod_ips) >= expected_workers:
-                logger.info(
-                    f"Found {len(pod_ips)}/{expected_workers} workers after {elapsed:.1f}s"
-                )
+                logger.info(f"Found {len(pod_ips)}/{expected_workers} workers after {elapsed:.1f}s")
                 return pod_ips
 
             # If we don't have expected count or timeout is reached, decide what to do
             if elapsed >= max_wait:
                 if expected_workers:
-                    logger.warning(
-                        f"Only found {len(pod_ips)}/{expected_workers} workers after {elapsed:.1f}s timeout"
-                    )
+                    logger.warning(f"Only found {len(pod_ips)}/{expected_workers} workers after {elapsed:.1f}s timeout")
                 else:
                     logger.info(f"Found {len(pod_ips)} workers after {elapsed:.1f}s")
                 return pod_ips
@@ -902,9 +840,7 @@ class DistributedSupervisor:
             # Log progress if count changed
             if len(pod_ips) != last_count:
                 if expected_workers:
-                    logger.info(
-                        f"{len(pod_ips)}/{expected_workers} workers found, waiting for quorum..."
-                    )
+                    logger.info(f"{len(pod_ips)}/{expected_workers} workers found, waiting for quorum...")
                 else:
                     logger.debug(f"{len(pod_ips)} workers found, no quorum set")
                 last_count = len(pod_ips)
@@ -957,9 +893,7 @@ class DistributedSupervisor:
 
             # Initialize with current workers
             self._current_workers = set(self.pod_ips())
-            logger.debug(
-                f"Starting DNS monitor with {len(self._current_workers)} workers"
-            )
+            logger.debug(f"Starting DNS monitor with {len(self._current_workers)} workers")
 
             self._dns_monitor_running = True
             self._dns_monitor_thread = threading.Thread(
@@ -1060,13 +994,9 @@ class DistributedSupervisor:
 
                     # Log the change
                     if removed:
-                        logger.error(
-                            f"Workers REMOVED from cluster (forced check): {removed}"
-                        )
+                        logger.error(f"Workers REMOVED from cluster (forced check): {removed}")
                     if added:
-                        logger.warning(
-                            f"Workers ADDED to cluster (forced check): {added}"
-                        )
+                        logger.warning(f"Workers ADDED to cluster (forced check): {added}")
 
                     raise WorkerMembershipChanged(
                         added_ips=added,
@@ -1116,17 +1046,13 @@ class DistributedSupervisor:
     ):
         # if intercept_call is True, this method should be overridden by subclasses to handle distributing and/or
         # supervising the distributed execution
-        raise NotImplementedError(
-            "call_distributed() must be implemented by subclasses"
-        )
+        raise NotImplementedError("call_distributed() must be implemented by subclasses")
 
 
 class DistributedProcess(multiprocessing.Process):
     """Base class for distributed processes that run callables in subprocesses."""
 
-    def __init__(
-        self, local_rank, request_queue, response_queue, max_threads=4, **kwargs
-    ):
+    def __init__(self, local_rank, request_queue, response_queue, max_threads=4, **kwargs):
         super().__init__()
         # We don't need the cache miss / reload here because these processes are destroyed and recreated
         # with each .to call.
@@ -1150,9 +1076,7 @@ class DistributedProcess(multiprocessing.Process):
             self._executor = None
 
     @classmethod
-    def get_distributed_env_vars(
-        cls, worker_ips, node_rank, local_rank, num_local_procs, **settings
-    ):
+    def get_distributed_env_vars(cls, worker_ips, node_rank, local_rank, num_local_procs, **settings):
         """Get framework-specific distributed environment variables.
 
         Args:
@@ -1220,9 +1144,7 @@ class DistributedProcess(multiprocessing.Process):
                 request_id_ctx_var.reset(token)
 
                 # Send response back with the unique ID
-                self._response_queue.put(
-                    {"request_unique_id": request_unique_id, "result": result}
-                )
+                self._response_queue.put({"request_unique_id": request_unique_id, "result": result})
 
             except Exception as e:
                 # Reset the request ID even if there was an error
@@ -1271,9 +1193,7 @@ class DistributedProcess(multiprocessing.Process):
                     if self._executor:
                         self._executor.submit(self.handle_request, request)
                     else:
-                        logger.warning(
-                            "Executor is None, skipping request (likely shutting down)"
-                        )
+                        logger.warning("Executor is None, skipping request (likely shutting down)")
 
                 except Exception as e:
                     # Timeout is normal, continue loop
@@ -1286,9 +1206,7 @@ class DistributedProcess(multiprocessing.Process):
 
         finally:
             # Cleanup
-            logger.info(
-                "Received shutdown signal, cleaning up distributed environment..."
-            )
+            logger.info("Received shutdown signal, cleaning up distributed environment...")
             self.proc_cleanup()
             logger.info("Exiting gracefully.")
 
@@ -1303,22 +1221,16 @@ class PyTorchProcess(DistributedProcess):
             dist.destroy_process_group()
             logger.info("Destroyed PyTorch process group.")
         except Exception:
-            logger.info(
-                "Failed to destroy PyTorch process group, it may not have been initialized: {e}"
-            )
+            logger.info("Failed to destroy PyTorch process group, it may not have been initialized: {e}")
             pass
         # Call parent cleanup for debugging sessions
         super().proc_cleanup()
 
     @classmethod
-    def get_distributed_env_vars(
-        cls, worker_ips, node_rank, local_rank, num_local_procs, **settings
-    ):
+    def get_distributed_env_vars(cls, worker_ips, node_rank, local_rank, num_local_procs, **settings):
         """Get PyTorch-specific distributed environment variables."""
         port = settings.get("port") or 12345
-        env_vars = super().get_distributed_env_vars(
-            worker_ips, node_rank, local_rank, num_local_procs, **settings
-        )
+        env_vars = super().get_distributed_env_vars(worker_ips, node_rank, local_rank, num_local_procs, **settings)
         env_vars.update(
             {
                 "MASTER_ADDR": worker_ips[0],
@@ -1391,9 +1303,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         self.max_threads_per_proc = max_threads_per_proc
         self.process_pool = None
         self.remote_worker_pool = None  # Pool for async HTTP calls to remote workers
-        self.process_kwargs = (
-            process_kwargs  # Additional settings to pass to process class
-        )
+        self.process_kwargs = process_kwargs  # Additional settings to pass to process class
         self.tree_fanout = tree_fanout
         self.tree_minimum = tree_minimum
 
@@ -1431,9 +1341,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
             # Start all processes (now handled internally by the pool)
             self.process_pool.start()
 
-            self.remote_worker_pool = RemoteWorkerPool(
-                quorum_timeout=self.quorum_timeout
-            )
+            self.remote_worker_pool = RemoteWorkerPool(quorum_timeout=self.quorum_timeout)
             self.remote_worker_pool.start()
             logger.debug("Finished setting up distributed processes")
 
@@ -1452,9 +1360,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
             self.remote_worker_pool.stop()
             self.remote_worker_pool = None
 
-        logger.debug(
-            f"Finished cleaning up {self.__class__.__name__} distributed processes"
-        )
+        logger.debug(f"Finished cleaning up {self.__class__.__name__} distributed processes")
 
     @staticmethod
     def intercept_call():
@@ -1519,9 +1425,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
 
         # Get all the pods in the service, and use the first one as the master.
         # Set the env vars based on whether this is a master or worker
-        logger.debug(
-            f"Configuring distributed environment, distributed_subcall={distributed_subcall}"
-        )
+        logger.debug(f"Configuring distributed environment, distributed_subcall={distributed_subcall}")
         this_pod_ip = os.environ["POD_IP"]
         logger.debug(f"This pod IP: {this_pod_ip}")
 
@@ -1564,21 +1468,13 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                 "POD_IPS": ",".join(worker_ips),
             }
         else:
-            logger.debug(
-                f"Acting as WORKER (distributed_subcall=True) at {this_pod_ip}"
-            )
-            logger.debug(
-                f"Worker received params keys: {list(params.keys()) if params else 'None'}"
-            )
-            distributed_env_vars = (
-                params.pop("distributed_env_vars", None) if params else None
-            )
+            logger.debug(f"Acting as WORKER (distributed_subcall=True) at {this_pod_ip}")
+            logger.debug(f"Worker received params keys: {list(params.keys()) if params else 'None'}")
+            distributed_env_vars = params.pop("distributed_env_vars", None) if params else None
             logger.debug(f"Using distributed_env_vars: {distributed_env_vars}")
             if not distributed_env_vars:
                 logger.error(f"No distributed_env_vars found in params: {params}")
-                raise RuntimeError(
-                    "distributed_env_vars must be provided for distributed subcalls"
-                )
+                raise RuntimeError("distributed_env_vars must be provided for distributed subcalls")
             worker_ips = distributed_env_vars["POD_IPS"].split(",")
 
             # Don't debug for subcalls, we only want to debug one process
@@ -1602,18 +1498,14 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                 my_ip=this_pod_ip,
                 fanout=self.tree_fanout,  # Each node can have up to 50 children
             )
-            logger.debug(
-                f"Tree node {this_pod_ip} will call {len(subcall_ips)} direct children"
-            )
+            logger.debug(f"Tree node {this_pod_ip} will call {len(subcall_ips)} direct children")
         elif not distributed_subcall:
             # Use worker ip list as is for coordiantor node in flat topology
             # Leave subcall_ips = [] for workers in flat topology
             subcall_ips = copy.deepcopy(worker_ips)
             if this_pod_ip in subcall_ips:
                 subcall_ips.remove(this_pod_ip)
-                logger.debug(
-                    f"Removed self ({this_pod_ip}) from subcall list, will call: {subcall_ips}"
-                )
+                logger.debug(f"Removed self ({this_pod_ip}) from subcall list, will call: {subcall_ips}")
             else:
                 # This can happen with headless services where POD_IP might not exactly match DNS results
                 # Try to match by partial IP or hostname
@@ -1641,19 +1533,13 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                     if isinstance(item, str) and "." in item:
                         # It's an IP address
                         if item not in worker_ips:
-                            raise ValueError(
-                                f"Worker IP '{item}' not found in available workers: {worker_ips}"
-                            )
+                            raise ValueError(f"Worker IP '{item}' not found in available workers: {worker_ips}")
                         target_ips.add(item)
-                    elif isinstance(item, int) or (
-                        isinstance(item, str) and item.isdigit()
-                    ):
+                    elif isinstance(item, int) or (isinstance(item, str) and item.isdigit()):
                         # It's an index
                         idx = int(item) if isinstance(item, str) else item
                         if idx < 0 or idx >= len(worker_ips):
-                            raise ValueError(
-                                f"Worker index {idx} out of range. Valid range: 0-{len(worker_ips)-1}"
-                            )
+                            raise ValueError(f"Worker index {idx} out of range. Valid range: 0-{len(worker_ips)-1}")
                         target_ips.add(worker_ips[idx])
                     else:
                         raise ValueError(
@@ -1691,9 +1577,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         except ValueError:
             # This pod IP not found in DNS results - may be external service IP
             # Fall back to using POD_IP directly and assume node_rank based on position
-            logger.warning(
-                f"Pod IP {this_pod_ip} not found in DNS results {worker_ips}. Using fallback logic."
-            )
+            logger.warning(f"Pod IP {this_pod_ip} not found in DNS results {worker_ips}. Using fallback logic.")
             # For now, assume we're the first worker if not found
             node_rank = 0
 
@@ -1713,16 +1597,12 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                             break
                     except httpx.RequestError:
                         if workers_arg == "ready":
-                            logger.debug(
-                                f"Worker {worker_ip} not ready, skipping as per 'ready' workers argument"
-                            )
+                            logger.debug(f"Worker {worker_ip} not ready, skipping as per 'ready' workers argument")
                             return None
                         time.sleep(1)
                 else:
                     # Timeout reached without successful health check
-                    logger.warning(
-                        f"Worker {worker_ip} failed to respond after {self.quorum_timeout}s timeout"
-                    )
+                    logger.warning(f"Worker {worker_ip} failed to respond after {self.quorum_timeout}s timeout")
                     if workers_arg != "ready":
                         raise TimeoutError(
                             f"Worker {worker_ip} did not become ready within {self.quorum_timeout} seconds. "
@@ -1800,12 +1680,8 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         if subcall_ips:
             logger.debug(f"Have {len(subcall_ips)} remote workers to call")
             if not self.remote_worker_pool:
-                raise RuntimeError(
-                    "RemoteWorkerPool not initialized. This is required for distributed execution."
-                )
-            logger.debug(
-                f"Using existing RemoteWorkerPool to call {len(subcall_ips)} workers"
-            )
+                raise RuntimeError("RemoteWorkerPool not initialized. This is required for distributed execution.")
+            logger.debug(f"Using existing RemoteWorkerPool to call {len(subcall_ips)} workers")
 
             def call_remote_workers():
                 nonlocal worker_exception
@@ -1825,9 +1701,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                         clean_headers["X-Deployed-As-Of"] = deployed_as_of
 
                     # Call remote workers asynchronously through the pool
-                    logger.debug(
-                        f"Calling {len(subcall_ips)} remote workers via RemoteWorkerPool: {subcall_ips}"
-                    )
+                    logger.debug(f"Calling {len(subcall_ips)} remote workers via RemoteWorkerPool: {subcall_ips}")
                     results = self.remote_worker_pool.call_workers(
                         worker_ips=subcall_ips,
                         cls_or_fn_name=cls_or_fn_name,
@@ -1854,23 +1728,17 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                             "Connection closed",
                         ]
                     ):
-                        logger.debug(
-                            f"Connection error detected: {e}, checking for membership changes"
-                        )
+                        logger.debug(f"Connection error detected: {e}, checking for membership changes")
                         # Force DNS check to see if workers were removed
                         self.check_for_membership_changes(force_dns_check=True)
                     worker_exception = e
                     raise
 
             worker_future = executor.submit(call_remote_workers)
-            logger.debug(
-                f"Submitted worker_future for {len(subcall_ips)} remote workers"
-            )
+            logger.debug(f"Submitted worker_future for {len(subcall_ips)} remote workers")
 
         else:
-            logger.debug(
-                f"No remote workers to call (subcall_ips is empty or None: {subcall_ips})"
-            )
+            logger.debug(f"No remote workers to call (subcall_ips is empty or None: {subcall_ips})")
 
         # Check if we need to initialize RemoteWorkerPool for tree topology workers
         if subcall_ips:
@@ -1879,27 +1747,19 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                 logger.warning(
                     f"INITIALIZING RemoteWorkerPool for tree worker at {this_pod_ip} to call {len(subcall_ips)} children"
                 )
-                self.remote_worker_pool = RemoteWorkerPool(
-                    quorum_timeout=self.quorum_timeout
-                )
+                self.remote_worker_pool = RemoteWorkerPool(quorum_timeout=self.quorum_timeout)
                 self.remote_worker_pool.start(
                     max_workers=min(len(subcall_ips) + 50, 200)
                 )  # Size for expected children plus buffer
-                logger.warning(
-                    f"RemoteWorkerPool initialized successfully for {this_pod_ip}"
-                )
+                logger.warning(f"RemoteWorkerPool initialized successfully for {this_pod_ip}")
             elif (
                 not hasattr(self.remote_worker_pool, "process")
                 or not self.remote_worker_pool.process
                 or not self.remote_worker_pool.process.is_alive()
             ):
                 # Pool exists but not started/alive
-                logger.warning(
-                    f"RemoteWorkerPool exists but not running for {this_pod_ip}, starting it now"
-                )
-                self.remote_worker_pool.start(
-                    max_workers=min(len(subcall_ips) + 50, 200)
-                )
+                logger.warning(f"RemoteWorkerPool exists but not running for {this_pod_ip}, starting it now")
+                self.remote_worker_pool.start(max_workers=min(len(subcall_ips) + 50, 200))
 
         if subcall_ips and not self.remote_worker_pool:
             # RemoteWorkerPool should always be initialized at this point
@@ -1954,9 +1814,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                         self.check_for_membership_changes()
                     except Exception as e:
                         # Cancel all pending futures immediately
-                        logger.error(
-                            f"Membership change detected, cancelling futures: {e}"
-                        )
+                        logger.error(f"Membership change detected, cancelling futures: {e}")
                         for f in pending_futures:
                             if not f.done():
                                 f.cancel()
@@ -1965,9 +1823,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                         change_event.clear()  # Reset for next change
 
                 # Wait for next future with a short timeout to allow membership checks
-                done, pending_futures = wait(
-                    pending_futures, timeout=1.0, return_when=FIRST_COMPLETED
-                )
+                done, pending_futures = wait(pending_futures, timeout=1.0, return_when=FIRST_COMPLETED)
 
                 for future in done:
                     logger.debug(
@@ -1981,9 +1837,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                                 f"Remote worker future returned: {type(results).__name__} with {len(results) if hasattr(results, '__len__') else 'N/A'} items"
                             )
                             # Process results - they're already JSON-decoded
-                            logger.debug(
-                                f"Processing {len(results)} results from RemoteWorkerPool"
-                            )
+                            logger.debug(f"Processing {len(results)} results from RemoteWorkerPool")
                             for i, result in enumerate(results):
                                 logger.debug(
                                     f"Result {i}: type={type(result).__name__}, "
@@ -1998,15 +1852,11 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                                     worker_responses.extend(result)
                                 else:
                                     worker_responses.append(result)
-                            logger.debug(
-                                f"Got {len(worker_responses)} total responses from remote workers"
-                            )
+                            logger.debug(f"Got {len(worker_responses)} total responses from remote workers")
                         else:  # local_future
                             logger.debug("Getting results from local processes future")
                             local_responses = future.result()
-                            logger.debug(
-                                f"Got {len(local_responses)} responses from local processes"
-                            )
+                            logger.debug(f"Got {len(local_responses)} responses from local processes")
                             # Check for errors in local responses
                             for response in local_responses:
                                 if isinstance(response, JSONResponse):
@@ -2036,14 +1886,10 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
             logger.debug(
                 f"Combining {len(local_responses)} local + {len(worker_responses)} remote = {total} total responses"
             )
-        logger.debug(
-            f"Distributed_subcall={distributed_subcall}, tree topology={tree_mode}"
-        )
+        logger.debug(f"Distributed_subcall={distributed_subcall}, tree topology={tree_mode}")
         # Log sample of what we're returning for debugging
         if worker_responses:
-            logger.debug(
-                f"Sample worker response type: {type(worker_responses[0]).__name__}"
-            )
+            logger.debug(f"Sample worker response type: {type(worker_responses[0]).__name__}")
         responses = local_responses + worker_responses
         for response in responses:
             # If the response is a JSONResponse, we need to check if it contains an exception,
@@ -2061,17 +1907,13 @@ class JaxProcess(DistributedProcess):
     """JAX-specific distributed process."""
 
     @classmethod
-    def get_distributed_env_vars(
-        cls, worker_ips, node_rank, local_rank, num_local_procs, **settings
-    ):
+    def get_distributed_env_vars(cls, worker_ips, node_rank, local_rank, num_local_procs, **settings):
         """Get JAX-specific distributed environment variables.
 
         JAX uses a coordinator address and process ID for distributed setup.
         """
         port = settings.get("port") or 1234  # JAX default coordinator port
-        env_vars = super().get_distributed_env_vars(
-            worker_ips, node_rank, local_rank, num_local_procs, **settings
-        )
+        env_vars = super().get_distributed_env_vars(worker_ips, node_rank, local_rank, num_local_procs, **settings)
 
         # JAX distributed environment variables
         env_vars.update(
@@ -2124,9 +1966,7 @@ class TensorflowProcess(DistributedProcess):
         super().proc_cleanup()
 
     @classmethod
-    def get_distributed_env_vars(
-        cls, worker_ips, node_rank, local_rank, num_local_procs, **settings
-    ):
+    def get_distributed_env_vars(cls, worker_ips, node_rank, local_rank, num_local_procs, **settings):
         """Get TensorFlow-specific distributed environment variables.
 
         TensorFlow uses TF_CONFIG for distributed training configuration.
@@ -2134,9 +1974,7 @@ class TensorflowProcess(DistributedProcess):
         import json
 
         port = settings.get("port") or 2222  # TensorFlow default port
-        env_vars = super().get_distributed_env_vars(
-            worker_ips, node_rank, local_rank, num_local_procs, **settings
-        )
+        env_vars = super().get_distributed_env_vars(worker_ips, node_rank, local_rank, num_local_procs, **settings)
 
         # Build TF_CONFIG for MultiWorkerMirroredStrategy
         worker_addresses = [f"{ip}:{port}" for ip in worker_ips]
@@ -2177,12 +2015,8 @@ class MonarchProcess(DistributedProcess):
     actors across worker nodes. Each node runs a process_allocator service.
     """
 
-    def __init__(
-        self, local_rank, request_queue, response_queue, max_threads=4, **kwargs
-    ):
-        super().__init__(
-            local_rank, request_queue, response_queue, max_threads, **kwargs
-        )
+    def __init__(self, local_rank, request_queue, response_queue, max_threads=4, **kwargs):
+        super().__init__(local_rank, request_queue, response_queue, max_threads, **kwargs)
         self.allocator = None
 
         # Monarch imports will be done in run() on the main thread
@@ -2194,24 +2028,16 @@ class MonarchProcess(DistributedProcess):
 
         try:
             # Try to import if not already available
-            if (
-                self.RemoteAllocator is None
-                or self.StaticRemoteAllocInitializer is None
-            ):
+            if self.RemoteAllocator is None or self.StaticRemoteAllocInitializer is None:
                 try:
-                    from monarch._src.actor.allocator import (
-                        RemoteAllocator,
-                        StaticRemoteAllocInitializer,
-                    )
+                    from monarch._src.actor.allocator import RemoteAllocator, StaticRemoteAllocInitializer
 
                     self.RemoteAllocator = RemoteAllocator
                     self.StaticRemoteAllocInitializer = StaticRemoteAllocInitializer
                     logger.debug("Monarch components imported")
                 except ImportError as e:
                     logger.error(f"Failed to import Monarch: {e}")
-                    logger.error(
-                        "Make sure torchmonarch is installed: pip install torchmonarch"
-                    )
+                    logger.error("Make sure torchmonarch is installed: pip install torchmonarch")
                     import traceback
 
                     logger.error(traceback.format_exc())
@@ -2223,13 +2049,8 @@ class MonarchProcess(DistributedProcess):
                     logger.error(traceback.format_exc())
                     return None
 
-            if (
-                self.RemoteAllocator is None
-                or self.StaticRemoteAllocInitializer is None
-            ):
-                logger.error(
-                    "Monarch components not available. Cannot create allocator."
-                )
+            if self.RemoteAllocator is None or self.StaticRemoteAllocInitializer is None:
+                logger.error("Monarch components not available. Cannot create allocator.")
                 return None
 
             # Get worker addresses from POD_IPS
@@ -2241,24 +2062,16 @@ class MonarchProcess(DistributedProcess):
             # Use tcp! format for channel addresses (Monarch's format)
             # Format: tcp!{ip}:{port} not tcp://{ip}:{port}
             worker_addresses = [f"tcp!{ip}:26600" for ip in pod_ips]
-            logger.info(
-                f"Creating Monarch allocator with {len(worker_addresses)} workers"
-            )
+            logger.info(f"Creating Monarch allocator with {len(worker_addresses)} workers")
             logger.debug(f"Worker addresses type: {type(worker_addresses)}")
-            logger.debug(
-                f"First address: {worker_addresses[0] if worker_addresses else 'none'}"
-            )
-            logger.debug(
-                f"First address type: {type(worker_addresses[0]) if worker_addresses else 'none'}"
-            )
+            logger.debug(f"First address: {worker_addresses[0] if worker_addresses else 'none'}")
+            logger.debug(f"First address type: {type(worker_addresses[0]) if worker_addresses else 'none'}")
 
             # Simple check - don't add complex waiting logic
 
             # Create initializer with all workers using pre-imported classes
             # StaticRemoteAllocInitializer takes addresses as positional args
-            logger.debug(
-                f"About to create StaticRemoteAllocInitializer with args: {worker_addresses}"
-            )
+            logger.debug(f"About to create StaticRemoteAllocInitializer with args: {worker_addresses}")
             try:
                 initializer = self.StaticRemoteAllocInitializer(*worker_addresses)
             except Exception as e:
@@ -2275,9 +2088,7 @@ class MonarchProcess(DistributedProcess):
             service_name = os.environ.get("KT_SERVICE_NAME", "monarch-default")
             world_id = service_name
             try:
-                allocator = self.RemoteAllocator(
-                    world_id=world_id, initializer=initializer
-                )
+                allocator = self.RemoteAllocator(world_id=world_id, initializer=initializer)
                 logger.info(f"Created allocator with world_id={world_id}")
                 return allocator
             except Exception as e:
@@ -2353,9 +2164,7 @@ class MonarchProcess(DistributedProcess):
                 pass
 
         # Run the function (we're already on the main thread of this process)
-        logger.info(
-            f"Rank {rank}: Running user function with args={args}, kwargs keys={list(kwargs.keys())}"
-        )
+        logger.info(f"Rank {rank}: Running user function with args={args}, kwargs keys={list(kwargs.keys())}")
 
         try:
             if asyncio.iscoroutinefunction(user_method):
@@ -2367,19 +2176,13 @@ class MonarchProcess(DistributedProcess):
 
             # If the result is an exception dict (from the user's try/except),
             # convert it back to a proper exception and raise it
-            if (
-                isinstance(result, dict)
-                and "status" in result
-                and result["status"] == "error"
-            ):
+            if isinstance(result, dict) and "status" in result and result["status"] == "error":
                 error_msg = result.get("error", "Unknown error")
                 traceback_str = result.get("traceback", "")
                 logger.error(f"User function returned error dict: {error_msg}")
                 logger.error(f"Traceback from user function: {traceback_str}")
                 # Raise a RuntimeError with the original error message
-                raise RuntimeError(
-                    f"Monarch execution failed: {error_msg}\n{traceback_str}"
-                )
+                raise RuntimeError(f"Monarch execution failed: {error_msg}\n{traceback_str}")
 
             return result
         except Exception as e:
@@ -2398,10 +2201,7 @@ class MonarchProcess(DistributedProcess):
         # This is the right place since run() executes on the main thread
         if self.RemoteAllocator is None or self.StaticRemoteAllocInitializer is None:
             try:
-                from monarch._src.actor.allocator import (
-                    RemoteAllocator,
-                    StaticRemoteAllocInitializer,
-                )
+                from monarch._src.actor.allocator import RemoteAllocator, StaticRemoteAllocInitializer
 
                 self.RemoteAllocator = RemoteAllocator
                 self.StaticRemoteAllocInitializer = StaticRemoteAllocInitializer
@@ -2468,9 +2268,7 @@ class MonarchProcess(DistributedProcess):
                 result = self.run_user_function(callable_obj, method_name, params)
 
                 # Send response
-                self._response_queue.put(
-                    {"request_unique_id": request_unique_id, "result": result}
-                )
+                self._response_queue.put({"request_unique_id": request_unique_id, "result": result})
 
             except Exception as e:
                 # Package and send error
@@ -2517,13 +2315,9 @@ class MonarchProcess(DistributedProcess):
         super().proc_cleanup()
 
     @classmethod
-    def get_distributed_env_vars(
-        cls, worker_ips, node_rank, local_rank, num_local_procs, **settings
-    ):
+    def get_distributed_env_vars(cls, worker_ips, node_rank, local_rank, num_local_procs, **settings):
         """Get Monarch-specific environment variables."""
-        env_vars = super().get_distributed_env_vars(
-            worker_ips, node_rank, local_rank, num_local_procs, **settings
-        )
+        env_vars = super().get_distributed_env_vars(worker_ips, node_rank, local_rank, num_local_procs, **settings)
 
         # Monarch uses these for discovery
         env_vars.update(
@@ -2596,9 +2390,7 @@ class MonarchDistributed(DistributedSupervisor):
             logger.info(f"Started MonarchProcess pool: {self.process_pool}")
 
             # Create remote worker pool for coordination
-            self.remote_worker_pool = RemoteWorkerPool(
-                quorum_timeout=self.quorum_timeout
-            )
+            self.remote_worker_pool = RemoteWorkerPool(quorum_timeout=self.quorum_timeout)
             self.remote_worker_pool.start()
 
             logger.debug("Finished setting up Monarch distributed processes")
@@ -2609,9 +2401,7 @@ class MonarchDistributed(DistributedSupervisor):
             # Check if process_allocator is already running
             import subprocess
 
-            check_result = subprocess.run(
-                ["pgrep", "-f", "process_allocator"], capture_output=True
-            )
+            check_result = subprocess.run(["pgrep", "-f", "process_allocator"], capture_output=True)
             if check_result.returncode == 0:
                 logger.info("process_allocator already running")
                 return
@@ -2667,15 +2457,9 @@ class MonarchDistributed(DistributedSupervisor):
 
             # Check if it's still running
             if self.allocator_proc.poll() is None:
-                logger.info(
-                    f"process_allocator started successfully (PID: {self.allocator_proc.pid})"
-                )
+                logger.info(f"process_allocator started successfully (PID: {self.allocator_proc.pid})")
             else:
-                stderr = (
-                    self.allocator_proc.stderr.read().decode()
-                    if self.allocator_proc.stderr
-                    else ""
-                )
+                stderr = self.allocator_proc.stderr.read().decode() if self.allocator_proc.stderr else ""
                 logger.error(f"process_allocator failed to start: {stderr}")
                 self.allocator_proc = None
 
@@ -2757,13 +2541,10 @@ class MonarchDistributed(DistributedSupervisor):
                 "This may indicate the pods aren't ready yet. Consider increasing quorum_timeout in .distribute() call."
             )
             raise RuntimeError(
-                "No pods found for Monarch distributed setup. "
-                "Consider increasing quorum_timeout parameter."
+                "No pods found for Monarch distributed setup. " "Consider increasing quorum_timeout parameter."
             )
 
-        logger.info(
-            f"Found {len(pod_ips)} pod(s) for Monarch distributed setup: {pod_ips}"
-        )
+        logger.info(f"Found {len(pod_ips)} pod(s) for Monarch distributed setup: {pod_ips}")
 
         # Store critical environment variables
         self.distributed_env_vars = {}
@@ -2894,13 +2675,9 @@ class RayDistributed(DistributedSupervisor):
                     RAY_START_PROC = None
                     raise
             else:
-                logger.warning(
-                    "KUBERAY_GEN_RAY_START_CMD environment variable not found"
-                )
+                logger.warning("KUBERAY_GEN_RAY_START_CMD environment variable not found")
 
-        logger.debug(
-            "Ray distributed supervisor setup completed (pod discovery will be done lazily)"
-        )
+        logger.debug("Ray distributed supervisor setup completed (pod discovery will be done lazily)")
 
         # Only the head node runs the subprocess
         this_pod_ip = os.environ["POD_IP"]
@@ -2949,14 +2726,10 @@ class RayDistributed(DistributedSupervisor):
 
             # # Start remote worker pool for async HTTP calls if needed
             # Use a reasonable default max_workers since we don't know cluster size yet
-            self.remote_worker_pool = RemoteWorkerPool(
-                quorum_timeout=self.quorum_timeout
-            )
+            self.remote_worker_pool = RemoteWorkerPool(quorum_timeout=self.quorum_timeout)
             self.remote_worker_pool.start(max_workers=100)  # Default size
 
-            logger.debug(
-                "Finished setting up Ray distributed process and remote worker pool"
-            )
+            logger.debug("Finished setting up Ray distributed process and remote worker pool")
 
     def cleanup(self):
         """Clean up Ray distributed process."""
@@ -3023,8 +2796,7 @@ class RayDistributed(DistributedSupervisor):
                 "This may indicate the pods aren't ready yet. Consider increasing quorum_timeout in .distribute() call."
             )
             raise RuntimeError(
-                "No pods found for Ray distributed setup. "
-                "Consider increasing quorum_timeout parameter."
+                "No pods found for Ray distributed setup. " "Consider increasing quorum_timeout parameter."
             )
 
         logger.info(f"Found {len(pod_ips)} pod(s) for distributed setup: {pod_ips}")
@@ -3061,9 +2833,7 @@ class RayDistributed(DistributedSupervisor):
             logger.debug("No other pods to reload")
             return
 
-        logger.info(
-            f"Sending reload requests to {len(other_pod_ips)} other pods: {other_pod_ips}"
-        )
+        logger.info(f"Sending reload requests to {len(other_pod_ips)} other pods: {other_pod_ips}")
 
         server_port = os.environ.get("KT_SERVER_PORT", "32300")
         total_timeout = self.quorum_timeout  # Use configurable quorum timeout
@@ -3074,9 +2844,7 @@ class RayDistributed(DistributedSupervisor):
         remaining_pods = set(other_pod_ips)
 
         while remaining_pods and (time.time() - start_time) < total_timeout:
-            logger.debug(
-                f"Attempting to reload {len(remaining_pods)} remaining pods: {list(remaining_pods)}"
-            )
+            logger.debug(f"Attempting to reload {len(remaining_pods)} remaining pods: {list(remaining_pods)}")
 
             def reload_pod(pod_ip):
                 """Send reload request to a single pod."""
@@ -3089,22 +2857,16 @@ class RayDistributed(DistributedSupervisor):
                         health_response = client.get(health_url, timeout=5)
 
                         if health_response.status_code != 200:
-                            logger.debug(
-                                f"Pod {pod_ip} health check failed, will retry later"
-                            )
+                            logger.debug(f"Pod {pod_ip} health check failed, will retry later")
                             return False
 
                         # Pod is healthy, send reload request (no timeout, installs can be long-running)
-                        response = client.post(
-                            url, headers={"X-Deployed-As-Of": deployed_as_of}
-                        )
+                        response = client.post(url, headers={"X-Deployed-As-Of": deployed_as_of})
                         if response.status_code == 200:
                             logger.debug(f"Successfully reloaded image on pod {pod_ip}")
                             return True
                         else:
-                            logger.warning(
-                                f"Pod {pod_ip} reload returned status {response.status_code}"
-                            )
+                            logger.warning(f"Pod {pod_ip} reload returned status {response.status_code}")
                             return False
 
                 except Exception as e:
@@ -3114,14 +2876,9 @@ class RayDistributed(DistributedSupervisor):
             # Try to reload all remaining pods in parallel
             current_attempt_pods = list(remaining_pods)
 
-            with ThreadPoolExecutor(
-                max_workers=min(len(current_attempt_pods), 10)
-            ) as executor:
+            with ThreadPoolExecutor(max_workers=min(len(current_attempt_pods), 10)) as executor:
                 # Submit reload tasks for remaining pods
-                future_to_pod = {
-                    executor.submit(reload_pod, pod_ip): pod_ip
-                    for pod_ip in current_attempt_pods
-                }
+                future_to_pod = {executor.submit(reload_pod, pod_ip): pod_ip for pod_ip in current_attempt_pods}
 
                 # Process completed futures
                 for future in as_completed(future_to_pod, timeout=None):
@@ -3138,9 +2895,7 @@ class RayDistributed(DistributedSupervisor):
                 elapsed = time.time() - start_time
                 remaining_time = total_timeout - elapsed
                 if remaining_time > retry_interval:
-                    logger.info(
-                        f"Waiting {retry_interval}s before retrying {len(remaining_pods)} pods..."
-                    )
+                    logger.info(f"Waiting {retry_interval}s before retrying {len(remaining_pods)} pods...")
                     time.sleep(retry_interval)
                 else:
                     logger.warning("Timeout approaching, stopping retry attempts")
@@ -3148,14 +2903,10 @@ class RayDistributed(DistributedSupervisor):
 
         # Log final results
         if successful_pods:
-            logger.info(
-                f"Successfully reloaded {len(successful_pods)} pod images: {list(successful_pods)}"
-            )
+            logger.info(f"Successfully reloaded {len(successful_pods)} pod images: {list(successful_pods)}")
 
         if remaining_pods:
-            logger.warning(
-                f"Failed to reload {len(remaining_pods)} pod images after timeout: {list(remaining_pods)}"
-            )
+            logger.warning(f"Failed to reload {len(remaining_pods)} pod images after timeout: {list(remaining_pods)}")
 
     def _is_ray_running(self):
         """Check if Ray is actually running by trying to connect to the Ray GCS port."""
@@ -3170,9 +2921,7 @@ class RayDistributed(DistributedSupervisor):
             sock.close()
 
             if result == 0:
-                logger.debug(
-                    "Ray GCS port 6379 is accessible, Ray appears to be running"
-                )
+                logger.debug("Ray GCS port 6379 is accessible, Ray appears to be running")
                 return True
             else:
                 logger.debug("Ray GCS port 6379 is not accessible, Ray is not running")
@@ -3211,13 +2960,9 @@ def distributed_supervisor_factory(distribution_type, *args, **kwargs):
     elif distribution_type == "jax":
         return SPMDDistributedSupervisor(process_class=JaxProcess, *args, **kwargs)
     elif distribution_type == "tensorflow" or distribution_type == "tf":
-        return SPMDDistributedSupervisor(
-            process_class=TensorflowProcess, *args, **kwargs
-        )
+        return SPMDDistributedSupervisor(process_class=TensorflowProcess, *args, **kwargs)
     elif distribution_type is None or distribution_type == "spmd":
         # Default to base DistributedProcess - no framework-specific dependencies
-        return SPMDDistributedSupervisor(
-            process_class=DistributedProcess, *args, **kwargs
-        )
+        return SPMDDistributedSupervisor(process_class=DistributedProcess, *args, **kwargs)
     else:
         raise ValueError(f"Unsupported distributed type: {distribution_type}")

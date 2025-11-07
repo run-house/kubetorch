@@ -28,17 +28,11 @@ from kubetorch.resources.compute.utils import (
 )
 from kubetorch.resources.compute.websocket import WebSocketRsyncTunnel
 from kubetorch.resources.images.image import Image, ImageSetupStepType
-from kubetorch.resources.secrets.kubernetes_secrets_client import (
-    KubernetesSecretsClient,
-)
+from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecretsClient
 from kubetorch.resources.volumes.volume import Volume
 from kubetorch.servers.http.utils import is_running_in_kubernetes, load_template
 from kubetorch.serving.autoscaling import AutoscalingConfig
-from kubetorch.serving.service_manager import (
-    DeploymentServiceManager,
-    KnativeServiceManager,
-    RayClusterServiceManager,
-)
+from kubetorch.serving.service_manager import DeploymentServiceManager, KnativeServiceManager, RayClusterServiceManager
 from kubetorch.serving.utils import GPUConfig, pod_is_running, RequestedPodResources
 
 from kubetorch.utils import extract_host_port, http_to_ws, load_kubeconfig
@@ -204,27 +198,19 @@ class Compute:
 
         # determine pod template vars
         server_port = serving_constants.DEFAULT_KT_SERVER_PORT
-        service_account_name = (
-            service_account_name or serving_constants.DEFAULT_SERVICE_ACCOUNT_NAME
-        )
+        service_account_name = service_account_name or serving_constants.DEFAULT_SERVICE_ACCOUNT_NAME
         otel_enabled = (
-            globals.config.cluster_config.get("otel_enabled", False)
-            if globals.config.cluster_config
-            else False
+            globals.config.cluster_config.get("otel_enabled", False) if globals.config.cluster_config else False
         )
         server_image = self._get_server_image(image, otel_enabled, inactivity_ttl)
         gpus = None if gpus in (0, None) else gpus
         gpu_config = self._load_gpu_config(gpus, gpu_memory, gpu_type)
         self._gpu_annotations = self._get_gpu_annotations(gpu_config)
-        requested_resources = self._get_requested_resources(
-            cpus, memory, disk_size, gpu_config
-        )
+        requested_resources = self._get_requested_resources(cpus, memory, disk_size, gpu_config)
         secret_env_vars, secret_volumes = self._extract_secrets(secrets)
         volume_mounts, volume_specs = self._volumes_for_pod_template(volumes)
         scheduler_name = self._get_scheduler_name(queue)
-        node_selector = self._get_node_selector(
-            node_selector.copy() if node_selector else {}, gpu_type
-        )
+        node_selector = self._get_node_selector(node_selector.copy() if node_selector else {}, gpu_type)
         all_tolerations = self._get_tolerations(gpus, tolerations)
 
         env_vars = env_vars or {}
@@ -243,9 +229,7 @@ class Compute:
             "volume_mounts": volume_mounts,
             "volume_specs": volume_specs,
             "service_account_name": service_account_name,
-            "config_env_vars": self._get_config_env_vars(
-                allowed_serialization or ["json"]
-            ),
+            "config_env_vars": self._get_config_env_vars(allowed_serialization or ["json"]),
             "image_pull_policy": image_pull_policy,
             "namespace": self._namespace,
             "freeze": freeze,
@@ -306,19 +290,13 @@ class Compute:
         compute.replicas = resource["spec"].get("replicas")
         compute.labels = template_metadata.get("labels", {})
         compute.annotations = annotations
-        compute._autoscaling_config = annotations.get(
-            "autoscaling.knative.dev/config", {}
-        )
+        compute._autoscaling_config = annotations.get("autoscaling.knative.dev/config", {})
         compute._queue = template_metadata.get("labels", {}).get("kai.scheduler/queue")
-        compute._kubeconfig_path = annotations.get(
-            serving_constants.KUBECONFIG_PATH_ANNOTATION
-        )
+        compute._kubeconfig_path = annotations.get(serving_constants.KUBECONFIG_PATH_ANNOTATION)
 
         # Extract GPU annotations directly from template annotations
         gpu_annotation_keys = ["gpu-memory", "gpu-fraction"]
-        compute._gpu_annotations = {
-            k: v for k, v in annotations.items() if k in gpu_annotation_keys
-        }
+        compute._gpu_annotations = {k: v for k, v in annotations.items() if k in gpu_annotation_keys}
 
         return compute
 
@@ -351,9 +329,7 @@ class Compute:
     @property
     def kubeconfig_path(self):
         if self._kubeconfig_path is None:
-            self._kubeconfig_path = (
-                os.getenv("KUBECONFIG") or constants.DEFAULT_KUBECONFIG_PATH
-            )
+            self._kubeconfig_path = os.getenv("KUBECONFIG") or constants.DEFAULT_KUBECONFIG_PATH
         return str(Path(self._kubeconfig_path).expanduser())
 
     @property
@@ -639,9 +615,7 @@ class Compute:
                 return
 
         # Add new dshm volume if not found
-        self.pod_template["volumes"].append(
-            {"name": "dshm", "emptyDir": {"medium": "Memory", "sizeLimit": value}}
-        )
+        self.pod_template["volumes"].append({"name": "dshm", "emptyDir": {"medium": "Memory", "sizeLimit": value}})
 
     # Alias for backward compatibility (deprecated)
     @property
@@ -690,9 +664,7 @@ class Compute:
                         if env_var["name"] not in existing_secret["env_vars"]:
                             existing_secret["env_vars"].append(env_var["name"])
                     else:
-                        secret_env_vars.append(
-                            {"secret_name": secret_name, "env_vars": [env_var["name"]]}
-                        )
+                        secret_env_vars.append({"secret_name": secret_name, "env_vars": [env_var["name"]]})
         return secret_env_vars
 
     @property
@@ -728,9 +700,7 @@ class Compute:
             for mount in container["volumeMounts"]:
                 # Skip the default dshm mount
                 if mount["name"] != "dshm":
-                    volume_mounts.append(
-                        {"name": mount["name"], "mountPath": mount["mountPath"]}
-                    )
+                    volume_mounts.append({"name": mount["name"], "mountPath": mount["mountPath"]})
         return volume_mounts
 
     @property
@@ -803,10 +773,7 @@ class Compute:
             container = self._container()
             if "env" in container:
                 for env_var in container["env"]:
-                    if (
-                        "valueFrom" in env_var
-                        and "secretKeyRef" in env_var["valueFrom"]
-                    ):
+                    if "valueFrom" in env_var and "secretKeyRef" in env_var["valueFrom"]:
                         secret_ref = env_var["valueFrom"]["secretKeyRef"]
                         if secret_ref["name"] not in secrets:
                             secrets.append(secret_ref["name"])
@@ -825,23 +792,15 @@ class Compute:
 
     @property
     def gpu_anti_affinity(self):
-        if (
-            "affinity" in self.pod_template
-            and "nodeAffinity" in self.pod_template["affinity"]
-        ):
+        if "affinity" in self.pod_template and "nodeAffinity" in self.pod_template["affinity"]:
             node_affinity = self.pod_template["affinity"]["nodeAffinity"]
             if "requiredDuringSchedulingIgnoredDuringExecution" in node_affinity:
-                required = node_affinity[
-                    "requiredDuringSchedulingIgnoredDuringExecution"
-                ]
+                required = node_affinity["requiredDuringSchedulingIgnoredDuringExecution"]
                 if "nodeSelectorTerms" in required:
                     for term in required["nodeSelectorTerms"]:
                         if "matchExpressions" in term:
                             for expr in term["matchExpressions"]:
-                                if (
-                                    expr.get("key") == "nvidia.com/gpu"
-                                    and expr.get("operator") == "DoesNotExist"
-                                ):
+                                if expr.get("key") == "nvidia.com/gpu" and expr.get("operator") == "DoesNotExist":
                                     return True
         return False
 
@@ -929,9 +888,7 @@ class Compute:
 
     @inactivity_ttl.setter
     def inactivity_ttl(self, value: str):
-        if value and (
-            not isinstance(value, str) or not re.match(r"^\d+[smhd]$", value)
-        ):
+        if value and (not isinstance(value, str) or not re.match(r"^\d+[smhd]$", value)):
             raise ValueError("Inactivity TTL must be a string, e.g. '5m', '1h', '1d'")
         if value and not self.otel_enabled:
             logger.warning(
@@ -985,11 +942,7 @@ class Compute:
         container = self._container()
         if "env" in container:
             for env_var in container["env"]:
-                if (
-                    env_var["name"] == "KT_DISTRIBUTED_CONFIG"
-                    and "value" in env_var
-                    and env_var["value"]
-                ):
+                if env_var["name"] == "KT_DISTRIBUTED_CONFIG" and "value" in env_var and env_var["value"]:
                     import json
 
                     try:
@@ -1024,9 +977,7 @@ class Compute:
             try:
                 json.dumps(value)
             except (TypeError, ValueError) as e:
-                non_serializable_keys.append(
-                    f"'{key}': {type(value).__name__} - {str(e)}"
-                )
+                non_serializable_keys.append(f"'{key}': {type(value).__name__} - {str(e)}")
 
         if non_serializable_keys:
             raise ValueError(
@@ -1047,9 +998,7 @@ class Compute:
         if service_dns and not service_dns_found:
             container["env"].append({"name": "KT_SERVICE_DNS", "value": service_dns})
         if not distributed_config_found:
-            container["env"].append(
-                {"name": "KT_DISTRIBUTED_CONFIG", "value": json.dumps(config)}
-            )
+            container["env"].append({"name": "KT_DISTRIBUTED_CONFIG", "value": json.dumps(config)})
 
     @property
     def deployment_mode(self):
@@ -1077,9 +1026,7 @@ class Compute:
         if not self._service_name:
             for env_var in self._container_env():
                 if env_var["name"] == "KT_SERVICE_NAME" and "value" in env_var:
-                    self._service_name = (
-                        env_var["value"] if not env_var["value"] == "None" else None
-                    )
+                    self._service_name = env_var["value"] if not env_var["value"] == "None" else None
                     break
         return self._service_name
 
@@ -1126,9 +1073,7 @@ class Compute:
 
         # Add Memory if specified
         if memory:
-            requests["memory"] = RequestedPodResources.memory_for_resource_request(
-                memory
-            )
+            requests["memory"] = RequestedPodResources.memory_for_resource_request(memory)
             limits["memory"] = requests["memory"]
 
         # Add Storage if specified
@@ -1179,18 +1124,14 @@ class Compute:
     def _get_config_env_vars(self, allowed_serialization):
         config_env_vars = globals.config._get_config_env_vars()
         if allowed_serialization:
-            config_env_vars["KT_ALLOWED_SERIALIZATION"] = ",".join(
-                allowed_serialization
-            )
+            config_env_vars["KT_ALLOWED_SERIALIZATION"] = ",".join(allowed_serialization)
 
         return config_env_vars
 
     def _server_should_enable_otel(self, otel_enabled, inactivity_ttl):
         return otel_enabled and inactivity_ttl
 
-    def _should_install_otel_dependencies(
-        self, server_image, otel_enabled, inactivity_ttl
-    ):
+    def _should_install_otel_dependencies(self, server_image, otel_enabled, inactivity_ttl):
         return (
             self._server_should_enable_otel(otel_enabled, inactivity_ttl)
             and server_image != serving_constants.SERVER_IMAGE_WITH_OTEL
@@ -1232,10 +1173,7 @@ class Compute:
                     t["key"] == req_tol["key"]
                     and t.get("operator") == req_tol.get("operator")
                     and t.get("effect") == req_tol["effect"]
-                    and (
-                        req_tol.get("value") is None
-                        or t.get("value") == req_tol.get("value")
-                    )
+                    and (req_tol.get("value") is None or t.get("value") == req_tol.get("value"))
                     for t in all_tolerations
                 ):
                     all_tolerations.append(req_tol)
@@ -1268,13 +1206,9 @@ class Compute:
                 if gpus <= 0:
                     raise ValueError("GPU count must be greater than 0")
                 if gpus < 1:
-                    raise ValueError(
-                        "Fractional GPUs are not currently supported. Please use whole GPUs."
-                    )
+                    raise ValueError("Fractional GPUs are not currently supported. Please use whole GPUs.")
             if not str(gpus).isdigit():
-                raise ValueError(
-                    "Unexpected format for GPUs, expecting a numeric count"
-                )
+                raise ValueError("Unexpected format for GPUs, expecting a numeric count")
 
         gpu_config = {
             "count": int(gpus) if gpus else 1,
@@ -1286,9 +1220,7 @@ class Compute:
         # Handle memory specification
         if gpu_memory is not None:
             if not isinstance(gpu_memory, str):
-                raise ValueError(
-                    "GPU memory must be a string with suffix Mi, Gi, or Ti"
-                )
+                raise ValueError("GPU memory must be a string with suffix Mi, Gi, or Ti")
 
             units = {"mi": 1, "gi": 1024, "ti": 1024 * 1024}
             val = gpu_memory.lower()
@@ -1319,9 +1251,7 @@ class Compute:
         except config.config_exception.ConfigException:
             # Fall back to a local kubeconfig file
             if not Path(self.kubeconfig_path).exists():
-                raise FileNotFoundError(
-                    f"Kubeconfig file not found: {self.kubeconfig_path}"
-                )
+                raise FileNotFoundError(f"Kubeconfig file not found: {self.kubeconfig_path}")
             config.load_kube_config(config_file=self.kubeconfig_path)
 
         # Reset the cached API clients so they'll be reinitialized with the loaded config
@@ -1347,9 +1277,7 @@ class Compute:
                             and "key" in value[0]
                             and "value" in value[0]
                         ):
-                            validated_config[key] = {
-                                item["key"]: item["value"] for item in value
-                            }
+                            validated_config[key] = {item["key"]: item["value"] for item in value}
                         elif value is not None:
                             validated_config[key] = value
                     global_config = validated_config
@@ -1364,9 +1292,7 @@ class Compute:
             for key in ["labels", "annotations", "env_vars"]:
                 # Merge global config with existing config for dictionary values
                 if key in global_config and isinstance(global_config[key], dict):
-                    self.__setattr__(
-                        key, {**global_config[key], **self.__getattribute__(key)}
-                    )
+                    self.__setattr__(key, {**global_config[key], **self.__getattribute__(key)})
             if "image_id" in global_config:
                 if self.image is None:
                     self.image = Image(image_id=global_config["image_id"])
@@ -1389,9 +1315,7 @@ class Compute:
         """Creates a new service on the compute for the provided service. If the service already exists,
         it will update the service with the latest copy of the code."""
         # Finalize pod template with launch time env vars
-        self._update_launch_env_vars(
-            service_name, pointer_env_vars, metadata_env_vars, launch_id
-        )
+        self._update_launch_env_vars(service_name, pointer_env_vars, metadata_env_vars, launch_id)
         self._upload_secrets_list()
 
         setup_script = self._get_setup_script(install_url, startup_rsync_command)
@@ -1403,9 +1327,7 @@ class Compute:
 
         # Prepare annotations for service creation, including kubeconfig path if provided
         if self._kubeconfig_path is not None:
-            self.annotations[
-                serving_constants.KUBECONFIG_PATH_ANNOTATION
-            ] = self._kubeconfig_path
+            self.annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
 
         # Create service using the appropriate service manager
         # KnativeServiceManager will handle autoscaling config, inactivity_ttl, etc.
@@ -1438,13 +1360,9 @@ class Compute:
                 service_template = {
                     "metadata": {
                         "name": service_name,
-                        "namespace": created_service.get("metadata", {}).get(
-                            "namespace"
-                        ),
+                        "namespace": created_service.get("metadata", {}).get("namespace"),
                     },
-                    "spec": {
-                        "template": created_service["spec"]["headGroupSpec"]["template"]
-                    },
+                    "spec": {"template": created_service["spec"]["headGroupSpec"]["template"]},
                 }
             else:
                 # For Knative services and other dict-based resources
@@ -1461,9 +1379,7 @@ class Compute:
                 "spec": {"template": created_service.spec.template},
             }
 
-        logger.debug(
-            f"Successfully deployed {self.deployment_mode} service {service_name}"
-        )
+        logger.debug(f"Successfully deployed {self.deployment_mode} service {service_name}")
 
         return service_template
 
@@ -1498,9 +1414,7 @@ class Compute:
 
         return service_template
 
-    def _update_launch_env_vars(
-        self, service_name, pointer_env_vars, metadata_env_vars, launch_id
-    ):
+    def _update_launch_env_vars(self, service_name, pointer_env_vars, metadata_env_vars, launch_id):
         kt_env_vars = {
             **pointer_env_vars,
             **metadata_env_vars,
@@ -1558,9 +1472,7 @@ class Compute:
         secret_env_vars = []
         secret_volumes = []
         if secrets:
-            secrets_client = KubernetesSecretsClient(
-                namespace=self.namespace, kubeconfig_path=self.kubeconfig_path
-            )
+            secrets_client = KubernetesSecretsClient(namespace=self.namespace, kubeconfig_path=self.kubeconfig_path)
             secret_objects = secrets_client.convert_to_secret_objects(secrets=secrets)
             (
                 secret_env_vars,
@@ -1635,9 +1547,7 @@ class Compute:
             for vol in volumes:
                 if isinstance(vol, str):
                     # list of volume names (assume they exist)
-                    volume = Volume.from_name(
-                        vol, create_if_missing=False, core_v1=self.core_api
-                    )
+                    volume = Volume.from_name(vol, create_if_missing=False, core_v1=self.core_api)
                     processed_volumes.append(volume)
 
                 elif isinstance(vol, Volume):
@@ -1649,9 +1559,7 @@ class Compute:
                     processed_volumes.append(vol)
 
                 else:
-                    raise ValueError(
-                        f"Volume list items must be strings or Volume objects, got {type(vol)}"
-                    )
+                    raise ValueError(f"Volume list items must be strings or Volume objects, got {type(vol)}")
 
             return processed_volumes
 
@@ -1666,9 +1574,7 @@ class Compute:
         if volumes:
             for volume in volumes:
                 # Add volume mount
-                volume_mounts.append(
-                    {"name": volume.name, "mountPath": volume.mount_path}
-                )
+                volume_mounts.append({"name": volume.name, "mountPath": volume.mount_path})
 
                 # Add volume spec
                 volume_specs.append(volume.pod_template_spec())
@@ -1740,18 +1646,14 @@ class Compute:
                 return False
             for pod in pods:
                 if pod.status.phase != "Running":
-                    logger.info(
-                        f"Pod {pod.metadata.name} is not running. Status: {pod.status.phase}"
-                    )
+                    logger.info(f"Pod {pod.metadata.name} is not running. Status: {pod.status.phase}")
                     return False
         except client.exceptions.ApiException:
             return False
         return True
 
     def _base_rsync_url(self, local_port: int):
-        return (
-            f"rsync://localhost:{local_port}/data/{self.namespace}/{self.service_name}"
-        )
+        return f"rsync://localhost:{local_port}/data/{self.namespace}/{self.service_name}"
 
     def _rsync_svc_url(self):
         return f"rsync://kubetorch-rsync.{self.namespace}.svc.cluster.local:{serving_constants.REMOTE_RSYNC_PORT}/data/{self.namespace}/{self.service_name}/"
@@ -1782,9 +1684,7 @@ class Compute:
         python_path = self.image.python_path or "python3"
         pip_install_cmd = f"{python_path} -m pip install"
         try:
-            result = self.run_bash(
-                "cat .kt/kt_pip_install_cmd 2>/dev/null || echo ''", node=node
-            )
+            result = self.run_bash("cat .kt/kt_pip_install_cmd 2>/dev/null || echo ''", node=node)
             if result and result[0][0] == 0 and result[0][1].strip():
                 pip_install_cmd = result[0][1].strip()
         except Exception:
@@ -1792,9 +1692,7 @@ class Compute:
 
         for req in reqs:
             base = self.working_dir or "."
-            remote_editable = (
-                self.run_bash(f"[ -d {base}/{req} ]", node=node)[0][0] == 0
-            )
+            remote_editable = self.run_bash(f"[ -d {base}/{req} ]", node=node)[0][0] == 0
             if remote_editable:
                 req = f"{base}/{req}"
             else:
@@ -1835,13 +1733,7 @@ class Compute:
         """Run bash commands on the pod(s)."""
         self._load_kube_config()
 
-        pod_names = (
-            self.pod_names()
-            if node in ["all", None]
-            else [node]
-            if isinstance(node, str)
-            else node
-        )
+        pod_names = self.pod_names() if node in ["all", None] else [node] if isinstance(node, str) else node
 
         return _run_bash(
             commands=commands,
@@ -1857,9 +1749,7 @@ class Compute:
 
         label_selector = f"app={serving_constants.RSYNC_SERVICE_NAME}"
         pod_name = (
-            self.core_api.list_namespaced_pod(
-                namespace=self.namespace, label_selector=label_selector
-            )
+            self.core_api.list_namespaced_pod(namespace=self.namespace, label_selector=label_selector)
             .items[0]
             .metadata.name
         )
@@ -1885,10 +1775,7 @@ class Compute:
             if resp.returncode != 0:
                 if (
                     create_target_dir
-                    and (
-                        "rsync: --mkpath" in resp.stderr
-                        or "rsync: unrecognized option" in resp.stderr
-                    )
+                    and ("rsync: --mkpath" in resp.stderr or "rsync: unrecognized option" in resp.stderr)
                     and not is_running_in_kubernetes()
                 ):
                     logger.warning(
@@ -1896,9 +1783,7 @@ class Compute:
                         "Please upgrade rsync to 3.2.0+ to improve performance."
                     )
                     self._create_rsync_target_dir()
-                    return self._run_rsync_command(
-                        backup_rsync_cmd, create_target_dir=False
-                    )
+                    return self._run_rsync_command(backup_rsync_cmd, create_target_dir=False)
 
                 raise RsyncError(rsync_cmd, resp.returncode, resp.stdout, resp.stderr)
         else:
@@ -1928,16 +1813,12 @@ class Compute:
                 r"rsync error:",
                 r"@ERROR:",
             ]
-            error_regexes = [
-                re.compile(pattern, re.IGNORECASE) for pattern in error_patterns
-            ]
+            error_regexes = [re.compile(pattern, re.IGNORECASE) for pattern in error_patterns]
 
             try:
                 with os.fdopen(leader, "rb", buffering=0) as stdout:
                     while True:
-                        rlist, _, _ = select.select(
-                            [stdout], [], [], 0.1
-                        )  # 0.1 sec timeout for responsiveness
+                        rlist, _, _ = select.select([stdout], [], [], 0.1)  # 0.1 sec timeout for responsiveness
                         if stdout in rlist:
                             try:
                                 chunk = os.read(stdout.fileno(), 1024)
@@ -1955,14 +1836,9 @@ class Compute:
 
                                 for error_regex in error_regexes:
                                     if error_regex.search(decoded_line):
-                                        raise RsyncError(
-                                            rsync_cmd, 1, decoded_line, decoded_line
-                                        )
+                                        raise RsyncError(rsync_cmd, 1, decoded_line, decoded_line)
 
-                                if (
-                                    "total size is" in decoded_line
-                                    and "speedup is" in decoded_line
-                                ):
+                                if "total size is" in decoded_line and "speedup is" in decoded_line:
                                     transfer_completed = True
 
                             if transfer_completed:
@@ -1996,9 +1872,7 @@ class Compute:
 
             logger.info("Rsync operation completed successfully")
 
-    async def _run_rsync_command_async(
-        self, rsync_cmd: str, create_target_dir: bool = True
-    ):
+    async def _run_rsync_command_async(self, rsync_cmd: str, create_target_dir: bool = True):
         """Async version of _run_rsync_command using asyncio.subprocess."""
         import asyncio
 
@@ -2017,20 +1891,13 @@ class Compute:
             )
 
             stdout_bytes, stderr_bytes = await proc.communicate()
-            stdout = (
-                stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-            )
-            stderr = (
-                stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
-            )
+            stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+            stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
 
             if proc.returncode != 0:
                 if proc.returncode is None:
                     proc.terminate()
-                if (
-                    "rsync: --mkpath" in stderr
-                    or "rsync: unrecognized option" in stderr
-                ):
+                if "rsync: --mkpath" in stderr or "rsync: unrecognized option" in stderr:
                     error_msg = (
                         "Rsync failed: --mkpath is not supported, please upgrade your rsync version to 3.2.0+ to "
                         "improve performance (e.g. `brew install rsync`)"
@@ -2117,17 +1984,9 @@ class Compute:
 
         if contents:
             if self.working_dir:
-                source = [
-                    s
-                    if s.endswith("/") or not Path(self.working_dir, s).is_dir()
-                    else s + "/"
-                    for s in source
-                ]
+                source = [s if s.endswith("/") or not Path(self.working_dir, s).is_dir() else s + "/" for s in source]
             else:
-                source = [
-                    s if s.endswith("/") or not Path(s).is_dir() else s + "/"
-                    for s in source
-                ]
+                source = [s if s.endswith("/") or not Path(s).is_dir() else s + "/" for s in source]
 
         source_str = " ".join(source)
 
@@ -2167,9 +2026,7 @@ class Compute:
         filter_options: str = None,
         force: bool = False,
     ):
-        rsync_cmd = self._get_rsync_cmd(
-            source, dest, rsync_local_port, contents, filter_options, force
-        )
+        rsync_cmd = self._get_rsync_cmd(source, dest, rsync_local_port, contents, filter_options, force)
         self._run_rsync_command(rsync_cmd)
 
     async def _rsync_async(
@@ -2182,9 +2039,7 @@ class Compute:
         force: bool = False,
     ):
         """Async version of _rsync_helper."""
-        rsync_cmd = self._get_rsync_cmd(
-            source, dest, rsync_local_port, contents, filter_options, force
-        )
+        rsync_cmd = self._get_rsync_cmd(source, dest, rsync_local_port, contents, filter_options, force)
         await self._run_rsync_command_async(rsync_cmd)
 
     def _get_websocket_info(self, local_port: int):
@@ -2225,9 +2080,7 @@ class Compute:
 
         logger.debug(f"Opening WebSocket tunnel on port {websocket_port} to {ws_url}")
         with WebSocketRsyncTunnel(websocket_port, ws_url) as tunnel:
-            self._rsync(
-                source, dest, tunnel.local_port, contents, filter_options, force
-            )
+            self._rsync(source, dest, tunnel.local_port, contents, filter_options, force)
 
     async def rsync_async(
         self,
@@ -2243,9 +2096,7 @@ class Compute:
 
         logger.debug(f"Opening WebSocket tunnel on port {websocket_port} to {ws_url}")
         with WebSocketRsyncTunnel(websocket_port, ws_url) as tunnel:
-            await self._rsync_async(
-                source, dest, tunnel.local_port, contents, filter_options, force
-            )
+            await self._rsync_async(source, dest, tunnel.local_port, contents, filter_options, force)
 
     def rsync_in_cluster(
         self,
@@ -2256,9 +2107,7 @@ class Compute:
         force: bool = False,
     ):
         """Rsync from inside the cluster to the rsync pod."""
-        rsync_command = self._get_rsync_in_cluster_cmd(
-            source, dest, contents, filter_options, force
-        )
+        rsync_command = self._get_rsync_in_cluster_cmd(source, dest, contents, filter_options, force)
         self._run_rsync_command(rsync_command)
 
     async def rsync_in_cluster_async(
@@ -2270,9 +2119,7 @@ class Compute:
         force: bool = False,
     ):
         """Async version of rsync_in_cluster. Rsync from inside the cluster to the rsync pod."""
-        rsync_command = self._get_rsync_in_cluster_cmd(
-            source, dest, contents, filter_options, force
-        )
+        rsync_command = self._get_rsync_in_cluster_cmd(source, dest, contents, filter_options, force)
         await self._run_rsync_command_async(rsync_command)
 
     def _image_setup_and_instructions(self, rsync: bool = True):
@@ -2320,9 +2167,7 @@ class Compute:
                         instructions += " # force"
             elif step.step_type == ImageSetupStepType.SYNC_PACKAGE:
                 # using package name instead of paths, since the folder path in the rsync pod will just be the package name
-                full_path, dest_dir = _get_sync_package_paths(
-                    step.kwargs.get("package")
-                )
+                full_path, dest_dir = _get_sync_package_paths(step.kwargs.get("package"))
                 if rsync:
                     self.rsync(full_path, dest=dest_dir)
                 instructions += f"COPY {full_path} {dest_dir}"
@@ -2361,10 +2206,7 @@ class Compute:
                 for key, val in step.kwargs.get("env_vars").items():
                     # single env var per line in the dockerfile
                     instructions += f"ENV {key} {val}\n"
-            if (
-                step.kwargs.get("force")
-                and step.step_type != ImageSetupStepType.PIP_INSTALL
-            ):
+            if step.kwargs.get("force") and step.step_type != ImageSetupStepType.PIP_INSTALL:
                 instructions += " # force"
             instructions += "\n"
 
@@ -2470,9 +2312,7 @@ class Compute:
 
         if workers:
             if not isinstance(workers, int):
-                raise ValueError(
-                    "Workers must be an integer. List of <integer, Compute> pairs is not yet supported"
-                )
+                raise ValueError("Workers must be an integer. List of <integer, Compute> pairs is not yet supported")
             # Set replicas property instead of storing in distributed_config
             self.replicas = workers
 
@@ -2550,9 +2390,7 @@ class Compute:
 
         if "scale_to_zero_pod_retention_period" not in kwargs:
             kwargs["scale_to_zero_pod_retention_period"] = "10m"
-            logger.debug(
-                "Setting scale_to_zero_pod_retention_period=10m to avoid thrashing"
-            )
+            logger.debug("Setting scale_to_zero_pod_retention_period=10m to avoid thrashing")
 
         if "progress_deadline" not in kwargs:
             # Ensure progress_deadline is at least as long as launch_timeout
@@ -2560,15 +2398,11 @@ class Compute:
             if self.launch_timeout:
                 # Convert launch_timeout (seconds) to a duration string
                 # Add some buffer (20% or at least 60 seconds)
-                timeout_with_buffer = max(
-                    self.launch_timeout + 60, int(self.launch_timeout * 1.2)
-                )
+                timeout_with_buffer = max(self.launch_timeout + 60, int(self.launch_timeout * 1.2))
                 if timeout_with_buffer > 600:  # If larger than default
                     default_deadline = f"{timeout_with_buffer}s"
             kwargs["progress_deadline"] = default_deadline
-            logger.debug(
-                f"Setting progress_deadline={default_deadline} to allow time for initialization"
-            )
+            logger.debug(f"Setting progress_deadline={default_deadline} to allow time for initialization")
 
         autoscaling_config = AutoscalingConfig(**kwargs)
         if autoscaling_config:

@@ -22,9 +22,7 @@ def get_test_logger(name=None):
     # Avoid adding handlers if they already exist
     if not logger.handlers:
         handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         handler.setFormatter(formatter)
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
@@ -141,9 +139,7 @@ class TorchArray:
         import torch
 
         torch.distributed.init_process_group(backend="gloo")
-        print(
-            f"Rank {torch.distributed.get_rank()} of {torch.distributed.get_world_size()} initialized"
-        )
+        print(f"Rank {torch.distributed.get_rank()} of {torch.distributed.get_world_size()} initialized")
         print(f"Hello from the cluster stdout! {i}")
         logger.info(f"Hello from the cluster logs! {i}")
         self.arr[i] = i
@@ -176,9 +172,7 @@ class GPUMemoryHog:
 
         # Try to allocate more memory than a typical GPU has
         # Most GPUs have 8-16GB, so trying to allocate 32GB should trigger OOM
-        self.data = torch.ones(
-            (8192, 8192, 128), device="cuda", dtype=torch.float32
-        )  # ~32GB
+        self.data = torch.ones((8192, 8192, 128), device="cuda", dtype=torch.float32)  # ~32GB
         # Force memory allocation
         self.result = self.data.sum().item()
         print(f"Allocated and summed {self.data.numel() * 4 / 1e9:.1f}GB on GPU")
@@ -452,9 +446,7 @@ def write_temp_file_fn(temp_fd, temp_path, fn_contents):
 def service_deployer(service_name: str):
     import kubetorch as kt
 
-    deployed = kt.fn(simple_summer, service_name).to(
-        kt.Compute(cpus=".1", image=kt.images.Debian())
-    )
+    deployed = kt.fn(simple_summer, service_name).to(kt.Compute(cpus=".1", image=kt.images.Debian()))
 
     return deployed(1, 2)
 
@@ -480,8 +472,6 @@ def service_deployer_with_logs(service_name: str):
     for i in range(5):
         logger.info(f"This is the {i}th log from the parent service")
 
-    deployed = kt.fn(simple_summer_with_logs, service_name).to(
-        kt.Compute(cpus=".1", image=kt.images.Debian())
-    )
+    deployed = kt.fn(simple_summer_with_logs, service_name).to(kt.Compute(cpus=".1", image=kt.images.Debian()))
 
     return deployed(2, 3)

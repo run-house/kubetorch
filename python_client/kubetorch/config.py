@@ -56,9 +56,7 @@ class KubetorchConfig:
 
             if is_running_in_kubernetes():
                 try:
-                    with open(
-                        "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
-                    ) as f:
+                    with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace") as f:
                         return f.read().strip()
                 except FileNotFoundError:
                     return "default"
@@ -95,9 +93,7 @@ class KubetorchConfig:
 
         validated = validate_username(value)
         if validated != value:
-            logger.info(
-                f"Username was validated and changed to {validated} to be Kubernetes-compatible."
-            )
+            logger.info(f"Username was validated and changed to {validated} to be Kubernetes-compatible.")
         self._username = validated
 
     @property
@@ -156,9 +152,7 @@ class KubetorchConfig:
         elif isinstance(values, list):
             self._volumes = values
         else:
-            raise ValueError(
-                "volumes must be a list of strings or comma-separated string"
-            )
+            raise ValueError("volumes must be a list of strings or comma-separated string")
 
     @property
     def api_url(self):
@@ -186,10 +180,7 @@ class KubetorchConfig:
             3. File cache
             4. In-cluster namespace or kubeconfig current context
         """
-        if (
-            self.install_namespace
-            and self.install_namespace != DEFAULT_INSTALL_NAMESPACE
-        ):
+        if self.install_namespace and self.install_namespace != DEFAULT_INSTALL_NAMESPACE:
             self._namespace = self.install_namespace
         elif self._namespace is None:
             ns = self._get_env_var("namespace") or self.file_cache.get("namespace")
@@ -212,9 +203,7 @@ class KubetorchConfig:
             4. Default install namespace
         """
         if self._install_namespace is None:
-            ns = self._get_env_var("install_namespace") or self.file_cache.get(
-                "install_namespace"
-            )
+            ns = self._get_env_var("install_namespace") or self.file_cache.get("install_namespace")
             self._install_namespace = ns or DEFAULT_INSTALL_NAMESPACE
         return self._install_namespace
 
@@ -264,9 +253,7 @@ class KubetorchConfig:
 
                 self._log_verbosity = verbosity_env_var
             else:
-                self._log_verbosity = self.file_cache.get(
-                    "log_verbosity", default_verbosity
-                )
+                self._log_verbosity = self.file_cache.get("log_verbosity", default_verbosity)
 
         return self._log_verbosity
 
@@ -279,9 +266,7 @@ class KubetorchConfig:
             # In case we are unsetting log_verbosity, None is a valid value
             verbosity = LogVerbosity(value).value if value else None
         except ValueError:
-            raise ValueError(
-                "Invalid log verbosity value. Must be one of: 'debug', 'info', 'critical'."
-            )
+            raise ValueError("Invalid log verbosity value. Must be one of: 'debug', 'info', 'critical'.")
 
         self._log_verbosity = verbosity
 
@@ -302,9 +287,7 @@ class KubetorchConfig:
             if self._get_env_var("stream_logs"):
                 self._stream_logs = self._get_env_var("stream_logs").lower() == "true"
             else:
-                self._stream_logs = self.file_cache.get(
-                    "stream_logs", True
-                )  # Default to True
+                self._stream_logs = self.file_cache.get("stream_logs", True)  # Default to True
         return self._stream_logs
 
     @stream_logs.setter
@@ -345,13 +328,9 @@ class KubetorchConfig:
         """
         if self._stream_metrics is None:
             if self._get_env_var("stream_metrics"):
-                self._stream_metrics = (
-                    self._get_env_var("stream_metrics").lower() == "true"
-                )
+                self._stream_metrics = self._get_env_var("stream_metrics").lower() == "true"
             else:
-                self._stream_metrics = self.file_cache.get(
-                    "stream_metrics", True
-                )  # Default to True
+                self._stream_metrics = self.file_cache.get("stream_metrics", True)  # Default to True
         return self._stream_metrics
 
     @stream_metrics.setter
@@ -430,11 +409,7 @@ class KubetorchConfig:
         """Write out config to local ``~/.kt/config.yaml``, to be used globally."""
         # Ensure directory exists
         self.CONFIG_FILE.expanduser().parent.mkdir(parents=True, exist_ok=True)
-        values = {
-            k: str(v) if isinstance(v, dict) else v
-            for k, v in dict(self).items()
-            if v is not None
-        }
+        values = {k: str(v) if isinstance(v, dict) else v for k, v in dict(self).items() if v is not None}
         if user_values:
             values.update(user_values)
 

@@ -122,9 +122,7 @@ class Image:
             image_id (str): Docker image in the following format ``"<registry>/<image>:<tag>"``
         """
         if self.image_id:
-            raise ValueError(
-                "Setting both a machine image and docker image is not yet supported."
-            )
+            raise ValueError("Setting both a machine image and docker image is not yet supported.")
         self.image_id = image_id
         return self
 

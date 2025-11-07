@@ -45,12 +45,8 @@ def secret(
     """
 
     # env_vars or path or provider are provided
-    valid_input = sum([bool(x) for x in [provider, path, env_vars]]) == 1 or (
-        provider and path
-    )
-    valid_from_name_input = (
-        sum([bool(x) for x in [provider, path, env_vars]]) == 0 and name
-    )
+    valid_input = sum([bool(x) for x in [provider, path, env_vars]]) == 1 or (provider and path)
+    valid_from_name_input = sum([bool(x) for x in [provider, path, env_vars]]) == 0 and name
 
     if not (valid_from_name_input or valid_input):
         raise ValueError(
@@ -59,9 +55,7 @@ def secret(
 
     if valid_input:
         if provider:
-            return Secret.from_provider(
-                provider=provider, name=name, path=path, override=override
-            )
+            return Secret.from_provider(provider=provider, name=name, path=path, override=override)
         elif path and not provider:  # the case where provider + path are provided are
             return Secret.from_path(path=path, name=name, override=override)
         elif env_vars:

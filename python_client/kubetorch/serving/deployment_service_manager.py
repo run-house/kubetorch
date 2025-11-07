@@ -87,21 +87,15 @@ class DeploymentServiceManager(BaseServiceManager):
 
         if scheduler_name and queue_name:
             labels["kai.scheduler/queue"] = queue_name  # Useful for queries, etc
-            template_labels[
-                "kai.scheduler/queue"
-            ] = queue_name  # Required for KAI to schedule pods
+            template_labels["kai.scheduler/queue"] = queue_name  # Required for KAI to schedule pods
 
         deployment_timestamp = datetime.now(timezone.utc).isoformat()
-        template_annotations = {
-            "kubetorch.com/deployment_timestamp": deployment_timestamp
-        }
+        template_annotations = {"kubetorch.com/deployment_timestamp": deployment_timestamp}
 
         # Create Deployment
         deployment = load_template(
             template_file=serving_constants.DEPLOYMENT_TEMPLATE_FILE,
-            template_dir=os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "templates"
-            ),
+            template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
             name=name,
             namespace=self.namespace,
             annotations=annotations,
@@ -118,18 +112,14 @@ class DeploymentServiceManager(BaseServiceManager):
         # Check if this is a distributed deployment
         env_vars = pod_template.get("containers", [{}])[0].get("env", [])
         is_distributed = any(
-            env.get("name") == "KT_DISTRIBUTED_CONFIG"
-            and env.get("value") != "null"
-            and env.get("value")
+            env.get("name") == "KT_DISTRIBUTED_CONFIG" and env.get("value") != "null" and env.get("value")
             for env in env_vars
         )
 
         # Create regular service with session affinity
         service = load_template(
             template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
-            template_dir=os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "templates"
-            ),
+            template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
             name=service_name,
             namespace=self.namespace,
             annotations=annotations,
@@ -137,9 +127,7 @@ class DeploymentServiceManager(BaseServiceManager):
             deployment_name=name,
             module_name=clean_module_name,
             distributed=False,  # Keep regular service for client access
-            server_port=pod_template.get("containers", [{}])[0]
-            .get("ports", [{}])[0]
-            .get("containerPort", 32300),
+            server_port=pod_template.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300),
         )
 
         # For distributed deployments, also create a headless service for pod discovery
@@ -147,9 +135,7 @@ class DeploymentServiceManager(BaseServiceManager):
         if is_distributed:
             headless_service = load_template(
                 template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
-                template_dir=os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)), "templates"
-                ),
+                template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
                 name=f"{service_name}-headless",  # Use different name for headless
                 namespace=self.namespace,
                 annotations=annotations,
@@ -157,9 +143,7 @@ class DeploymentServiceManager(BaseServiceManager):
                 deployment_name=name,
                 module_name=clean_module_name,
                 distributed=True,  # Make this one headless
-                server_port=pod_template.get("containers", [{}])[0]
-                .get("ports", [{}])[0]
-                .get("containerPort", 32300),
+                server_port=pod_template.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300),
             )
 
         try:
@@ -173,9 +157,7 @@ class DeploymentServiceManager(BaseServiceManager):
                     **kwargs,
                 )
                 if not dryrun:
-                    logger.info(
-                        f"Created service {service_name} in namespace {self.namespace}"
-                    )
+                    logger.info(f"Created service {service_name} in namespace {self.namespace}")
             except client.exceptions.ApiException as e:
                 if e.status == 409:
                     logger.info(f"Service {service_name} already exists")
@@ -191,14 +173,10 @@ class DeploymentServiceManager(BaseServiceManager):
                         **kwargs,
                     )
                     if not dryrun:
-                        logger.info(
-                            f"Created headless service {service_name}-headless in namespace {self.namespace}"
-                        )
+                        logger.info(f"Created headless service {service_name}-headless in namespace {self.namespace}")
                 except client.exceptions.ApiException as e:
                     if e.status == 409:
-                        logger.info(
-                            f"Headless service {service_name}-headless already exists"
-                        )
+                        logger.info(f"Headless service {service_name}-headless already exists")
                     else:
                         raise
 
@@ -255,28 +233,16 @@ class DeploymentServiceManager(BaseServiceManager):
         """Get deployment timestamp annotation for Deployment services."""
         try:
             deployment = self.get_deployment(service_name)
-            if (
-                deployment
-                and hasattr(deployment, "metadata")
-                and hasattr(deployment.metadata, "annotations")
-            ):
-                return deployment.metadata.annotations.get(
-                    "kubetorch.com/deployment_timestamp", None
-                )
+            if deployment and hasattr(deployment, "metadata") and hasattr(deployment.metadata, "annotations"):
+                return deployment.metadata.annotations.get("kubetorch.com/deployment_timestamp", None)
         except client.exceptions.ApiException:
             pass
         return None
 
-    def update_deployment_timestamp_annotation(
-        self, service_name: str, new_timestamp: str
-    ) -> str:
+    def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
         """Update deployment timestamp annotation for Deployment services."""
         try:
-            patch_body = {
-                "metadata": {
-                    "annotations": {"kubetorch.com/deployment_timestamp": new_timestamp}
-                }
-            }
+            patch_body = {"metadata": {"annotations": {"kubetorch.com/deployment_timestamp": new_timestamp}}}
             self.apps_v1_api.patch_namespaced_deployment(
                 name=service_name,
                 namespace=self.namespace,
@@ -284,9 +250,7 @@ class DeploymentServiceManager(BaseServiceManager):
             )
             return new_timestamp
         except client.exceptions.ApiException as e:
-            logger.error(
-                f"Failed to update deployment timestamp for '{service_name}': {str(e)}"
-            )
+            logger.error(f"Failed to update deployment timestamp for '{service_name}': {str(e)}")
             raise
 
     def create_or_update_service(
@@ -383,9 +347,7 @@ class DeploymentServiceManager(BaseServiceManager):
         sleep_interval = 2
         start_time = time.time()
 
-        logger.info(
-            f"Checking Deployment {service_name} pod readiness (timeout: {launch_timeout} seconds)"
-        )
+        logger.info(f"Checking Deployment {service_name} pod readiness (timeout: {launch_timeout} seconds)")
 
         iteration = 0
         while (time.time() - start_time) < launch_timeout:
@@ -403,14 +365,10 @@ class DeploymentServiceManager(BaseServiceManager):
                 desired_replicas = deployment.spec.replicas or 0
 
                 if iteration % 3 == 0:
-                    logger.debug(
-                        f"Deployment {service_name}: {ready_replicas}/{desired_replicas} replicas ready"
-                    )
+                    logger.debug(f"Deployment {service_name}: {ready_replicas}/{desired_replicas} replicas ready")
 
                 if ready_replicas >= desired_replicas and desired_replicas > 0:
-                    logger.info(
-                        f"Deployment {service_name} pod(s) are now ready with {ready_replicas} replicas"
-                    )
+                    logger.info(f"Deployment {service_name} pod(s) are now ready with {ready_replicas} replicas")
                     return True
 
                 # Check for pod-level issues
@@ -438,16 +396,11 @@ class DeploymentServiceManager(BaseServiceManager):
             if iteration % 10 == 0:
                 elapsed = int(time.time() - start_time)
                 remaining = max(0, int(launch_timeout - elapsed))
-                logger.info(
-                    f"Deployment is not yet ready "
-                    f"(elapsed: {elapsed}s, remaining: {remaining}s)"
-                )
+                logger.info(f"Deployment is not yet ready " f"(elapsed: {elapsed}s, remaining: {remaining}s)")
 
             time.sleep(sleep_interval)
 
-        raise ServiceTimeoutError(
-            f"Deployment {service_name} is not ready after {launch_timeout} seconds"
-        )
+        raise ServiceTimeoutError(f"Deployment {service_name} is not ready after {launch_timeout} seconds")
 
     def teardown_service(self, service_name: str, console=None) -> bool:
         """Teardown Deployment and associated resources.

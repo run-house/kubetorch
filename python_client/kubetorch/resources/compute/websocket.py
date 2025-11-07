@@ -87,9 +87,7 @@ class WebSocketRsyncTunnel:
         while self.running:
             try:
                 client_sock, _ = self.server_socket.accept()
-                threading.Thread(
-                    target=self._handle_client, args=(client_sock,), daemon=True
-                ).start()
+                threading.Thread(target=self._handle_client, args=(client_sock,), daemon=True).start()
             except:
                 break
 

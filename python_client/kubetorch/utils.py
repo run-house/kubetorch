@@ -53,9 +53,7 @@ def validate_username(username):
         username = username.strip("-")
     reserved = ["kt", "kubetorch", "knative"]
     if username in reserved:
-        raise ValueError(
-            f"{original_username} is one of the reserved names: {', '.join(reserved)}"
-        )
+        raise ValueError(f"{original_username} is one of the reserved names: {', '.join(reserved)}")
     if not re.match(r"^[a-z]([-a-z0-9]*[a-z0-9])?$", username):
         raise ValueError(f"{original_username} must be a valid k8s name")
     return username
