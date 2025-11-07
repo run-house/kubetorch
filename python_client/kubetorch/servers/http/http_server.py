@@ -1217,7 +1217,7 @@ async def lifespan(app: FastAPI):
 
     try:
         if os.getenv("KT_CALLABLE_TYPE") == "app":
-            cached_image_setup()
+            run_image_setup()
         else:
             load_callable()
 

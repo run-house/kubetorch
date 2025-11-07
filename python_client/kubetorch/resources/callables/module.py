@@ -792,7 +792,8 @@ class Module:
     def _get_service_dockerfile(self, metadata_env_vars):
         image_instructions = self.compute._image_setup_and_instructions()
 
-        image_instructions += "\n"
+        if image_instructions:
+            image_instructions += "\n"
         for key, val in metadata_env_vars.items():
             if isinstance(val, Dict):
                 val = json.dumps(val)
