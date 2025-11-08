@@ -56,9 +56,7 @@ def get_k8s_identity_name() -> Optional[str]:
                     parts = user_name.split("/")
                     if len(parts) >= 2:
                         return "role-" + parts[-2].lower()
-                elif "/" in user_name and (
-                    ".amazonaws.com" in user_name or "arn:aws" in user_name
-                ):
+                elif "/" in user_name and (".amazonaws.com" in user_name or "arn:aws" in user_name):
                     parts = user_name.split("/")
                     return "user-" + parts[-1].lower()
 
@@ -113,9 +111,7 @@ def _read_file_if_exists(file_path: str) -> Optional[str]:
 # ------------------------------------------------------------------------------------------------
 
 
-def check_path_on_kubernetes_pods(
-    path: str, service_name: str, namespace: str = None
-) -> bool:
+def check_path_on_kubernetes_pods(path: str, service_name: str, namespace: str = None) -> bool:
     """
     Check if a path exists on a specific Knative service's pods
     """
@@ -127,9 +123,7 @@ def check_path_on_kubernetes_pods(
 
     pods = _fetch_pods_for_kubernetes_service(service_name, namespace, core_v1_api)
     if not pods:
-        logger.error(
-            f"No pods found for service {service_name} in namespace {namespace}"
-        )
+        logger.error(f"No pods found for service {service_name} in namespace {namespace}")
         return False
 
     path_found = True
@@ -156,9 +150,7 @@ def check_path_on_kubernetes_pods(
     return path_found
 
 
-def check_env_vars_on_kubernetes_pods(
-    env_vars: list, service_name: str, namespace: str = None
-) -> dict:
+def check_env_vars_on_kubernetes_pods(env_vars: list, service_name: str, namespace: str = None) -> dict:
     """
     Check if an AWS role is assumed on a specific Knative service's pods
 
@@ -174,9 +166,7 @@ def check_env_vars_on_kubernetes_pods(
 
     pods = _fetch_pods_for_kubernetes_service(service_name, namespace, core_v1_api)
     if not pods:
-        logger.error(
-            f"No pods found for service {service_name} in namespace {namespace}"
-        )
+        logger.error(f"No pods found for service {service_name} in namespace {namespace}")
         return {}
 
     found_env_vars = {}
@@ -210,9 +200,7 @@ def check_env_vars_on_kubernetes_pods(
     return found_env_vars
 
 
-def _fetch_pods_for_kubernetes_service(
-    service_name: str, namespace: str, client_api: client.CoreV1Api
-) -> List[V1Pod]:
+def _fetch_pods_for_kubernetes_service(service_name: str, namespace: str, client_api: client.CoreV1Api) -> List[V1Pod]:
     """
     Fetch pods for a specific Knative service with timeout
     """
@@ -228,9 +216,7 @@ def _fetch_pods_for_kubernetes_service(
             if ready_pods:
                 return ready_pods
         except Exception as e:
-            logger.error(
-                f"Error fetching pods for service {service_name} in namespace {namespace}: {e}"
-            )
+            logger.error(f"Error fetching pods for service {service_name} in namespace {namespace}: {e}")
         time.sleep(1)
 
     return []

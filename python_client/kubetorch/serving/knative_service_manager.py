@@ -85,9 +85,7 @@ class KnativeServiceManager(BaseServiceManager):
 
         if scheduler_name and queue_name:
             labels["kai.scheduler/queue"] = queue_name  # Useful for queries, etc
-            template_labels[
-                "kai.scheduler/queue"
-            ] = queue_name  # Required for KAI to schedule pods
+            template_labels["kai.scheduler/queue"] = queue_name  # Required for KAI to schedule pods
             # Note: KAI wraps the Knative revision in a podgroup, expecting at least 1 pod to schedule initially
             # Only set min-scale=1 if user hasn't explicitly provided a min_scale value
             if autoscaling_config.min_scale is None:
@@ -99,9 +97,7 @@ class KnativeServiceManager(BaseServiceManager):
 
         # Add progress deadline if specified (not an autoscaling annotation)
         if autoscaling_config.progress_deadline is not None:
-            template_annotations[
-                "serving.knative.dev/progress-deadline"
-            ] = autoscaling_config.progress_deadline
+            template_annotations["serving.knative.dev/progress-deadline"] = autoscaling_config.progress_deadline
 
         if inactivity_ttl:
             annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
@@ -113,9 +109,7 @@ class KnativeServiceManager(BaseServiceManager):
             template_annotations.update(gpu_annotations)
 
         deployment_timestamp = datetime.now(timezone.utc).isoformat()
-        template_annotations.update(
-            {"kubetorch.com/deployment_timestamp": deployment_timestamp}
-        )
+        template_annotations.update({"kubetorch.com/deployment_timestamp": deployment_timestamp})
 
         # Set containerConcurrency based on autoscaling config
         # When using concurrency-based autoscaling, set containerConcurrency to match
@@ -135,9 +129,7 @@ class KnativeServiceManager(BaseServiceManager):
 
         service = load_template(
             template_file=serving_constants.KNATIVE_SERVICE_TEMPLATE_FILE,
-            template_dir=os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "templates"
-            ),
+            template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
             **template_vars,
         )
 
@@ -193,24 +185,16 @@ class KnativeServiceManager(BaseServiceManager):
             service = self.get_knative_service(service_name)
             if service:
                 return (
-                    service.get("metadata", {})
-                    .get("annotations", {})
-                    .get("kubetorch.com/deployment_timestamp", None)
+                    service.get("metadata", {}).get("annotations", {}).get("kubetorch.com/deployment_timestamp", None)
                 )
         except client.exceptions.ApiException:
             pass
         return None
 
-    def update_deployment_timestamp_annotation(
-        self, service_name: str, new_timestamp: str
-    ) -> str:
+    def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
         """Update deployment timestamp annotation for Knative services."""
         try:
-            patch_body = {
-                "metadata": {
-                    "annotations": {"kubetorch.com/deployment_timestamp": new_timestamp}
-                }
-            }
+            patch_body = {"metadata": {"annotations": {"kubetorch.com/deployment_timestamp": new_timestamp}}}
             self.objects_api.patch_namespaced_custom_object(
                 group="serving.knative.dev",
                 version="v1",
@@ -221,9 +205,7 @@ class KnativeServiceManager(BaseServiceManager):
             )
             return new_timestamp
         except client.exceptions.ApiException as e:
-            logger.error(
-                f"Failed to update deployment timestamp for Knative service '{service_name}': {str(e)}"
-            )
+            logger.error(f"Failed to update deployment timestamp for Knative service '{service_name}': {str(e)}")
             raise
 
     def get_knative_service_endpoint(self, service_name: str) -> str:
@@ -263,9 +245,7 @@ class KnativeServiceManager(BaseServiceManager):
         """
         Creates a Knative service with autoscaling capabilities.
         """
-        logger.info(
-            f"Deploying Kubetorch autoscaling (Knative) service with name: {service_name}"
-        )
+        logger.info(f"Deploying Kubetorch autoscaling (Knative) service with name: {service_name}")
         try:
             created_service = self._create_or_update_knative_service(
                 name=service_name,
@@ -375,9 +355,7 @@ class KnativeServiceManager(BaseServiceManager):
             "autoscaling": False,
         }
 
-        logger.info(
-            f"Checking service {service_name} pod readiness (timeout: {launch_timeout} seconds)"
-        )
+        logger.info(f"Checking service {service_name} pod readiness (timeout: {launch_timeout} seconds)")
         iteration = 0
         while (time.time() - start_time) < launch_timeout:
             iteration += 1
@@ -410,15 +388,10 @@ class KnativeServiceManager(BaseServiceManager):
 
                 # Get the min-scale from annotations
                 min_scale = 0
-                if (
-                    service.get("spec", {})
-                    .get("template", {})
-                    .get("metadata", {})
-                    .get("annotations", {})
-                ):
-                    min_scale_str = service["spec"]["template"]["metadata"][
-                        "annotations"
-                    ].get("autoscaling.knative.dev/min-scale", "0")
+                if service.get("spec", {}).get("template", {}).get("metadata", {}).get("annotations", {}):
+                    min_scale_str = service["spec"]["template"]["metadata"]["annotations"].get(
+                        "autoscaling.knative.dev/min-scale", "0"
+                    )
                     min_scale = int(min_scale_str)
 
                 if min_scale == 0 and self._status_condition_ready(status):
@@ -468,9 +441,7 @@ class KnativeServiceManager(BaseServiceManager):
 
                 latest_revision = status.get("latestCreatedRevisionName")
                 if latest_revision:
-                    check_revision_for_errors(
-                        latest_revision, self.namespace, objects_api
-                    )
+                    check_revision_for_errors(latest_revision, self.namespace, objects_api)
 
             except client.exceptions.ApiException:
                 raise
@@ -478,10 +449,7 @@ class KnativeServiceManager(BaseServiceManager):
             if iteration % 10 == 0:
                 elapsed = int(time.time() - start_time)
                 remaining = max(0, int(launch_timeout - elapsed))
-                logger.info(
-                    f"Service is not yet marked as ready "
-                    f"(elapsed: {elapsed}s, remaining: {remaining}s)"
-                )
+                logger.info(f"Service is not yet marked as ready " f"(elapsed: {elapsed}s, remaining: {remaining}s)")
 
             time.sleep(sleep_interval)
 

@@ -43,12 +43,8 @@ class Secret:
         name_prefix = (
             f"{config.username}-" if config.username else ""
         )  # we need the username as prefix in case diffrent users will create the same provider secret
-        self._name = (
-            name or f"{name_prefix}{provider}" or f"{name_prefix}{self._PROVIDER}"
-        )
-        self._name = self._name.replace(
-            "_", "-"
-        )  # cleanup so the name will match k8 standards.
+        self._name = name or f"{name_prefix}{provider}" or f"{name_prefix}{self._PROVIDER}"
+        self._name = self._name.replace("_", "-")  # cleanup so the name will match k8 standards.
         self._namespace = kwargs.get("namespace", None) or config.namespace
         self._values = values
 
@@ -58,9 +54,7 @@ class Secret:
             filenames = kwargs.get(
                 "filenames", None
             )  # we might get filenames as kwarg if we load the secret from name or form config
-            updated_path, filenames = self._split_path_if_needed(
-                path=path, filenames=filenames
-            )
+            updated_path, filenames = self._split_path_if_needed(path=path, filenames=filenames)
             self.path = updated_path
             self.filenames = filenames
         self.env_vars = env_vars
@@ -131,9 +125,7 @@ class Secret:
             self.filenames = filenames
         return values
 
-    def _split_path_if_needed(
-        self, path: str, filenames: list = None
-    ) -> Tuple[str, List[str]]:
+    def _split_path_if_needed(self, path: str, filenames: list = None) -> Tuple[str, List[str]]:
         """Split path into path and filesnames if a single file is specified as a full path"""
         updated_path = path
         is_default_path = updated_path == self._DEFAULT_PATH
@@ -162,9 +154,7 @@ class Secret:
     @classmethod
     def from_name(cls, name, namespace: str = config.namespace):
 
-        from kubetorch.resources.secrets.kubernetes_secrets_client import (
-            KubernetesSecretsClient,
-        )
+        from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecretsClient
 
         secrets_client = KubernetesSecretsClient(namespace=namespace)
         secret = secrets_client.load_secret(name=name)
@@ -185,9 +175,7 @@ class Secret:
         return list(_str_to_provider_class.values())
 
     @classmethod
-    def from_provider(
-        cls, provider: str, name: str = None, path: str = None, override: bool = False
-    ):
+    def from_provider(cls, provider: str, name: str = None, path: str = None, override: bool = False):
         """Return kubetorch provider secret object
 
         Args:
@@ -200,9 +188,7 @@ class Secret:
 
         secret_class = _get_provider_class(provider)
         if not secret_class:
-            raise ValueError(
-                f"{provider} is not a supported provider: {Secret.builtin_providers(as_str=True)}"
-            )
+            raise ValueError(f"{provider} is not a supported provider: {Secret.builtin_providers(as_str=True)}")
         return secret_class(name=name, provider=provider, path=path, override=override)
 
     @classmethod

@@ -203,26 +203,16 @@ class PodTerminatedError(Exception):
     @property
     def evicted(self) -> bool:
         """True if pod was evicted (ex: node pressure, preemption)."""
-        return self.reason == "Evicted" or any(
-            "Evicted" in event["reason"] for event in self.events
-        )
+        return self.reason == "Evicted" or any("Evicted" in event["reason"] for event in self.events)
 
     @property
     def oom_killed(self) -> bool:
         """True if pod was evicted due to OOM."""
-        return self.reason == "OOMKilled" or any(
-            "OOMKilled" in event["reason"] for event in self.events
-        )
+        return self.reason == "OOMKilled" or any("OOMKilled" in event["reason"] for event in self.events)
 
     def __str__(self):
-        events_str = "\n".join(
-            f"{e['timestamp']} {e['reason']}: {e['message']}" for e in self.events
-        )
-        base_exc = (
-            f"\nPod Name: {self.pod_name}\n"
-            f"Reason: {self.reason}\n"
-            f"Status Code: {self.status_code}\n"
-        )
+        events_str = "\n".join(f"{e['timestamp']} {e['reason']}: {e['message']}" for e in self.events)
+        base_exc = f"\nPod Name: {self.pod_name}\n" f"Reason: {self.reason}\n" f"Status Code: {self.status_code}\n"
         if self.events:
             base_exc += f"Recent Events:\n{events_str}"
         return base_exc
@@ -316,9 +306,7 @@ def clean_and_validate_k8s_name(name: str, allow_full_length: bool = True) -> st
                           If False, limits to 40 chars to leave room for k8s suffixes.
     """
     max_k8s_name_length = 63  # max length allowed by k8s
-    max_base_name_length = (
-        40  # max module name length to account for added k8s suffixes
-    )
+    max_base_name_length = 40  # max module name length to account for added k8s suffixes
     # Regex to comply with k8s service name requirements
     cleaned_name = re.sub(r"[^a-z0-9-]|^[-]|[-]$", "", name.lower())
     if not cleaned_name:
@@ -350,10 +338,7 @@ def clean_and_validate_k8s_name(name: str, allow_full_length: bool = True) -> st
                 # Handle prefix trimming
                 if prefix:
                     segments = prefix.split("-")
-                    while (
-                        len("-".join(segments)) + len(k8s_part) + len(suffix)
-                        > max_length
-                    ):
+                    while len("-".join(segments)) + len(k8s_part) + len(suffix) > max_length:
                         if len(segments) > 1:
                             segments.pop()
                         else:
@@ -368,21 +353,14 @@ def clean_and_validate_k8s_name(name: str, allow_full_length: bool = True) -> st
                     current_length = 0
                     for seg in suffix_segments:
                         # Only add segment if it's at least 2 chars so the name doesn't look cut off
-                        if (
-                            len(seg) >= 2
-                            and current_length + len(seg) + 1 <= remaining_length
-                        ):
+                        if len(seg) >= 2 and current_length + len(seg) + 1 <= remaining_length:
                             clean_segments.append(seg)
                             current_length += len(seg) + 1
                     suffix = "-".join(clean_segments)
                 else:
                     suffix = ""
 
-            cleaned_name = (
-                (prefix + "-" if prefix else "")
-                + k8s_part
-                + ("-" + suffix if suffix else "")
-            )
+            cleaned_name = (prefix + "-" if prefix else "") + k8s_part + ("-" + suffix if suffix else "")
 
     return cleaned_name
 
@@ -405,9 +383,7 @@ def is_running_in_kubernetes():
     return False
 
 
-def _get_rendered_template(
-    template_file: str, template_dir: str, **template_vars
-) -> str:
+def _get_rendered_template(template_file: str, template_dir: str, **template_vars) -> str:
     """Helper function to set up and render a template."""
     template_loader = jinja2.FileSystemLoader(searchpath=template_dir)
     template_env = jinja2.Environment(
@@ -428,9 +404,7 @@ def load_template(template_file: str, template_dir: str, **template_vars) -> dic
     return yaml.safe_load(rendered)
 
 
-def load_multi_yaml_template(
-    template_file: str, template_dir: str, **template_vars
-) -> dict:
+def load_multi_yaml_template(template_file: str, template_dir: str, **template_vars) -> dict:
     """Load and render a multi-document YAML template."""
     rendered = _get_rendered_template(template_file, template_dir, **template_vars)
     return {"items": list(yaml.safe_load_all(rendered))}
@@ -458,14 +432,12 @@ def print_log_stream_client(message, last_timestamp, print_pod_name: bool = Fals
                 log_name = log_line.get("name")
                 if log_name == "print_redirect":
                     message = log_line.get("message")
-                    print(
-                        f"{pod_name}{formatter.start_color}{message}{formatter.reset_color}"
-                    )
+                    print(f"{pod_name}{formatter.start_color}{message}{formatter.reset_color}")
                 elif log_name != "uvicorn.access":
-                    formatted_log = f"{pod_name}{log_line.get('asctime')} | {log_line.get('levelname')} | {log_line.get('message')}"
-                    print(
-                        f"{formatter.start_color}{formatted_log}{formatter.reset_color}"
+                    formatted_log = (
+                        f"{pod_name}{log_line.get('asctime')} | {log_line.get('levelname')} | {log_line.get('message')}"
                     )
+                    print(f"{formatter.start_color}{formatted_log}{formatter.reset_color}")
     return last_timestamp
 
 
@@ -538,13 +510,9 @@ async def stream_logs_websocket_helper(
                         message = message
 
                     if stream_type == StreamType.HTTP_CLIENT:
-                        last_timestamp = print_log_stream_client(
-                            message, last_timestamp, print_pod_name
-                        )
+                        last_timestamp = print_log_stream_client(message, last_timestamp, print_pod_name)
                     elif stream_type == StreamType.CLI:
-                        last_timestamp = print_log_stream_cli(
-                            message, last_timestamp, print_pod_name
-                        )
+                        last_timestamp = print_log_stream_cli(message, last_timestamp, print_pod_name)
                 except asyncio.TimeoutError:
                     # Timeout is expected, just continue the loop
                     continue
@@ -612,12 +580,8 @@ def deep_breakpoint(debug_port: int = DEFAULT_DEBUG_PORT):
         subprocess.run(install_cmd, shell=True, check=True, text=True)
         print("Pdb installed successfully.")
 
-    print(
-        "Distributed breakpoint activated. To attach a debugger, run the following command:"
-    )
-    print(
-        f"kt debug {os.environ['POD_NAME']} --port {debug_port} --namespace {os.environ['POD_NAMESPACE']}"
-    )
+    print("Distributed breakpoint activated. To attach a debugger, run the following command:")
+    print(f"kt debug {os.environ['POD_NAME']} --port {debug_port} --namespace {os.environ['POD_NAMESPACE']}")
 
     import web_pdb
 
@@ -639,9 +603,7 @@ def deep_breakpoint(debug_port: int = DEFAULT_DEBUG_PORT):
         raise e
 
 
-def wait_for_app_start(
-    port, health_check: str, process: subprocess.Popen, timeout: int = 60
-):
+def wait_for_app_start(port, health_check: str, process: subprocess.Popen, timeout: int = 60):
     """
     Wait until the app is ready. If health_check if provided, will send HTTP requests to check, otherwise
     will wait until something is listening on the port.
@@ -665,9 +627,7 @@ def wait_for_app_start(
             except httpx.ConnectError:
                 pass
             time.sleep(0.5)
-        raise TimeoutError(
-            f"App did not become healthy on {url} within {timeout} seconds"
-        )
+        raise TimeoutError(f"App did not become healthy on {url} within {timeout} seconds")
     else:
         # Fallback to socket check
         while time.time() - start_time < timeout:
@@ -680,9 +640,7 @@ def wait_for_app_start(
                     return True
                 except (ConnectionRefusedError, socket.timeout):
                     time.sleep(0.5)
-        raise TimeoutError(
-            f"Failed to detect open port {port} for app {url} within {timeout} seconds"
-        )
+        raise TimeoutError(f"Failed to detect open port {port} for app {url} within {timeout} seconds")
 
 
 def _serialize_body(body: dict, serialization: str):

@@ -3,12 +3,7 @@ from kubetorch.resources.callables.cls.cls import Cls, cls  # noqa: F401
 from kubetorch.resources.callables.fn.fn import Fn, fn  # noqa: F401
 from kubetorch.resources.compute.app import App, app  # noqa: F401
 from kubetorch.resources.compute.compute import Compute  # noqa: F401
-from kubetorch.resources.compute.decorators import (  # noqa: F401
-    async_,
-    autoscale,
-    compute,
-    distribute,
-)
+from kubetorch.resources.compute.decorators import async_, autoscale, compute, distribute  # noqa: F401
 from kubetorch.resources.compute.utils import (
     ImagePullError,
     KnativeServiceConflictError,

@@ -36,13 +36,7 @@ def test_custom_template_dryrun():
     import kubetorch as kt
 
     custom_template = {
-        "spec": {
-            "template": {
-                "spec": {
-                    "nodeSelector": {"node.kubernetes.io/instance-type": "g4dn.xlarge"}
-                }
-            }
-        }
+        "spec": {"template": {"spec": {"nodeSelector": {"node.kubernetes.io/instance-type": "g4dn.xlarge"}}}}
     }
     compute = kt.Compute(cpus=".1", service_template=custom_template)
     remote_fn = kt.fn(summer).to(compute, dryrun=True)
@@ -104,15 +98,9 @@ def test_working_dir_for_custom_image():
         )
     )
     namespace = remote_fn.compute.namespace
-    deploy_pods = get_pods_for_service_cli(
-        remote_fn.service_name, namespace=namespace, core_api=core_api
-    ).items
+    deploy_pods = get_pods_for_service_cli(remote_fn.service_name, namespace=namespace, core_api=core_api).items
     deploy_pod = next(
-        (
-            p
-            for p in deploy_pods
-            if p.status.phase == "Running" and not p.metadata.deletion_timestamp
-        ),
+        (p for p in deploy_pods if p.status.phase == "Running" and not p.metadata.deletion_timestamp),
         None,
     )
     assert deploy_pod
@@ -171,9 +159,7 @@ def test_image_rsync():
             # Test 4: Directory with contents=True
             .rsync(source=str(test_dir), dest="contents_only", contents=True)
             # Test 5: Absolute source and destination
-            .rsync(
-                source=str(tmpdir.absolute()), dest="/data/rsync_test", contents=True
-            )
+            .rsync(source=str(tmpdir.absolute()), dest="/data/rsync_test", contents=True)
             # Test 6: Tilde in destination (should be treated as relative)
             .rsync(
                 source=str(test_assets_dir / "home_test.txt"),
@@ -188,9 +174,7 @@ def test_image_rsync():
         )
 
         # Deploy verifier class to test all scenarios
-        remote_verifier = kt.cls(
-            RsyncVerifier, name=f"{get_test_fn_name()}_verifier"
-        ).to(
+        remote_verifier = kt.cls(RsyncVerifier, name=f"{get_test_fn_name()}_verifier").to(
             kt.Compute(
                 cpus=".01",
                 gpu_anti_affinity=True,
@@ -202,20 +186,12 @@ def test_image_rsync():
         results = remote_verifier.test_all_scenarios()
 
         # Verify test 1: Single file with relative destination
-        assert results["single_relative"][
-            "exists"
-        ], "Single file with relative path not found"
-        assert results["single_relative"][
-            "content_match"
-        ], "Single file content doesn't match"
+        assert results["single_relative"]["exists"], "Single file with relative path not found"
+        assert results["single_relative"]["content_match"], "Single file content doesn't match"
 
         # Verify test 2: Single file with absolute destination
-        assert results["single_absolute"][
-            "exists"
-        ], "Single file with absolute path not found"
-        assert results["single_absolute"][
-            "content_match"
-        ], "Absolute file content doesn't match"
+        assert results["single_absolute"]["exists"], "Single file with absolute path not found"
+        assert results["single_absolute"]["content_match"], "Absolute file content doesn't match"
 
         # Verify test 3: Directory with contents=False
         dir_result = results["dir_no_contents"]
@@ -240,21 +216,15 @@ def test_image_rsync():
             "test_dir/nested/deep.txt",
         ]
         for expected in expected_files:
-            assert abs_result["files"][expected][
-                "exists"
-            ], f"Missing {expected} in absolute rsync"
+            assert abs_result["files"][expected]["exists"], f"Missing {expected} in absolute rsync"
 
         # Verify test 6: Tilde expansion
         assert results["tilde_home"]["exists"], "File from home directory not found"
         assert results["tilde_home"]["content_match"], "Home file content doesn't match"
 
         # Verify test 7: No dest for file (should use basename)
-        assert results["no_dest_file"][
-            "exists"
-        ], "File without dest not found at basename location"
-        assert results["no_dest_file"][
-            "content_match"
-        ], "No-dest file content doesn't match"
+        assert results["no_dest_file"]["exists"], "File without dest not found at basename location"
+        assert results["no_dest_file"]["content_match"], "No-dest file content doesn't match"
 
         # Verify test 8: No dest for directory (should use directory name)
         no_dest_dir = results["no_dest_dir"]
@@ -264,12 +234,8 @@ def test_image_rsync():
         ), f"Missing files in no-dest dir: {no_dest_dir['files']}"
 
         # Verify test 9: No dest with absolute path (should use basename)
-        assert results["no_dest_absolute"][
-            "exists"
-        ], "Absolute source without dest not found"
-        assert results["no_dest_absolute"][
-            "content_match"
-        ], "Absolute no-dest file content doesn't match"
+        assert results["no_dest_absolute"]["exists"], "Absolute source without dest not found"
+        assert results["no_dest_absolute"]["content_match"], "Absolute no-dest file content doesn't match"
 
 
 @pytest.mark.level("minimal")
@@ -316,9 +282,7 @@ def test_declarative_fn_freeze():
     remote_fn = kt.fn(summer, name=get_test_fn_name()).to(
         kt.Compute(
             cpus=".1",
-            image=kt.Image(
-                image_id="us-east1-docker.pkg.dev/runhouse-test/kubetorch-images/kubetorch-client:main"
-            ),
+            image=kt.Image(image_id="us-east1-docker.pkg.dev/runhouse-test/kubetorch-images/kubetorch-client:main"),
             freeze=True,
             gpu_anti_affinity=True,
         )
@@ -373,9 +337,7 @@ def test_refresh_fn_cache():
 def test_image_update():
     import kubetorch as kt
 
-    image = kt.images.Debian().set_env_vars(
-        {"empty": "", "val": "old_val", "val2": "some_other_val"}
-    )
+    image = kt.images.Debian().set_env_vars({"empty": "", "val": "old_val", "val2": "some_other_val"})
     compute = kt.Compute(
         cpus=".01",
         image=image,
@@ -451,9 +413,7 @@ def test_global_kt_cache():
         },
         launch_timeout=launch_timeout,
         gpu_anti_affinity=True,
-        volumes=[
-            kt.Volume("kt-global-cache", size="10Gi", access_mode="ReadWriteOnce")
-        ],
+        volumes=[kt.Volume("kt-global-cache", size="10Gi", access_mode="ReadWriteOnce")],
     )
 
     remote_fn = kt.fn(get_env_var, name=get_test_fn_name()).to(compute)
@@ -555,9 +515,7 @@ def test_unschedulable_pod_knative():
     # Requesting 1000 CPUs and 0.1 memory should be unschedulable
     with pytest.raises(kt.ResourceNotAvailableError):
         remote_cls = kt.cls(ResourceHungryService, name=get_test_fn_name()).to(
-            kt.Compute(
-                cpus="1000", memory="0.1", gpu_anti_affinity=True, launch_timeout=40
-            ).autoscale(min_replicas=1)
+            kt.Compute(cpus="1000", memory="0.1", gpu_anti_affinity=True, launch_timeout=40).autoscale(min_replicas=1)
         )
         remote_cls.some_method()
 
@@ -569,9 +527,7 @@ def test_unschedulable_pod_deployment():
     # Requesting 1000 CPUs and 0.1 memory should be unschedulable
     with pytest.raises(kt.ResourceNotAvailableError):
         remote_cls = kt.cls(ResourceHungryService, name=get_test_fn_name()).to(
-            kt.Compute(
-                cpus="1000", memory="0.1", gpu_anti_affinity=True, launch_timeout=40
-            )
+            kt.Compute(cpus="1000", memory="0.1", gpu_anti_affinity=True, launch_timeout=40)
         )
         remote_cls.some_method()
 
@@ -582,9 +538,7 @@ def test_pod_terminated_error():
 
     disk_size = "50Mi"
     with pytest.raises(Exception):
-        remote_cls = kt.cls(ResourceHungryService).to(
-            kt.Compute(cpus="0.1", disk_size=disk_size)
-        )
+        remote_cls = kt.cls(ResourceHungryService).to(kt.Compute(cpus="0.1", disk_size=disk_size))
         remote_cls.consume_disk()
 
 

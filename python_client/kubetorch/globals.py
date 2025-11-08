@@ -57,9 +57,7 @@ def _cleanup_port_forwards():
         _port_forwards.clear()
 
 
-def _ensure_pf(
-    service_name: str, namespace: str, remote_port: int, health_endpoint: str
-) -> PFHandle:
+def _ensure_pf(service_name: str, namespace: str, remote_port: int, health_endpoint: str) -> PFHandle:
     from kubetorch.resources.compute.utils import find_available_port
     from kubetorch.serving.utils import wait_for_port_forward
 
@@ -87,23 +85,17 @@ def _ensure_pf(
             "--namespace",
             namespace,
         ]
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
-        )
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
 
         # If it dies immediately, surface stderr (much clearer than a generic timeout)
         time.sleep(0.3)
 
         if proc.poll() is not None:
             err = (proc.stderr.read() or b"").decode(errors="ignore")
-            raise RuntimeError(
-                f"kubectl port-forward exited (rc={proc.returncode}): {err.strip()}"
-            )
+            raise RuntimeError(f"kubectl port-forward exited (rc={proc.returncode}): {err.strip()}")
 
         if health_endpoint:
-            cluster_config = wait_for_port_forward(
-                proc, local_port, health_endpoint=health_endpoint
-            )
+            cluster_config = wait_for_port_forward(proc, local_port, health_endpoint=health_endpoint)
             if isinstance(cluster_config, dict):
                 config.cluster_config = cluster_config
                 config.write()
@@ -113,9 +105,7 @@ def _ensure_pf(
             ok = False
             while time.time() < deadline:
                 try:
-                    with socket.create_connection(
-                        ("127.0.0.1", local_port), timeout=0.5
-                    ):
+                    with socket.create_connection(("127.0.0.1", local_port), timeout=0.5):
                         ok = True
                         break
                 except OSError:
@@ -125,17 +115,13 @@ def _ensure_pf(
 
         time.sleep(0.2)  # tiny grace
 
-        h = PFHandle(
-            process=proc, port=local_port, base_url=f"http://localhost:{local_port}"
-        )
+        h = PFHandle(process=proc, port=local_port, base_url=f"http://localhost:{local_port}")
         # Store in cache while still holding the lock
         _port_forwards[service_name] = h
         return h
 
 
-async def _ensure_pf_async(
-    service_name: str, namespace: str, remote_port: int, health_endpoint: str
-) -> PFHandle:
+async def _ensure_pf_async(service_name: str, namespace: str, remote_port: int, health_endpoint: str) -> PFHandle:
     """Async version of _ensure_pf for use in async contexts."""
     from kubetorch.resources.compute.utils import find_available_port
     from kubetorch.serving.utils import wait_for_port_forward
@@ -181,9 +167,7 @@ async def _ensure_pf_async(
 
             if proc.poll() is not None:
                 err = (proc.stderr.read() or b"").decode(errors="ignore")
-                raise RuntimeError(
-                    f"kubectl port-forward exited (rc={proc.returncode}): {err.strip()}"
-                )
+                raise RuntimeError(f"kubectl port-forward exited (rc={proc.returncode}): {err.strip()}")
 
             if health_endpoint:
                 wait_for_port_forward(proc, local_port, health_endpoint=health_endpoint)
@@ -193,9 +177,7 @@ async def _ensure_pf_async(
                 ok = False
                 while time.time() < deadline:
                     try:
-                        with socket.create_connection(
-                            ("127.0.0.1", local_port), timeout=0.5
-                        ):
+                        with socket.create_connection(("127.0.0.1", local_port), timeout=0.5):
                             ok = True
                             break
                     except OSError:
@@ -205,9 +187,7 @@ async def _ensure_pf_async(
 
             time.sleep(0.2)  # tiny grace
 
-            return PFHandle(
-                process=proc, port=local_port, base_url=f"http://localhost:{local_port}"
-            )
+            return PFHandle(process=proc, port=local_port, base_url=f"http://localhost:{local_port}")
 
         # Run the blocking operation in a thread
         loop = asyncio.get_event_loop()
@@ -276,9 +256,7 @@ async def service_url_async(
 
         async with _pf_async_lock:
             _port_forwards.pop(service_name, None)
-        h = await _ensure_pf_async(
-            service_name, namespace, remote_port, health_endpoint
-        )
+        h = await _ensure_pf_async(service_name, namespace, remote_port, health_endpoint)
     return h.base_url
 
 

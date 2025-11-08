@@ -71,12 +71,8 @@ async def test_monitoring_query_metrics(remote_cls):
     # Define a Prometheus queries(for example, check the number of running pods)
     queries = dict()
     for pod_name in remote_cls_pod_names:
-        queries[
-            f"memory usage {pod_name}"
-        ] = f"container_cpu_usage_seconds_total{{pod='{pod_name}'}}"
-        queries[
-            f"cpu usage {pod_name}"
-        ] = f"container_cpu_usage_seconds_total{{pod='{pod_name}'}}"
+        queries[f"memory usage {pod_name}"] = f"container_cpu_usage_seconds_total{{pod='{pod_name}'}}"
+        queries[f"cpu usage {pod_name}"] = f"container_cpu_usage_seconds_total{{pod='{pod_name}'}}"
 
     base_url = service_url()
     prom = PrometheusConnect(
@@ -169,15 +165,9 @@ async def test_monitoring_with_custom_structlog():
     # Verify all print statements were captured and streamed
     for i in range(num_iterations):
         assert f"Processing iteration {i}" in out, f"Missing print for iteration {i}"
-        assert (
-            f"Module logger info: Processing item {i}" in out
-        ), f"Missing module logger info {i}"
-        assert (
-            f"Local logger info: Item {i} in progress" in out
-        ), f"Missing local logger info {i}"
-        assert (
-            f"Local logger warning: Check item {i}" in out
-        ), f"Missing logger warning {i}"
+        assert f"Module logger info: Processing item {i}" in out, f"Missing module logger info {i}"
+        assert f"Local logger info: Item {i} in progress" in out, f"Missing local logger info {i}"
+        assert f"Local logger warning: Check item {i}" in out, f"Missing logger warning {i}"
         assert f"Class logger: Processing {i}" in out, f"Missing class logger {i}"
 
     assert f"Completed {num_iterations} iterations" in out

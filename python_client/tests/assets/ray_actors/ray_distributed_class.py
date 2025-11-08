@@ -80,9 +80,7 @@ class RayDistributedProcessor:
         actor_results = ray.get(actor_futures)
 
         # Step 3: Use tasks to postprocess results
-        postprocess_futures = [
-            postprocess_task.remote(result) for result in actor_results
-        ]
+        postprocess_futures = [postprocess_task.remote(result) for result in actor_results]
         final_results = ray.get(postprocess_futures)
 
         return {

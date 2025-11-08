@@ -59,33 +59,23 @@ class AutoscalingConfig:
             setattr(self, field, kwargs.pop(field, getattr(self, field, None)))
 
         # set additional kwargs as annotations
-        self.extra_annotations = {
-            f"autoscaling.knative.dev/{k}": str(v) for k, v in kwargs.items()
-        }
+        self.extra_annotations = {f"autoscaling.knative.dev/{k}": str(v) for k, v in kwargs.items()}
 
         self._validate()
 
     def _validate(self):
         """Validation logic moved to separate method"""
-        if (
-            self.min_scale is not None
-            and self.max_scale is not None
-            and self.min_scale > self.max_scale
-        ):
+        if self.min_scale is not None and self.max_scale is not None and self.min_scale > self.max_scale:
             raise AutoScalingError("min_scale cannot be greater than max_scale")
         if self.window is not None and not self.window.endswith(("s", "m", "h")):
             raise AutoScalingError("window must end with s, m, or h")
-        if self.target_utilization is not None and (
-            self.target_utilization <= 0 or self.target_utilization > 100
-        ):
+        if self.target_utilization is not None and (self.target_utilization <= 0 or self.target_utilization > 100):
             raise AutoScalingError("target_utilization must be between 1 and 100")
         if self.scale_to_zero_pod_retention_period is not None:
             # Validate time format (e.g., "30s", "1m5s", "2h")
             import re
 
-            if not re.match(
-                r"^\d+[smh](\d+[smh])*$", self.scale_to_zero_pod_retention_period
-            ):
+            if not re.match(r"^\d+[smh](\d+[smh])*$", self.scale_to_zero_pod_retention_period):
                 raise AutoScalingError(
                     "scale_to_zero_pod_retention_period must be a valid duration (e.g., '30s', '1m5s')"
                 )
@@ -94,9 +84,7 @@ class AutoscalingConfig:
             import re
 
             if not re.match(r"^\d+[smh](\d+[smh])*$", self.scale_down_delay):
-                raise AutoScalingError(
-                    "scale_down_delay must be a valid duration (e.g., '15m', '1h')"
-                )
+                raise AutoScalingError("scale_down_delay must be a valid duration (e.g., '15m', '1h')")
         if self.autoscaler_class is not None and self.autoscaler_class not in [
             "kpa.autoscaling.knative.dev",
             "hpa.autoscaling.knative.dev",
@@ -109,9 +97,7 @@ class AutoscalingConfig:
             import re
 
             if not re.match(r"^\d+[smh](\d+[smh])*$", self.progress_deadline):
-                raise AutoScalingError(
-                    "progress_deadline must be a valid duration (e.g., '10m', '600s')"
-                )
+                raise AutoScalingError("progress_deadline must be a valid duration (e.g., '10m', '600s')")
 
     def __post_init__(self):
         """Call the same validation for dataclass initialization"""
@@ -147,14 +133,10 @@ class AutoscalingConfig:
             annotations["autoscaling.knative.dev/metric"] = self.metric
 
         if self.target_utilization is not None:
-            annotations["autoscaling.knative.dev/target-utilization-percentage"] = str(
-                self.target_utilization
-            )
+            annotations["autoscaling.knative.dev/target-utilization-percentage"] = str(self.target_utilization)
 
         if self.initial_scale is not None:
-            annotations["autoscaling.knative.dev/initial-scale"] = str(
-                self.initial_scale
-            )
+            annotations["autoscaling.knative.dev/initial-scale"] = str(self.initial_scale)
 
         if self.scale_to_zero_pod_retention_period is not None:
             annotations[
@@ -162,9 +144,7 @@ class AutoscalingConfig:
             ] = self.scale_to_zero_pod_retention_period
 
         if self.scale_down_delay is not None:
-            annotations[
-                "autoscaling.knative.dev/scale-down-delay"
-            ] = self.scale_down_delay
+            annotations["autoscaling.knative.dev/scale-down-delay"] = self.scale_down_delay
 
         # Add any extra annotations from the config
         if hasattr(self, "extra_annotations"):

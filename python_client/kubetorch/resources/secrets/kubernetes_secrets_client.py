@@ -62,9 +62,7 @@ class KubernetesSecretsClient:
         """Delete all secrets for current user."""
         return self._delete_all_secrets_for_user(username=username)
 
-    def convert_to_secret_objects(
-        self, secrets: List[Union[str, Secret]]
-    ) -> List[Secret]:
+    def convert_to_secret_objects(self, secrets: List[Union[str, Secret]]) -> List[Secret]:
         """
         Converts a list of strings and Secrets into Secret objects without uploading.
         """
@@ -74,9 +72,7 @@ class KubernetesSecretsClient:
         for secret_or_string in secrets:
             # Create a provider secret if only the name is provided
             secret = (
-                secret_factory(provider=secret_or_string)
-                if isinstance(secret_or_string, str)
-                else secret_or_string
+                secret_factory(provider=secret_or_string) if isinstance(secret_or_string, str) else secret_or_string
             )
             secret_objects.append(secret)
 
@@ -142,14 +138,10 @@ class KubernetesSecretsClient:
         try:
             secret = self.api_client.read_namespaced_secret(name, self.namespace)
         except ApiException as e:
-            if (
-                e.status == 404
-            ):  # secret does not exist, try to load with formatted k8 name
+            if e.status == 404:  # secret does not exist, try to load with formatted k8 name
                 secret_name = self._format_secret_name(name)
                 try:
-                    secret = self.api_client.read_namespaced_secret(
-                        secret_name, self.namespace
-                    )
+                    secret = self.api_client.read_namespaced_secret(secret_name, self.namespace)
                 except ApiException as e:
                     if e.status == 404:
                         logger.info(
@@ -173,14 +165,10 @@ class KubernetesSecretsClient:
             return None
 
         override = (
-            secret.metadata.annotations.get("kubetorch.com/override", "False")
-            if secret.metadata.annotations
-            else None
+            secret.metadata.annotations.get("kubetorch.com/override", "False") if secret.metadata.annotations else None
         )
         path = (
-            secret.metadata.annotations.get("kubetorch.com/secret-path", None)
-            if secret.metadata.annotations
-            else None
+            secret.metadata.annotations.get("kubetorch.com/secret-path", None) if secret.metadata.annotations else None
         )
         filenames = (
             secret.metadata.annotations.get("kubetorch.com/secret-filenames", None)
@@ -200,9 +188,7 @@ class KubernetesSecretsClient:
             secret_config["filenames"] = filenames
             return secret_config
 
-        decoded_values = {
-            k: base64.b64decode(v).decode("utf-8") for k, v in secret.data.items()
-        }
+        decoded_values = {k: base64.b64decode(v).decode("utf-8") for k, v in secret.data.items()}
         secret_config["values"] = decoded_values
 
         mount_type = secret.metadata.labels.get("kubetorch.com/mount-type", None)
@@ -215,9 +201,7 @@ class KubernetesSecretsClient:
         secret_name = self._format_secret_name(secret.name)
         provider = secret.provider
         mount_type = "volume" if secret.path else "env"
-        encoded_data = {
-            k: base64.b64encode(v.encode()).decode() for k, v in secret.values.items()
-        }
+        encoded_data = {k: base64.b64encode(v.encode()).decode() for k, v in secret.values.items()}
         labels = {
             "kubetorch.com/mount-type": mount_type,
             "kubetorch.com/secret-name": secret.name,
@@ -239,9 +223,7 @@ class KubernetesSecretsClient:
             labels=labels,
             annotations=annotations,
         )
-        secret_body = client.V1Secret(
-            metadata=metadata, data=encoded_data, type="Opaque"  # default secret type
-        )
+        secret_body = client.V1Secret(metadata=metadata, data=encoded_data, type="Opaque")  # default secret type
 
         return secret_body
 
@@ -285,9 +267,7 @@ class KubernetesSecretsClient:
             if e.status == 404:  # try to load secret with kubernetes formatted name
                 formatted_name = self._format_secret_name(secret.name)
                 try:
-                    return self.api_client.read_namespaced_secret(
-                        formatted_name, self.namespace
-                    )
+                    return self.api_client.read_namespaced_secret(formatted_name, self.namespace)
                 except ApiException:
                     return None
 
@@ -295,20 +275,13 @@ class KubernetesSecretsClient:
         existing_secret = self._get_existing_secret(secret)
         if existing_secret is None:
             if console:
-                console.print(
-                    f"[red]Failed to update secret {secret.name}: secret does not exist[/red]"
-                )
+                console.print(f"[red]Failed to update secret {secret.name}: secret does not exist[/red]")
                 return False
             else:
-                raise kubetorch.SecretNotFound(
-                    secret_name=secret.name, namespace=self.namespace
-                )
+                raise kubetorch.SecretNotFound(secret_name=secret.name, namespace=self.namespace)
 
         if not secret.override:
-            decoded_values = {
-                k: base64.b64decode(v).decode("utf-8")
-                for k, v in existing_secret.data.items()
-            }
+            decoded_values = {k: base64.b64decode(v).decode("utf-8") for k, v in existing_secret.data.items()}
             if not decoded_values == secret.values:
                 msg = f"Secret {secret.name} exists with different values and `secret.override` not set to True."
                 if console:
@@ -318,18 +291,14 @@ class KubernetesSecretsClient:
                     raise ValueError(msg)
             else:
                 msg = f"Secret {secret.name} already exists with the same values."
-                console.print(
-                    f"[bold green]{msg}[/bold green]"
-                ) if console else logger.info(msg)
+                console.print(f"[bold green]{msg}[/bold green]") if console else logger.info(msg)
                 return True
 
         secret_name = self._format_secret_name(secret.name)
         secret_body = self._build_secret_body(secret=secret)
 
         try:
-            self.api_client.replace_namespaced_secret(
-                secret_name, self.namespace, secret_body
-            )
+            self.api_client.replace_namespaced_secret(secret_name, self.namespace, secret_body)
             if console:
                 console.print("[bold green]✔ Secret updated successfully[/bold green]")
                 console.print(f"  Name: [cyan]{secret.name}[/cyan]")
@@ -340,9 +309,7 @@ class KubernetesSecretsClient:
 
         except Exception as e:
             if console:
-                console.print(
-                    f"[red]Failed to update secret {secret.name}: {str(e)}[/red]"
-                )
+                console.print(f"[red]Failed to update secret {secret.name}: {str(e)}[/red]")
                 return False
             raise e
 
@@ -385,9 +352,7 @@ class KubernetesSecretsClient:
             for secret in secrets.items:
                 secret_name = secret.metadata.name
                 try:
-                    self.api_client.delete_namespaced_secret(
-                        secret_name, self.namespace
-                    )
+                    self.api_client.delete_namespaced_secret(secret_name, self.namespace)
                     logger.info(
                         f"Deleted Kubernetes secret {secret_name} for user {username}",
                     )

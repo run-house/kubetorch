@@ -71,9 +71,7 @@ class App(Module):
         red = "\u001b[31m"
         reset = "\u001b[0m"
 
-        logger.info(
-            f"{red}Received {signal.Signals(signum).name}. Exiting parent process.{reset}"
-        )
+        logger.info(f"{red}Received {signal.Signals(signum).name}. Exiting parent process.{reset}")
         self._print_kt_cmds()
         sys.exit(0)
 
@@ -93,9 +91,7 @@ class App(Module):
         self.setup_signal_handlers()
 
         stream_logs = not self._run_async
-        self._launch_service(
-            install_url, use_editable, deployment_timestamp, stream_logs
-        )
+        self._launch_service(install_url, use_editable, deployment_timestamp, stream_logs)
 
     def _get_service_dockerfile(self, metadata_env_vars):
         image_instructions = super()._get_service_dockerfile(metadata_env_vars)
@@ -140,9 +136,7 @@ class App(Module):
                     time.sleep(5)
 
                 if not self.compute.is_up():
-                    raise ServiceTimeoutError(
-                        f"Service {self.service_name} is not up after 60 seconds."
-                    )
+                    raise ServiceTimeoutError(f"Service {self.service_name} is not up after 60 seconds.")
         else:
             super()._launch_service(
                 install_url,
@@ -244,9 +238,7 @@ def app(
     kwargs["env_vars"] = env_vars
     compute = Compute(**kwargs)
 
-    main_file = os.getenv("KT_RUN_FILE") or os.path.abspath(
-        sys.modules["__main__"].__file__
-    )
+    main_file = os.getenv("KT_RUN_FILE") or os.path.abspath(sys.modules["__main__"].__file__)
     relative_path = os.path.relpath(main_file, os.getcwd())
     pointers = [os.getcwd(), relative_path, None]
     relative_cli_command = re.sub(main_file, relative_path, cli_command)

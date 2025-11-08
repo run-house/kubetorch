@@ -98,10 +98,7 @@ class TestHTTPServer:
     def test_non_existent_callable(self, setup_kt_directory, test_dir, http_client):
         response = http_client.post("/non_existent_callable/random_method")
         assert response.status_code == 404
-        assert (
-            "Callable 'non_existent_callable' not found in metadata configuration"
-            in response.json()["detail"]
-        )
+        assert "Callable 'non_existent_callable' not found in metadata configuration" in response.json()["detail"]
 
 
 @pytest.mark.parametrize("test_dir", load_test_assets(["torch_summer", "torch_ddp"]))
@@ -153,7 +150,4 @@ class TestDistributedHTTPServer:
     def test_non_existent_callable(self, setup_kt_directory, test_dir, http_client):
         response = http_client.post("/non_existent_callable/random_method")
         assert response.status_code == 404
-        assert (
-            "Callable 'non_existent_callable' not found in metadata configuration"
-            in response.json()["detail"]
-        )
+        assert "Callable 'non_existent_callable' not found in metadata configuration" in response.json()["detail"]

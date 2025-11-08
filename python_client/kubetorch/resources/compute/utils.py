@@ -13,13 +13,8 @@ from kubernetes.stream import stream
 
 import kubetorch.globals
 from kubetorch.logger import get_logger
-from kubetorch.resources.callables.utils import (
-    get_local_install_path,
-    locate_working_dir,
-)
-from kubetorch.resources.secrets.kubernetes_secrets_client import (
-    KubernetesSecretsClient,
-)
+from kubetorch.resources.callables.utils import get_local_install_path, locate_working_dir
+from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecretsClient
 from kubetorch.servers.http.utils import is_running_in_kubernetes, StartupError
 from kubetorch.serving import constants as serving_constants
 from kubetorch.serving.constants import KT_SERVICE_LABEL, KT_USERNAME_LABEL
@@ -85,9 +80,7 @@ class SecretNotFound(Exception):
     """Raised when trying to update kubetorch secret the does not exist"""
 
     def __init__(self, secret_name: str, namespace: str):
-        super().__init__(
-            f"kubetorch secret {secret_name} was not found in {namespace} namespace"
-        )
+        super().__init__(f"kubetorch secret {secret_name} was not found in {namespace} namespace")
 
 
 class RsyncError(Exception):
@@ -119,9 +112,7 @@ def _run_bash(
 ):
     if isinstance(commands, str):
         commands = [commands]
-    commands = [
-        ["/bin/sh", "-c", f'{command}; echo "::EXIT_CODE::$?"'] for command in commands
-    ]
+    commands = [["/bin/sh", "-c", f'{command}; echo "::EXIT_CODE::$?"'] for command in commands]
 
     if isinstance(pod_names, str):
         pod_names = [pod_names]
@@ -166,9 +157,7 @@ def _run_bash(
                     ret_codes.append([exit_code, "", stdout])
 
             except Exception as e:
-                raise Exception(
-                    f"Failed to execute command {exec_command} on pod {pod_name}: {str(e)}"
-                )
+                raise Exception(f"Failed to execute command {exec_command} on pod {pod_name}: {str(e)}")
     return ret_codes
 
 
@@ -193,9 +182,7 @@ def _get_rsync_exclude_options() -> str:
     if Path(gitignore_path).exists():
         exclude_args += f" --exclude-from='{gitignore_path}'"
     # Add some reasonable default exclusions
-    exclude_args += (
-        " --exclude='*.pyc' --exclude='__pycache__' --exclude='.venv' --exclude='.git'"
-    )
+    exclude_args += " --exclude='*.pyc' --exclude='__pycache__' --exclude='.venv' --exclude='.git'"
 
     return exclude_args.strip()
 
@@ -269,9 +256,7 @@ def delete_configmaps(
                     console.print(f"[yellow]Warning:[/yellow] ConfigMap {cm} not found")
             else:
                 if console:
-                    console.print(
-                        f"[red]Error:[/red] Failed to delete configmap {cm}: {e}"
-                    )
+                    console.print(f"[red]Error:[/red] Failed to delete configmap {cm}: {e}")
 
 
 def delete_service(
@@ -303,9 +288,7 @@ def delete_service(
     except Exception as e:
         if e.status == 404:
             if console:
-                console.print(
-                    f"[yellow]Note:[/yellow] Service {name} not found or already deleted"
-                )
+                console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
         else:
             if console:
                 console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
@@ -337,14 +320,10 @@ def delete_deployment(
     except ApiException as e:
         if e.status == 404:
             if console:
-                console.print(
-                    f"[yellow]Note:[/yellow] Deployment {name} not found or already deleted"
-                )
+                console.print(f"[yellow]Note:[/yellow] Deployment {name} not found or already deleted")
         else:
             if console:
-                console.print(
-                    f"[red]Error:[/red] Failed to delete deployment {name}: {e}"
-                )
+                console.print(f"[red]Error:[/red] Failed to delete deployment {name}: {e}")
 
     # Delete the associated service (regular service, not headless)
     try:
@@ -359,9 +338,7 @@ def delete_deployment(
     except ApiException as e:
         if e.status == 404:
             if console:
-                console.print(
-                    f"[yellow]Note:[/yellow] Service {name} not found or already deleted"
-                )
+                console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
         else:
             if console:
                 console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
@@ -382,9 +359,7 @@ def delete_deployment(
             pass
         else:
             if console:
-                console.print(
-                    f"[red]Error:[/red] Failed to delete headless service {name}-headless: {e}"
-                )
+                console.print(f"[red]Error:[/red] Failed to delete headless service {name}-headless: {e}")
 
 
 def delete_raycluster(
@@ -418,14 +393,10 @@ def delete_raycluster(
     except ApiException as e:
         if e.status == 404:
             if console:
-                console.print(
-                    f"[yellow]Note:[/yellow] RayCluster {name} not found or already deleted"
-                )
+                console.print(f"[yellow]Note:[/yellow] RayCluster {name} not found or already deleted")
         else:
             if console:
-                console.print(
-                    f"[red]Error:[/red] Failed to delete RayCluster {name}: {e}"
-                )
+                console.print(f"[red]Error:[/red] Failed to delete RayCluster {name}: {e}")
 
     # Delete the associated service (created alongside RayCluster)
     try:
@@ -440,9 +411,7 @@ def delete_raycluster(
     except ApiException as e:
         if e.status == 404:
             if console:
-                console.print(
-                    f"[yellow]Note:[/yellow] Service {name} not found or already deleted"
-                )
+                console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
         else:
             if console:
                 console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
@@ -463,9 +432,7 @@ def delete_raycluster(
             pass
         else:
             if console:
-                console.print(
-                    f"[red]Error:[/red] Failed to delete headless service {name}-headless: {e}"
-                )
+                console.print(f"[red]Error:[/red] Failed to delete headless service {name}-headless: {e}")
 
 
 def delete_resources_for_service(
@@ -518,9 +485,7 @@ def delete_resources_for_service(
             force=force,
         )
 
-    delete_cached_service_data(
-        core_api=core_api, service_name=name, namespace=namespace, console=console
-    )
+    delete_cached_service_data(core_api=core_api, service_name=name, namespace=namespace, console=console)
 
 
 def delete_cached_service_data(
@@ -532,15 +497,11 @@ def delete_cached_service_data(
     """Delete service data from the rsync pod."""
     try:
         # Find the rsync pod name in the provided namespace
-        pods = core_api.list_namespaced_pod(
-            namespace=namespace, label_selector="app=kubetorch-rsync"
-        )
+        pods = core_api.list_namespaced_pod(namespace=namespace, label_selector="app=kubetorch-rsync")
 
         if not pods.items:
             if console:
-                console.print(
-                    f"[yellow] No rsync pod found in namespace {namespace}[/yellow]"
-                )
+                console.print(f"[yellow] No rsync pod found in namespace {namespace}[/yellow]")
             return
 
         pod_name = pods.items[0].metadata.name
@@ -581,9 +542,7 @@ def delete_cached_service_data(
 
             if result.returncode != 0:
                 if console:
-                    console.print(
-                        f"[red]Error cleaning up cached data: {result.stderr}[/red]"
-                    )
+                    console.print(f"[red]Error cleaning up cached data: {result.stderr}[/red]")
                 return
             output = result.stdout.strip()
 
@@ -627,9 +586,7 @@ def _collect_modules(target_str):
 
     if target_fn_or_class:
         if not hasattr(module, target_fn_or_class):
-            raise ValueError(
-                f"Function or class {target_fn_or_class} not found in {target_module_or_path}."
-            )
+            raise ValueError(f"Function or class {target_fn_or_class} not found in {target_module_or_path}.")
         to_deploy = [getattr(module, target_fn_or_class)]
         if not isinstance(to_deploy[0], Module):
             raise ValueError(
@@ -642,9 +599,7 @@ def _collect_modules(target_str):
             if isinstance(obj, Module):
                 to_deploy.append(obj)
         if not to_deploy:
-            raise ValueError(
-                f"No functions or classes decorated with @kt.compute found in {target_module_or_path}."
-            )
+            raise ValueError(f"No functions or classes decorated with @kt.compute found in {target_module_or_path}.")
 
     return to_deploy, target_fn_or_class
 
@@ -675,9 +630,7 @@ def fetch_resources_for_teardown(
     services = []
 
     if prefix in ["kt", "kubetorch", "knative"]:
-        raise ValueError(
-            f"Invalid prefix: {prefix} is reserved. Please delete these individually."
-        )
+        raise ValueError(f"Invalid prefix: {prefix} is reserved. Please delete these individually.")
 
     # Initialize apps API for deployments
     apps_v1_api = client.AppsV1Api()
@@ -699,9 +652,7 @@ def fetch_resources_for_teardown(
             )
             items = response.get("items", [])
             knative_services = [
-                item["metadata"]["name"]
-                for item in items
-                if (username or item["metadata"]["name"].startswith(prefix))
+                item["metadata"]["name"] for item in items if (username or item["metadata"]["name"].startswith(prefix))
             ]
             services.extend(knative_services)
         except client.exceptions.ApiException as e:
@@ -711,9 +662,7 @@ def fetch_resources_for_teardown(
         # Search Deployments
         try:
             # Build label selector for deployments - use KT_TEMPLATE_LABEL to identify kubetorch deployments
-            deployment_label_selector = (
-                f"{serving_constants.KT_TEMPLATE_LABEL}=deployment"
-            )
+            deployment_label_selector = f"{serving_constants.KT_TEMPLATE_LABEL}=deployment"
             if username:
                 deployment_label_selector += f",{KT_USERNAME_LABEL}={username}"
 
@@ -733,9 +682,7 @@ def fetch_resources_for_teardown(
         # Search RayClusters
         try:
             # Build label selector for rayclusters - use template label to identify kubetorch rayclusters
-            raycluster_label_selector = (
-                f"{serving_constants.KT_TEMPLATE_LABEL}=raycluster"
-            )
+            raycluster_label_selector = f"{serving_constants.KT_TEMPLATE_LABEL}=raycluster"
             if username:
                 raycluster_label_selector += f",{KT_USERNAME_LABEL}={username}"
 
@@ -748,9 +695,7 @@ def fetch_resources_for_teardown(
             )
             items = response.get("items", [])
             raycluster_services = [
-                item["metadata"]["name"]
-                for item in items
-                if (username or item["metadata"]["name"].startswith(prefix))
+                item["metadata"]["name"] for item in items if (username or item["metadata"]["name"].startswith(prefix))
             ]
             services.extend(raycluster_services)
         except client.exceptions.ApiException as e:
@@ -759,9 +704,7 @@ def fetch_resources_for_teardown(
 
     else:
         if not target:
-            raise ValueError(
-                "Please provide a service name or use the --all or --prefix flags"
-            )
+            raise ValueError("Please provide a service name or use the --all or --prefix flags")
 
         # Case when service_name is a module or file path (i.e. the `kt deploy` usage path)
         if ":" in target or ".py" in target or "." in target:
@@ -796,16 +739,11 @@ def fetch_resources_for_teardown(
         # Check if it's a Deployment (if not found as Knative service)
         if not service_found:
             try:
-                deployment = apps_v1_api.read_namespaced_deployment(
-                    name=service_name, namespace=namespace
-                )
+                deployment = apps_v1_api.read_namespaced_deployment(name=service_name, namespace=namespace)
                 # Only consider it if it has kubetorch template label
                 if (
                     deployment.metadata.labels
-                    and deployment.metadata.labels.get(
-                        serving_constants.KT_TEMPLATE_LABEL
-                    )
-                    == "deployment"
+                    and deployment.metadata.labels.get(serving_constants.KT_TEMPLATE_LABEL) == "deployment"
                 ):
                     service_type = "deployment"
                     service_found = True
@@ -830,9 +768,7 @@ def fetch_resources_for_teardown(
 
         # Get associated resources if service exists
         configmaps = load_configmaps(core_api, service_name, namespace)
-        pods = core_api.list_namespaced_pod(
-            namespace=namespace, label_selector=f"{KT_SERVICE_LABEL}={service_name}"
-        )
+        pods = core_api.list_namespaced_pod(namespace=namespace, label_selector=f"{KT_SERVICE_LABEL}={service_name}")
         pods = [pod.metadata.name for pod in pods.items]
 
         # Only add the service to the resources if it has configmaps, pods, or we found the service
@@ -869,17 +805,11 @@ def _get_sync_package_paths(
 
 
 # ----------------- Error Handling Utils ----------------- #
-def check_pod_status_for_errors(
-    pod: client.V1Pod, queue_name: str = None, scheduler_name: str = None
-):
+def check_pod_status_for_errors(pod: client.V1Pod, queue_name: str = None, scheduler_name: str = None):
     """Check pod status for errors"""
     # Check for scheduling issues
     for condition in pod.status.conditions or []:
-        if (
-            condition.type == "PodScheduled"
-            and condition.status == "False"
-            and condition.reason == "Unschedulable"
-        ):
+        if condition.type == "PodScheduled" and condition.status == "False" and condition.reason == "Unschedulable":
             msg = condition.message.lower()
 
             # Check if the pod is scheduled in the correct queue and scheduler
@@ -914,14 +844,10 @@ def check_pod_status_for_errors(
                 reason = container_status.state.waiting.reason
                 message = container_status.state.waiting.message or ""
                 if reason in TERMINATE_EARLY_ERRORS:
-                    raise TERMINATE_EARLY_ERRORS[reason](
-                        f"Pod {pod.metadata.name}: {message}"
-                    )
+                    raise TERMINATE_EARLY_ERRORS[reason](f"Pod {pod.metadata.name}: {message}")
 
 
-def check_pod_events_for_errors(
-    pod: client.V1Pod, namespace: str, core_api: client.CoreV1Api
-):
+def check_pod_events_for_errors(pod: client.V1Pod, namespace: str, core_api: client.CoreV1Api):
     """Check pod events for scheduling errors"""
     try:
         events = core_api.list_namespaced_event(
@@ -935,9 +861,7 @@ def check_pod_events_for_errors(
                 and event.source.component == "karpenter"
                 and "no instance type has enough resources" in event.message
             ):
-                raise ResourceNotAvailableError(
-                    f"Pod {pod.metadata.name} failed to schedule: {event.message}"
-                )
+                raise ResourceNotAvailableError(f"Pod {pod.metadata.name} failed to schedule: {event.message}")
     except client.exceptions.ApiException as e:
         logger.warning(f"Error fetching events for pod {pod.metadata.name}: {e}")
 
@@ -972,11 +896,7 @@ def check_replicaset_events_for_errors(
             ).items
 
             for event in events:
-                if (
-                    event.reason == "FailedCreate"
-                    and event.type == "Warning"
-                    and "forbidden" in event.message.lower()
-                ):
+                if event.reason == "FailedCreate" and event.type == "Warning" and "forbidden" in event.message.lower():
                     # Check for specific PriorityClass errors
                     if "priorityclass" in event.message.lower():
                         raise ResourceNotAvailableError(
@@ -1004,9 +924,7 @@ def check_replicaset_events_for_errors(
         raise
 
 
-def check_revision_for_errors(
-    revision_name: str, namespace: str, objects_api: client.CustomObjectsApi
-):
+def check_revision_for_errors(revision_name: str, namespace: str, objects_api: client.CustomObjectsApi):
     """Check revision for errors"""
     try:
         revision = objects_api.get_namespaced_custom_object(
@@ -1021,9 +939,7 @@ def check_revision_for_errors(
                 reason = cond.get("reason")
                 message = cond.get("message", f"Revision failed with reason: {reason}")
                 if reason in TERMINATE_EARLY_ERRORS:
-                    raise TERMINATE_EARLY_ERRORS[reason](
-                        f"Revision {revision_name}: {message}"
-                    )
+                    raise TERMINATE_EARLY_ERRORS[reason](f"Revision {revision_name}: {message}")
     except client.exceptions.ApiException as e:
         logger.warning(f"Error checking revision: {e}")
 
@@ -1050,9 +966,7 @@ def get_parsed_secret(secret: client.V1Secret):
         "name": secret.metadata.name,
         "username": labels.get("kubetorch.com/username", None) if labels else None,
         "namespace": secret.metadata.namespace,
-        "user_defined_name": labels.get("kubetorch.com/secret-name", None)
-        if labels
-        else None,
+        "user_defined_name": labels.get("kubetorch.com/secret-name", None) if labels else None,
         "labels": labels,
         "annotations": secret.metadata.annotations,
         "type": secret.type,
@@ -1073,33 +987,25 @@ def list_secrets(
         if all_namespaces:
             secrets: client.V1SecretList = core_api.list_secret_for_all_namespaces()
         else:
-            secrets: client.V1SecretList = core_api.list_namespaced_secret(
-                namespace=namespace
-            )
+            secrets: client.V1SecretList = core_api.list_namespaced_secret(namespace=namespace)
         if not secrets:
             return None
         filtered_secrets = []
         for secret in secrets.items:
             parsed_secret = get_parsed_secret(secret)
             user_defined_secret_name = parsed_secret.get("user_defined_name")
-            if (
-                user_defined_secret_name
-            ):  # filter secrets that was created by kt api, by the username set in kt.config.
+            if user_defined_secret_name:  # filter secrets that was created by kt api, by the username set in kt.config.
                 if prefix and filter_by_creator:  # filter secrets by prefix + creator
                     if (
                         parsed_secret.get("user_defined_name").startswith(prefix)
-                        and parsed_secret.get("username")
-                        == kubetorch.globals.config.username
+                        and parsed_secret.get("username") == kubetorch.globals.config.username
                     ):
                         filtered_secrets.append(parsed_secret)
                 elif prefix:  # filter secrets by prefix
                     if parsed_secret.get("user_defined_name").startswith(prefix):
                         filtered_secrets.append(parsed_secret)
                 elif filter_by_creator:  # filter secrets by creator
-                    if (
-                        parsed_secret.get("username")
-                        == kubetorch.globals.config.username
-                    ):
+                    if parsed_secret.get("username") == kubetorch.globals.config.username:
                         filtered_secrets.append(parsed_secret)
                 else:  # No additional filters required
                     filtered_secrets.append(parsed_secret)

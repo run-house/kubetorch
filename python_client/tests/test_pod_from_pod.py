@@ -2,11 +2,7 @@ import os
 
 import pytest
 
-from .utils import (
-    create_random_name_prefix,
-    service_deployer,
-    service_deployer_with_raycluster,
-)
+from .utils import create_random_name_prefix, service_deployer, service_deployer_with_raycluster
 
 
 @pytest.fixture(autouse=True, scope="session")

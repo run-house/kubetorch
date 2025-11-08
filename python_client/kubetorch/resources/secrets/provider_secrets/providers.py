@@ -70,8 +70,7 @@ def _check_if_provider_secret(provider_str: str = None, provider_env_vars: dict 
             return _str_to_provider_class[provider_str]
 
         full_default_paths_to_provider = {
-            os.path.abspath(path): secret
-            for path, secret in _path_to_provider_class.items()
+            os.path.abspath(path): secret for path, secret in _path_to_provider_class.items()
         }
         provided_full_path = os.path.abspath(provider_str)
         return full_default_paths_to_provider.get(provided_full_path, None)

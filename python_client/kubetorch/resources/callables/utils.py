@@ -51,13 +51,9 @@ def _get_module_import_info(raw_cls_or_fn: Union[Type, Callable]):
         # Adapted from https://github.com/modal-labs/modal-client/blob/main/modal/_function_utils.py#L94
         if getattr(py_module, "__package__", None):
             module_path = os.path.abspath(py_module.__file__)
-            package_paths = [
-                os.path.abspath(p) for p in __import__(py_module.__package__).__path__
-            ]
+            package_paths = [os.path.abspath(p) for p in __import__(py_module.__package__).__path__]
             base_dirs = [
-                base_dir
-                for base_dir in package_paths
-                if os.path.commonpath((base_dir, module_path)) == base_dir
+                base_dir for base_dir in package_paths if os.path.commonpath((base_dir, module_path)) == base_dir
             ]
 
             if len(base_dirs) != 1:
@@ -72,11 +68,7 @@ def _extract_module_path(raw_cls_or_fn: Union[Type, Callable]):
     py_module = inspect.getmodule(raw_cls_or_fn)
 
     # Need to resolve in case just filename is given
-    module_path = (
-        str(Path(inspect.getfile(py_module)).resolve())
-        if hasattr(py_module, "__file__")
-        else None
-    )
+    module_path = str(Path(inspect.getfile(py_module)).resolve()) if hasattr(py_module, "__file__") else None
 
     return module_path
 
@@ -103,9 +95,7 @@ def locate_working_dir(start_dir=None):
         "requirements.txt",
     ]
 
-    dir_with_target = _find_directory_containing_any_file(
-        start_dir, target_files, searched_dirs=set()
-    )
+    dir_with_target = _find_directory_containing_any_file(start_dir, target_files, searched_dirs=set())
     found_project_dir = dir_with_target is not None
     return (dir_with_target if found_project_dir else start_dir), found_project_dir
 
@@ -121,9 +111,7 @@ def _find_directory_containing_any_file(dir_path, files, searched_dirs=None):
     parent_path = Path(dir_path).parent
     if parent_path in searched_dirs:
         return None
-    return _find_directory_containing_any_file(
-        parent_path, files, searched_dirs=searched_dirs
-    )
+    return _find_directory_containing_any_file(parent_path, files, searched_dirs=searched_dirs)
 
 
 def get_local_install_path(package_name: str) -> Optional[str]:
@@ -166,15 +154,12 @@ def get_names_for_reload_fallbacks(name: str, prefixes: list[str] = []):
             # Ensure that we use the truncated branch name that was used to create the service initially
             valid_branch = validate_username(branch)
             # Note: username/prefix takes precedence over branch (in the event they differ)
-            fallback_prefixes = [
-                v for v in (current_prefix, valid_branch) if v is not None
-            ]
+            fallback_prefixes = [v for v in (current_prefix, valid_branch) if v is not None]
         else:
             fallback_prefixes = [current_prefix] if current_prefix else []
 
     potential_names = [
-        clean_and_validate_k8s_name(f"{prefix}-{name}", allow_full_length=True)
-        for prefix in fallback_prefixes
+        clean_and_validate_k8s_name(f"{prefix}-{name}", allow_full_length=True) for prefix in fallback_prefixes
     ]
     if not prefixes and name not in potential_names:
         # try loading the bare name (i.e. prod mode) last, but only if we're not looking for specific prefixes

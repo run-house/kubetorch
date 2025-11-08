@@ -12,10 +12,7 @@ import websockets
 
 from kubetorch.globals import config, service_url, service_url_async
 from kubetorch.logger import get_logger
-from kubetorch.resources.callables.utils import (
-    get_names_for_reload_fallbacks,
-    locate_working_dir,
-)
+from kubetorch.resources.callables.utils import get_names_for_reload_fallbacks, locate_working_dir
 
 from kubetorch.resources.compute.utils import (
     delete_cached_service_data,
@@ -61,9 +58,7 @@ class Module:
         self._service_name = None
 
         self.pointers = pointers
-        self.name = (
-            clean_and_validate_k8s_name(name, allow_full_length=False) if name else None
-        )
+        self.name = clean_and_validate_k8s_name(name, allow_full_length=False) if name else None
 
     @property
     def module_name(self):
@@ -99,16 +94,10 @@ class Module:
 
         service_name = self.name
 
-        if (
-            config.username
-            and not self.reload_prefixes
-            and not service_name.startswith(config.username + "-")
-        ):
+        if config.username and not self.reload_prefixes and not service_name.startswith(config.username + "-"):
             service_name = f"{config.username}-{service_name}"
 
-        self._service_name = clean_and_validate_k8s_name(
-            service_name, allow_full_length=True
-        )
+        self._service_name = clean_and_validate_k8s_name(service_name, allow_full_length=True)
         return self._service_name
 
     @service_name.setter
@@ -127,10 +116,8 @@ class Module:
     @property
     def deployment_timestamp(self):
         if not self._deployment_timestamp:
-            self._deployment_timestamp = (
-                self.compute.service_manager.get_deployment_timestamp_annotation(
-                    self.service_name
-                )
+            self._deployment_timestamp = self.compute.service_manager.get_deployment_timestamp_annotation(
+                self.service_name
             )
         return self._deployment_timestamp
 
@@ -144,14 +131,10 @@ class Module:
             return self._remote_pointers
 
         source_dir, _ = locate_working_dir(self.pointers[0])
-        relative_module_path = (
-            Path(self.pointers[0]).expanduser().relative_to(source_dir)
-        )
+        relative_module_path = Path(self.pointers[0]).expanduser().relative_to(source_dir)
         source_dir_name = Path(source_dir).name
         if self.compute.working_dir is not None:
-            container_module_path = str(
-                Path(self.compute.working_dir) / source_dir_name / relative_module_path
-            )
+            container_module_path = str(Path(self.compute.working_dir) / source_dir_name / relative_module_path)
         else:
             # Leave it as relative path
             container_module_path = str(Path(source_dir_name) / relative_module_path)
@@ -223,11 +206,7 @@ class Module:
     ):
         """Reload an existing callable by its service name."""
         from kubernetes import client
-        from kubernetes.config import (
-            ConfigException,
-            load_incluster_config,
-            load_kube_config,
-        )
+        from kubernetes.config import ConfigException, load_incluster_config, load_kube_config
 
         import kubetorch as kt
 
@@ -242,9 +221,7 @@ class Module:
         namespace = namespace or config.namespace
         if isinstance(reload_prefixes, str):
             reload_prefixes = [reload_prefixes]
-        potential_names = get_names_for_reload_fallbacks(
-            name=name, prefixes=reload_prefixes
-        )
+        potential_names = get_names_for_reload_fallbacks(name=name, prefixes=reload_prefixes)
 
         # Use unified service discovery from BaseServiceManager
         from kubetorch.serving.service_manager import BaseServiceManager
@@ -297,15 +274,11 @@ class Module:
 
             if module_args.get("KT_CALLABLE_TYPE") == "cls":
                 init_args = json.loads(module_args.get("KT_INIT_ARGS") or "{}")
-                reloaded_module = kt.Cls(
-                    name=candidate, pointers=pointers, init_args=init_args
-                )
+                reloaded_module = kt.Cls(name=candidate, pointers=pointers, init_args=init_args)
             elif module_args.get("KT_CALLABLE_TYPE") == "fn":
                 reloaded_module = kt.Fn(name=candidate, pointers=pointers)
             else:
-                raise ValueError(
-                    f"Unknown module type: {module_args.get('KT_CALLABLE_TYPE')}"
-                )
+                raise ValueError(f"Unknown module type: {module_args.get('KT_CALLABLE_TYPE')}")
 
             reloaded_module.service_name = candidate
             reloaded_module.compute = compute
@@ -373,9 +346,7 @@ class Module:
         """
         if self.compute is None:
             raise ValueError("Compute must be set before deploying the module.")
-        return await self.to_async(
-            self.compute, init_args=getattr(self, "init_args", None)
-        )
+        return await self.to_async(self.compute, init_args=getattr(self, "init_args", None))
 
     def to(
         self,
@@ -433,9 +404,7 @@ class Module:
             try:
                 existing_service = self._get_existing_service(reload_prefixes)
                 if existing_service:
-                    logger.debug(
-                        f"Reusing existing service: {existing_service.service_name}"
-                    )
+                    logger.debug(f"Reusing existing service: {existing_service.service_name}")
                     return existing_service
             except Exception as e:
                 logger.info(
@@ -520,13 +489,9 @@ class Module:
         """
         if get_if_exists:
             try:
-                existing_service = await self._get_existing_service_async(
-                    reload_prefixes
-                )
+                existing_service = await self._get_existing_service_async(reload_prefixes)
                 if existing_service:
-                    logger.debug(
-                        f"Reusing existing service: {existing_service.service_name}"
-                    )
+                    logger.debug(f"Reusing existing service: {existing_service.service_name}")
                     return existing_service
             except Exception as e:
                 logger.info(
@@ -545,9 +510,7 @@ class Module:
         install_url, use_editable = get_kt_install_url(self.compute.freeze)
 
         if not dryrun and not self.compute.freeze:
-            await self._rsync_repo_and_image_patches_async(
-                install_url, use_editable, init_args
-            )
+            await self._rsync_repo_and_image_patches_async(install_url, use_editable, init_args)
 
         await self._launch_service_async(
             install_url,
@@ -621,26 +584,18 @@ class Module:
 
         pointer_env_vars = self._get_pointer_env_vars(self.remote_pointers)
         metadata_env_vars = self._get_metadata_env_vars(init_args)
-        service_dockerfile = self._get_service_dockerfile(
-            {**pointer_env_vars, **metadata_env_vars}
-        )
+        service_dockerfile = self._get_service_dockerfile({**pointer_env_vars, **metadata_env_vars})
         return rsync_dirs, service_dockerfile
 
     def _rsync_repo_and_image_patches(self, install_url, use_editable, init_args):
         logger.debug("Rsyncing data to the rsync pod")
-        rsync_dirs, service_dockerfile = self._get_rsync_dirs_and_dockerfile(
-            install_url, use_editable, init_args
-        )
+        rsync_dirs, service_dockerfile = self._get_rsync_dirs_and_dockerfile(install_url, use_editable, init_args)
         self._construct_and_rsync_files(rsync_dirs, service_dockerfile)
         logger.debug(f"Rsync completed for service {self.service_name}")
 
-    async def _rsync_repo_and_image_patches_async(
-        self, install_url, use_editable, init_args
-    ):
+    async def _rsync_repo_and_image_patches_async(self, install_url, use_editable, init_args):
         logger.debug("Rsyncing data to the rsync pod")
-        rsync_dirs, service_dockerfile = self._get_rsync_dirs_and_dockerfile(
-            install_url, use_editable, init_args
-        )
+        rsync_dirs, service_dockerfile = self._get_rsync_dirs_and_dockerfile(install_url, use_editable, init_args)
         await self._construct_and_rsync_files_async(rsync_dirs, service_dockerfile)
         logger.debug(f"Rsync completed for service {self.service_name}")
 
@@ -666,9 +621,7 @@ class Module:
                 verbosity = config.log_verbosity
 
             # Create a unique request ID for this launch sequence
-            launch_request_id = (
-                f"launch_{generate_unique_request_id('launch', deployment_timestamp)}"
-            )
+            launch_request_id = f"launch_{generate_unique_request_id('launch', deployment_timestamp)}"
 
             # Start log streaming in a separate thread
             log_thread = threading.Thread(
@@ -699,11 +652,9 @@ class Module:
             self.service_config = service_config
 
             if not self.compute.freeze and not dryrun:
-                self.deployment_timestamp = (
-                    self.compute.service_manager.update_deployment_timestamp_annotation(
-                        service_name=self.service_name,
-                        new_timestamp=deployment_timestamp,
-                    )
+                self.deployment_timestamp = self.compute.service_manager.update_deployment_timestamp_annotation(
+                    service_name=self.service_name,
+                    new_timestamp=deployment_timestamp,
                 )
             if not dryrun:
                 self.compute._check_service_ready()
@@ -736,9 +687,7 @@ class Module:
                 verbosity = config.log_verbosity
 
             # Create a unique request ID for this launch sequence
-            launch_request_id = (
-                f"launch_{generate_unique_request_id('launch', deployment_timestamp)}"
-            )
+            launch_request_id = f"launch_{generate_unique_request_id('launch', deployment_timestamp)}"
 
             # Start log streaming as an async task
             log_task = asyncio.create_task(
@@ -767,11 +716,9 @@ class Module:
             self.service_config = service_config
 
             if not self.compute.freeze and not dryrun:
-                self.deployment_timestamp = (
-                    self.compute.service_manager.update_deployment_timestamp_annotation(
-                        service_name=self.service_name,
-                        new_timestamp=deployment_timestamp,
-                    )
+                self.deployment_timestamp = self.compute.service_manager.update_deployment_timestamp_annotation(
+                    service_name=self.service_name,
+                    new_timestamp=deployment_timestamp,
                 )
             if not dryrun:
                 await self.compute._check_service_ready_async()
@@ -799,9 +746,7 @@ class Module:
                 val = json.dumps(val)
             image_instructions += f"ENV {key} {val}\n"
 
-        logger.debug(
-            f"Generated Dockerfile for service {self.service_name}:\n{image_instructions}"
-        )
+        logger.debug(f"Generated Dockerfile for service {self.service_name}:\n{image_instructions}")
         return image_instructions
 
     def _construct_and_rsync_files(self, rsync_dirs, service_dockerfile):
@@ -862,9 +807,7 @@ class Module:
             namespace=self.compute.namespace,
         )
         if configmaps:
-            logger.info(
-                f"Deleting {len(configmaps)} configmap{'' if len(configmaps) == 1 else 's'}"
-            )
+            logger.info(f"Deleting {len(configmaps)} configmap{'' if len(configmaps) == 1 else 's'}")
             delete_configmaps(
                 core_api=self.compute.core_api,
                 configmaps=configmaps,
@@ -897,9 +840,7 @@ class Module:
         return {
             "KT_INIT_ARGS": init_args,
             "KT_CALLABLE_TYPE": self.MODULE_TYPE,
-            "KT_DISTRIBUTED_CONFIG": json.dumps(distributed_config)
-            if distributed_config
-            else None,
+            "KT_DISTRIBUTED_CONFIG": json.dumps(distributed_config) if distributed_config else None,
         }
 
     def _stream_launch_logs(
@@ -913,16 +854,12 @@ class Module:
         try:
             # Only use "kubetorch" container to exclude queue-proxy (e.g. Knative sidecars) container logs which
             # are spammy with tons of healthcheck calls
-            pod_query = (
-                f'{{k8s_container_name="kubetorch"}} | json | request_id="{request_id}"'
-            )
+            pod_query = f'{{k8s_container_name="kubetorch"}} | json | request_id="{request_id}"'
             event_query = f'{{service_name="unknown_service"}} | json | k8s_object_name=~"{self.service_name}.*" | k8s_namespace_name="{self.namespace}"'
 
             encoded_pod_query = urllib.parse.quote_plus(pod_query)
             encoded_event_query = urllib.parse.quote_plus(event_query)
-            logger.debug(
-                f"Streaming launch logs and events for service {self.service_name}"
-            )
+            logger.debug(f"Streaming launch logs and events for service {self.service_name}")
 
             def start_log_threads(host, port):
                 def run_pod_logs():
@@ -960,9 +897,7 @@ class Module:
 
             base_url = service_url()
             host, port = extract_host_port(base_url)
-            logger.debug(
-                f"Streaming launch logs with url={base_url} host={host} and local port {port}"
-            )
+            logger.debug(f"Streaming launch logs with url={base_url} host={host} and local port {port}")
             start_log_threads(host, port)
 
         except Exception as e:
@@ -980,22 +915,16 @@ class Module:
         try:
             # Only use "kubetorch" container to exclude queue-proxy (e.g. Knative sidecars) container logs which
             # are spammy with tons of healthcheck calls
-            pod_query = (
-                f'{{k8s_container_name="kubetorch"}} | json | request_id="{request_id}"'
-            )
+            pod_query = f'{{k8s_container_name="kubetorch"}} | json | request_id="{request_id}"'
             event_query = f'{{service_name="unknown_service"}} | json | k8s_object_name=~"{self.service_name}.*" | k8s_namespace_name="{self.namespace}"'
 
             encoded_pod_query = urllib.parse.quote_plus(pod_query)
             encoded_event_query = urllib.parse.quote_plus(event_query)
-            logger.debug(
-                f"Streaming launch logs and events for service {self.service_name}"
-            )
+            logger.debug(f"Streaming launch logs and events for service {self.service_name}")
 
             base_url = await service_url_async()
             host, port = extract_host_port(base_url)
-            logger.debug(
-                f"Streaming launch logs with url={base_url} host={host} and local port {port}"
-            )
+            logger.debug(f"Streaming launch logs with url={base_url} host={host} and local port {port}")
 
             # Create async tasks for both log streams
             pod_task = asyncio.create_task(
@@ -1130,11 +1059,7 @@ class Module:
                 while True:
                     # If stop event is set, start counting down
                     # Handle both threading.Event and asyncio.Event
-                    is_stop_set = (
-                        stop_event.is_set()
-                        if hasattr(stop_event, "is_set")
-                        else stop_event.is_set()
-                    )
+                    is_stop_set = stop_event.is_set() if hasattr(stop_event, "is_set") else stop_event.is_set()
                     if is_stop_set and stop_time is None:
                         stop_time = time.time() + 2  # 2 second grace period
 
@@ -1145,9 +1070,7 @@ class Module:
                     try:
                         # Use shorter timeout during grace period
                         timeout = 0.1 if stop_time is not None else 1.0
-                        message = await asyncio.wait_for(
-                            websocket.recv(), timeout=timeout
-                        )
+                        message = await asyncio.wait_for(websocket.recv(), timeout=timeout)
                         data = json.loads(message)
 
                         if data.get("streams"):
@@ -1156,38 +1079,27 @@ class Module:
                                 is_event = "k8s_event_count" in list(labels.keys())
                                 for value in stream["values"]:
                                     ts_ns = int(value[0])
-                                    if (
-                                        start_timestamp is not None
-                                        and ts_ns < start_timestamp
-                                    ):
+                                    if start_timestamp is not None and ts_ns < start_timestamp:
                                         continue
                                     log_line = value[1]
                                     if is_event:
                                         event_type = labels.get("detected_level", "")
-                                        if (
-                                            log_verbosity == LogVerbosity.CRITICAL
-                                            and event_type == "Normal"
-                                        ):
+                                        if log_verbosity == LogVerbosity.CRITICAL and event_type == "Normal":
                                             # skip Normal events in MINIMAL
                                             continue
 
                                         try:
                                             msg = log_line
-                                            reason = (
-                                                labels.get("k8s_event_reason", ""),
-                                            )
+                                            reason = (labels.get("k8s_event_reason", ""),)
 
                                             # Note: relevant starting in release 0.1.19 (using OTel instead of Alloy)
                                             if isinstance(reason, tuple):
                                                 reason = reason[0]
 
-                                            event_type = labels.get(
-                                                "detected_level", ""
-                                            )
+                                            event_type = labels.get("detected_level", "")
 
                                             if reason == "Unhealthy" and (
-                                                "HTTP probe failed with statuscode: 503"
-                                                in msg
+                                                "HTTP probe failed with statuscode: 503" in msg
                                                 or "Startup probe failed" in msg
                                             ):
                                                 # HTTP probe failures are expected during setup
@@ -1199,10 +1111,7 @@ class Module:
                                                 "failed to get private k8s service endpoints:",
                                             )
                                             # Ignore queue-proxy events and gateway setup events
-                                            if any(
-                                                pattern in msg.lower()
-                                                for pattern in ignore_patterns
-                                            ):
+                                            if any(pattern in msg.lower() for pattern in ignore_patterns):
                                                 continue
 
                                             if msg in shown_event_messages:
@@ -1220,20 +1129,13 @@ class Module:
                                                 LogVerbosity.INFO,
                                                 LogVerbosity.DEBUG,
                                             ]:
-                                                print(
-                                                    f'[EVENT] reason={reason} "{msg}"'
-                                                )
+                                                print(f'[EVENT] reason={reason} "{msg}"')
                                         else:
-                                            print(
-                                                f'[EVENT] type={event_type} reason={reason} "{msg}"'
-                                            )
+                                            print(f'[EVENT] type={event_type} reason={reason} "{msg}"')
                                         continue
 
                                     # Skip if we've already seen this timestamp
-                                    if (
-                                        last_timestamp is not None
-                                        and value[0] <= last_timestamp
-                                    ):
+                                    if last_timestamp is not None and value[0] <= last_timestamp:
                                         continue
                                     last_timestamp = value[0]
                                     if log_verbosity in [
@@ -1249,27 +1151,19 @@ class Module:
                                         if log_dict is not None:
                                             # at this stage we are post setup
                                             pod_name = log_dict.get("pod", request_id)
-                                            levelname = log_dict.get(
-                                                "levelname", "INFO"
-                                            )
+                                            levelname = log_dict.get("levelname", "INFO")
                                             ts = log_dict.get("asctime")
                                             message = log_dict.get("message", "")
 
                                             if (
                                                 log_verbosity == LogVerbosity.CRITICAL
-                                                and levelname
-                                                not in ["ERROR", "CRITICAL"]
-                                            ) or (
-                                                log_verbosity == LogVerbosity.INFO
-                                                and levelname == "DEBUG"
-                                            ):
+                                                and levelname not in ["ERROR", "CRITICAL"]
+                                            ) or (log_verbosity == LogVerbosity.INFO and levelname == "DEBUG"):
                                                 continue
 
                                             log_line = f"{levelname} | {ts} | {message}"
                                             if pod_name not in formatters:
-                                                formatters[
-                                                    pod_name
-                                                ] = ServerLogsFormatter(pod_name)
+                                                formatters[pod_name] = ServerLogsFormatter(pod_name)
                                             formatter = formatters[pod_name]
                                         else:
                                             # streaming pre server setup logs, before we have the pod name
@@ -1310,9 +1204,7 @@ class Module:
                 except (asyncio.TimeoutError, Exception):
                     pass
 
-    def _wait_for_http_health(
-        self, timeout=60, retry_interval=0.1, backoff=2, max_interval=10
-    ):
+    def _wait_for_http_health(self, timeout=60, retry_interval=0.1, backoff=2, max_interval=10):
         """Wait for the HTTP server to be ready by checking the /health endpoint.
 
         Args:
@@ -1321,9 +1213,7 @@ class Module:
         """
         import time
 
-        logger.info(
-            f"Waiting for HTTP server to be ready for service {self.service_name}"
-        )
+        logger.info(f"Waiting for HTTP server to be ready for service {self.service_name}")
         start_time = time.time()
 
         while time.time() - start_time < timeout:
@@ -1337,9 +1227,7 @@ class Module:
                     logger.info(f"HTTP server is ready for service {self.service_name}")
                     return
                 else:
-                    logger.debug(
-                        f"Health check returned status {response.status_code}, retrying..."
-                    )
+                    logger.debug(f"Health check returned status {response.status_code}, retrying...")
 
             except VersionMismatchError as e:
                 raise e
@@ -1353,13 +1241,9 @@ class Module:
             retry_interval = min(retry_interval, max_interval)
 
         # If we get here, we've timed out
-        logger.warning(
-            f"HTTP health check timed out after {timeout}s for service {self.service_name}"
-        )
+        logger.warning(f"HTTP health check timed out after {timeout}s for service {self.service_name}")
 
-    async def _wait_for_http_health_async(
-        self, timeout=60, retry_interval=0.1, backoff=2, max_interval=10
-    ):
+    async def _wait_for_http_health_async(self, timeout=60, retry_interval=0.1, backoff=2, max_interval=10):
         """Async version of _wait_for_http_health. Wait for the HTTP server to be ready by checking the /health endpoint.
 
         Args:
@@ -1368,9 +1252,7 @@ class Module:
         """
         import asyncio
 
-        logger.info(
-            f"Waiting for HTTP server to be ready for service {self.service_name}"
-        )
+        logger.info(f"Waiting for HTTP server to be ready for service {self.service_name}")
         start_time = time.time()
 
         while time.time() - start_time < timeout:
@@ -1384,9 +1266,7 @@ class Module:
                     logger.info(f"HTTP server is ready for service {self.service_name}")
                     return
                 else:
-                    logger.debug(
-                        f"Health check returned status {response.status_code}, retrying..."
-                    )
+                    logger.debug(f"Health check returned status {response.status_code}, retrying...")
             except Exception as e:
                 logger.debug(f"Health check failed: {e}, retrying...")
 
@@ -1396,9 +1276,7 @@ class Module:
             retry_interval = min(retry_interval, max_interval)
 
         # If we get here, we've timed out
-        logger.warning(
-            f"HTTP health check timed out after {timeout}s for service {self.service_name}"
-        )
+        logger.warning(f"HTTP health check timed out after {timeout}s for service {self.service_name}")
 
     def __getstate__(self):
         """Remove local stateful values before pickle serialization."""

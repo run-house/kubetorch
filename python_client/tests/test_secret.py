@@ -4,18 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from kubetorch.resources.secrets.kubernetes_secrets_client import (
-    KubernetesSecretsClient,
-)
+from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecretsClient
 from kubetorch.resources.secrets.provider_secrets.aws_secret import AWSSecret
 from kubetorch.resources.secrets.provider_secrets.gcp_secret import GCPSecret
-from kubetorch.resources.secrets.provider_secrets.huggingface_secret import (
-    HuggingFaceSecret,
-)
-from kubetorch.resources.secrets.utils import (
-    check_env_vars_on_kubernetes_pods,
-    check_path_on_kubernetes_pods,
-)
+from kubetorch.resources.secrets.provider_secrets.huggingface_secret import HuggingFaceSecret
+from kubetorch.resources.secrets.utils import check_env_vars_on_kubernetes_pods, check_path_on_kubernetes_pods
 
 from .conftest import get_test_hash
 from .utils import create_random_name_prefix, get_env_var, summer
@@ -113,9 +106,7 @@ def test_secret_create_provider_and_path_and_reload():
 
         secret_name = f"{get_test_hash()}-provider-from-path-secret"
         full_secret_path = str(temp_file.resolve())
-        secret_path_parent, secret_filenames = str(temp_file.parent.resolve()), str(
-            temp_file.name
-        )
+        secret_path_parent, secret_filenames = str(temp_file.parent.resolve()), str(temp_file.name)
         provider = "aws"
 
         secret = kt.secret(name=secret_name, provider=provider, path=full_secret_path)
@@ -137,13 +128,9 @@ def test_kubernetes_secret_create_update_delete():
     import kubetorch as kt
 
     name = f"{create_random_name_prefix()}-secret"  # prevent collisions
-    secret = kt.secret(
-        name=name, provider="gcp"
-    )  # comment if you are running on eks cluster
+    secret = kt.secret(name=name, provider="gcp")  # comment if you are running on eks cluster
     #  secret = kt.secret(name=name, provider="aws")  # un-comment if you are running on eks cluster
-    assert (
-        secret.provider == "gcp"
-    )  # switch to aws if you are running on an eks cluster
+    assert secret.provider == "gcp"  # switch to aws if you are running on an eks cluster
     client = KubernetesSecretsClient()
 
     success = client.create_secret(secret)
@@ -201,9 +188,7 @@ def test_secret_aws_propogated_to_pod_as_string():
 
     # Check that the secret is propogated to the pod
     for filename in AWSSecret._DEFAULT_FILENAMES:
-        assert check_path_on_kubernetes_pods(
-            f"{AWSSecret._DEFAULT_PATH}/{filename}", remote_fn.service_name
-        )
+        assert check_path_on_kubernetes_pods(f"{AWSSecret._DEFAULT_PATH}/{filename}", remote_fn.service_name)
 
 
 @pytest.mark.level("minimal")
@@ -220,9 +205,7 @@ def test_secret_gcp_propogated_to_pod_as_string():
 
     # Check that the secret is propogated to the pod
     for filename in GCPSecret._DEFAULT_FILENAMES:
-        assert check_path_on_kubernetes_pods(
-            f"{GCPSecret._DEFAULT_PATH}/{filename}", remote_fn.service_name
-        )
+        assert check_path_on_kubernetes_pods(f"{GCPSecret._DEFAULT_PATH}/{filename}", remote_fn.service_name)
 
 
 @pytest.mark.level("minimal")
@@ -242,9 +225,7 @@ def test_secret_gcp_propogated_to_pod_as_object():
 
     # Check that the secret is propogated to the pod
     for filename in gcp_secret.filenames:
-        assert check_path_on_kubernetes_pods(
-            f"{gcp_secret.path}/{filename}", remote_fn.service_name
-        )
+        assert check_path_on_kubernetes_pods(f"{gcp_secret.path}/{filename}", remote_fn.service_name)
 
 
 @pytest.mark.level("minimal")
@@ -254,9 +235,7 @@ def test_secret_huggingface_propogated_to_pod():
     provider = "huggingface"
     name = f"{create_random_name_prefix()}-custom-secret-hf"
 
-    remote_fn = kt.fn(get_env_var, name=name).to(
-        kt.Compute(cpus=".1", secrets=[provider])
-    )
+    remote_fn = kt.fn(get_env_var, name=name).to(kt.Compute(cpus=".1", secrets=[provider]))
 
     assert remote_fn("HF_TOKEN")
 
@@ -266,9 +245,7 @@ def test_secret_huggingface_propogated_to_pod():
     assert loaded_secret
 
     # Check that the secret is propogated to the pod (check env_vars)
-    env_vars = check_env_vars_on_kubernetes_pods(
-        HuggingFaceSecret._DEFAULT_ENV_VARS, remote_fn.service_name
-    )
+    env_vars = check_env_vars_on_kubernetes_pods(HuggingFaceSecret._DEFAULT_ENV_VARS, remote_fn.service_name)
     if env_vars:
         assert env_vars
         for k in HuggingFaceSecret._DEFAULT_ENV_VARS:
@@ -298,9 +275,7 @@ def test_secret_custom_env_vars_propogated_to_pod():
     assert secret.values == {CUSTOM_ENV_VAR: CUSTOM_ENV_VAR_VALUE}
     assert secret.env_vars == [CUSTOM_ENV_VAR]
 
-    remote_fn = kt.fn(get_env_var, name=name).to(
-        kt.Compute(cpus=".1", secrets=[secret]).autoscale(min_replicas=1)
-    )
+    remote_fn = kt.fn(get_env_var, name=name).to(kt.Compute(cpus=".1", secrets=[secret]).autoscale(min_replicas=1))
 
     assert remote_fn(CUSTOM_ENV_VAR) == CUSTOM_ENV_VAR_VALUE
 

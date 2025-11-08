@@ -98,3 +98,6 @@ kt_pdb = "kubetorch.servers.http.pdb:main"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 120

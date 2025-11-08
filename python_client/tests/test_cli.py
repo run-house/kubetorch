@@ -44,9 +44,7 @@ def remote_fn_for_teardown(secret: kt.Secret = None):
     return fn
 
 
-def validate_logs_fn_service_info(
-    list_output: str, service_name: str, compute_type: str
-):
+def validate_logs_fn_service_info(list_output: str, service_name: str, compute_type: str):
     table_column_names = [
         "SERVICE",
         "TYPE",
@@ -80,22 +78,13 @@ def validate_logs_fn_service_info(
     assert re.search(service_expected_info, list_output, re.DOTALL)
 
 
-def validate_teardown_output(
-    teardown_output: str, service_name: str, force_delete: bool = False
-):
+def validate_teardown_output(teardown_output: str, service_name: str, force_delete: bool = False):
     assert "The following resources will be deleted:\n" in teardown_output
     assert f"• Deployment: {service_name}\n• Service: {service_name}" in teardown_output
 
-    assert (
-        "Force deleting resources..."
-        if force_delete
-        else "Deleting resources..." in teardown_output
-    )
+    assert "Force deleting resources..." if force_delete else "Deleting resources..." in teardown_output
 
-    assert (
-        f"✓ Deleted deployment {service_name}\n✓ Deleted service {service_name}"
-        in teardown_output
-    )
+    assert f"✓ Deleted deployment {service_name}\n✓ Deleted service {service_name}" in teardown_output
 
     if force_delete:
         time.sleep(3)
@@ -122,9 +111,7 @@ async def test_cli_kt_list_basic(remote_logs_fn):
     result = runner.invoke(app, ["list", "--sort"], env={"COLUMNS": "400"}, color=False)
     assert result.exit_code == 0
     list_output = result.stdout
-    validate_logs_fn_service_info(
-        list_output=list_output, service_name=service_name, compute_type=compute_type
-    )
+    validate_logs_fn_service_info(list_output=list_output, service_name=service_name, compute_type=compute_type)
 
 
 @pytest.mark.level("minimal")
@@ -154,9 +141,7 @@ async def test_cli_kt_list_ns_with_services(remote_logs_fn):
 @pytest.mark.level("minimal")
 @pytest.mark.asyncio
 async def test_cli_kt_list_ns_without_services(remote_logs_fn):
-    result = runner.invoke(
-        app, ["list", "-n", "no-such-ns"], env={"COLUMNS": "200"}, color=False
-    )
+    result = runner.invoke(app, ["list", "-n", "no-such-ns"], env={"COLUMNS": "200"}, color=False)
     assert result.exit_code == 0
     list_output = result.stdout
     assert "No services found in no-such-ns namespace" in list_output
@@ -190,9 +175,7 @@ async def test_cli_kt_list_existing_prefix(remote_logs_fn):
 @pytest.mark.level("minimal")
 @pytest.mark.asyncio
 async def test_cli_kt_list_non_existing_prefix(remote_logs_fn):
-    result = runner.invoke(
-        app, ["list", "-t", "no-such-prefix"], env={"COLUMNS": "200"}, color=False
-    )
+    result = runner.invoke(app, ["list", "-t", "no-such-prefix"], env={"COLUMNS": "200"}, color=False)
     assert result.exit_code == 0
     list_output = result.stdout
     assert "No services found in default namespace" in list_output
@@ -203,9 +186,7 @@ async def test_cli_kt_list_non_existing_prefix(remote_logs_fn):
 async def test_cli_kt_list_multiple_flags(remote_logs_fn):
     service_name = remote_logs_fn.service_name
     compute_type = os.getenv("TEST_COMPUTE_TYPE", "deployment")
-    existing_service_prefix = service_name[
-        :10
-    ]  # prefix = first 10 chars of the service name
+    existing_service_prefix = service_name[:10]  # prefix = first 10 chars of the service name
     existing_ns = remote_logs_fn.namespace
     wrong_service_prefix = "no-such-prefix"
     wrong_ns = "no-such-ns"
@@ -219,9 +200,7 @@ async def test_cli_kt_list_multiple_flags(remote_logs_fn):
     )
     assert result.exit_code == 0
     list_output = result.stdout
-    validate_logs_fn_service_info(
-        list_output=list_output, service_name=service_name, compute_type=compute_type
-    )
+    validate_logs_fn_service_info(list_output=list_output, service_name=service_name, compute_type=compute_type)
 
     # wrong ns, correct service prefix
     result = runner.invoke(
@@ -279,9 +258,7 @@ def test_cli_kt_config():
         kt_config = kt.globals.config
 
         for config_key in config_list_output.keys():
-            assert config_list_output.get(config_key) == getattr(
-                kt_config, config_key, None
-            )
+            assert config_list_output.get(config_key) == getattr(kt_config, config_key, None)
 
 
 @pytest.mark.level("unit")
@@ -342,14 +319,9 @@ def test_cli_kt_config_set():
         # Part D: set supported key, but provide a value of a wrong type
         # D.1: unsupported username
         invalid_username = "1"
-        result = runner.invoke(
-            app, ["config", "set", "username", invalid_username], color=False
-        )
+        result = runner.invoke(app, ["config", "set", "username", invalid_username], color=False)
         assert result.exit_code == 1
-        assert (
-            f"Error setting username: {invalid_username} must be a valid k8s name"
-            in result.stdout
-        )
+        assert f"Error setting username: {invalid_username} must be a valid k8s name" in result.stdout
 
         # D.2: provide username that is in a reserved names
         reserved_names = ["kt", "kubetorch", "knative"]
@@ -367,14 +339,9 @@ def test_cli_kt_config_set():
             )
 
         # D.3: provide stream_logs that is not a boolean
-        result = runner.invoke(
-            app, ["config", "set", "stream_logs", "notBoolVal"], color=False
-        )
+        result = runner.invoke(app, ["config", "set", "stream_logs", "notBoolVal"], color=False)
         assert result.exit_code == 1
-        assert (
-            "Error setting stream_logs: stream_logs must be a boolean value"
-            in result.stdout
-        )
+        assert "Error setting stream_logs: stream_logs must be a boolean value" in result.stdout
 
         # D.4: provide stream_logs that is not a boolean
         result = runner.invoke(
@@ -418,9 +385,7 @@ def test_cli_kt_config_unset():
             assert get_result.exit_code == 0
             assert get_msg_after_unset.get(key) in get_result.stdout
         # Part B: unsupported key
-        result = runner.invoke(
-            app, ["config", "unset", "NoSuchKey"], color=False, env={"COLUMNS": "200"}
-        )
+        result = runner.invoke(app, ["config", "unset", "NoSuchKey"], color=False, env={"COLUMNS": "200"})
         assert result.exit_code == 2
         result_output = result.stdout or result.stderr
         assert "Error" in result_output
@@ -436,9 +401,7 @@ def test_cli_kt_config_unset():
 @pytest.mark.level("unit")
 def test_cli_kt_config_unknown_action():
     unsupported_action = "NoSuchAction"
-    result = runner.invoke(
-        app, ["config", unsupported_action], color=False, env={"COLUMNS": "200"}
-    )
+    result = runner.invoke(app, ["config", unsupported_action], color=False, env={"COLUMNS": "200"})
     assert result.exit_code == 1
     result_output = result.stdout or result.stderr
     assert f"Unknown action: {unsupported_action}" in result_output
@@ -472,9 +435,7 @@ async def test_cli_kt_check_basic(remote_logs_fn):
         assert f"Checking {check}..." in result_output
 
     assert "All service checks passed" in result_output
-    kt.config.stream_logs = (
-        original_log_streaming  # set stream_logs to its original value
-    )
+    kt.config.stream_logs = original_log_streaming  # set stream_logs to its original value
 
 
 @pytest.mark.level("minimal")
@@ -500,9 +461,7 @@ async def test_cli_kt_check_basic_multipod(remote_logs_fn_autoscaled):
         assert f"Checking {check}..." in result_output
 
     assert "All service checks passed" in result_output
-    kt.config.stream_logs = (
-        original_log_streaming  # set stream_logs to its original value
-    )
+    kt.config.stream_logs = original_log_streaming  # set stream_logs to its original value
 
 
 ####################################
@@ -521,12 +480,8 @@ async def test_cli_kt_describe_basic(remote_logs_fn):
     args_placeholder = []
 
     if has_ingress:
-        service_path = has_ingress.replace("wss://", "https://").replace(
-            "ws://", "http://"
-        )
-        service_path = (
-            f"{service_path}/{service_namespace}/{service_name}/METHOD_OR_CLS_NAME"
-        )
+        service_path = has_ingress.replace("wss://", "https://").replace("ws://", "http://")
+        service_path = f"{service_path}/{service_namespace}/{service_name}/METHOD_OR_CLS_NAME"
     else:
         service_path = f"http://{service_name}.{service_namespace}.svc.cluster.local/METHOD_OR_CLS_NAME"
 
@@ -605,9 +560,7 @@ async def test_cli_kt_describe_basic(remote_logs_fn):
 def test_cli_kt_teardown_long_confirmation():
     remote_fn = remote_fn_for_teardown()
     service_name = remote_fn.service_name
-    teardown_result = runner.invoke(
-        app, ["teardown", service_name, "--yes"], color=False, env={"COLUMNS": "200"}
-    )
+    teardown_result = runner.invoke(app, ["teardown", service_name, "--yes"], color=False, env={"COLUMNS": "200"})
 
     assert teardown_result.exit_code == 0
     result_output = teardown_result.output
@@ -660,9 +613,7 @@ def test_cli_kt_teardown_force():
 
     assert teardown_result.exit_code == 0
     result_output = teardown_result.stdout
-    validate_teardown_output(
-        teardown_output=result_output, service_name=service_name, force_delete=True
-    )
+    validate_teardown_output(teardown_output=result_output, service_name=service_name, force_delete=True)
 
 
 @pytest.mark.level("minimal")
@@ -696,41 +647,26 @@ def test_cli_kt_teardown_multiple_flags():
 @pytest.mark.level("minimal")
 def test_cli_kt_teardown_wrong_usage():
     # Part A: no name provided
-    teardown_result = runner.invoke(
-        app, ["teardown"], color=False, env={"COLUMNS": "200"}
-    )
+    teardown_result = runner.invoke(app, ["teardown"], color=False, env={"COLUMNS": "200"})
 
     assert teardown_result.exit_code == 1
-    assert (
-        "Please provide a service name or use the --all or --prefix flags"
-        in teardown_result.output
-    )
+    assert "Please provide a service name or use the --all or --prefix flags" in teardown_result.output
 
     # Part B: teardown non-existing service
     service_name = "noSuchService"
-    teardown_result = runner.invoke(
-        app, ["teardown", service_name, "-y"], color=False, env={"COLUMNS": "200"}
-    )
+    teardown_result = runner.invoke(app, ["teardown", service_name, "-y"], color=False, env={"COLUMNS": "200"})
 
     assert teardown_result.exit_code == 1
     output = teardown_result.output
-    assert (
-        f"Finding resources for service {service_name.lower()} in default namespace..."
-        in output
-    )
+    assert f"Finding resources for service {service_name.lower()} in default namespace..." in output
     assert f"Service {service_name.lower()} not found" in output
 
     # Part C: teardown service with non-existing prefix
-    teardown_result = runner.invoke(
-        app, ["teardown", "-p", service_name, "-y"], color=False, env={"COLUMNS": "200"}
-    )
+    teardown_result = runner.invoke(app, ["teardown", "-p", service_name, "-y"], color=False, env={"COLUMNS": "200"})
 
     assert teardown_result.exit_code == 0
     output = teardown_result.output
-    assert (
-        f"Deleting all services with prefix {service_name} in default namespace"
-        in output
-    )
+    assert f"Deleting all services with prefix {service_name} in default namespace" in output
     assert "No services are found" in output
 
     # Part D: teardown service but provide wrong namespace
@@ -746,10 +682,7 @@ def test_cli_kt_teardown_wrong_usage():
 
     assert teardown_result.exit_code == 1
     output = teardown_result.output
-    assert (
-        f"Finding resources for service {service_name.lower()} in {service_namespace}1 namespace..."
-        in output
-    )
+    assert f"Finding resources for service {service_name.lower()} in {service_namespace}1 namespace..." in output
     assert f"Service {service_name.lower()} not found"
 
 
@@ -774,19 +707,14 @@ def test_cli_secrets_create_aws_with_name():
     cmd = ["secrets", "create", secret_name, "--provider", "aws"]
     result = runner.invoke(app, cmd, color=False)
     assert result.exit_code == 0
-    assert (
-        f"Successfully created secret {secret_name} in namespace default"
-        in result.output
-    )
+    assert f"Successfully created secret {secret_name} in namespace default" in result.output
 
 
 @pytest.mark.skip("Skipping since CI is running on a GKE cluster")
 @pytest.mark.level("unit")
 def test_cli_secrets_create_aws_test_ns():
     tests_ns = get_tests_namespace()
-    create_test_ns_cmd = (
-        f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
-    )
+    create_test_ns_cmd = f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
     subprocess.run(create_test_ns_cmd, shell=True, check=True)
     cmd = ["secrets", "create", "--provider", "aws", "--namespace", tests_ns]
     result = runner.invoke(app, cmd, color=False)
@@ -820,9 +748,7 @@ def test_cli_secrets_create_gcp_with_name():
 @pytest.mark.level("unit")
 def test_cli_secrets_create_gcp_test_ns():
     tests_ns = get_tests_namespace()
-    create_test_ns_cmd = (
-        f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
-    )
+    create_test_ns_cmd = f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
     subprocess.run(create_test_ns_cmd, shell=True, check=True)
     cmd = ["secrets", "create", "--provider", "gcp", "--namespace", tests_ns]
     result = runner.invoke(app, cmd, color=False)
@@ -876,15 +802,10 @@ def test_cli_secrets_create_same_secret_twice():
     # create the secret for the first time
     result_first_creation = runner.invoke(app, cmd, color=False)
     assert result_first_creation.exit_code == 0
-    assert (
-        f"Successfully created secret {secret_name} in namespace default"
-        in result_first_creation.output
-    )
+    assert f"Successfully created secret {secret_name} in namespace default" in result_first_creation.output
 
     # create the secret for the second time
-    result_second_creation = runner.invoke(
-        app, cmd, color=False, env={"COLUMNS": "200"}
-    )
+    result_second_creation = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
     assert result_second_creation.exit_code == 0
     assert (
         f"Secret '{secret_name}' already exists in namespace default for username {kt.globals.config.username}, skipping creation"
@@ -906,9 +827,7 @@ def test_cli_secrets_create_same_secret_twice_gcp():
     assert "Namespace: default\n" in first_output
 
     # create the secret for the second time
-    result_second_creation = runner.invoke(
-        app, cmd, color=False, env={"COLUMNS": "200"}
-    )
+    result_second_creation = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
     assert result_second_creation.exit_code == 0
     assert (
         f"Secret '{secret_name}' already exists in namespace default, skipping creation"
@@ -967,9 +886,7 @@ def test_cli_secrets_list():
 @pytest.mark.level("unit")
 def test_cli_secrets_list_in_test_ns():
     tests_ns = get_tests_namespace()
-    create_test_ns_cmd = (
-        f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
-    )
+    create_test_ns_cmd = f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
     subprocess.run(create_test_ns_cmd, shell=True, check=True)
     secret_name = f"{get_test_hash()}-gcp-{tests_ns}"
     cmd = [
@@ -1001,9 +918,7 @@ def test_cli_secrets_list_in_test_ns():
 @pytest.mark.level("unit")
 def test_cli_secrets_list_all():
     tests_ns = get_tests_namespace()
-    create_test_ns_cmd = (
-        f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
-    )
+    create_test_ns_cmd = f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
     subprocess.run(create_test_ns_cmd, shell=True, check=True)
     secret_names = [f"{get_test_hash()}-gcp-{tests_ns}-{i}" for i in range(2)]
     for secret_name in secret_names:
@@ -1030,12 +945,9 @@ def test_cli_secrets_list_all():
         ["secrets", "list", "--all-namespaces"],
     ]
     expected_patterns = [
-        rf".*{secret_name}.*{kt.globals.config.username}.*{tests_ns}.*"
-        for secret_name in secret_names
+        rf".*{secret_name}.*{kt.globals.config.username}.*{tests_ns}.*" for secret_name in secret_names
     ]
-    expected_patterns.append(
-        rf".*{secret_name_default}.*{kt.globals.config.username}.*default.*"
-    )
+    expected_patterns.append(rf".*{secret_name_default}.*{kt.globals.config.username}.*default.*")
     for cmd in list_cmds:
         result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
         assert result.exit_code == 0
@@ -1048,9 +960,7 @@ def test_cli_secrets_list_all():
 def test_cli_secrets_list_prefix():
     tests_ns = get_tests_namespace()
     test_hash = get_test_hash()
-    create_test_ns_cmd = (
-        f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
-    )
+    create_test_ns_cmd = f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
     subprocess.run(create_test_ns_cmd, shell=True, check=True)
     secret_names = [f"{test_hash}-gcp-{tests_ns}-{i + 2}" for i in range(2)]
     for secret_name in secret_names:
@@ -1076,9 +986,7 @@ def test_cli_secrets_list_prefix():
         ["secrets", "list", "-x", test_hash],
         ["secrets", "list", "--prefix", test_hash],
     ]
-    expected_pattern = (
-        rf".*{secret_name_default}.*{kt.globals.config.username}.*default.*"
-    )
+    expected_pattern = rf".*{secret_name_default}.*{kt.globals.config.username}.*default.*"
     for cmd in list_cmds:
         result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
         assert result.exit_code == 0
@@ -1090,9 +998,7 @@ def test_cli_secrets_list_prefix():
 def test_cli_secrets_list_prefix_and_namespace():
     tests_ns = get_tests_namespace()
     test_hash = get_test_hash()
-    create_test_ns_cmd = (
-        f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
-    )
+    create_test_ns_cmd = f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
     subprocess.run(create_test_ns_cmd, shell=True, check=True)
     secret_names = [f"{test_hash}-gcp-{tests_ns}-{i + 4}" for i in range(2)]
     for secret_name in secret_names:
@@ -1119,8 +1025,7 @@ def test_cli_secrets_list_prefix_and_namespace():
         ["secrets", "list", "--prefix", test_hash, "--namespace", tests_ns],
     ]
     expected_patterns = [
-        rf".*{secret_name}.*{kt.globals.config.username}.*{tests_ns}.*"
-        for secret_name in secret_names
+        rf".*{secret_name}.*{kt.globals.config.username}.*{tests_ns}.*" for secret_name in secret_names
     ]
     for cmd in list_cmds:
         result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
@@ -1134,9 +1039,7 @@ def test_cli_secrets_list_prefix_and_namespace():
 def test_cli_secrets_list_prefix_and_all():
     tests_ns = get_tests_namespace()
     test_hash = get_test_hash()
-    create_test_ns_cmd = (
-        f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
-    )
+    create_test_ns_cmd = f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
     subprocess.run(create_test_ns_cmd, shell=True, check=True)
     secret_names = [f"{test_hash}-gcp-{tests_ns}-{i + 4}" for i in range(2)]
     for secret_name in secret_names:
@@ -1163,12 +1066,9 @@ def test_cli_secrets_list_prefix_and_all():
         ["secrets", "list", "--prefix", test_hash, "--all-namespaces"],
     ]
     expected_patterns = [
-        rf".*{secret_name}.*{kt.globals.config.username}.*{tests_ns}.*"
-        for secret_name in secret_names
+        rf".*{secret_name}.*{kt.globals.config.username}.*{tests_ns}.*" for secret_name in secret_names
     ]
-    expected_patterns.append(
-        rf".*{secret_name_default}.*{kt.globals.config.username}.*default.*"
-    )
+    expected_patterns.append(rf".*{secret_name_default}.*{kt.globals.config.username}.*default.*")
     for cmd in list_cmds:
         result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
         assert result.exit_code == 0
@@ -1202,9 +1102,7 @@ def test_cli_secrets_basic_delete():
 def test_cli_secrets_delete_in_namespace():
     namespace_flags = ["-n", "--namespace"]
     test_ns = get_tests_namespace()
-    create_test_ns_cmd = (
-        f"kubectl get namespace {test_ns} || kubectl create namespace {test_ns}"
-    )
+    create_test_ns_cmd = f"kubectl get namespace {test_ns} || kubectl create namespace {test_ns}"
     subprocess.run(create_test_ns_cmd, shell=True, check=True)
     for flag in namespace_flags:
         secret_name = f"{get_test_hash()}-gcp-{create_random_name_prefix()}"
@@ -1257,9 +1155,7 @@ def test_cli_secrets_delete_prefix():
 @pytest.mark.level("unit")
 def test_cli_secrets_delete_prefix_and_namespace():
     test_ns = get_tests_namespace()
-    create_test_ns_cmd = (
-        f"kubectl get namespace {test_ns} || kubectl create namespace {test_ns}"
-    )
+    create_test_ns_cmd = f"kubectl get namespace {test_ns} || kubectl create namespace {test_ns}"
     subprocess.run(create_test_ns_cmd, shell=True, check=True)
     test_hash = get_test_hash()
     secret_name = f"{test_hash}-gcp-{create_random_name_prefix()}"

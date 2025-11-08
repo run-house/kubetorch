@@ -80,9 +80,7 @@ def test_fn_sync_on_gpu_with_autoscaling():
 
     # Check logs of each pod to confirm requests were routed to them at least once
     for pod_name in pod_names:
-        resp = subprocess.run(
-            ["kubectl", "logs", pod_name], capture_output=True, text=True
-        )
+        resp = subprocess.run(["kubectl", "logs", pod_name], capture_output=True, text=True)
         num_requests = resp.stdout.count("POST /get_cuda_version")
         assert num_requests > 0, f"Pod {pod_name} received no requests"
 

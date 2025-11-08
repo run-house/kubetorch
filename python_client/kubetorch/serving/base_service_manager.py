@@ -53,9 +53,7 @@ class BaseServiceManager:
         return labels
 
     def _apply_yaml_template(self, yaml_file, replace_existing=False, **kwargs):
-        with importlib.resources.files("kubetorch.serving.templates").joinpath(
-            yaml_file
-        ).open("r") as f:
+        with importlib.resources.files("kubetorch.serving.templates").joinpath(yaml_file).open("r") as f:
             template = Template(f.read())
 
         yaml_content = template.render(**kwargs)
@@ -63,9 +61,7 @@ class BaseServiceManager:
         k8s_client = client.ApiClient()
 
         for obj in yaml_objects:
-            logger.info(
-                f"Applying {obj.get('kind')}/{obj.get('metadata', {}).get('name')}"
-            )
+            logger.info(f"Applying {obj.get('kind')}/{obj.get('metadata', {}).get('name')}")
             try:
                 if replace_existing:
                     # Try to delete existing resource first
@@ -76,14 +72,10 @@ class BaseServiceManager:
                             raise
 
                 utils.create_from_dict(k8s_client, obj)
-                logger.info(
-                    f"Successfully applied {obj.get('kind')}/{obj.get('metadata', {}).get('name')}"
-                )
+                logger.info(f"Successfully applied {obj.get('kind')}/{obj.get('metadata', {}).get('name')}")
             except utils.FailToCreateError as e:
                 if "already exists" in str(e):
-                    logger.info(
-                        f"Resource already exists: {obj.get('kind')}/{obj.get('metadata', {}).get('name')}"
-                    )
+                    logger.info(f"Resource already exists: {obj.get('kind')}/{obj.get('metadata', {}).get('name')}")
                 else:
                     raise
 
@@ -93,9 +85,7 @@ class BaseServiceManager:
         pass
 
     @abstractmethod
-    def update_deployment_timestamp_annotation(
-        self, service_name: str, new_timestamp: str
-    ) -> str:
+    def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
         """Update deployment timestamp annotation for this service type."""
         pass
 
@@ -197,9 +187,7 @@ class BaseServiceManager:
                         continue
 
                     # Convert V1Deployment object to dictionary for consistency
-                    deployment_dict = client.ApiClient().sanitize_for_serialization(
-                        deployment
-                    )
+                    deployment_dict = client.ApiClient().sanitize_for_serialization(deployment)
 
                     # Add kind and apiVersion (not included in V1Deployment object)
                     deployment_dict["kind"] = "Deployment"
@@ -211,8 +199,7 @@ class BaseServiceManager:
                             "template_type": "deployment",
                             "resource": deployment_dict,  # Now consistently a dict
                             "namespace": namespace,
-                            "creation_timestamp": deployment.metadata.creation_timestamp.isoformat()
-                            + "Z",
+                            "creation_timestamp": deployment.metadata.creation_timestamp.isoformat() + "Z",
                         }
                     )
 
@@ -246,9 +233,7 @@ class BaseServiceManager:
                             "template_type": "raycluster",
                             "resource": cluster,  # Already a dict
                             "namespace": namespace,
-                            "creation_timestamp": cluster["metadata"][
-                                "creationTimestamp"
-                            ],
+                            "creation_timestamp": cluster["metadata"]["creationTimestamp"],
                         }
                     )
 
@@ -294,9 +279,7 @@ class BaseServiceManager:
         # Build label selector
         label_selector = f"{serving_constants.KT_SERVICE_LABEL}={service_name}"
         try:
-            pods = core_api.list_namespaced_pod(
-                namespace=namespace, label_selector=label_selector
-            )
+            pods = core_api.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
             return pods.items
         except client.exceptions.ApiException as e:
             logger.warning(f"Failed to list pods for service {service_name}: {e}")
@@ -329,9 +312,7 @@ class BaseServiceManager:
     def get_pods_for_service(self, service_name: str, **kwargs) -> List[client.V1Pod]:
         raise NotImplementedError("Subclasses must implement get_pods_for_service")
 
-    def check_service_ready(
-        self, service_name: str, launch_timeout: int, **kwargs
-    ) -> bool:
+    def check_service_ready(self, service_name: str, launch_timeout: int, **kwargs) -> bool:
         """Check if service is ready to serve requests.
 
         This method should be implemented by subclasses to provide service-type-specific

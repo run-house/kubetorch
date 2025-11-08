@@ -9,9 +9,7 @@ def test_default_autoscale():
     config = AutoscalingConfig()
     annotations = config.convert_to_annotations()
     # Should only have the autoscaler class, no other defaults
-    assert annotations == {
-        "autoscaling.knative.dev/class": "kpa.autoscaling.knative.dev"
-    }
+    assert annotations == {"autoscaling.knative.dev/class": "kpa.autoscaling.knative.dev"}
 
 
 @pytest.mark.level("unit")
@@ -31,17 +29,11 @@ def test_autoscale_with_scale_to_zero_pod_retention():
     """Test the new scale_to_zero_pod_retention_period parameter"""
     config = AutoscalingConfig(scale_to_zero_pod_retention_period="30s")
     annotations = config.convert_to_annotations()
-    assert (
-        annotations["autoscaling.knative.dev/scale-to-zero-pod-retention-period"]
-        == "30s"
-    )
+    assert annotations["autoscaling.knative.dev/scale-to-zero-pod-retention-period"] == "30s"
 
     config = AutoscalingConfig(scale_to_zero_pod_retention_period="1m5s")
     annotations = config.convert_to_annotations()
-    assert (
-        annotations["autoscaling.knative.dev/scale-to-zero-pod-retention-period"]
-        == "1m5s"
-    )
+    assert annotations["autoscaling.knative.dev/scale-to-zero-pod-retention-period"] == "1m5s"
 
 
 @pytest.mark.level("unit")
@@ -70,10 +62,7 @@ def test_autoscale_with_all_parameters():
     assert annotations["autoscaling.knative.dev/min-scale"] == "2"
     assert annotations["autoscaling.knative.dev/max-scale"] == "10"
     assert annotations["autoscaling.knative.dev/initial-scale"] == "3"
-    assert (
-        annotations["autoscaling.knative.dev/scale-to-zero-pod-retention-period"]
-        == "45s"
-    )
+    assert annotations["autoscaling.knative.dev/scale-to-zero-pod-retention-period"] == "45s"
     assert annotations["autoscaling.knative.dev/scale-down-delay"] == "10m"
     # Note: concurrency doesn't appear in annotations, it's handled separately for containerConcurrency
 
@@ -81,22 +70,16 @@ def test_autoscale_with_all_parameters():
 @pytest.mark.level("unit")
 def test_autoscale_validation_errors():
     """Test that validation catches invalid inputs"""
-    with pytest.raises(
-        AutoScalingError, match="min_scale cannot be greater than max_scale"
-    ):
+    with pytest.raises(AutoScalingError, match="min_scale cannot be greater than max_scale"):
         AutoscalingConfig(min_scale=5, max_scale=2)
 
     with pytest.raises(AutoScalingError, match="window must end with s, m, or h"):
         AutoscalingConfig(window="60")
 
-    with pytest.raises(
-        AutoScalingError, match="target_utilization must be between 1 and 100"
-    ):
+    with pytest.raises(AutoScalingError, match="target_utilization must be between 1 and 100"):
         AutoscalingConfig(target_utilization=0)
 
-    with pytest.raises(
-        AutoScalingError, match="target_utilization must be between 1 and 100"
-    ):
+    with pytest.raises(AutoScalingError, match="target_utilization must be between 1 and 100"):
         AutoscalingConfig(target_utilization=101)
 
     with pytest.raises(
@@ -105,9 +88,7 @@ def test_autoscale_validation_errors():
     ):
         AutoscalingConfig(scale_to_zero_pod_retention_period="invalid")
 
-    with pytest.raises(
-        AutoScalingError, match="scale_down_delay must be a valid duration"
-    ):
+    with pytest.raises(AutoScalingError, match="scale_down_delay must be a valid duration"):
         AutoscalingConfig(scale_down_delay="10")
 
     with pytest.raises(AutoScalingError, match="autoscaler_class must be"):
@@ -173,7 +154,5 @@ def test_extra_annotations():
     annotations = config.convert_to_annotations()
 
     assert annotations["autoscaling.knative.dev/min-scale"] == "1"
-    assert (
-        annotations["autoscaling.knative.dev/some_custom_annotation"] == "custom-value"
-    )
+    assert annotations["autoscaling.knative.dev/some_custom_annotation"] == "custom-value"
     assert annotations["autoscaling.knative.dev/another_annotation"] == "another-value"

@@ -21,9 +21,7 @@ def test_run_app_base():
 
     try:
         config.set("stream_logs", True)
-        result = subprocess.run(
-            cmd, shell=True, text=True, check=True, capture_output=True
-        ).stdout
+        result = subprocess.run(cmd, shell=True, text=True, check=True, capture_output=True).stdout
 
         assert f"Hello from the cluster stdout! {a} {b}" in result
         assert f"Hello from the cluster logs! {a} {b}" in result
@@ -45,9 +43,7 @@ def test_run_app_nested():
 
     try:
         config.set("stream_logs", True)
-        result = subprocess.run(
-            cmd, shell=True, text=True, check=True, capture_output=True
-        ).stdout
+        result = subprocess.run(cmd, shell=True, text=True, check=True, capture_output=True).stdout
 
         assert f"result: {a+b}" in result
         assert f"Hello from the cluster stdout! {a} {b}" in result

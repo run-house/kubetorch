@@ -110,11 +110,7 @@ def validate_config_key(key: str = None):
     if key is None:
         return
 
-    valid_keys = {
-        name
-        for name, attr in vars(KubetorchConfig).items()
-        if isinstance(attr, property)
-    }
+    valid_keys = {name for name, attr in vars(KubetorchConfig).items() if isinstance(attr, property)}
     if key not in valid_keys:
         raise typer.BadParameter(f"Valid keys are: {', '.join(sorted(valid_keys))}")
     return key
@@ -142,28 +138,16 @@ def get_deployment_mode(name: str, namespace: str, custom_api, apps_v1_api) -> s
     """Validate service exists and return deployment mode."""
     try:
         original_name = name
-        deployment_mode = detect_deployment_mode(
-            name, namespace, custom_api, apps_v1_api
-        )
+        deployment_mode = detect_deployment_mode(name, namespace, custom_api, apps_v1_api)
         # If service not found and not already prefixed with username, try with username prefix
-        if (
-            not deployment_mode
-            and globals.config.username
-            and not name.startswith(globals.config.username + "-")
-        ):
+        if not deployment_mode and globals.config.username and not name.startswith(globals.config.username + "-"):
             name = f"{globals.config.username}-{name}"
-            deployment_mode = detect_deployment_mode(
-                name, namespace, custom_api, apps_v1_api
-            )
+            deployment_mode = detect_deployment_mode(name, namespace, custom_api, apps_v1_api)
 
         if not deployment_mode:
-            console.print(
-                f"[red]Failed to load service [bold]{original_name}[/bold] in namespace {namespace}[/red]"
-            )
+            console.print(f"[red]Failed to load service [bold]{original_name}[/bold] in namespace {namespace}[/red]")
             raise typer.Exit(1)
-        console.print(
-            f"Found [green]{deployment_mode}[/green] service [blue]{name}[/blue]"
-        )
+        console.print(f"Found [green]{deployment_mode}[/green] service [blue]{name}[/blue]")
         return name, deployment_mode
 
     except ApiException as e:
@@ -175,12 +159,8 @@ def validate_pods_exist(name: str, namespace: str, core_api) -> list:
     """Validate pods exist for service and return pod list."""
     pods = get_pods_for_service_cli(name, namespace, core_api)
     if not pods.items:
-        console.print(
-            f"\n[red]No pods found for service {name} in namespace {namespace}[/red]"
-        )
-        console.print(
-            f"You can view the service's status using:\n [yellow]  kt status {name}[/yellow]"
-        )
+        console.print(f"\n[red]No pods found for service {name} in namespace {namespace}[/red]")
+        console.print(f"You can view the service's status using:\n [yellow]  kt status {name}[/yellow]")
         raise typer.Exit(1)
     return pods.items
 
@@ -198,9 +178,7 @@ def port_forward_to_pod(
     for attempt in range(MAX_PORT_TRIES):
         candidate_port = local_port + attempt
         if not is_port_available(candidate_port):
-            logger.debug(
-                f"Local port {candidate_port} is already in use, trying again..."
-            )
+            logger.debug(f"Local port {candidate_port} is already in use, trying again...")
             continue
 
         cmd = [
@@ -213,9 +191,7 @@ def port_forward_to_pod(
         ]
         logger.debug(f"Running port-forward command: {' '.join(cmd)}")
 
-        process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
-        )
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
 
         try:
             wait_for_port_forward(
@@ -243,11 +219,7 @@ def port_forward_to_pod(
 def get_last_updated(pod):
     conditions = pod["status"].get("conditions", [])
     latest = max(
-        (
-            c.get("lastTransitionTime")
-            for c in conditions
-            if c.get("lastTransitionTime")
-        ),
+        (c.get("lastTransitionTime") for c in conditions if c.get("lastTransitionTime")),
         default="",
     )
     return latest
@@ -349,9 +321,7 @@ def export_report_pdf(report_data, filename):
     # Table Header (centered text)
     header_height = row_height
     c.setFillColor(sidebar_color)
-    c.roundRect(
-        table_left, y - header_height, table_width, header_height, 4, fill=1, stroke=0
-    )
+    c.roundRect(table_left, y - header_height, table_width, header_height, 4, fill=1, stroke=0)
     c.setFont("Helvetica-Bold", 11)
     c.setFillColor(colors.white)
     header_y = y - header_height + 5
@@ -364,9 +334,7 @@ def export_report_pdf(report_data, filename):
     # Dashed outline (starts at header, not above)
     c.setStrokeColor(sidebar_color)
     c.setDash(4, 4)
-    c.roundRect(
-        table_left, y - table_height, table_width, table_height, 6, fill=0, stroke=1
-    )
+    c.roundRect(table_left, y - table_height, table_width, table_height, 6, fill=0, stroke=1)
     c.setDash()
     y -= header_height
 
@@ -434,9 +402,7 @@ def export_report_pdf(report_data, filename):
     # Footer
     c.setFont("Helvetica-Oblique", 8)
     c.setFillColor(colors.HexColor("#888888"))
-    c.drawString(
-        40, footer_y, f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
+    c.drawString(40, footer_y, f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     c.setFillColor(colors.black)
 
     c.save()
@@ -487,9 +453,7 @@ def get_usage_data(prom, weeks):
     start_time = end_time - timedelta(days=days)
 
     # sum of CPU-seconds used by all cores for that container (ex: 2 cores for 1 second = 2 seconds)
-    cpu_query = (
-        f'increase(container_cpu_usage_seconds_total{{container="kubetorch"}}[{days}d])'
-    )
+    cpu_query = f'increase(container_cpu_usage_seconds_total{{container="kubetorch"}}[{days}d])'
     cpu_result = prom.custom_query(cpu_query)
 
     total_cpu_seconds = 0
@@ -533,8 +497,7 @@ def get_service_metrics(prom, pod_name: str, pod_node: str, running_on_gpu: bool
         f"container='kubetorch'}}[{cpu_query_time_window}]))"
     )
     requested_cpu_query = (
-        f"sum(kube_pod_container_resource_requests{{pod='{pod_name}', "
-        f"resource='cpu', container='kubetorch'}})"
+        f"sum(kube_pod_container_resource_requests{{pod='{pod_name}', " f"resource='cpu', container='kubetorch'}})"
     )
 
     used_cpu_result = extract_prometheus_metric_value(used_cpu_query)
@@ -542,22 +505,16 @@ def get_service_metrics(prom, pod_name: str, pod_node: str, running_on_gpu: bool
     requested_cpu_result = extract_prometheus_metric_value(requested_cpu_query)
 
     cpu_util = (
-        round((100 * (used_cpu_result / requested_cpu_result)), 3)
-        if used_cpu_result and requested_cpu_result
-        else 0
+        round((100 * (used_cpu_result / requested_cpu_result)), 3) if used_cpu_result and requested_cpu_result else 0
     )
 
     memory_usage_query = f"container_memory_usage_bytes{{pod='{pod_name}', container='kubetorch'}} / 1073741824"
     memory_usage = round(extract_prometheus_metric_value(memory_usage_query), 3)
 
-    machine_mem_query = (
-        f"machine_memory_bytes{{node='{pod_node}'}} / 1073741824"  # convert to GB
-    )
+    machine_mem_query = f"machine_memory_bytes{{node='{pod_node}'}} / 1073741824"  # convert to GB
     machine_mem_result = extract_prometheus_metric_value(machine_mem_query)
 
-    cpu_mem_percent = (
-        round((memory_usage / machine_mem_result) * 100, 3) if machine_mem_result else 0
-    )
+    cpu_mem_percent = round((memory_usage / machine_mem_result) * 100, 3) if machine_mem_result else 0
     collected_metrics = {
         "cpu_util": cpu_util,
         "used_cpu": round(used_cpu_result, 4),
@@ -571,12 +528,10 @@ def get_service_metrics(prom, pod_name: str, pod_node: str, running_on_gpu: bool
     if running_on_gpu:
         gpu_util_query = f"DCGM_FI_DEV_GPU_UTIL{{exported_pod='{pod_name}', exported_container='kubetorch'}}"
         gpu_mem_used_query = (
-            f"DCGM_FI_DEV_FB_USED{{exported_pod='{pod_name}', "
-            f"exported_container='kubetorch'}} * 1.048576 / 1000"
+            f"DCGM_FI_DEV_FB_USED{{exported_pod='{pod_name}', " f"exported_container='kubetorch'}} * 1.048576 / 1000"
         )  # convert MiB to MB to GB
         gpu_mem_free_query = (
-            f"DCGM_FI_DEV_FB_FREE{{exported_pod='{pod_name}', "
-            f"exported_container='kubetorch'}} * 1.048576 / 1000"
+            f"DCGM_FI_DEV_FB_FREE{{exported_pod='{pod_name}', " f"exported_container='kubetorch'}} * 1.048576 / 1000"
         )  # convert MiB to MB to GB
 
         gpu_util = extract_prometheus_metric_value(gpu_util_query)
@@ -626,9 +581,7 @@ def get_current_cluster_name():
 def print_pod_info(pod_name, pod_idx, is_gpu, metrics=None, queue_name=None):
     """Print pod info with metrics if available"""
     queue_msg = f" | [bold]Queue Name[/bold]: {queue_name}"
-    base_msg = (
-        f"{BULLET_UNICODE} [reset][bold cyan]{pod_name}[/bold cyan] (idx: {pod_idx})"
-    )
+    base_msg = f"{BULLET_UNICODE} [reset][bold cyan]{pod_name}[/bold cyan] (idx: {pod_idx})"
     if queue_name:
         base_msg += queue_msg
     console.print(base_msg)
@@ -661,9 +614,7 @@ def _get_logs_from_loki_worker(uri: str, print_pod_name: bool):
         logs = []
         if data.get("streams"):
             for stream in data["streams"]:
-                pod_name = (
-                    f'({stream.get("stream").get("pod")}) ' if print_pod_name else ""
-                )
+                pod_name = f'({stream.get("stream").get("pod")}) ' if print_pod_name else ""
                 for value in stream.get("values"):
                     try:
                         log_line = json.loads(value[1])
@@ -711,9 +662,7 @@ def get_logs_from_loki(
         # Use thread timeout for websocket worker since websocket timeouts don't work reliably
         executor = ThreadPoolExecutor(max_workers=1)
         try:
-            future = executor.submit(
-                _get_logs_from_loki_worker, target_uri, print_pod_name
-            )
+            future = executor.submit(_get_logs_from_loki_worker, target_uri, print_pod_name)
             try:
                 result = future.result(timeout=timeout)
                 return result
@@ -765,14 +714,10 @@ def get_logs_query(name: str, namespace: str, selected_pod: str, deployment_mode
             pod_names = [pod.metadata.name for pod in pods]
             return f'{{k8s_pod_name=~"{"|".join(pod_names)}",k8s_container_name="kubetorch"}} | json'
         else:
-            console.print(
-                f"[red]Logs does not support deployment mode: {deployment_mode}[/red]"
-            )
+            console.print(f"[red]Logs does not support deployment mode: {deployment_mode}[/red]")
             return None
     else:
-        return (
-            f'{{k8s_pod_name=~"{selected_pod}",k8s_container_name="kubetorch"}} | json'
-        )
+        return f'{{k8s_pod_name=~"{selected_pod}",k8s_container_name="kubetorch"}} | json'
 
 
 def follow_logs_in_cli(
@@ -818,11 +763,9 @@ def follow_logs_in_cli(
 def is_ingress_vpc_only(annotations: dict):
     # Check for internal LoadBalancer annotations
     internal_checks = [
-        annotations.get("service.beta.kubernetes.io/aws-load-balancer-internal")
-        == "true",
+        annotations.get("service.beta.kubernetes.io/aws-load-balancer-internal") == "true",
         annotations.get("networking.gke.io/load-balancer-type") == "Internal",
-        annotations.get("service.beta.kubernetes.io/oci-load-balancer-internal")
-        == "true",
+        annotations.get("service.beta.kubernetes.io/oci-load-balancer-internal") == "true",
     ]
 
     vpc_only = any(internal_checks)
@@ -862,9 +805,7 @@ def list_all_queues():
         # Insert "default" queue if missing
         if not any(q["metadata"]["name"] == "default" for q in queues):
             default_children = [
-                q["metadata"]["name"]
-                for q in queues
-                if q.get("spec", {}).get("parentQueue") == "default"
+                q["metadata"]["name"] for q in queues if q.get("spec", {}).get("parentQueue") == "default"
             ]
             queues.insert(
                 0,
@@ -908,9 +849,7 @@ def list_all_queues():
                 str(cpu.get("quota", "-")),
                 str(gpu.get("quota", "-")),
                 str(memory.get("quota", "-")),
-                str(
-                    cpu.get("overQuotaWeight", "-")
-                ),  # use CPU's overQuotaWeight as example
+                str(cpu.get("overQuotaWeight", "-")),  # use CPU's overQuotaWeight as example
             )
 
         console.print(queue_table)
@@ -974,9 +913,7 @@ def validate_provided_pod(service_name, provided_pod, service_pods):
     else:
         pod_names = [pod.metadata.name for pod in service_pods]
         if provided_pod not in pod_names:
-            console.print(
-                f"[red]{service_name} does not have an associated pod called {provided_pod}[/red]"
-            )
+            console.print(f"[red]{service_name} does not have an associated pod called {provided_pod}[/red]")
             raise typer.Exit(1)
         else:
             pod_name = provided_pod
@@ -1006,9 +943,7 @@ def load_kubetorch_volumes_for_service(namespace, service_name, core_v1) -> List
     return volumes
 
 
-def create_table_for_output(
-    columns: List[set], no_wrap_columns_names: list = None, header_style: dict = None
-):
+def create_table_for_output(columns: List[set], no_wrap_columns_names: list = None, header_style: dict = None):
     table = Table(box=box.SQUARE, header_style=Style(**header_style))
     for name, style in columns:
         if name in no_wrap_columns_names:
