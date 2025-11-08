@@ -1433,8 +1433,9 @@ async def run_callable_internal(
     # Check if the user method is async
     is_async_method = inspect.iscoroutinefunction(user_method)
 
+    callable_name = f"{cls_or_fn_name}.{method_name}" if method_name else cls_or_fn_name
     if debug_port:
-        logger.info(f"Debugging remote callable {cls_or_fn_name}.{method_name} on port {debug_port}")
+        logger.info(f"Debugging remote callable {callable_name} on port {debug_port}")
         deep_breakpoint(debug_port)
         # If using the debugger, step in here ("s") to enter your function/class method.
         if is_async_method:
@@ -1444,7 +1445,7 @@ async def run_callable_internal(
             # Use lambda to properly pass both args and kwargs
             result = await run_in_executor_with_context(None, lambda: user_method(*args, **kwargs))
     else:
-        logger.debug(f"Calling remote callable {cls_or_fn_name}.{method_name}")
+        logger.debug(f"Calling remote callable {callable_name}")
         if is_async_method:
             result = await user_method(*args, **kwargs)
         else:
@@ -1533,8 +1534,9 @@ def run_callable_internal_sync(
     # Check if the user method is async
     is_async_method = inspect.iscoroutinefunction(user_method)
 
+    callable_name = f"{cls_or_fn_name}.{method_name}" if method_name else cls_or_fn_name
     if debug_port:
-        logger.info(f"Debugging remote callable {cls_or_fn_name}.{method_name} on port {debug_port}")
+        logger.info(f"Debugging remote callable {callable_name} on port {debug_port}")
         deep_breakpoint(debug_port)
         # If using the debugger, step in here ("s") to enter your function/class method.
         if is_async_method:
@@ -1543,7 +1545,7 @@ def run_callable_internal_sync(
         else:
             result = user_method(*args, **kwargs)
     else:
-        logger.debug(f"Calling remote callable {cls_or_fn_name}.{method_name}")
+        logger.debug(f"Calling remote callable {callable_name}")
         if is_async_method:
             # For async methods in sync context, we need to run them in a new event loop
             result = asyncio.run(user_method(*args, **kwargs))
