@@ -80,7 +80,7 @@ logStreaming:
     memory: 256Mi
 
 metrics:
-  enabled: true # set to `false` to disable ephemeral monitoring
+  enabled: true # set to `false` to disable metrics collection & streaming
   scrapeKubelet: true
   prometheus:
     image: prom/prometheus:v3.7.2
@@ -114,6 +114,9 @@ metrics:
 
 opentelemetry-collector:
   enabled: true # set to `false` to disable opentelemetry collector
+  serviceAccount:
+    create: false # use the SA that kubetorch creates
+    name: kubetorch-opentelemetry-collector
   mode: daemonset
   image:
     repository: otel/opentelemetry-collector-contrib

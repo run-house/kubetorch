@@ -16,6 +16,7 @@ spec:
       labels:
         app: kubetorch-logging
     spec:
+      serviceAccountName: kubetorch-logging
       containers:
         - name: loki
           image: {{ .Values.logStreaming.image }}
@@ -34,37 +35,86 @@ spec:
         - name: config
           configMap:
             name: kubetorch-logging-config
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubetorch-logging
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: kubetorch-logging
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubetorch-logging
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints", "configmaps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubetorch-logging
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: kubetorch-logging
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: kubetorch-logging
+    namespace: {{ .Release.Namespace }}
 {{- end }}
+
 {{- if (index .Values "opentelemetry-collector").enabled }}
 ---
-# RBAC for existing OpenTelemetry Collector Agent
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubetorch-opentelemetry-collector
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: kubetorch-opentelemetry-collector
+{{- $allNamespaces := .Values.kubetorchConfig.deployment_namespaces | default list }}
+{{- if not (has .Release.Namespace $allNamespaces) }}
+  {{- $allNamespaces = append $allNamespaces .Release.Namespace }}
+{{- end }}
+{{- range $allNamespaces }}
+---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: kubetorch-otel-agent
+  namespace: {{ . }}
+  labels:
+    app: kubetorch-opentelemetry-collector
 rules:
   - apiGroups: [""]
     resources:
       - pods
-      - namespaces
-      - nodes
       - services
+      - endpoints
       - events
-    verbs:
-      - get
-      - list
-      - watch
+      - configmaps
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: kubetorch-otel-agent-binding
+  namespace: {{ . }}
+  labels:
+    app: kubetorch-opentelemetry-collector
+roleRef:
+  kind: Role
+  name: kubetorch-otel-agent
+  apiGroup: rbac.authorization.k8s.io
 subjects:
   - kind: ServiceAccount
     name: kubetorch-opentelemetry-collector
-    namespace: {{ .Release.Namespace }}
-roleRef:
-  kind: ClusterRole
-  name: kubetorch-otel-agent
-  apiGroup: rbac.authorization.k8s.io
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
 {{- end }}
