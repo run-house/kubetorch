@@ -13,7 +13,7 @@ import websockets
 
 from kubernetes import client
 
-from kubetorch.globals import config, service_url
+from kubetorch.globals import config, MetricsConfig, service_url
 from kubetorch.logger import get_logger
 
 from kubetorch.servers.http.utils import (
@@ -246,7 +246,7 @@ class HTTPClient:
         self,
         endpoint: str,
         stream_logs: Union[bool, None],
-        stream_metrics: Union[bool, None],
+        stream_metrics: Union[bool, MetricsConfig, None],
         headers: dict,
         pdb: Union[bool, int],
         serialization: str,
@@ -254,8 +254,13 @@ class HTTPClient:
         if stream_logs is None:
             stream_logs = config.stream_logs or False
 
-        if stream_metrics is None:
+        metrics_config = None
+        if isinstance(stream_metrics, MetricsConfig):
+            metrics_config = stream_metrics
+            stream_metrics = True
+        elif stream_metrics is None:
             stream_metrics = config.stream_metrics or False
+            metrics_config = None
 
         if pdb:
             debug_port = DEFAULT_DEBUG_PORT if isinstance(pdb, bool) else pdb
@@ -277,7 +282,7 @@ class HTTPClient:
             log_thread.start()
 
         if stream_metrics:
-            metrics_thread = threading.Thread(target=self.stream_metrics, args=(stop_event,))
+            metrics_thread = threading.Thread(target=self.stream_metrics, args=(stop_event, metrics_config))
             metrics_thread.daemon = True
             metrics_thread.start()
         else:
@@ -289,7 +294,7 @@ class HTTPClient:
         self,
         endpoint: str,
         stream_logs: Union[bool, None],
-        stream_metrics: Union[bool, None],
+        stream_metrics: Union[bool, MetricsConfig, None],
         headers: dict,
         pdb: Union[bool, int],
         serialization: str,
@@ -298,8 +303,13 @@ class HTTPClient:
         if stream_logs is None:
             stream_logs = config.stream_logs or False
 
-        if stream_metrics is None:
+        metrics_config = None
+        if isinstance(stream_metrics, MetricsConfig):
+            metrics_config = stream_metrics
+            stream_metrics = True
+        elif stream_metrics is None:
             stream_metrics = config.stream_metrics or False
+            metrics_config = None
 
         if pdb:
             debug_port = DEFAULT_DEBUG_PORT if isinstance(pdb, bool) else pdb
@@ -320,7 +330,7 @@ class HTTPClient:
 
         metrics_task = None
         if stream_metrics:
-            metrics_task = asyncio.create_task(self.stream_metrics_async(request_id, stop_event))
+            metrics_task = asyncio.create_task(self.stream_metrics_async(request_id, stop_event, metrics_config))
 
         return endpoint, headers, stop_event, log_task, metrics_task, request_id
 
@@ -452,7 +462,7 @@ class HTTPClient:
         stop_event,
         http_getter,
         sleeper,
-        interval: int = 30,
+        metrics_config: MetricsConfig,
         is_async: bool = False,
     ):
         """
@@ -464,11 +474,11 @@ class HTTPClient:
         metrics related to the service’s pods until the given `stop_event` is set.
 
         Args:
-            stop_event: A threading.Event or asyncio.Event used to stop collection.
-            http_getter: Callable that fetches Prometheus data — either sync (`requests.get`)
+            stop_event (threading.event or asyncio.Event): A threading.Event or asyncio.Event used to stop collection.
+            http_getter (Callable): Callable that fetches Prometheus data — either sync (`requests.get`)
                          or async (`httpx.AsyncClient.get`).
-            sleeper: Callable that sleeps between metric polls — either time.sleep or
-                     asyncio.sleep.
+            sleeper (Callable): Callable that sleeps between metric polls — either time.sleep or asyncio.sleep.
+            metrics_config (MetricsConfig): User provided configuration controlling metrics collection behavior.
             is_async (bool): If ``True``, runs in async mode (awaits HTTP + sleep calls).
                              If ``False``, runs in blocking sync mode.
 
@@ -489,6 +499,10 @@ class HTTPClient:
             return obj
 
         async def run():
+
+            show_gpu = True
+            interval = metrics_config.interval if metrics_config else 30
+
             active_pods = self.compute.pod_names()
             if not active_pods:
                 logger.warning("No active pods found for service, skipping metrics collection")
@@ -507,7 +521,8 @@ class HTTPClient:
                 "GPU_SM": f'avg by (pod) (avg_over_time(DCGM_FI_DEV_GPU_UTIL{{pod=~"{pod_regex}"}}[{interval}s]))',
                 "GPUMiB": f'avg by (pod) (avg_over_time(DCGM_FI_DEV_FB_USED{{pod=~"{pod_regex}"}}[{interval}s]))',
             }
-            show_gpu = True
+
+            start_time = time.time()
 
             while not stop_event.is_set():
                 await maybe_await(sleeper(interval))
@@ -555,13 +570,17 @@ class HTTPClient:
 
                         print(f"{line}", flush=True)
 
+                elapsed = time.time() - start_time
+                sleep_interval = max(interval, int(min(60, 1 + elapsed / 30)))
+                await maybe_await(sleeper(sleep_interval))
+
         # run sync or async depending on mode
         if is_async:
             return run()
         else:
             asyncio.run(run())
 
-    def _collect_metrics(self, stop_event, http_getter, sleeper):
+    def _collect_metrics(self, stop_event, http_getter, sleeper, metrics_config):
         """
         Synchronous metrics collector.
 
@@ -572,15 +591,16 @@ class HTTPClient:
             stop_event: threading.Event to signal termination of metric collection.
             http_getter: Synchronous callable that fetches Prometheus query results.
             sleeper: Blocking sleep callable.
+            metrics_config: User provided configuration controlling metrics collection behavior.
 
         Notes:
             - Runs until `stop_event` is set.
             - Safe to use in multi-threaded environments.
             - Should not be invoked from within an asyncio event loop.
         """
-        self._collect_metrics_common(stop_event, http_getter, sleeper, is_async=False)
+        self._collect_metrics_common(stop_event, http_getter, sleeper, metrics_config=metrics_config, is_async=False)
 
-    async def _collect_metrics_async(self, stop_event, http_getter, sleeper):
+    async def _collect_metrics_async(self, stop_event, http_getter, sleeper, metrics_config):
         """
         Asynchronous metrics collector.
 
@@ -591,13 +611,16 @@ class HTTPClient:
             stop_event: asyncio.Event to signal termination of metric collection.
             http_getter: Asynchronous callable that fetches Prometheus query results.
             sleeper: Async sleep callable.
+            metrics_config: User provided configuration controlling metrics collection behavior.
 
         Note:
             - Should only be called from within an asyncio context.
             - Automatically terminates once `stop_event` is set.
             - Prints formatted metrics continuously until stopped.
         """
-        await self._collect_metrics_common(stop_event, http_getter, sleeper, is_async=True)
+        await self._collect_metrics_common(
+            stop_event, http_getter, sleeper, metrics_config=metrics_config, is_async=True
+        )
 
     # ----------------- Core APIs ----------------- #
     def stream_logs(self, request_id, stop_event):
@@ -616,7 +639,7 @@ class HTTPClient:
         base_host, base_port = extract_host_port(base_url)
         await self._stream_logs_websocket(request_id, stop_event, host=base_host, port=base_port)
 
-    async def stream_metrics_async(self, request_id, stop_event):
+    async def stream_metrics_async(self, request_id, stop_event, metrics_config):
         """Async GPU/CPU metrics streaming (uses httpx.AsyncClient)."""
         logger.debug(f"Starting async metrics for {self.service_name} (request_id={request_id})")
 
@@ -637,12 +660,13 @@ class HTTPClient:
         async def async_sleep(seconds):
             await asyncio.sleep(seconds)
 
-        await self._collect_metrics_async(stop_event, async_http_get, async_sleep)
+        await self._collect_metrics_async(stop_event, async_http_get, async_sleep, metrics_config)
         logger.debug(f"Stopped async metrics for {request_id}")
 
-    def stream_metrics(self, stop_event):
+    def stream_metrics(self, stop_event, metrics_config: MetricsConfig = None):
         """Synchronous GPU/CPU metrics streaming (uses requests)."""
         logger.debug(f"Streaming metrics for {self.service_name}")
+        logger.debug(f"Using metrics config: {metrics_config}")
 
         def sync_http_get(url, params):
             try:
@@ -660,13 +684,13 @@ class HTTPClient:
         def sync_sleep(seconds):
             time.sleep(seconds)
 
-        self._collect_metrics(stop_event, sync_http_get, sync_sleep)
+        self._collect_metrics(stop_event, sync_http_get, sync_sleep, metrics_config)
 
     def call_method(
         self,
         endpoint: str,
         stream_logs: Union[bool, None] = None,
-        stream_metrics: Union[bool, None] = None,
+        stream_metrics: Union[bool, MetricsConfig, None] = None,
         body: dict = None,
         headers: dict = None,
         pdb: Union[bool, int] = None,

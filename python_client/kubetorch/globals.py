@@ -8,7 +8,7 @@ import threading
 import time
 
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Literal, Optional
 
 from kubetorch.config import KubetorchConfig
 from kubetorch.serving.constants import (
@@ -22,6 +22,12 @@ from kubetorch.serving.constants import (
 disable_decorators = False
 
 config = KubetorchConfig()
+
+
+@dataclass
+class MetricsConfig:
+    interval: int = 5  # polling interval in seconds
+    scope: Literal["pod", "service"] = "pod"  # aggregation level (default to "pod")
 
 
 @dataclass(frozen=True)

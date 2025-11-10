@@ -6,7 +6,7 @@ from kubetorch.globals import service_url
 
 from kubetorch.utils import capture_stdout
 
-from .utils import create_random_name_prefix, service_deployer_with_logs
+from .utils import create_random_name_prefix, service_deployer_with_logs, summer
 
 
 @pytest.mark.level("minimal")
@@ -195,3 +195,17 @@ async def test_monitoring_with_custom_structlog():
     assert success_result == "success"
     assert "Starting process with potential errors" in error_out
     assert "Process completed successfully" in error_out
+
+
+@pytest.mark.level("minimal")
+def test_metrics_config(remote_fn):
+    import kubetorch as kt
+
+    metrics_config = kt.MetricsConfig(interval=3)
+
+    service_name = remote_fn.service_name
+    some_reloaded_fn = kt.fn(summer, name=service_name, get_if_exists=True)
+    assert some_reloaded_fn(2, 2, stream_metrics=True) == 4
+
+    another_reloaded_fn = kt.fn(name=service_name, get_if_exists=True)
+    assert another_reloaded_fn(2, 3, stream_metrics=metrics_config) == 5
