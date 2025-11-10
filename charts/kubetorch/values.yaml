@@ -70,7 +70,7 @@ nginxProxy:
       route: "/health"
 
 logStreaming:
-  enabled: true # set to `false` to disable ephemeral log storage
+  enabled: true # set to `false` to disable log streaming
   retentionPeriod: 24h
   maxConcurrentTailRequests: 100
   image: grafana/loki:3.5.3

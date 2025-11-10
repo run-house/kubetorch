@@ -4,6 +4,7 @@ import threading
 import time
 import urllib.parse
 from collections import defaultdict
+from datetime import datetime
 from typing import Union
 
 import httpx
@@ -496,14 +497,14 @@ class HTTPClient:
             pod_regex = "|".join(active_pods)
 
             metric_queries = {
-                "CPU": f'sum by (pod) (rate(container_cpu_usage_seconds_total{{container!="",pod=~"{pod_regex}"}}[2m]))',
+                "CPU%": f'sum by (pod, node) (rate(container_cpu_usage_seconds_total{{container!="",pod=~"{pod_regex}"}}[30s])) / on(node) group_left() machine_cpu_cores * 100',
                 "Mem": f'sum by (pod) (container_memory_working_set_bytes{{container!="",pod=~"{pod_regex}"}}) / 1024 / 1024',
                 "GPU%": f'avg(DCGM_FI_DEV_GPU_UTIL{{pod=~"{pod_regex}"}}) by (pod)',
                 "GPUMiB": f'avg(DCGM_FI_DEV_FB_USED{{pod=~"{pod_regex}"}}) by (pod) / 1024 / 1024',
             }
 
             show_gpu = True
-            interval = 1
+            interval = 5
             start_time = time.time()
 
             while not stop_event.is_set():
@@ -540,20 +541,22 @@ class HTTPClient:
 
                 if pod_data:
                     for pod, vals in sorted(pod_data.items()):
-                        cpu = vals.get("CPU", 0.0)
                         mem = vals.get("Mem", 0.0)
                         gpu = vals.get("GPU%", 0.0)
                         gpumem = vals.get("GPUMiB", 0.0)
-                        cpu_pct = cpu * 100
-
-                        line = f"[METRICS] pod={pod} | " f"CPU={cpu:.3f} ({cpu_pct:.1f}%) | Mem={mem:.1f}MiB"
+                        cpu_pct = vals.get("CPU%", 0.0)
+                        now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        line = (
+                            f"[METRICS] {now_ts} | pod: {pod} | "
+                            f"CPU Utilization: {cpu_pct:.1f}% | Memory: {mem:.3f}MiB"
+                        )
                         if show_gpu:
-                            line += f" | GPU-Mem={gpumem:.1f}MiB | GPU={gpu:.1f}%"
+                            line += f" | GPU Utilization: {gpu:.1f}% | GPU Memory: {gpumem:.3f}MiB"
 
                         print(f"{line}", flush=True)
 
                 elapsed = time.time() - start_time
-                interval = 1 if elapsed < 10 else 5
+                interval = max(5, int(min(30, 1 + elapsed / 30)))
                 await maybe_await(sleeper(interval))
 
         # run sync or async depending on mode
