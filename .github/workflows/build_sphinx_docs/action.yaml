@@ -1,0 +1,125 @@
+name: "Build and Sync Sphinx Documentation"
+description: "Build Sphinx documentation (JSON) and sync it to an external repository."
+
+inputs:
+  version:
+    description: "Version number for the documentation"
+    required: false
+    default: "latest"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout source repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.10
+
+    - name: Install kubetorch
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install uv
+        uv pip install --system -e ./python_client[client]
+
+    - name: Install docs requirements
+      shell: bash
+      run: |
+        pip install -r python_client/kubetorch/docs/requirements.txt
+
+    - name: Determine version
+      id: version
+      shell: bash
+      run: |
+        if [ "${{ inputs.version }}" = "latest" ]; then
+          VERSION="${{ github.sha }}"
+        else
+          VERSION="${{ inputs.version }}"
+        fi
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "Determined docs version: $VERSION"
+
+    - name: Build Sphinx documentation (JSON)
+      shell: bash
+      run: |
+        cd python_client/kubetorch/docs
+        make json
+        echo "Preview generated JSON files:"
+        find _build/json -name "*.fjson" -o -name "*.json" | head -10
+
+    - name: Prepare JSON files
+      shell: bash
+      run: |
+        mkdir -p staging
+
+        JSON_DIR="python_client/kubetorch/docs/_build/json"
+        if [ ! -d "$JSON_DIR" ]; then
+          echo "Error: JSON build directory not found: $JSON_DIR"
+          exit 1
+        fi
+
+        cp -r "$JSON_DIR"/* staging/
+
+        cat > staging/build-info.json << EOF
+        {
+          "version": "${{ steps.version.outputs.version }}",
+          "build_time": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+          "source_commit": "${{ github.sha }}",
+          "source_repo": "${{ github.repository }}",
+          "builder": "sphinx-json",
+          "workflow_run": "${{ github.run_id }}"
+        }
+        EOF
+
+    - name: Checkout destination documentation repository
+      uses: actions/checkout@v4
+
+    - name: Sync documentation files
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        cd dest-repo
+
+        git config user.name "Docs Bot"
+        git config user.email "action@github.com"
+
+        mkdir -p "v$VERSION"
+        rm -rf "v$VERSION/*"
+
+        cp -r ../staging/* "v$VERSION/"
+
+    - name: Commit and push changes
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        cd dest-repo
+
+        git add "v$VERSION/"
+
+        if git diff --staged --quiet; then
+          echo "No changes to commit."
+          exit 0
+        fi
+
+        git commit -m "Update documentation for version $VERSION
+
+        Source repo: ${{ github.repository }}
+        Commit: ${{ github.sha }}
+        Workflow run: ${{ github.run_id }}
+        Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+        "
+
+        git push origin "main"
+
+    - name: Create summary
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        echo "## Documentation Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Version:** $VERSION" >> $GITHUB_STEP_SUMMARY
+        echo "- **Source Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Files Synced:** $(find staging -type f | wc -l)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build Time:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_STEP_SUMMARY
