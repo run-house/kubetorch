@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 
 import pytest
@@ -197,15 +198,68 @@ async def test_monitoring_with_custom_structlog():
     assert "Process completed successfully" in error_out
 
 
+def test_metrics_config_helper(service_name, metrics_config, a, b, expected_result):
+    import kubetorch as kt
+
+    reloaded_fn = kt.fn(summer, name=service_name, get_if_exists=True)
+    out = ""
+    fn_sleep_time = 45
+    with capture_stdout() as stdout:
+        sum_result = reloaded_fn(a=a, b=b, sleep_time=fn_sleep_time, stream_metrics=metrics_config)
+        time.sleep(7)  # wait for the logs to finish streaming
+        out = out + str(stdout)
+
+    assert sum_result == expected_result
+
+    # if stream_metrics == false, make sure we don't stream metrics
+    if isinstance(metrics_config, bool) and not metrics_config:
+        assert "[METRICS]" not in out
+    else:
+        # test the following use-cases:
+        # 1. No metrics_config is provided: use the default metrics_config, where metrics_config.scope = resource
+        # 2. metrics_config is provided as bool, it's value == True
+        # 3. metrics_config is provided as MetricsConfig() instance, with metrics_config.scope == "resource"
+        if metrics_config is None or isinstance(metrics_config, bool) or metrics_config.scope == "resource":
+            pattern = re.compile(
+                r"^\[METRICS\]\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*\|\s*CPU:\s*[\d.]+.\s*\|\s*Memory:\s*[\d.]+MiB\s*$",
+                re.MULTILINE,
+            )
+        # 4. metrics_config is provided as MetricsConfig() instance, with metrics_config.scope == "pod"
+        else:
+            pattern = re.compile(
+                r"^\[METRICS\]\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*\|\s*pod:\s*\S+\s*\|\s*CPU:\s*[\d.]+.\s*\|\s*Memory:\s*[\d.]+MiB\s*$",
+                re.MULTILINE,
+            )
+
+        assert re.search(pattern, out)
+
+
 @pytest.mark.level("minimal")
 def test_metrics_config(remote_fn):
     import kubetorch as kt
 
-    metrics_config = kt.MetricsConfig(interval=3)
-
     service_name = remote_fn.service_name
-    some_reloaded_fn = kt.fn(summer, name=service_name, get_if_exists=True)
-    assert some_reloaded_fn(2, 2, stream_metrics=True) == 4
 
-    another_reloaded_fn = kt.fn(name=service_name, get_if_exists=True)
-    assert another_reloaded_fn(2, 3, stream_metrics=metrics_config) == 5
+    test_args = [
+        (1, 2, 3, kt.MetricsConfig(interval=35)),  # new interval + a=1, b=2, expected_result=3
+        (6, 7, 13, kt.MetricsConfig(scope="pod")),  # new scope + a=6, b=7, expected_result=13
+        (
+            15,
+            2,
+            17,
+            kt.MetricsConfig(scope="pod", interval=35),
+        ),  # new interval and new scope + a=15, b=2, expected_result=17
+    ]
+
+    for a, b, expected_result, metrics_config in test_args:
+        test_metrics_config_helper(
+            service_name=service_name, metrics_config=metrics_config, a=a, b=b, expected_result=expected_result
+        )
+
+    # passing stream_metrics as bool
+    test_metrics_config_helper(service_name=service_name, metrics_config=True, a=2, b=2, expected_result=4)
+
+    test_metrics_config_helper(service_name=service_name, metrics_config=False, a=5, b=3, expected_result=8)
+
+    # passing stream_metrics as None
+    test_metrics_config_helper(service_name=service_name, metrics_config=None, a=3, b=2, expected_result=5)
