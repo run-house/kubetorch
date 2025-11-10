@@ -709,15 +709,32 @@ def load_callable_from_env():
     try:
         # Try regular package import first
         if module_name in sys.modules:
-            # We make this logs to info because some imports are slow and we want the user to know that it's not our fault
-            # and not hanging
-            logger.info(f"Reimporting module {module_name}")
             # Clear any existing debugging sessions when reloading modules
             clear_debugging_sessions()
-            module = importlib.reload(sys.modules[module_name])
+
+            # Remove the module and any modules under KT_FILE_PATH from sys.modules
+            # This ensures we reload all user updates including cached submodules that were imported by the main module.
+            logger.info(f"Removing module {module_name} and submodules from sys.modules")
+            kt_file_path = os.environ.get("KT_FILE_PATH")
+            kt_file_path_str = str(Path(kt_file_path).expanduser().resolve()) + os.sep
+
+            del sys.modules[module_name]
+            for name, mod in list(sys.modules.items()):
+                if name == module_name or not hasattr(mod, "__file__") or not mod.__file__:
+                    continue
+                try:
+                    if os.path.abspath(mod.__file__).startswith(kt_file_path_str):
+                        del sys.modules[name]
+                except (KeyError, OSError, ValueError):
+                    pass
+
+            # We make this log to info because some imports are slow and we want the user to know that
+            # it's not our fault and not hanging
+            logger.info(f"Reimporting module {module_name} and related submodules")
         else:
             logger.debug(f"Importing module {module_name}")
-            module = importlib.import_module(module_name)
+
+        module = importlib.import_module(module_name)
         logger.debug(f"Module {module_name} loaded")
 
         # Ensure our structured logging is in place after user module import
