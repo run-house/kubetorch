@@ -98,7 +98,7 @@ def _ensure_pf(service_name: str, namespace: str, remote_port: int, health_endpo
             cluster_config = wait_for_port_forward(proc, local_port, health_endpoint=health_endpoint)
             if isinstance(cluster_config, dict):
                 config.cluster_config = cluster_config
-                config.write()
+                config.write(values={"cluster_config": cluster_config})
         else:
             # Minimal TCP wait (no HTTP probe)
             deadline = time.time() + 10

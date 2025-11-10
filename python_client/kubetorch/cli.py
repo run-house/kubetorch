@@ -341,8 +341,8 @@ def kt_config(
             raise typer.Exit(1)
 
         try:
-            value = config.set(key, value)
-            config.write()
+            value = config.set(key, value)  # validate value
+            config.write({key: value})
             console.print(f"[green]{key} set to:[/green] [blue]{value}[/blue]")
         except ValueError as e:
             console.print(f"[red]Error setting {key}:[/red] {str(e)}")
@@ -354,8 +354,8 @@ def kt_config(
             raise typer.Exit(1)
 
         try:
-            config.write({key: None})
             config.set(key, None)
+            config.write({key: None})
             console.print(f"[green]{key.capitalize()} unset[/green]")
         except ValueError as e:
             console.print(f"[red]Error unsetting {key}:[/red] {str(e)}")
