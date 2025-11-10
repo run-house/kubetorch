@@ -405,17 +405,35 @@ class KubetorchConfig:
             raise ValueError(f"Unknown config key: {key}")
         return getattr(self, key)
 
-    def write(self, user_values: dict = None):
-        """Write out config to local ``~/.kt/config.yaml``, to be used globally."""
+    def write(self, values: dict = None):
+        """Write out config to local ``~/.kt/config.yaml``, to be used globally.
+
+        Args:
+            values (optional): Dict of key-value pairs to write/update in the filesystem.
+                If provided, only these keys will be updated. None values will remove the key from the file.
+        """
         # Ensure directory exists
         self.CONFIG_FILE.expanduser().parent.mkdir(parents=True, exist_ok=True)
-        values = {k: str(v) if isinstance(v, dict) else v for k, v in dict(self).items() if v is not None}
-        if user_values:
-            values.update(user_values)
+
+        if values:
+            values_to_write = self._load_from_file()
+            for k, v in values.items():
+                if k not in ENV_MAPPINGS:
+                    raise ValueError(f"Unknown config key: {k}")
+                if v is None:
+                    values_to_write.pop(k, None)
+                else:
+                    values_to_write[k] = str(v) if isinstance(v, dict) else v
+        else:
+            values_to_write = {k: str(v) if isinstance(v, dict) else v for k, v in dict(self).items() if v is not None}
 
         # Write to file
         with self.CONFIG_FILE.expanduser().open("w") as stream:
-            yaml.safe_dump(values, stream)
+            yaml.safe_dump(values_to_write, stream)
+
+        # Invalidate file cache so it reloads on next access
+        if "file_cache" in self.__dict__:
+            del self.__dict__["file_cache"]
 
     def _get_env_var(self, key):
         return os.getenv(ENV_MAPPINGS[key])

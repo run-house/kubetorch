@@ -285,6 +285,7 @@ def test_cli_kt_config_set():
     original_username = kt.config.username  # str type value
     original_stream_logs = kt.config.stream_logs  # bool type value
     original_log_verbosity = kt.config.log_verbosity  # LogVerbosity (enum) value
+    original_file_values = kt.config._load_from_file()
 
     try:
         # Part A: set supported keys
@@ -313,8 +314,6 @@ def test_cli_kt_config_set():
         result = runner.invoke(app, ["config", "set", "username"], color=False)
         assert result.exit_code == 1
         assert "Both key and value are required for 'set'" in result.stdout
-
-        kt.config.username = original_username
 
         # Part D: set supported key, but provide a value of a wrong type
         # D.1: unsupported username
@@ -361,14 +360,16 @@ def test_cli_kt_config_set():
         kt.config.username = original_username
         kt.config.stream_logs = original_stream_logs
         kt.config.log_verbosity = original_log_verbosity
-        kt.config.write()
+        kt.config.write(original_file_values)
 
 
 @pytest.mark.level("unit")
 def test_cli_kt_config_unset():
+    # making hard copy, so this value won't change during `kt config unset`.
     original_username = kt.config.username  # str type value
     original_stream_logs = kt.config.stream_logs  # bool type value
     original_log_verbosity = kt.config.log_verbosity  # LogVerbosity (enum) value
+    original_file_values = kt.config._load_from_file()
     try:
         # Part A: supported keys
         config_keys = ["username", "stream_logs", "log_verbosity"]
@@ -395,7 +396,7 @@ def test_cli_kt_config_unset():
         kt.config.username = original_username
         kt.config.stream_logs = original_stream_logs
         kt.config.log_verbosity = original_log_verbosity
-        kt.config.write()
+        kt.config.write(original_file_values)
 
 
 @pytest.mark.level("unit")
