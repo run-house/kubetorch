@@ -20,3 +20,8 @@ dependencies:
     version: "4.5.0"
     repository: https://nvidia.github.io/dcgm-exporter/helm-charts
     condition: dcgm-exporter.enabled
+
+  - name: pyroscope
+    version: "1.16.0"
+    repository: "https://grafana.github.io/helm-charts"
+    condition: profiling.enabled

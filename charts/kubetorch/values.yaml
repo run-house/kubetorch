@@ -112,6 +112,42 @@ metrics:
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
 
+profiling:
+  enabled: true
+  pyroscope:
+    image:
+      repository: grafana/pyroscope
+      tag: 1.16.0
+    path: /pyroscope(/|$)(.*)
+    pathType: Prefix
+    backend:
+      service:
+        name: kubetorch-pyroscope
+        port:
+          number: 4040
+    rewrite-target: /$2
+    persistence:
+      enabled: false  # ephemeral storage; turn on if you want historical data
+    queryFrontend:
+      enabled: true
+    querier:
+      enabled: true
+    ingester:
+      enabled: true
+    storeGateway:
+      enabled: true
+    compactor:
+      enabled: true
+    queryScheduler:
+      enabled: true
+    service:
+      type: ClusterIP
+      port: 4040
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+
 opentelemetry-collector:
   enabled: true # set to `false` to disable opentelemetry collector
   serviceAccount:

@@ -105,6 +105,10 @@ containers:
         value: "otlp"
       - name: OTEL_PROPAGATORS
         value: "tracecontext,baggage"
+      - name: PYROSCOPE_SERVER
+        value: "http://pyroscope.kubetorch.svc.cluster.local:4040"
+      - name: PYROSCOPE_SAMPLE_RATE
+        value: "100"
       - name: KT_OTEL_ENABLED
         value: "{{ otel_enabled }}"
       - name: KT_SERVER_PORT

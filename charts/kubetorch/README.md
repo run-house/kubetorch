@@ -8,6 +8,7 @@ A Helm chart for kubetorch
 
 | Repository | Name | Version |
 |------------|------|---------|
+| https://grafana.github.io/helm-charts | pyroscope | 1.16.0 |
 | https://nvidia.github.io/dcgm-exporter/helm-charts | dcgm-exporter | 4.5.0 |
 | https://nvidia.github.io/k8s-device-plugin | nvidia-device-plugin | 0.14.1 |
 | https://open-telemetry.github.io/opentelemetry-helm-charts | opentelemetry-collector | 0.132.0 |
@@ -108,6 +109,25 @@ A Helm chart for kubetorch
 | opentelemetry-collector.serviceAccount.create | bool | `false` |  |
 | opentelemetry-collector.serviceAccount.name | string | `"kubetorch-opentelemetry-collector"` |  |
 | opentelemetry-collector.tolerations[0].operator | string | `"Exists"` |  |
+| profiling.enabled | bool | `true` |  |
+| profiling.pyroscope.backend.service.name | string | `"kubetorch-pyroscope"` |  |
+| profiling.pyroscope.backend.service.port.number | int | `4040` |  |
+| profiling.pyroscope.compactor.enabled | bool | `true` |  |
+| profiling.pyroscope.image.repository | string | `"grafana/pyroscope"` |  |
+| profiling.pyroscope.image.tag | string | `"1.16.0"` |  |
+| profiling.pyroscope.ingester.enabled | bool | `true` |  |
+| profiling.pyroscope.path | string | `"/pyroscope(/|$)(.*)"` |  |
+| profiling.pyroscope.pathType | string | `"Prefix"` |  |
+| profiling.pyroscope.persistence.enabled | bool | `false` |  |
+| profiling.pyroscope.querier.enabled | bool | `true` |  |
+| profiling.pyroscope.queryFrontend.enabled | bool | `true` |  |
+| profiling.pyroscope.queryScheduler.enabled | bool | `true` |  |
+| profiling.pyroscope.resources.requests.cpu | string | `"100m"` |  |
+| profiling.pyroscope.resources.requests.memory | string | `"256Mi"` |  |
+| profiling.pyroscope.rewrite-target | string | `"/$2"` |  |
+| profiling.pyroscope.service.port | int | `4040` |  |
+| profiling.pyroscope.service.type | string | `"ClusterIP"` |  |
+| profiling.pyroscope.storeGateway.enabled | bool | `true` |  |
 | rsync.cleanupCron.enabled | bool | `false` |  |
 | rsync.cpu.limit | int | `4` |  |
 | rsync.cpu.request | int | `2` |  |

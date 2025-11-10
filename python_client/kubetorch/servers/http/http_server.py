@@ -34,6 +34,7 @@ try:
     from server_metrics import get_inactivity_ttl_annotation, HeartbeatManager, setup_otel_metrics
     from utils import (
         clear_debugging_sessions,
+        clear_profiling,
         deep_breakpoint,
         DEFAULT_ALLOWED_SERIALIZATION,
         ensure_structured_logging,
@@ -495,31 +496,34 @@ def is_running_in_container():
     return Path("/.dockerenv").exists()
 
 
-async def run_in_executor_with_context(executor, func, *args):
+async def run_in_executor_with_context(executor, func, *args, **kwargs):
     """
     Helper to run a function in an executor while preserving the request_id context.
 
     This wrapper captures the current request_id from the context before running
     the function in a thread pool executor, then sets it in the new thread.
+
+    Args:
+        executor: Optional executor to use.
+        func: The callable to execute in a background thread.
+        *args, **kwargs: Arguments to pass directly to func(*args, **kwargs).
     """
     import asyncio
 
-    # Capture the current request_id before switching threads
     current_request_id = request_id_ctx_var.get("-")
 
-    def wrapper(*args):
-        # Set the request_id in the executor thread
+    def wrapper():
         token = None
         if current_request_id != "-":
             token = request_id_ctx_var.set(current_request_id)
         try:
-            return func(*args)
+            return func(*args, **kwargs)
         finally:
-            # Clean up the context to avoid leaking between requests
             if token is not None:
                 request_id_ctx_var.reset(token)
 
-    return await asyncio.get_event_loop().run_in_executor(executor, wrapper, *args)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(executor, wrapper)
 
 
 def should_reload(deployed_as_of: Optional[str] = None) -> bool:
@@ -1196,6 +1200,8 @@ async def lifespan(app: FastAPI):
         # Clear any remaining debugging sessions
         clear_debugging_sessions()
 
+        clear_profiling()
+
 
 # Add the filter to uvicorn's access logger
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
@@ -1236,6 +1242,26 @@ if os.getenv("KT_CALLABLE_TYPE") == "app" and os.getenv("KT_APP_PORT"):
         ["GET", "POST", "PUT", "DELETE", "PATCH"],
     )
 
+try:
+    # TODO: remove this
+    logger.info("Attempting to install pyroscope.....")
+    subprocess.run(["pip", "install", "pyroscope-io"])
+
+    import pyroscope
+
+    logger.info("Configuring pyroscope")
+    pyroscope.configure(
+        application_name="kubetorch",
+        server_address=os.getenv("PYROSCOPE_SERVER"),
+        sample_rate=int(os.getenv("PYROSCOPE_SAMPLE_RATE")),
+        oncpu=True,  # collect CPU samples
+        report_pid=True,
+        detect_subprocesses=True,
+    )
+    logger.info("Pyroscope successfully configured")
+
+except ImportError:
+    logger.info("pyroscope not found, skipping profiling support")
 
 #####################################
 ########## Error Handling ###########
@@ -1378,6 +1404,9 @@ async def run_callable(
         serialization=serialization,
         debug_port=debug_port,
     )
+
+    logger.info("Returning result from http endpoint")
+    logger.info(result)
     return result
 
 
@@ -1397,9 +1426,13 @@ async def run_callable_internal(
             detail=f"Serialization format '{serialization}' not allowed. Allowed formats: {allowed_serialization}",
         )
 
-    # Process the call
+    # -------------------------------
+    # Parse args, kwargs, and profile
+    # -------------------------------
     args = []
     kwargs = {}
+    profiler = None
+
     if params:
         if serialization == "pickle":
             # Handle pickle serialization - extract data from dictionary wrapper
@@ -1417,7 +1450,11 @@ async def run_callable_internal(
         # Default JSON handling
         args = params.get("args", [])
         kwargs = params.get("kwargs", {})
+        profiler = params.get("profiler")
 
+    # ----------------------------------
+    # Get method or callable to execute
+    # ----------------------------------
     if method_name:
         if not hasattr(callable_obj, method_name):
             raise HTTPException(
@@ -1435,16 +1472,40 @@ async def run_callable_internal(
 
     callable_name = f"{cls_or_fn_name}.{method_name}" if method_name else cls_or_fn_name
     if debug_port:
+        # Debug mode always takes precedence — skip profiling
         logger.info(f"Debugging remote callable {callable_name} on port {debug_port}")
-        deep_breakpoint(debug_port)
         # If using the debugger, step in here ("s") to enter your function/class method.
+        deep_breakpoint(debug_port)
         if is_async_method:
             result = await user_method(*args, **kwargs)
         else:
             # Run sync method in thread pool to avoid blocking
             # Use lambda to properly pass both args and kwargs
             result = await run_in_executor_with_context(None, lambda: user_method(*args, **kwargs))
+
+    elif profiler:
+        from kubetorch.servers.http.profiling import run_with_optional_profile
+
+        request_id = request_id_ctx_var.get("-")
+        logger.debug(
+            f"Running {cls_or_fn_name} with profiler: {profiler} (callable_name={callable_name}, request_id={request_id})"
+        )
+        result, profile_meta = await run_in_executor_with_context(
+            None,
+            run_with_optional_profile,
+            user_method,
+            *args,
+            profiler=profiler,
+            request_id=request_id,
+            callable_name=callable_name,
+            profile_type="cpu",
+            **kwargs,
+        )
+
+        result = {"result": result, "profile": profile_meta}
+
     else:
+        # Normal execution
         logger.debug(f"Calling remote callable {callable_name}")
         if is_async_method:
             result = await user_method(*args, **kwargs)
@@ -1453,12 +1514,15 @@ async def run_callable_internal(
             # Use lambda to properly pass both args and kwargs
             result = await run_in_executor_with_context(None, lambda: user_method(*args, **kwargs))
 
-    # Handle case where sync method returns an awaitable (e.g., from an async framework)
-    # This is less common but can happen with some async libraries
+    # ----------------------------------
+    # Await if result is an awaitable
+    # ----------------------------------
     if isinstance(result, Awaitable):
         result = await result
 
-    # Serialize response based on format
+    # ----------------------------------
+    # Serialize response
+    # ----------------------------------
     if serialization == "pickle":
         try:
             pickled_result = pickle.dumps(result)
