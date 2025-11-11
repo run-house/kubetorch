@@ -466,7 +466,7 @@ jobs:
 
       - name: Set Test Hash
         run: |
-          TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)-declarative"
+          TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)-decl"
           echo "TEST_HASH=$TEST_HASH" >> $GITHUB_ENV
 
       - name: Run declarative tests
@@ -563,7 +563,7 @@ jobs:
 
       - name: Run Teardown Commands
         run: |
-          for suffix in -minimal -mon -cli -pod -dist -python -queue -secret -declarative -app; do
+          for suffix in -minimal -mon -cli -pod -dist -python -queue -secret -decl -app; do
             echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --force"
             kt teardown --prefix ${TEST_HASH}${suffix} --force || true
             echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} --force"
