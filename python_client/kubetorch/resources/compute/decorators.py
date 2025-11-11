@@ -50,6 +50,7 @@ def compute(get_if_exists: bool = False, reload_prefixes: Union[str, List[str]] 
             return func_or_cls
 
         module_name = kwargs.pop("name", None)
+        kt_deploy_mode = os.environ.get("KT_CLI_DEPLOY_MODE") == "1"
 
         if isinstance(func_or_cls, type):
             new_module = cls(
@@ -66,17 +67,20 @@ def compute(get_if_exists: bool = False, reload_prefixes: Union[str, List[str]] 
                 reload_prefixes=reload_prefixes,
             )
 
-        # All remaining kwargs are passed to the Compute constructor
-        new_module.compute = Compute(**kwargs)
-        new_module.compute.service_name = new_module.service_name
-        if distribute_args:
-            distribute_args, distribute_kwargs = distribute_args
-            new_module.compute.distribute(*distribute_args, **distribute_kwargs)
-        if autoscale_args:
-            autoscale_args, autoscale_kwargs = autoscale_args
-            new_module.compute.autoscale(*autoscale_args, **autoscale_kwargs)
         if async_:
             new_module.async_ = async_
+
+        if kt_deploy_mode:
+            # Create new Compute and pass in remaining kwargs only in kt deploy mode, not when importing
+            # Imported kt module will be reloaded from name when called
+            new_module.compute = Compute(**kwargs)
+            new_module.compute.service_name = new_module.service_name
+            if distribute_args:
+                distribute_args, distribute_kwargs = distribute_args
+                new_module.compute.distribute(*distribute_args, **distribute_kwargs)
+            if autoscale_args:
+                autoscale_args, autoscale_kwargs = autoscale_args
+                new_module.compute.autoscale(*autoscale_args, **autoscale_kwargs)
 
         # update_wrapper(new_module, func_or_cls)
         return new_module
