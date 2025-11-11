@@ -1708,6 +1708,7 @@ class Compute:
                         )
                         if installed_remotely:
                             logger.info(f"{req} already installed. Skipping.")
+                            continue
                     else:
                         req = f"{req}=={local_version}"
 

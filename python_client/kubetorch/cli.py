@@ -1677,11 +1677,11 @@ def kt_volumes(
 
 @app.command("notebook")
 def kt_notebook(
+    name: str = typer.Argument(None, help="Service name"),
     cpus: str = typer.Option(None, "--cpus", help="CPU resources (e.g., '2', '500m')"),
     memory: str = typer.Option(None, "--memory", "-m", help="Memory resources (e.g., '4Gi', '512Mi')"),
     gpus: str = typer.Option(None, "--gpus", help="Number of GPUs"),
     image: str = typer.Option(None, "--image", "-i", help="Container image to use"),
-    name: str = typer.Option(None, "--name", help="Service name for the notebook"),
     namespace: str = typer.Option(
         globals.config.namespace,
         "-n",
@@ -1696,18 +1696,20 @@ def kt_notebook(
     ),
 ):
     """
-    Launch a JupyterLab notebook server on Kubernetes. The notebook service will continue running after you exit,
-    and you can reconnect to it until the service is torn down.
+    Launch a JupyterLab notebook server on a new or existing Kubetorch service. The notebook service will continue
+    running after you exit, and you can reconnect to it until the service is torn down.
 
     Examples:
 
     .. code-block:: bash
 
+        $ kt notebook tune-hpo # Launch notebook into new or existing service with name "tune-hpo"
+
         $ kt notebook --cpus 4 --memory 8Gi # Launch with specific resources
 
         $ kt notebook --gpus 1 --cpus 8 --memory 16Gi --image nvcr.io/nvidia/pytorch:23.10-py3  # Launch with GPU and custom image
 
-        $ kt notebook --gpus 1 --cpus 8 --memory 16Gi --no-restart # Reconnect to an existing notebook
+        $ kt notebook --gpus 1 --cpus 8 --memory 16Gi --no-restart # Don't restart kernels on reconnect
     """
     import webbrowser
 
@@ -1720,51 +1722,54 @@ def kt_notebook(
         )
         raise typer.Exit(1)
 
-    # Check if local port is available
-    from kubetorch.resources.compute.utils import is_port_available
-
-    original_port = local_port
-    for i in range(5):
-        if is_port_available(local_port):
-            break
-        local_port += 1
-    else:
-        console.print(f"\n[red]Ports {original_port}-{original_port + 4} are all in use.[/red]")
-        raise typer.Exit(1)
-    if local_port != original_port:
-        console.print(f"[yellow]Port {original_port} already in use, using port {local_port} instead.[/yellow]")
-
     # Build compute configuration
-    compute_kwargs = {"namespace": namespace}
-
-    if cpus:
-        compute_kwargs["cpus"] = cpus
-    if memory:
-        compute_kwargs["memory"] = memory
-    if gpus:
-        compute_kwargs["gpus"] = gpus
-    if inactivity_ttl:
-        compute_kwargs["inactivity_ttl"] = inactivity_ttl
+    compute_kwargs = {
+        "namespace": namespace,
+        "cpus": cpus,
+        "memory": memory,
+        "gpus": gpus,
+        "inactivity_ttl": inactivity_ttl,
+    }
 
     if image:
-        compute_kwargs["image"] = kt.Image(image_id=image).pip_install(["jupyterlab"])
+        compute_kwargs["image"] = kt.Image(image_id=image)
     else:
         if gpus:
             console.print(
-                "[yellow]Warning: Launching with GPUs without Docker image with NVIDIA drivers may not work[/yellow]"
+                "[yellow]Launching with GPUs without a CUDA-enabled image may limit GPU usability. "
+                "Specify an appropriate image, for example: "
+                "[bold]`kt notebook --gpus 1 --image nvcr.io/nvidia/pytorch:23.10-py3`[/bold].[/yellow]"
             )
+            return
 
-        compute_kwargs["image"] = kt.Image().pip_install(["jupyterlab"])
+        compute_kwargs["image"] = kt.Image()
 
     compute = kt.Compute(**compute_kwargs)
 
     # Generate service name
     service_name = name or "kt-notebook"
-    console.print("[cyan]Setting up compute for notebook...[/cyan]")
+
+    # Check if local port is available
+    from kubetorch.resources.compute.utils import find_available_port
+
+    original_port = local_port
+    try:
+        local_port = find_available_port(local_port, max_tries=5)
+        if local_port != original_port:
+            console.print(f"[yellow]Port {original_port} already in use, using port {local_port} instead.[/yellow]")
+    except RuntimeError:
+        console.print(f"\n[red]Ports {original_port}-{original_port + 4} are all in use.[/red]")
+        raise typer.Exit(1)
+
+    console.print("[cyan]Setting up notebook...[/cyan]")
 
     try:
+        # If the service already exists -> load it, then compare to what was requested
+        # If the service doesn't exist -> deploy with requested parameters
         remote_fn = kt.fn(notebook_placeholder, name=service_name).to(compute, stream_logs=False, get_if_exists=True)
+        compute.service_name = remote_fn.service_name
 
+        # Check if requested parameters match the existing compute
         mismatches = []
         expected_params = {
             "cpus": cpus,
@@ -1777,7 +1782,12 @@ def kt_notebook(
             if requested_value is None:
                 # Skip unset CLI options
                 continue
-            existing_value = getattr(remote_fn.compute, key, None)
+
+            existing_value = getattr(compute, key, None)
+            if key == "image":
+                # compare image_ids
+                existing_value = getattr(existing_value, "image_id", existing_value)
+
             if existing_value != requested_value:
                 mismatches.append((key, existing_value, requested_value))
 
@@ -1792,6 +1802,9 @@ def kt_notebook(
             )
             return
 
+        # Ensure jupyter lab is installed
+        compute.pip_install(["jupyterlab"])
+
         # Get pod information
         core_api, custom_api, apps_v1_api = initialize_k8s_clients()
         pods = validate_pods_exist(remote_fn.service_name, namespace, core_api)
@@ -1800,7 +1813,7 @@ def kt_notebook(
             raise typer.Exit(1)
 
         pod_name = sorted(pods, key=lambda p: p.metadata.creation_timestamp)[0].metadata.name
-        console.print(f"[green]Service launched (pod: {pod_name})[/green]")
+        console.print(f"[green]Service is up (pod: {pod_name})[/green]")
 
         # Start jupyter in background
         jupyter_cmd = (
