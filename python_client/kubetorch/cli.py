@@ -28,6 +28,7 @@ from .cli_utils import (
     is_ingress_vpc_only,
     load_ingress,
     load_kubetorch_volumes_for_service,
+    notebook_placeholder,
     port_forward_to_pod,
     SecretAction,
     service_name_argument,
@@ -838,7 +839,6 @@ def kt_port_forward(
     Examples:
 
     .. code-block:: bash
-
 
         $ kt port-forward my-service
 
@@ -1673,6 +1673,235 @@ def kt_volumes(
         except Exception as e:
             console.print(f"[red]Failed to delete volume {name}: {e}[/red]")
             raise typer.Exit(1)
+
+
+@app.command("notebook")
+def kt_notebook(
+    cpus: str = typer.Option(None, "--cpus", help="CPU resources (e.g., '2', '500m')"),
+    memory: str = typer.Option(None, "--memory", "-m", help="Memory resources (e.g., '4Gi', '512Mi')"),
+    gpus: str = typer.Option(None, "--gpus", help="Number of GPUs"),
+    image: str = typer.Option(None, "--image", "-i", help="Container image to use"),
+    name: str = typer.Option(None, "--name", help="Service name for the notebook"),
+    namespace: str = typer.Option(
+        globals.config.namespace,
+        "-n",
+        "--namespace",
+    ),
+    local_port: int = typer.Option(8888, "--port", "-p", help="Local port for notebook access"),
+    inactivity_ttl: str = typer.Option(None, "--ttl", help="Inactivity TTL (e.g., '1h', '30m')"),
+    restart_kernels: bool = typer.Option(
+        True,
+        "--restart/--no-restart",
+        help="Restart notebook kernel sessions upon reconnect",
+    ),
+):
+    """
+    Launch a JupyterLab notebook server on Kubernetes. The notebook service will continue running after you exit,
+    and you can reconnect to it until the service is torn down.
+
+    Examples:
+
+    .. code-block:: bash
+
+        $ kt notebook --cpus 4 --memory 8Gi # Launch with specific resources
+
+        $ kt notebook --gpus 1 --cpus 8 --memory 16Gi --image nvcr.io/nvidia/pytorch:23.10-py3  # Launch with GPU and custom image
+
+        $ kt notebook --gpus 1 --cpus 8 --memory 16Gi --no-restart # Reconnect to an existing notebook
+    """
+    import webbrowser
+
+    import kubetorch as kt
+
+    if is_running_in_kubernetes():
+        console.print(
+            "[red]Notebook command is not supported when running inside Kubernetes. "
+            "Please run this command locally.[/red]"
+        )
+        raise typer.Exit(1)
+
+    # Check if local port is available
+    from kubetorch.resources.compute.utils import is_port_available
+
+    original_port = local_port
+    for i in range(5):
+        if is_port_available(local_port):
+            break
+        local_port += 1
+    else:
+        console.print(f"\n[red]Ports {original_port}-{original_port + 4} are all in use.[/red]")
+        raise typer.Exit(1)
+    if local_port != original_port:
+        console.print(f"[yellow]Port {original_port} already in use, using port {local_port} instead.[/yellow]")
+
+    # Build compute configuration
+    compute_kwargs = {"namespace": namespace}
+
+    if cpus:
+        compute_kwargs["cpus"] = cpus
+    if memory:
+        compute_kwargs["memory"] = memory
+    if gpus:
+        compute_kwargs["gpus"] = gpus
+    if inactivity_ttl:
+        compute_kwargs["inactivity_ttl"] = inactivity_ttl
+
+    if image:
+        compute_kwargs["image"] = kt.Image(image_id=image).pip_install(["jupyterlab"])
+    else:
+        if gpus:
+            console.print(
+                "[yellow]Warning: Launching with GPUs without Docker image with NVIDIA drivers may not work[/yellow]"
+            )
+
+        compute_kwargs["image"] = kt.Image().pip_install(["jupyterlab"])
+
+    compute = kt.Compute(**compute_kwargs)
+
+    # Generate service name
+    service_name = name or "kt-notebook"
+    console.print("[cyan]Setting up compute for notebook...[/cyan]")
+
+    try:
+        remote_fn = kt.fn(notebook_placeholder, name=service_name).to(compute, stream_logs=False, get_if_exists=True)
+
+        mismatches = []
+        expected_params = {
+            "cpus": cpus,
+            "memory": memory,
+            "gpus": gpus,
+            "image": image,
+        }
+
+        for key, requested_value in expected_params.items():
+            if requested_value is None:
+                # Skip unset CLI options
+                continue
+            existing_value = getattr(remote_fn.compute, key, None)
+            if existing_value != requested_value:
+                mismatches.append((key, existing_value, requested_value))
+
+        if mismatches:
+            console.print("[yellow]Cannot reuse existing notebook due to mismatched parameters:[/yellow]")
+            for key, existing, requested in mismatches:
+                display_existing = existing if existing is not None else "<default>"
+                console.print(f"  - [bold]{key}[/bold]: existing = '{display_existing}', requested = '{requested}'")
+            console.print(
+                f"\n[yellow]Delete the existing notebook service ([bold]`kt teardown {service_name}`[/bold]) "
+                "or create a new one with a different name.[/yellow]"
+            )
+            return
+
+        # Get pod information
+        core_api, custom_api, apps_v1_api = initialize_k8s_clients()
+        pods = validate_pods_exist(remote_fn.service_name, namespace, core_api)
+        if not pods:
+            console.print(f"[red]No pods found for service {service_name}[/red]")
+            raise typer.Exit(1)
+
+        pod_name = sorted(pods, key=lambda p: p.metadata.creation_timestamp)[0].metadata.name
+        console.print(f"[green]Service launched (pod: {pod_name})[/green]")
+
+        # Start jupyter in background
+        jupyter_cmd = (
+            'bash -c "nohup jupyter lab --ip=0.0.0.0 --port=8888 --no-browser '
+            "--allow-root --ServerApp.token='' --ServerApp.password='' "
+            "--NotebookApp.token='' --NotebookApp.password='' "
+            '> /tmp/jupyter.log 2>&1 &"'
+        )
+        if restart_kernels:
+            start_cmd_result = compute.run_bash(jupyter_cmd)
+            if start_cmd_result and start_cmd_result[0][0] != 0:
+                console.print("[red]Error starting Jupyter Lab[/red]", start_cmd_result)
+                raise typer.Exit(1)
+
+        # Wait for jupyter to start
+        for i in range(5):
+            check_cmd = "tail -20 /tmp/jupyter.log"
+            result = compute.run_bash(check_cmd)
+            if result and result[0][0] == 0:
+                output = result[0][1]
+                if ("Jupyter Server" in output and "is running" in output) or ("Connecting to kernel" in output):
+                    break
+                else:
+                    console.print("[cyan]Waiting for Jupyter to start...[/cyan]")
+
+            time.sleep(5)
+
+        else:
+            if not restart_kernels:
+                console.print("[yellow] Jupyter may have failed to start, you may need to set the restart flag to True")
+
+        console.print(f"[cyan]Setting up port forward to localhost:{local_port}...[/cyan]")
+        cmd = [
+            "kubectl",
+            "port-forward",
+            f"pod/{pod_name}",
+            f"{local_port}:8888",
+            "--namespace",
+            namespace,
+        ]
+
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+
+        from kubetorch.serving.utils import wait_for_port_forward
+
+        try:
+            wait_for_port_forward(
+                process,
+                local_port,
+                health_endpoint=None,
+                validate_kubetorch_versions=False,
+            )
+            time.sleep(2)
+        except Exception as e:
+            console.print(f"[red]Failed to establish port forward: {e}[/red]")
+            if process:
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                    process.wait()
+                except (ProcessLookupError, OSError):
+                    pass
+            raise typer.Exit(1)
+
+        # Open in browser
+        notebook_url = f"http://localhost:{local_port}"
+        console.print(f"\n[green]✓ Notebook is ready on URL: {notebook_url}[/green]")
+        console.print(
+            f"[yellow]Service '{remote_fn.service_name}' will stay alive after exit; reconnecting will restart "
+            f"all kernel sessions[/yellow]"
+        )
+        console.print(f"\n[dim]To tear down: kt teardown {remote_fn.service_name}[/dim]")
+        console.print("[dim]Press Ctrl+C to stop port forwarding[/dim]\n")
+        if not os.getenv("KT_NO_BROWSER"):
+            webbrowser.open(notebook_url)
+
+        # Keep running
+        try:
+            while True:
+                if process.poll() is not None:
+                    console.print("\n[yellow]Port forward process terminated[/yellow]")
+                    break
+                time.sleep(1)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Stopping port forward...[/yellow]")
+        finally:
+            # Clean up port forward process only
+            if process:
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                    process.wait()
+                except (ProcessLookupError, OSError):
+                    pass
+
+            console.print(
+                f"\n[yellow]Service '{remote_fn.service_name}' is still running in namespace '{namespace}'[/yellow]"
+            )
+            console.print(f"[dim]To tear down: kt teardown {remote_fn.service_name}[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]Error setting up notebook: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @app.callback(invoke_without_command=True, help="Kubetorch CLI")
