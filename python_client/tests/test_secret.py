@@ -39,8 +39,12 @@ def test_gcp_secret_init():
 
     secret = kt.secret(provider="gcp")
     assert secret.provider == GCPSecret._PROVIDER
-    assert set(secret.values.keys()) == set(GCPSecret._DEFAULT_FILENAMES)
-    assert secret.path == GCPSecret._DEFAULT_PATH
+    if secret.path:
+        assert secret.path == GCPSecret._DEFAULT_PATH
+        assert set(secret.values.keys()) == set(GCPSecret._DEFAULT_FILENAMES)
+    else:
+        assert secret.env_vars == GCPSecret._DEFAULT_ENV_VARS
+        assert set(secret.values.keys()) == set(GCPSecret._DEFAULT_ENV_VARS)
 
 
 @pytest.mark.level("unit")
@@ -204,8 +208,12 @@ def test_secret_gcp_propogated_to_pod_as_string():
     assert secret
 
     # Check that the secret is propogated to the pod
-    for filename in GCPSecret._DEFAULT_FILENAMES:
-        assert check_path_on_kubernetes_pods(f"{GCPSecret._DEFAULT_PATH}/{filename}", remote_fn.service_name)
+    is_ci_env = os.getenv("CI", False)
+    if is_ci_env:
+        assert check_env_vars_on_kubernetes_pods(GCPSecret._DEFAULT_ENV_VARS, remote_fn.service_name)
+    else:
+        for filename in GCPSecret._DEFAULT_FILENAMES:
+            assert check_path_on_kubernetes_pods(f"{GCPSecret._DEFAULT_PATH}/{filename}", remote_fn.service_name)
 
 
 @pytest.mark.level("minimal")
@@ -224,8 +232,12 @@ def test_secret_gcp_propogated_to_pod_as_object():
     assert secret
 
     # Check that the secret is propogated to the pod
-    for filename in gcp_secret.filenames:
-        assert check_path_on_kubernetes_pods(f"{gcp_secret.path}/{filename}", remote_fn.service_name)
+    is_ci_env = os.getenv("CI", False)
+    if is_ci_env:
+        assert check_env_vars_on_kubernetes_pods(GCPSecret._DEFAULT_ENV_VARS, remote_fn.service_name)
+    else:
+        for filename in GCPSecret._DEFAULT_FILENAMES:
+            assert check_path_on_kubernetes_pods(f"{GCPSecret._DEFAULT_PATH}/{filename}", remote_fn.service_name)
 
 
 @pytest.mark.level("minimal")

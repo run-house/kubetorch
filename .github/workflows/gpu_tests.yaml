@@ -27,7 +27,7 @@ jobs:
         uses: ./.github/workflows/gke_authentications
         with:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_SA_KEY: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
 
       - name: Setup Test Cluster
         uses: ./.github/workflows/setup_test_cluster
@@ -61,6 +61,9 @@ jobs:
     if: ${{ always() }}
     needs: gpu-tests
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Checkout repository code
         uses: actions/checkout@v3
@@ -68,16 +71,16 @@ jobs:
       - name: Install Dependencies
         uses: ./.github/workflows/install_dependencies
 
+      - name: Setup authentications
+        uses: ./.github/workflows/gke_authentications
+        with:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+
       - name: Setup Test Cluster
         uses: ./.github/workflows/setup_test_cluster
         with:
           KUBECONFIG: ${{ secrets.KUBECONFIG }}
-
-      - name: Setup authentications
-        uses: ./.github/workflows/authentications
-        with:
-          KT_AWS_ACCESS_KEY: ${{ secrets.KT_AWS_ACCESS_KEY }}
-          KT_AWS_SECRET_KEY: ${{ secrets.KT_AWS_SECRET_KEY }}
 
       - name: Set Test Hash
         run: |

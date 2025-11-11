@@ -1229,8 +1229,9 @@ def test_cli_secrets_describe_no_show():
         output = result.output
         assert f"K8 Name: {secret_name}" in output
         assert "Namespace: default" in output
+        mount_type = "env" if os.getenv("CI", None) else "mount"
         assert (
-            f"Labels: {{'kubetorch.com/mount-type': 'volume', 'kubetorch.com/provider': 'gcp', "
+            f"Labels: {{'kubetorch.com/mount-type': '{mount_type}', 'kubetorch.com/provider': 'gcp', "
             f"'kubetorch.com/secret-name': '{secret_name}', 'kubetorch.com/user-identifier': "
             f"'{get_k8s_identity_name()}', 'kubetorch.com/username': '{kt.config.username}'}}"
             in output.replace("\n", "")  # Remove newlines from the output
@@ -1256,8 +1257,9 @@ def test_cli_secrets_describe_show():
         output = result.output
         assert f"K8 Name: {secret_name}" in output
         assert "Namespace: default" in output
+        mount_type = "env" if os.getenv("CI", None) else "mount"
         assert (
-            f"Labels: {{'kubetorch.com/mount-type': 'volume', 'kubetorch.com/provider': 'gcp', "
+            f"Labels: {{'kubetorch.com/mount-type': '{mount_type}', 'kubetorch.com/provider': 'gcp', "
             f"'kubetorch.com/secret-name': '{secret_name}', 'kubetorch.com/user-identifier': "
             f"'{get_k8s_identity_name()}', 'kubetorch.com/username': '{kt.config.username}'}}"
             in output.replace("\n", "")  # Remove newlines from the output
