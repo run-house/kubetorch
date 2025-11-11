@@ -119,6 +119,8 @@ def get_kt_install_url(freeze: bool = False):
     local_kt_path = get_local_install_path("kubetorch")
     if local_kt_path and (Path(local_kt_path) / "pyproject.toml").exists():
         return local_kt_path, True
+    elif local_kt_path and local_kt_path.endswith(".whl"):
+        return local_kt_path, False
     else:
         import kubetorch as kt
 

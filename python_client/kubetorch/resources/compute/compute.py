@@ -1500,7 +1500,7 @@ class Compute:
                 self.server_image, self.otel_enabled, self.inactivity_ttl
             ),
             server_image=self.server_image,
-            rsync_kt_editable_cmd=startup_rsync_command,
+            rsync_kt_local_cmd=startup_rsync_command,
             server_port=self.server_port,
         )
         return setup_script
