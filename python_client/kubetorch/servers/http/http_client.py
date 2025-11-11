@@ -452,6 +452,7 @@ class HTTPClient:
         stop_event,
         http_getter,
         sleeper,
+        interval: int = 30,
         is_async: bool = False,
     ):
         """
@@ -496,18 +497,20 @@ class HTTPClient:
             prom_url = f"{service_url()}/prometheus/api/v1/query"
             pod_regex = "|".join(active_pods)
 
+            # Build queries with current interval
             metric_queries = {
-                "CPU%": f'sum by (pod, node) (rate(container_cpu_usage_seconds_total{{container!="",pod=~"{pod_regex}"}}[30s])) / on(node) group_left() machine_cpu_cores * 100',
-                "Mem": f'sum by (pod) (container_memory_working_set_bytes{{container!="",pod=~"{pod_regex}"}}) / 1024 / 1024',
-                "GPU%": f'avg(DCGM_FI_DEV_GPU_UTIL{{pod=~"{pod_regex}"}}) by (pod)',
-                "GPUMiB": f'avg(DCGM_FI_DEV_FB_USED{{pod=~"{pod_regex}"}}) by (pod) / 1024 / 1024',
+                # CPU: Use rate of CPU seconds - cores utilized
+                "CPU": f'sum by (pod) (rate(container_cpu_usage_seconds_total{{container!="",pod=~"{pod_regex}"}}[30s]))',
+                # Memory: Working set in MiB
+                "Mem": f'avg_over_time(container_memory_working_set_bytes{{container!="",pod=~"{pod_regex}"}}[{interval}s]) / 1024 / 1024',
+                # GPU metrics from DCGM
+                "GPU_SM": f'avg by (pod) (avg_over_time(DCGM_FI_DEV_GPU_UTIL{{pod=~"{pod_regex}"}}[{interval}s]))',
+                "GPUMiB": f'avg by (pod) (avg_over_time(DCGM_FI_DEV_FB_USED{{pod=~"{pod_regex}"}}[{interval}s]))',
             }
-
             show_gpu = True
-            interval = 5
-            start_time = time.time()
 
             while not stop_event.is_set():
+                await maybe_await(sleeper(interval))
                 pod_data = defaultdict(dict)
                 gpu_values = []
 
@@ -542,22 +545,15 @@ class HTTPClient:
                 if pod_data:
                     for pod, vals in sorted(pod_data.items()):
                         mem = vals.get("Mem", 0.0)
-                        gpu = vals.get("GPU%", 0.0)
+                        cpu_cores = vals.get("CPU", 0.0)
+                        gpu = vals.get("GPU_SM", 0.0)
                         gpumem = vals.get("GPUMiB", 0.0)
-                        cpu_pct = vals.get("CPU%", 0.0)
                         now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        line = (
-                            f"[METRICS] {now_ts} | pod: {pod} | "
-                            f"CPU Utilization: {cpu_pct:.1f}% | Memory: {mem:.3f}MiB"
-                        )
+                        line = f"[METRICS] {now_ts} | pod: {pod} | " f"CPU: {cpu_cores:.2f} | Memory: {mem:.1f}MiB"
                         if show_gpu:
-                            line += f" | GPU Utilization: {gpu:.1f}% | GPU Memory: {gpumem:.3f}MiB"
+                            line += f" | GPU SM: {gpu:.1f}% | GPU Memory: {gpumem:.3f}MiB"
 
                         print(f"{line}", flush=True)
-
-                elapsed = time.time() - start_time
-                interval = max(5, int(min(30, 1 + elapsed / 30)))
-                await maybe_await(sleeper(interval))
 
         # run sync or async depending on mode
         if is_async:

@@ -86,7 +86,7 @@ metrics:
     image: prom/prometheus:v3.7.2
     port: 9090
     retention: 24h
-    scrapeInterval: 5s
+    scrapeInterval: 3s
     resources:
       cpu: 200m
       memory: 512Mi
