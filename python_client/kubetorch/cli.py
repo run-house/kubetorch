@@ -1697,26 +1697,6 @@ def kt_volumes(
             raise typer.Exit(1)
 
 
-@app.command("metrics")
-def kt_metrics(
-    namespace: str = typer.Option(
-        globals.config.namespace,
-        "-n",
-        "--namespace",
-    ),
-):
-    """Open a local Grafana dashboard"""
-    namespace = namespace or globals.config.namespace
-    v1_api, custom_api, _ = initialize_k8s_clients()
-    console.print(f"Loading metrics for Kubetorch services in namespace [blue]{namespace}[/blue]...")
-
-    try:
-        open_grafana_dashboard(namespace, console=console, v1_api=v1_api)
-    except Exception as e:
-        console.print(f"[red]{str(e)}[/red]")
-        raise typer.Exit(1)
-
-
 @app.callback(invoke_without_command=True, help="Kubetorch CLI")
 def main(
     ctx: typer.Context,
