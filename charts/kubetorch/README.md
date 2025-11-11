@@ -68,7 +68,7 @@ A Helm chart for kubetorch
 | metrics.prometheus.resources.cpu | string | `"200m"` |  |
 | metrics.prometheus.resources.memory | string | `"512Mi"` |  |
 | metrics.prometheus.retention | string | `"24h"` |  |
-| metrics.prometheus.scrapeInterval | string | `"5s"` |  |
+| metrics.prometheus.scrapeInterval | string | `"3s"` |  |
 | metrics.scrapeKubelet | bool | `true` |  |
 | nginx.resolver | string | `"kube-dns.kube-system.svc.cluster.local"` |  |
 | nginxProxy.backends.health.route | string | `"/health"` |  |
