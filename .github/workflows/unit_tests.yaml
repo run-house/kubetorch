@@ -54,7 +54,7 @@ jobs:
         uses: ./.github/workflows/gke_authentications
         with:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_SA_KEY: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
 
       - name: Install docs requirements
         run: pip install -r python_client/kubetorch/docs/requirements.txt
@@ -83,6 +83,9 @@ jobs:
           cd python_client
           pytest -v --level unit --detached
         timeout-minutes: 60
+        env:
+          client_id: "my-client-id"
+          client_secret: "my-client-secret"
 
       - name: secrets cleanup
         if: ${{ always() }}

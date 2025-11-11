@@ -1,58 +1,45 @@
 name: Set up GCP Auth
 
-description: Install gcloud CLI and authenticate using a service account key
+description: Install gcloud CLI and authenticate using Workload Identity Federation
 
 inputs:
   GCP_PROJECT_ID:
     description: 'GCP Project ID'
     required: true
-  GCP_SA_KEY:
-    description: 'GCP service account key JSON'
+  GCP_WORKLOAD_IDENTITY_PROVIDER:
+    description: 'workload identity provider for google cloud auth'
     required: true
 
 runs:
   using: composite
   steps:
-    - name: Setup Python
-      uses: actions/setup-python@v4
+    - name: Authenticate to GCP
+      uses: google-github-actions/auth@v3
       with:
-        python-version: '3.10'
-
-    - name: Write GCP service account key to file
-      shell: bash
-      run: |
-        mkdir -p $HOME/.config/gcloud
-        echo '${{ inputs.GCP_SA_KEY }}' > $HOME/.config/gcloud/application_default_credentials.json
-        chmod 600 $HOME/.config/gcloud/application_default_credentials.json
-
-    - name: Set up gcloud
-      uses: google-github-actions/setup-gcloud@v2
-      with:
+        workload_identity_provider: ${{ inputs.GCP_WORKLOAD_IDENTITY_PROVIDER }}
         project_id: ${{ inputs.GCP_PROJECT_ID }}
 
-    - name: Install gcloud CLI
-      uses: google-github-actions/setup-gcloud@v3
-      with:
-        version: latest
+    - name: Set up gcloud CLI
+      uses: google-github-actions/setup-gcloud@v2
 
-    - name: Authenticate to GCP
-      uses: google-github-actions/auth@v2
-      with:
-        credentials_json: ${{ inputs.GCP_SA_KEY }}
+    - name: Set gcloud project
+      shell: bash
+      run: |
+        gcloud config set project ${{ inputs.GCP_PROJECT_ID }}
 
     - name: Install GKE auth plugin
       shell: bash
       run: |
-        gcloud components install gke-gcloud-auth-plugin
+        gcloud components install gke-gcloud-auth-plugin --quiet
         echo "USE_GKE_GCLOUD_AUTH_PLUGIN=True" >> $GITHUB_ENV
 
-    - name: Set gcloud project
-      run: |
-        gcloud config set project ${{ inputs.GCP_PROJECT_ID }}
+    - name: Verify authentication
       shell: bash
+      run: |
+        gcloud auth list
 
     - name: Configure a mock huggingface token
+      shell: bash
       run: |
         mkdir -p $HOME/.cache/huggingface
         echo "mockingHFToken" > $HOME/.cache/huggingface/token
-      shell: bash
