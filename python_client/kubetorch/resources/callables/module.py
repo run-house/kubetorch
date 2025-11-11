@@ -235,7 +235,6 @@ class Module:
 
         # Try to find the first matching service across all service types
         for candidate in potential_names:
-
             service_info = service_dict.get(candidate)
             if service_info is None:
                 continue
@@ -407,8 +406,8 @@ class Module:
                     logger.debug(f"Reusing existing service: {existing_service.service_name}")
                     return existing_service
             except Exception as e:
-                logger.info(
-                    f"Service {self.service_name} not found in namespace {self.compute.namespace} "
+                logger.debug(
+                    f"Service {self.service_name} not found in namespace {compute.namespace} "
                     f"with reload_prefixes={reload_prefixes}: {str(e)}"
                 )
 

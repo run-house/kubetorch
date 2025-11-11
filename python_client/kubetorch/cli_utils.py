@@ -953,3 +953,10 @@ def create_table_for_output(columns: List[set], no_wrap_columns_names: list = No
             table.add_column(name, style=style)
 
     return table
+
+
+def notebook_placeholder():
+    """Placeholder function to launch notebook service"""
+    import time
+
+    time.sleep(3600)  # Keep alive for port forwarding
