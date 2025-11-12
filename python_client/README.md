@@ -12,6 +12,6 @@ Kubetorch enables you to run any Python code on Kubernetes at any scale by speci
 
 ---
 
-[Apache 2.0 License](LICENSE)
+[Apache 2.0 License](https://github.com/run-house/runhouse/blob/main/LICENSE)
 
 **🏃‍♀️ Built by [Runhouse](https://www.run.house) 🏠**
