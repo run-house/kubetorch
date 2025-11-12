@@ -34,6 +34,7 @@ try:
     from server_metrics import get_inactivity_ttl_annotation, HeartbeatManager, setup_otel_metrics
     from utils import (
         clear_debugging_sessions,
+        collect_reload_modules,
         deep_breakpoint,
         DEFAULT_ALLOWED_SERIALIZATION,
         ensure_structured_logging,
@@ -47,6 +48,7 @@ except ImportError:
     from .server_metrics import get_inactivity_ttl_annotation, HeartbeatManager, setup_otel_metrics
     from .utils import (
         clear_debugging_sessions,
+        collect_reload_modules,
         deep_breakpoint,
         DEFAULT_ALLOWED_SERIALIZATION,
         ensure_structured_logging,
@@ -712,29 +714,37 @@ def load_callable_from_env():
             # Clear any existing debugging sessions when reloading modules
             clear_debugging_sessions()
 
-            # Remove the module and any modules under KT_FILE_PATH from sys.modules
-            # This ensures we reload all user updates including cached submodules that were imported by the main module.
-            logger.info(f"Removing module {module_name} and submodules from sys.modules")
-            kt_file_path = os.environ.get("KT_FILE_PATH")
-            kt_file_path_str = str(Path(kt_file_path).expanduser().resolve()) + os.sep
+            # Find all user modules under kt_home_dir to reload
+            kt_home_dir = (
+                Path(os.environ.get("KT_DIRECTORY")).expanduser().resolve()
+                if "KT_DIRECTORY" in os.environ
+                else Path.cwd()
+            )
+            kt_home_dir_str = str(kt_home_dir) + os.sep
 
-            del sys.modules[module_name]
-            for name, mod in list(sys.modules.items()):
-                if name == module_name or not hasattr(mod, "__file__") or not mod.__file__:
-                    continue
-                try:
-                    if os.path.abspath(mod.__file__).startswith(kt_file_path_str):
-                        del sys.modules[name]
-                except (KeyError, OSError, ValueError):
-                    pass
+            # Collect all user modules and reload in order from children to parents
+            modules_to_reload_sorted = collect_reload_modules(kt_home_dir_str)
+            logger.info(f"Reloading imported usermodules under {kt_home_dir_str}")
+            logger.debug(f"Modules to reload: {modules_to_reload_sorted}")
+            for name in modules_to_reload_sorted:
+                if name in sys.modules:
+                    try:
+                        importlib.reload(sys.modules[name])
+                    except (ImportError, ValueError, TypeError) as e:
+                        logger.debug(f"Could not reload module {name}: {e}. Deleting and reimporting instead.")
+                        try:
+                            del sys.modules[name]
+                            importlib.import_module(name)
+                        except Exception as reimport_error:
+                            logger.error(f"Failed to reimport module {name} after reload failure: {reimport_error}")
 
-            # We make this log to info because some imports are slow and we want the user to know that
-            # it's not our fault and not hanging
-            logger.info(f"Reimporting module {module_name} and related submodules")
+            module = sys.modules.get(module_name)
+            if module is None:
+                logger.debug(f"Module {module_name} not found after reload, reimporting")
+                module = importlib.import_module(module_name)
         else:
             logger.debug(f"Importing module {module_name}")
-
-        module = importlib.import_module(module_name)
+            module = importlib.import_module(module_name)
         logger.debug(f"Module {module_name} loaded")
 
         # Ensure our structured logging is in place after user module import

@@ -132,6 +132,42 @@ def ensure_structured_logging():
 request_id_ctx_var: ContextVar[str] = ContextVar("request_id", default="-")
 
 
+def collect_reload_modules(kt_home_dir_str: str) -> list:
+    """
+    Collect user modules from sys.modules that should be reloaded. Returns sorted list of modules (children to parents)
+    with file under kt_home_dir and excludes kubetorch.servers.
+    """
+    modules_to_reload = []
+
+    for mod_name, mod in sys.modules.items():
+        # Exclude kubetorch.servers (framework module that shouldn't be reloaded)
+        if mod_name == "kubetorch.servers" or mod_name.startswith("kubetorch.servers."):
+            continue
+
+        if not hasattr(mod, "__file__") or not mod.__file__:
+            continue
+
+        try:
+            mod_file = os.path.abspath(mod.__file__)
+
+            # Only include modules under the kt home directory (synced files)
+            if mod_file.startswith(kt_home_dir_str):
+                # Exclude modules from site-packages (Docker image files)
+                if sys.prefix and mod_file.startswith(os.path.abspath(sys.prefix)):
+                    continue
+                if sys.base_prefix and sys.base_prefix != sys.prefix:
+                    if mod_file.startswith(os.path.abspath(sys.base_prefix)):
+                        continue
+
+                modules_to_reload.append(mod_name)
+        except (OSError, ValueError):
+            continue
+
+    # Sort from children to parents to ensure child modules are reloaded before their parent packages
+    modules_to_reload_sorted = sorted(modules_to_reload, key=lambda x: (x.count("."), len(x)), reverse=True)
+    return modules_to_reload_sorted
+
+
 class StartupError(Exception):
     pass
 
