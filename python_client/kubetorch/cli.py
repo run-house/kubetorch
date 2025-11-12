@@ -1357,7 +1357,7 @@ def kt_teardown(
     if teardown_all or prefix:
         service_word = "service" if service_count == 1 else "services"
         if not services:
-            console.print("[yellow]No services are found[/yellow]")
+            console.print("[yellow]No services found[/yellow]")
             raise typer.Exit(0)
         else:
             console.print(f"[yellow]Found [bold]{service_count}[/bold] {service_word} to delete.[/yellow]")
@@ -1370,29 +1370,6 @@ def kt_teardown(
     if not yes and service_count > 1:
         for service_name in services:
             console.print(f" • {service_name}")
-
-    # List out resources to be deleted for each service
-    console.print("\n[yellow]The following resources will be deleted:[/yellow]")
-    for name in services:
-        service_info = resources["services"][name]
-        configmaps = service_info["configmaps"]
-        service_type = service_info.get("type", "unknown")
-
-        if service_type == "deployment":
-            console.print(f"• Deployment: [blue]{name}[/blue]")
-            console.print(f"• Service: [blue]{name}[/blue]")
-        elif service_type == "knative":
-            console.print(f"• Knative Service: [blue]{name}[/blue]")
-        elif service_type == "raycluster":
-            console.print(f"• RayCluster: [blue]{name}[/blue]")
-            console.print(f"• Service: [blue]{name}[/blue]")
-        else:
-            console.print(f"• Service: [blue]{name}[/blue]")
-
-        if configmaps:
-            console.print("• ConfigMaps:")
-            for cm in configmaps:
-                console.print(f"  - [blue]{cm}[/blue]")
 
     # Confirmation prompt for single service
     if not yes and not force:  # if --force is provided, we don't need additional confirmation
