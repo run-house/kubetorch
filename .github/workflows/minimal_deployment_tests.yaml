@@ -79,13 +79,13 @@ jobs:
 
       - name: Set Test Hash
         run: |
-          TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)-${{ matrix.compute_type }}"
+          TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)"
           echo "TEST_HASH=$TEST_HASH" >> $GITHUB_ENV
 
       - name: Run tests with all deployment modes
         run: |
           cd python_client
-          pytest -v --durations=100 tests/test_deployment_fixtures.py --level minimal
+          pytest -v --durations=100 tests/test_deployment_fixtures.py --level minimal --detached
         timeout-minutes: 60
         env:
           TEST_COMPUTE_TYPE: ${{ matrix.compute_type }}
