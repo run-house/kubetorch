@@ -20,8 +20,8 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        uses: ./.github/workflows/install_dependencies
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
 
       - name: Setup authentications
         uses: ./.github/workflows/gke_authentications
@@ -68,8 +68,8 @@ jobs:
       - name: Checkout repository code
         uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        uses: ./.github/workflows/install_dependencies
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
 
       - name: Setup authentications
         uses: ./.github/workflows/gke_authentications
