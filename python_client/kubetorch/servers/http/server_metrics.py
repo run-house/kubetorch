@@ -180,7 +180,7 @@ def setup_otel_metrics(app: FastAPI):
         from opentelemetry.sdk.resources import Resource
         from prometheus_client import CollectorRegistry, CONTENT_TYPE_LATEST, generate_latest, Info
     except ImportError as e:
-        logger.info(f"OpenTelemetry metrics not enabled: {e}")
+        logger.debug(f"OpenTelemetry metrics not enabled: {e}")
         return app, None
 
     logger.info("Instrumenting FastAPI app for metrics")
