@@ -582,7 +582,7 @@ class HTTPClient:
                         now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                         pod_info = f"| pod: {pod} " if metrics_config.scope == "pod" else ""
-                        line = f"[METRICS] {now_ts} {pod_info}| " f"CPU: {cpu_cores:.2f}% | Memory: {mem:.3f}MiB"
+                        line = f"[METRICS] {now_ts} {pod_info}| " f"CPU: {cpu_cores:.2f} | Memory: {mem:.3f}MiB"
                         if show_gpu:
                             line += f" | GPU SM: {gpu:.2f}% | GPU Memory: {gpumem:.3f}MiB"
 
