@@ -5,7 +5,7 @@ import time
 import urllib.parse
 from collections import defaultdict
 from datetime import datetime
-from typing import Union
+from typing import Literal, Union
 
 import httpx
 import requests
@@ -254,13 +254,12 @@ class HTTPClient:
         if stream_logs is None:
             stream_logs = config.stream_logs or False
 
-        metrics_config = None
+        metrics_config = MetricsConfig()
         if isinstance(stream_metrics, MetricsConfig):
             metrics_config = stream_metrics
             stream_metrics = True
         elif stream_metrics is None:
             stream_metrics = config.stream_metrics or False
-            metrics_config = None
 
         if pdb:
             debug_port = DEFAULT_DEBUG_PORT if isinstance(pdb, bool) else pdb
@@ -457,6 +456,40 @@ class HTTPClient:
             loop.close()
 
     # ----------------- Metrics Helpers ----------------- #
+
+    def _get_stream_metrics_queries(self, scope: Literal["pod", "resource"], interval: int):
+        metric_queries = {}
+        if scope == "pod":
+            active_pods = self.compute.pod_names()
+            if not active_pods:
+                logger.warning("No active pods found for service, skipping metrics collection")
+                return
+
+            pod_regex = "|".join(active_pods)
+            metric_queries = {
+                # CPU: Use rate of CPU seconds - cores utilized
+                "CPU": f'sum by (pod) (rate(container_cpu_usage_seconds_total{{container!="",pod=~"{pod_regex}"}}[{interval}s]))',
+                # Memory: Working set in MiB
+                "Mem": f'avg_over_time(container_memory_working_set_bytes{{container!="",pod=~"{pod_regex}"}}[{interval}s]) / 1024 / 1024',
+                # GPU metrics from DCGM
+                "GPU_SM": f'avg by (pod) (avg_over_time(DCGM_FI_DEV_GPU_UTIL{{pod=~"{pod_regex}"}}[{interval}s]))',
+                "GPUMiB": f'avg by (pod) (avg_over_time(DCGM_FI_DEV_FB_USED{{pod=~"{pod_regex}"}}[{interval}s]))',
+            }
+
+        elif scope == "resource":
+            service_name_regex = f"{self.compute.service_name}.+"
+            metric_queries = {
+                # CPU: Use rate of CPU seconds - cores utilized
+                "CPU": f'avg((rate(container_cpu_usage_seconds_total{{container!="",pod=~"{service_name_regex}"}}[{interval}s])))',
+                # Memory: Working set in MiB
+                "Mem": f'avg(avg_over_time(container_memory_working_set_bytes{{container!="",pod=~"{service_name_regex}"}}[{interval}s]) / 1024 / 1024)',
+                # GPU metrics from DCGM
+                "GPU_SM": f'avg(avg_over_time(DCGM_FI_DEV_GPU_UTIL{{pod=~"{service_name_regex}"}}[{interval}s]))',
+                "GPUMiB": f'avg(avg_over_time(DCGM_FI_DEV_FB_USED{{pod=~"{service_name_regex}"}}[{interval}s]))',
+            }
+
+        return metric_queries
+
     def _collect_metrics_common(
         self,
         stop_event,
@@ -500,27 +533,10 @@ class HTTPClient:
 
         async def run():
 
+            interval = int(metrics_config.interval)
+            metric_queries = self._get_stream_metrics_queries(scope=metrics_config.scope, interval=interval)
             show_gpu = True
-            interval = metrics_config.interval if metrics_config else 30
-
-            active_pods = self.compute.pod_names()
-            if not active_pods:
-                logger.warning("No active pods found for service, skipping metrics collection")
-                return
-
             prom_url = f"{service_url()}/prometheus/api/v1/query"
-            pod_regex = "|".join(active_pods)
-
-            # Build queries with current interval
-            metric_queries = {
-                # CPU: Use rate of CPU seconds - cores utilized
-                "CPU": f'sum by (pod) (rate(container_cpu_usage_seconds_total{{container!="",pod=~"{pod_regex}"}}[30s]))',
-                # Memory: Working set in MiB
-                "Mem": f'avg_over_time(container_memory_working_set_bytes{{container!="",pod=~"{pod_regex}"}}[{interval}s]) / 1024 / 1024',
-                # GPU metrics from DCGM
-                "GPU_SM": f'avg by (pod) (avg_over_time(DCGM_FI_DEV_GPU_UTIL{{pod=~"{pod_regex}"}}[{interval}s]))',
-                "GPUMiB": f'avg by (pod) (avg_over_time(DCGM_FI_DEV_FB_USED{{pod=~"{pod_regex}"}}[{interval}s]))',
-            }
 
             start_time = time.time()
 
@@ -564,9 +580,11 @@ class HTTPClient:
                         gpu = vals.get("GPU_SM", 0.0)
                         gpumem = vals.get("GPUMiB", 0.0)
                         now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        line = f"[METRICS] {now_ts} | pod: {pod} | " f"CPU: {cpu_cores:.2f} | Memory: {mem:.1f}MiB"
+
+                        pod_info = f"| pod: {pod} " if metrics_config.scope == "pod" else ""
+                        line = f"[METRICS] {now_ts} {pod_info}| " f"CPU: {cpu_cores:.2f}% | Memory: {mem:.3f}MiB"
                         if show_gpu:
-                            line += f" | GPU SM: {gpu:.1f}% | GPU Memory: {gpumem:.3f}MiB"
+                            line += f" | GPU SM: {gpu:.2f}% | GPU Memory: {gpumem:.3f}MiB"
 
                         print(f"{line}", flush=True)
 
@@ -716,7 +734,7 @@ class HTTPClient:
         self,
         endpoint: str,
         stream_logs: Union[bool, None] = None,
-        stream_metrics: Union[bool, None] = None,
+        stream_metrics: Union[bool, MetricsConfig, None] = None,
         body: dict = None,
         headers: dict = None,
         pdb: Union[bool, int] = None,

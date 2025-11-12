@@ -26,8 +26,8 @@ config = KubetorchConfig()
 
 @dataclass
 class MetricsConfig:
-    interval: int = 5  # polling interval in seconds
-    scope: Literal["pod", "service"] = "pod"  # aggregation level (default to "pod")
+    interval: int = 30  # polling interval in seconds
+    scope: Literal["pod", "resource"] = "resource"  # aggregation level (default to "resource")
 
 
 @dataclass(frozen=True)
