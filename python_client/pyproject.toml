@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "kubetorch"
 version = "0.2.4"
-description = "A Python interface for running ML workloads on Kubernetes"
+description = "A Fast, Pythonic, 'Serverless' Interface for Running ML Workloads on Kubernetes"
 authors = ["Runhouse Team"]
 license = "Apache 2.0"
 readme = "README.md"
@@ -46,7 +46,6 @@ web-pdb = {version = "*", optional = true}
 # Client extras
 typer = {version = "*", optional = true}
 rich = {version = "*", optional = true}
-prometheus-api-client = {version = "*", optional = true}
 
 # Docs extras
 myst-parser = {version = "*", optional = true}
@@ -68,7 +67,7 @@ prometheus-client = {version = "*", optional = true}
 
 [tool.poetry.extras]
 server = ["fastapi", "uvicorn", "python-json-logger", "web-pdb"]
-client = ["typer", "rich", "prometheus-api-client"]
+client = ["typer", "rich"]
 docs = ["myst-parser", "sphinx", "sphinx-autodoc-typehints", "sphinx-book-theme"]
 otel = [
     "opentelemetry-api",
@@ -87,7 +86,6 @@ otel = [
 pytest = ">=8.3.5"
 pytest-asyncio = "*"
 fastapi = "*"
-prometheus-api-client = "*"
 uv = "*"
 
 [tool.poetry.scripts]
