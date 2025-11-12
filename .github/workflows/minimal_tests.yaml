@@ -149,6 +149,9 @@ jobs:
       - name: Install Dependencies
         uses: ./.github/workflows/install_dependencies
 
+      - name: Install monitoring tests requirements
+        run: pip install prometheus_api_client
+
       - name: Setup authentications
         uses: ./.github/workflows/gke_authentications
         with:
