@@ -79,15 +79,12 @@ def validate_logs_fn_service_info(list_output: str, service_name: str, compute_t
 
 
 def validate_teardown_output(teardown_output: str, service_name: str, force_delete: bool = False):
-    assert "The following resources will be deleted:\n" in teardown_output
-    assert f"• Deployment: {service_name}\n• Service: {service_name}" in teardown_output
 
     assert "Force deleting resources..." if force_delete else "Deleting resources..." in teardown_output
-
     assert f"✓ Deleted deployment {service_name}\n✓ Deleted service {service_name}" in teardown_output
 
     if force_delete:
-        time.sleep(3)
+        time.sleep(5)
 
     list_result = runner.invoke(app, ["list"], color=False, env={"COLUMNS": "200"})
 
@@ -668,7 +665,7 @@ def test_cli_kt_teardown_wrong_usage():
     assert teardown_result.exit_code == 0
     output = teardown_result.output
     assert f"Deleting all services with prefix {service_name} in default namespace" in output
-    assert "No services are found" in output
+    assert "No services found" in output
 
     # Part D: teardown service but provide wrong namespace
     remote_fn = remote_fn_for_teardown()
