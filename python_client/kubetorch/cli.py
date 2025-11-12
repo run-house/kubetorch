@@ -1767,7 +1767,7 @@ def kt_notebook(
         # If the service already exists -> load it, then compare to what was requested
         # If the service doesn't exist -> deploy with requested parameters
         remote_fn = kt.fn(notebook_placeholder, name=service_name).to(compute, stream_logs=False, get_if_exists=True)
-        compute.service_name = remote_fn.service_name
+        compute = remote_fn.compute
 
         # Check if requested parameters match the existing compute
         mismatches = []

@@ -1681,7 +1681,7 @@ class Compute:
     ):
         """Pip install reqs onto compute pod(s)."""
         reqs = [reqs] if isinstance(reqs, str) else reqs
-        python_path = self.image.python_path or "python3"
+        python_path = self.image.python_path if self.image else "python3"
         pip_install_cmd = f"{python_path} -m pip install"
         try:
             result = self.run_bash("cat .kt/kt_pip_install_cmd 2>/dev/null || echo ''", node=node)
