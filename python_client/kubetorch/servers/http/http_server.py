@@ -7,7 +7,6 @@ import json
 import logging.config
 import os
 import pickle
-import random
 import subprocess
 import sys
 import threading
@@ -42,7 +41,6 @@ try:
         is_running_in_kubernetes,
         LOG_CONFIG,
         request_id_ctx_var,
-        RSYNC_PORT,
         wait_for_app_start,
     )
 except ImportError:
@@ -56,7 +54,6 @@ except ImportError:
         is_running_in_kubernetes,
         LOG_CONFIG,
         request_id_ctx_var,
-        RSYNC_PORT,
         wait_for_app_start,
     )
 
@@ -182,7 +179,6 @@ def cached_image_setup():
     # Grab the current list of installed dependencies with pip freeze to check if anything changes (we need to send a
     # SIGHUP to restart the server if so)
     start_deps = None
-    import subprocess
 
     try:
         res = subprocess.run(
@@ -842,122 +838,13 @@ def import_from_file(file_path: str, module_name: str):
 #####################################
 ########## Rsync Helpers ############
 #####################################
-def generate_rsync_command(subdir: str = ".", exclude_absolute: bool = True):
-    """Generate rsync command for syncing from jump pod.
-
-    Args:
-        subdir: Directory to sync to (default current directory)
-        exclude_absolute: Whether to exclude __absolute__ directory (default True)
-    """
-    service_name = os.getenv("KT_SERVICE_NAME")
-    namespace = os.getenv("POD_NAMESPACE")
-
-    exclude_opt = "--exclude='__absolute__*' " if exclude_absolute else ""
-    logger.debug("Syncing code from rsync pod to local directory")
-    return f"rsync -av {exclude_opt}rsync://kubetorch-rsync.{namespace}.svc.cluster.local:{RSYNC_PORT}/data/{namespace}/{service_name}/ {subdir}"
-
-
 def rsync_file_updates():
-    """Rsync files from the jump pod to the worker pod.
-
-    Performs two rsync operations in parallel:
-    1. Regular files (excluding __absolute__*) to the working directory
-    2. Absolute path files (under __absolute__/) to their absolute destinations
-    """
-    import concurrent.futures
-    from concurrent.futures import ThreadPoolExecutor
+    """Sync files from rsync pod into the server pod using centralized data_transfer helper."""
+    from kubetorch import data_transfer as _dt
 
     service_name = os.getenv("KT_SERVICE_NAME")
     namespace = os.getenv("POD_NAMESPACE")
-
-    # Build base rsync URL
-    rsync_base = f"rsync://kubetorch-rsync.{namespace}.svc.cluster.local:{RSYNC_PORT}/data/{namespace}/{service_name}/"
-
-    max_retries = 5
-    base_delay = 1  # seconds
-    max_delay = 30  # seconds
-
-    def run_rsync_with_retries(rsync_cmd, description):
-        """Helper to run rsync with exponential backoff retries."""
-        for attempt in range(max_retries):
-            resp = subprocess.run(
-                rsync_cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-            )
-
-            if resp.returncode == 0:
-                logger.debug(f"Successfully rsync'd {description}")
-                return  # Success!
-
-            # Check if it's a retryable error
-            retryable_errors = [
-                "max connections",
-                "Temporary failure in name resolution",
-                "Name or service not known",
-                "Connection refused",
-                "No route to host",
-            ]
-
-            is_retryable = any(error in resp.stderr for error in retryable_errors)
-
-            if is_retryable and attempt < max_retries - 1:
-                # Calculate exponential backoff with jitter
-                delay = min(base_delay * (2**attempt) + random.uniform(0, 1), max_delay)
-                logger.warning(
-                    f"Rsync {description} failed with retryable error: {resp.stderr.strip()}. "
-                    f"Retrying in {delay:.1f} seconds (attempt {attempt + 1}/{max_retries})"
-                )
-                time.sleep(delay)
-            else:
-                # For non-retryable errors or final attempt, raise immediately
-                if attempt == max_retries - 1:
-                    logger.error(f"Rsync {description} failed after {max_retries} attempts. Last error: {resp.stderr}")
-                raise RuntimeError(f"Rsync {description} failed with error: {resp.stderr}")
-
-        # If we exhausted all retries
-        raise RuntimeError(f"Rsync {description} failed after {max_retries} attempts. Last error: {resp.stderr}")
-
-    def rsync_regular_files():
-        """Rsync regular files (excluding __absolute__*) to working directory."""
-        rsync_cmd_regular = f"rsync -avL --exclude='__absolute__*' {rsync_base} ."
-        logger.debug(f"Rsyncing regular files with command: {rsync_cmd_regular}")
-        run_rsync_with_retries(rsync_cmd_regular, "regular files")
-
-    def rsync_absolute_files():
-        """Rsync absolute path files to their absolute destinations."""
-        # First, do a dry-run to see if __absolute__ directory exists
-        check_cmd = f"rsync --list-only {rsync_base}__absolute__/"
-        check_resp = subprocess.run(check_cmd, shell=True, capture_output=True, text=True)
-
-        if check_resp.returncode == 0 and check_resp.stdout.strip():
-            # __absolute__ directory exists, sync its contents to root
-            # The trick is to sync from __absolute__/ to / which places files in their absolute paths
-            rsync_cmd_absolute = f"rsync -avL {rsync_base}__absolute__/ /"
-            logger.debug(f"Rsyncing absolute path files with command: {rsync_cmd_absolute}")
-            run_rsync_with_retries(rsync_cmd_absolute, "absolute path files")
-        else:
-            logger.debug("No absolute path files to sync")
-
-    # Run both rsync operations in parallel
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        # Submit both tasks
-        regular_future = executor.submit(rsync_regular_files)
-        absolute_future = executor.submit(rsync_absolute_files)
-
-        # Wait for both to complete and handle any exceptions
-        futures = [regular_future, absolute_future]
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                future.result()  # This will raise any exception that occurred
-            except Exception as e:
-                # Cancel remaining futures if one fails
-                for f in futures:
-                    f.cancel()
-                raise e
-
-    logger.debug("Completed rsync of all files")
+    _dt.sync_workdir_from_store(namespace=namespace, service_name=service_name)
 
 
 #####################################

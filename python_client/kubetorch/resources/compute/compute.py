@@ -6,7 +6,6 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Union
-from urllib.parse import urlparse
 
 import yaml
 
@@ -16,19 +15,12 @@ from kubernetes.client import V1ResourceRequirements
 import kubetorch.constants as constants
 import kubetorch.serving.constants as serving_constants
 
-from kubetorch import globals
+from kubetorch import data_transfer, globals
 from kubetorch.globals import LoggingConfig
 
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.utils import find_locally_installed_version
-from kubetorch.resources.compute.utils import (
-    _get_rsync_exclude_options,
-    _get_sync_package_paths,
-    _run_bash,
-    find_available_port,
-    RsyncError,
-)
-from kubetorch.resources.compute.websocket import WebSocketRsyncTunnel
+from kubetorch.resources.compute.utils import _get_sync_package_paths, _run_bash
 from kubetorch.resources.images.image import Image, ImageSetupStepType
 from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecretsClient
 from kubetorch.resources.volumes.volume import Volume
@@ -36,7 +28,7 @@ from kubetorch.servers.http.utils import is_running_in_kubernetes, load_template
 from kubetorch.serving.autoscaling import AutoscalingConfig
 from kubetorch.serving.utils import pod_is_running
 
-from kubetorch.utils import extract_host_port, http_to_ws, load_head_node_pod
+from kubetorch.utils import extract_host_port, load_head_node_pod
 
 logger = get_logger(__name__)
 
@@ -2143,10 +2135,14 @@ class Compute:
         return True
 
     def _base_rsync_url(self, local_port: int):
-        return f"rsync://localhost:{local_port}/data/{self.namespace}/{self.service_name}"
+        # Delegate to data_transfer module
+        client = data_transfer.RsyncClient(self.namespace, self.service_name)
+        return client.get_base_rsync_url(local_port)
 
     def _rsync_svc_url(self):
-        return f"rsync://kubetorch-rsync.{self.namespace}.svc.cluster.local:{serving_constants.REMOTE_RSYNC_PORT}/data/{self.namespace}/{self.service_name}/"
+        # Delegate to data_transfer module
+        client = data_transfer.RsyncClient(self.namespace, self.service_name)
+        return client.get_rsync_pod_url()
 
     def ssh(self, pod_name: str = None):
         if pod_name is None:
@@ -2243,164 +2239,19 @@ class Compute:
 
     def _create_rsync_target_dir(self):
         """Create the subdirectory for this particular service in the rsync pod."""
-        subdir = f"/data/{self.namespace}/{self.service_name}"
-
-        label_selector = f"app={serving_constants.RSYNC_SERVICE_NAME}"
-        result = globals.controller_client().list_pods(namespace=self.namespace, label_selector=label_selector)
-        pod_name = result["items"][0]["metadata"]["name"]
-
-        subdir_cmd = f"kubectl exec {pod_name} -n {self.namespace} -- mkdir -p {subdir}"
-        logger.info(f"Creating directory on rsync pod with cmd: {subdir_cmd}")
-        subprocess.run(subdir_cmd, shell=True, check=True)
+        # Delegate to data_transfer module
+        client = data_transfer.RsyncClient(self.namespace, self.service_name)
+        client.create_rsync_target_dir()
 
     def _run_rsync_command(self, rsync_cmd, create_target_dir: bool = True):
-        backup_rsync_cmd = rsync_cmd
-        if "--mkpath" not in rsync_cmd and create_target_dir:
-            # Warning: --mkpath requires rsync 3.2.0+
-            # Note: --mkpath allows the rsync daemon to create all intermediate directories that may not exist
-            # https://download.samba.org/pub/rsync/rsync.1#opt--mkpath
-            rsync_cmd = rsync_cmd.replace("rsync ", "rsync --mkpath ", 1)
-            logger.debug(f"Rsync command: {rsync_cmd}")
-
-            resp = subprocess.run(
-                rsync_cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-            )
-            if resp.returncode != 0:
-                if (
-                    create_target_dir
-                    and ("rsync: --mkpath" in resp.stderr or "rsync: unrecognized option" in resp.stderr)
-                    and not is_running_in_kubernetes()
-                ):
-                    logger.warning(
-                        "Rsync failed: --mkpath is not supported, falling back to creating target dir. "
-                        "Please upgrade rsync to 3.2.0+ to improve performance."
-                    )
-                    self._create_rsync_target_dir()
-                    return self._run_rsync_command(backup_rsync_cmd, create_target_dir=False)
-
-                raise RsyncError(rsync_cmd, resp.returncode, resp.stdout, resp.stderr)
-        else:
-            import fcntl
-            import pty
-            import select
-
-            logger.debug(f"Rsync command: {rsync_cmd}")
-
-            leader, follower = pty.openpty()
-            proc = subprocess.Popen(
-                shlex.split(rsync_cmd),
-                stdout=follower,
-                stderr=follower,
-                text=True,
-                close_fds=True,
-            )
-            os.close(follower)
-
-            # Set to non-blocking mode
-            flags = fcntl.fcntl(leader, fcntl.F_GETFL)
-            fcntl.fcntl(leader, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-            buffer = b""
-            transfer_completed = False
-            error_patterns = [
-                r"rsync\(\d+\): error:",
-                r"rsync error:",
-                r"@ERROR:",
-            ]
-            error_regexes = [re.compile(pattern, re.IGNORECASE) for pattern in error_patterns]
-
-            try:
-                with os.fdopen(leader, "rb", buffering=0) as stdout:
-                    while True:
-                        rlist, _, _ = select.select([stdout], [], [], 0.1)  # 0.1 sec timeout for responsiveness
-                        if stdout in rlist:
-                            try:
-                                chunk = os.read(stdout.fileno(), 1024)
-                            except BlockingIOError:
-                                continue  # no data available, try again
-
-                            if not chunk:  # EOF
-                                break
-
-                            buffer += chunk
-                            while b"\n" in buffer:
-                                line, buffer = buffer.split(b"\n", 1)
-                                decoded_line = line.decode(errors="replace").strip()
-                                logger.debug(f"{decoded_line}")
-
-                                for error_regex in error_regexes:
-                                    if error_regex.search(decoded_line):
-                                        raise RsyncError(rsync_cmd, 1, decoded_line, decoded_line)
-
-                                if "total size is" in decoded_line and "speedup is" in decoded_line:
-                                    transfer_completed = True
-
-                            if transfer_completed:
-                                break
-
-                        exit_code = proc.poll()
-                        if exit_code is not None:
-                            if exit_code != 0:
-                                raise RsyncError(
-                                    rsync_cmd,
-                                    exit_code,
-                                    output=decoded_line,
-                                    stderr=decoded_line,
-                                )
-                            break
-
-                    proc.terminate()
-            except Exception as e:
-                proc.terminate()
-                raise e
-
-            if not transfer_completed:
-                logger.error("Rsync process ended without completion message")
-                proc.terminate()
-                raise subprocess.CalledProcessError(
-                    1,
-                    rsync_cmd,
-                    output="",
-                    stderr="Rsync completed without success indication",
-                )
-
-            logger.info("Rsync operation completed successfully")
+        """Delegate rsync command execution to data_transfer module."""
+        client = data_transfer.RsyncClient(self.namespace, self.service_name)
+        client.run_rsync_command(rsync_cmd, create_target_dir)
 
     async def _run_rsync_command_async(self, rsync_cmd: str, create_target_dir: bool = True):
-        """Async version of _run_rsync_command using asyncio.subprocess."""
-        import asyncio
-
-        if "--mkpath" not in rsync_cmd and create_target_dir:
-            # Warning: --mkpath requires rsync 3.2.0+
-            # Note: --mkpath allows the rsync daemon to create all intermediate directories that may not exist
-            # https://download.samba.org/pub/rsync/rsync.1#opt--mkpath
-            rsync_cmd = rsync_cmd.replace("rsync ", "rsync --mkpath ", 1)
-            logger.debug(f"Rsync command: {rsync_cmd}")
-
-            # Use asyncio.create_subprocess_shell for shell commands
-            proc = await asyncio.create_subprocess_shell(
-                rsync_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-            stdout_bytes, stderr_bytes = await proc.communicate()
-            stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-            stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
-
-            if proc.returncode != 0:
-                if proc.returncode is None:
-                    proc.terminate()
-                if "rsync: --mkpath" in stderr or "rsync: unrecognized option" in stderr:
-                    error_msg = (
-                        "Rsync failed: --mkpath is not supported, please upgrade your rsync version to 3.2.0+ to "
-                        "improve performance (e.g. `brew install rsync`)"
-                    )
-                    raise RsyncError(rsync_cmd, proc.returncode, stdout, error_msg)
-
-                raise RsyncError(rsync_cmd, proc.returncode, stdout, stderr)
+        """Async version - delegate to data_transfer module."""
+        client = data_transfer.RsyncClient(self.namespace, self.service_name)
+        await client.run_rsync_command_async(rsync_cmd, create_target_dir)
 
     def _get_rsync_cmd(
         self,
@@ -2411,55 +2262,18 @@ class Compute:
         filter_options: str = None,
         force: bool = False,
     ):
-        if dest:
-            # Handle tilde prefix - treat as relative to home/working directory
-            if dest.startswith("~/"):
-                # Strip ~/ prefix to make it relative
-                dest = dest[2:]
-
-            # Handle absolute vs relative paths
-            if dest.startswith("/"):
-                # For absolute paths, store under special __absolute__ subdirectory in the rsync pod
-                # to preserve the path structure
-                dest_for_rsync = f"__absolute__{dest}"
-            else:
-                # Relative paths work as before
-                dest_for_rsync = dest
-            remote_dest = f"{self._base_rsync_url(rsync_local_port)}/{dest_for_rsync}"
-        else:
-            remote_dest = self._base_rsync_url(rsync_local_port)
-
-        source = [source] if isinstance(source, str) else source
-
-        for src in source:
-            if not Path(src).expanduser().exists():
-                raise ValueError(f"Could not locate path to sync up: {src}")
-
-        exclude_options = _get_rsync_exclude_options()
-
-        expanded_sources = []
-        for s in source:
-            path = Path(s).expanduser().absolute()
-            if not path.exists():
-                raise ValueError(f"Could not locate path to sync up: {s}")
-
-            path_str = str(path)
-            if contents and path.is_dir() and not str(s).endswith("/"):
-                path_str += "/"
-            expanded_sources.append(path_str)
-
-        source_str = " ".join(expanded_sources)
-
-        rsync_cmd = f"rsync -avL {exclude_options}"
-
-        if filter_options:
-            rsync_cmd += f" {filter_options}"
-
-        if force:
-            rsync_cmd += " --ignore-times"
-
-        rsync_cmd += f" {source_str} {remote_dest}"
-        return rsync_cmd
+        """Build rsync command - delegate to data_transfer module."""
+        client = data_transfer.RsyncClient(self.namespace, self.service_name)
+        return client.build_rsync_command(
+            source=source,
+            dest=dest,
+            rsync_local_port=rsync_local_port,
+            contents=contents,
+            filter_options=filter_options,
+            force=force,
+            is_download=False,
+            in_cluster=False,
+        )
 
     def _get_rsync_in_cluster_cmd(
         self,
@@ -2469,49 +2283,17 @@ class Compute:
         filter_options: str = None,
         force: bool = False,
     ):
-        """Generate rsync command for in-cluster execution."""
-        # Handle tilde prefix in dest - treat as relative to home/working directory
-        if dest and dest.startswith("~/"):
-            dest = dest[2:]  # Strip ~/ prefix to make it relative
-
-        source = [source] if isinstance(source, str) else source
-        if self.working_dir:
-            source = [src.replace(self.working_dir, "") for src in source]
-
-        if contents:
-            if self.working_dir:
-                source = [s if s.endswith("/") or not Path(self.working_dir, s).is_dir() else s + "/" for s in source]
-            else:
-                source = [s if s.endswith("/") or not Path(s).is_dir() else s + "/" for s in source]
-
-        source_str = " ".join(source)
-
-        exclude_options = _get_rsync_exclude_options()
-
-        base_remote = self._rsync_svc_url()
-
-        if dest is None:
-            # no dest specified -> use base
-            remote = base_remote
-        elif dest.startswith("rsync://"):
-            # if full rsync:// URL -> use as-is
-            remote = dest
-        else:
-            # if relative subdir specified -> append to base
-            remote = base_remote + dest.lstrip("/")
-
-        # rsync wants the remote last; ensure it ends with '/' so we copy *into* the dir
-        if not remote.endswith("/"):
-            remote += "/"
-
-        rsync_command = f"rsync -av {exclude_options}"
-        if filter_options:
-            rsync_command += f" {filter_options}"
-        if force:
-            rsync_command += " --ignore-times"
-
-        rsync_command += f" {source_str} {remote}"
-        return rsync_command
+        """Build rsync command for in-cluster - delegate to data_transfer module."""
+        client = data_transfer.RsyncClient(self.namespace, self.service_name)
+        return client.build_rsync_command(
+            source=source,
+            dest=dest,
+            contents=contents,
+            filter_options=filter_options,
+            force=force,
+            is_download=False,
+            in_cluster=True,
+        )
 
     def _rsync(
         self,
@@ -2534,32 +2316,14 @@ class Compute:
         filter_options: str = None,
         force: bool = False,
     ):
-        """Async version of _rsync_helper."""
+        """Async version of _rsync."""
         rsync_cmd = self._get_rsync_cmd(source, dest, rsync_local_port, contents, filter_options, force)
         await self._run_rsync_command_async(rsync_cmd)
 
     def _get_websocket_info(self, local_port: int):
-        rsync_local_port = local_port or serving_constants.LOCAL_NGINX_PORT
-        base_url = globals.service_url()
-
-        # api_url = globals.config.api_url
-
-        # # Determine if we need port forwarding to reach nginx proxy
-        # should_port_forward = api_url is None
-
-        # if should_port_forward:
-        #     base_url = globals.service_url()
-        # else:
-        #     # Direct access to nginx proxy via ingress
-        #     base_url = api_url  # e.g. "https://your.ingress.domain"
-
-        ws_url = f"{http_to_ws(base_url)}/rsync/{self.namespace}/"
-        parsed_url = urlparse(base_url)
-
-        # choose a local ephemeral port for the tunnel
-        start_from = (parsed_url.port or rsync_local_port) + 1
-        websocket_port = find_available_port(start_from, max_tries=10)
-        return websocket_port, ws_url
+        """Get websocket info - delegate to data_transfer module."""
+        client = data_transfer.RsyncClient(self.namespace, self.service_name)
+        return client.get_websocket_info(local_port)
 
     def rsync(
         self,
@@ -2570,13 +2334,17 @@ class Compute:
         filter_options: str = None,
         force: bool = False,
     ):
-        """Rsync from local to the rsync pod."""
-        # Note: use the nginx port by default since the rsync pod sits behind the nginx proxy
-        websocket_port, ws_url = self._get_websocket_info(local_port)
-
-        logger.debug(f"Opening WebSocket tunnel on port {websocket_port} to {ws_url}")
-        with WebSocketRsyncTunnel(websocket_port, ws_url) as tunnel:
-            self._rsync(source, dest, tunnel.local_port, contents, filter_options, force)
+        """Rsync from local to the rsync pod - delegate to data_transfer."""
+        data_transfer.rsync(
+            source=source,
+            dest=dest,
+            namespace=self.namespace,
+            service_name=self.service_name,
+            contents=contents,
+            filter_options=filter_options,
+            force=force,
+            local_port=local_port,
+        )
 
     async def rsync_async(
         self,
@@ -2587,12 +2355,17 @@ class Compute:
         filter_options: str = None,
         force: bool = False,
     ):
-        """Async version of rsync. Rsync from local to the rsync pod."""
-        websocket_port, ws_url = self._get_websocket_info(local_port)
-
-        logger.debug(f"Opening WebSocket tunnel on port {websocket_port} to {ws_url}")
-        with WebSocketRsyncTunnel(websocket_port, ws_url) as tunnel:
-            await self._rsync_async(source, dest, tunnel.local_port, contents, filter_options, force)
+        """Async rsync - delegate to data_transfer."""
+        await data_transfer.rsync_async(
+            source=source,
+            dest=dest,
+            namespace=self.namespace,
+            service_name=self.service_name,
+            contents=contents,
+            filter_options=filter_options,
+            force=force,
+            local_port=local_port,
+        )
 
     def rsync_in_cluster(
         self,
@@ -2602,7 +2375,7 @@ class Compute:
         filter_options: str = None,
         force: bool = False,
     ):
-        """Rsync from inside the cluster to the rsync pod."""
+        """Rsync from inside the cluster - delegate to data_transfer."""
         rsync_command = self._get_rsync_in_cluster_cmd(source, dest, contents, filter_options, force)
         self._run_rsync_command(rsync_command)
 
@@ -2614,7 +2387,7 @@ class Compute:
         filter_options: str = None,
         force: bool = False,
     ):
-        """Async version of rsync_in_cluster. Rsync from inside the cluster to the rsync pod."""
+        """Async rsync from inside the cluster - delegate to data_transfer."""
         rsync_command = self._get_rsync_in_cluster_cmd(source, dest, contents, filter_options, force)
         await self._run_rsync_command_async(rsync_command)
 
