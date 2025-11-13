@@ -12,7 +12,8 @@ import subprocess
 import sys
 import time
 from contextvars import ContextVar
-from typing import List, Optional
+from pathlib import Path
+from typing import List, Optional, Union
 
 import httpx
 
@@ -21,6 +22,7 @@ import websockets
 import yaml
 
 from kubetorch.constants import LOCALHOST
+from kubetorch.globals import PyspyProfilerConfig, TorchProfilerConfig
 from kubetorch.logger import get_logger
 from kubetorch.serving.constants import DEFAULT_DEBUG_PORT
 from kubetorch.utils import ServerLogsFormatter
@@ -45,6 +47,10 @@ LOG_CONFIG = {
         "kubetorch": {"level": "INFO", "handlers": [], "propagate": True},
     },
 }
+
+# Profiling constants
+PYSPY_SAMPLE_RATE_HZ = 100
+SUPPORTED_PROFILERS = ["torch", "pyspy"]
 
 
 def ensure_structured_logging():
@@ -784,6 +790,11 @@ def _serialize_body(body: dict, serialization: str):
         encoded_args = base64.b64encode(pickled_args).decode("utf-8")
         body["data"] = encoded_args
         return body
+
+    # We need to serialize profiler as pickle anyway, since it's a python object
+    if "profiler" in body.keys():
+        pickled_profiler = pickle.dumps(body["profiler"])
+        body["profiler"] = base64.b64encode(pickled_profiler).decode("utf-8")
     return body or {}
 
 
@@ -806,3 +817,40 @@ def _deserialize_response(response, serialization: str):
             return pickle.loads(pickled_result)
         return response_data
     return response.json()
+
+
+# Profiler utils
+def generate_profiler_output_filename(filename: str, file_suffix: str, service_name: str, request_id: str) -> str:
+    if filename:
+        return f"{filename}.{file_suffix}"
+    else:
+        return f"{service_name}_{request_id}.{file_suffix}"  # added request id to prevent collisions. The running ts will be a part of the file metadata.
+
+
+def parse_profiler_output(
+    call_output: dict, profiler: Union[PyspyProfilerConfig, TorchProfilerConfig], service_name: str, request_id: str
+):
+    profiler_output = call_output.pop("profiler_output")
+    profiler_output_path = profiler.output_path
+    profiler_output_filename = profiler.output_filename
+    profiler_output_suffix = profiler.output_file_suffix()
+
+    if not profiler_output_path:
+        profiler_output_path = str(Path.cwd())
+    profiler_output_filename = generate_profiler_output_filename(
+        filename=profiler_output_filename,
+        file_suffix=profiler_output_suffix,
+        service_name=service_name,
+        request_id=request_id,
+    )
+
+    output_full_path = Path(profiler_output_path) / Path(profiler_output_filename)
+
+    if profiler.output_format != "profiler":
+        with open(output_full_path, "w+") as output_file:
+            output_file.write(profiler_output)
+            logger.info(f"profiler output can be found in {output_full_path}")
+
+        return call_output.pop("fn_output"), None
+
+    return call_output.pop("fn_output"), profiler_output

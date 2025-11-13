@@ -110,7 +110,17 @@ Kubetorch provides several observability and debugging features to help monitor 
 
 * `Debugging tools <https://www.run.house/kubetorch/guides/debugging>`_ : Enables runtime introspection and debugging of workloads.
 
+
 .. toctree::
    :maxdepth: 1
 
    python/workload_configs
+
+
+Profiling
+-------
+
+.. toctree::
+   :maxdepth: 1
+
+   python/profiling
