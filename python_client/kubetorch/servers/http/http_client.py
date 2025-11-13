@@ -13,13 +13,14 @@ import httpx
 import requests
 import websockets
 
-from kubetorch.globals import config, DebugConfig, LoggingConfig, MetricsConfig, service_url
+from kubetorch.globals import config, DebugConfig, LoggingConfig, MetricsConfig, ProfilerConfig, service_url
 from kubetorch.logger import get_logger
 
 from kubetorch.servers.http.utils import (
     _deserialize_response,
     _serialize_body,
     generate_unique_request_id,
+    parse_profiler_output,
     request_id_ctx_var,
 )
 
@@ -1073,14 +1074,28 @@ class HTTPClient:
         serialization: str = "json",
         debug: Union[bool, DebugConfig, None] = None,
     ):
-        (endpoint, headers, stop_event, log_thread, metrics_thread, _,) = self._prepare_request(
+        (endpoint, headers, stop_event, log_thread, metrics_thread, request_id) = self._prepare_request(
             endpoint, stream_logs, stream_metrics, headers, pdb, serialization, logging_config, debug
         )
+
+        profiler: ProfilerConfig = body.get("profiler", None)
+
         try:
             json_data = _serialize_body(body, serialization)
             response = self.post(endpoint=endpoint, json=json_data, headers=headers)
             response.raise_for_status()
-            return _deserialize_response(response, serialization)
+            deserialize_response = _deserialize_response(response, serialization)
+
+            if profiler:
+                fn_output = parse_profiler_output(
+                    call_output=deserialize_response,
+                    profiler=profiler,
+                    service_name=self.service_name,
+                    request_id=request_id,
+                )
+                return fn_output
+
+            return deserialize_response
         finally:
             stop_event.set()
             # Block main thread to allow log streaming to complete if shutdown_grace_period > 0
@@ -1100,7 +1115,7 @@ class HTTPClient:
         debug: Union[bool, DebugConfig, None] = None,
     ):
         """Async version of call_method."""
-        (endpoint, headers, stop_event, log_task, monitoring_task, _,) = self._prepare_request_async(
+        (endpoint, headers, stop_event, log_task, monitoring_task, request_id) = self._prepare_request_async(
             endpoint, stream_logs, stream_metrics, headers, pdb, serialization, logging_config, debug
         )
         try:
@@ -1111,6 +1126,18 @@ class HTTPClient:
 
             if stream_logs and log_task:
                 await asyncio.sleep(0.5)
+
+            profiler: ProfilerConfig = body.get("profiler", None)
+            if profiler:
+
+                fn_output, profiler_output = parse_profiler_output(
+                    call_output=result, profiler=profiler, service_name=self.service_name, request_id=request_id
+                )
+
+                if profiler.output_format == "table":
+                    return fn_output, profiler_output
+
+                return fn_output
 
             return result
         finally:

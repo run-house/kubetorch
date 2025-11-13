@@ -25,3 +25,13 @@ Metrics Config
    :members:
 
    .. automethod:: __init__
+
+==============
+Profiling Config
+==============
+
+.. autoclass:: kubetorch.ProfilerConfig
+   :members:
+   :undoc-members:
+
+    .. automethod:: __init__
