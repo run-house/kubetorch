@@ -1127,14 +1127,19 @@ class Module:
                                             # If parsing fails, just print the event as is
                                             pass
 
+                                        is_multi_pod = len(self.compute.pods()) > 1
+                                        k8_object_type = labels.get("k8s_object_kind")
+                                        k8_object_name = labels.get("k8s_object_name")
+                                        add_pod_info = is_multi_pod and k8_object_type == "Pod"
+                                        pod_info = f" | {k8_object_name} |" if add_pod_info else ""
                                         if event_type == "Normal":
                                             if log_verbosity in [
                                                 LogVerbosity.INFO,
                                                 LogVerbosity.DEBUG,
                                             ]:
-                                                print(f'[EVENT] reason={reason} "{msg}"')
+                                                print(f'[EVENT]{pod_info} reason={reason} "{msg}"')
                                         else:
-                                            print(f'[EVENT] type={event_type} reason={reason} "{msg}"')
+                                            print(f'[EVENT]{pod_info} type={event_type} reason={reason} "{msg}"')
                                         continue
 
                                     # Skip if we've already seen this timestamp
