@@ -94,7 +94,7 @@ def test_hash_and_teardown(request):
         print(f"Keeping test artifacts for session with hash: {teardown_hash}")
 
 
-def get_compute(compute_type: str):
+def get_compute(compute_type: str, autoscale_replicas: int = 1):
     import kubetorch as kt
 
     if compute_type == "ray":
@@ -121,7 +121,7 @@ def get_compute(compute_type: str):
     )
 
     if compute_type == "knative":
-        compute = compute.autoscale(min_replicas=1)
+        compute = compute.autoscale(min_replicas=autoscale_replicas, initial_scale=autoscale_replicas)
 
     return compute
 
