@@ -12,7 +12,7 @@ import httpx
 import requests
 import websockets
 
-from kubetorch.globals import config, LoggingConfig, MetricsConfig, service_url
+from kubetorch.globals import config, LoggingConfig, MetricsConfig, ProfilerConfig, service_url
 from kubetorch.logger import get_logger
 
 from kubetorch.provisioning.constants import DEFAULT_NGINX_PORT
@@ -1013,13 +1013,28 @@ class HTTPClient:
             stop_event,
             log_thread,
             metrics_thread,
-            _,
+            request_id,
         ) = self._prepare_request(endpoint, stream_logs, stream_metrics, headers, serialization, logging_config)
+        profiler: ProfilerConfig = body.get("profiler", None)  # instance of PyspyProfilerConfig or TorchProfilerConfig
+
         try:
             json_data = _serialize_body(body, serialization)
             response = self.post(endpoint=endpoint, json=json_data, headers=headers)
             response.raise_for_status()
-            return _deserialize_response(response, serialization)
+            deserialize_response = _deserialize_response(response, serialization)
+
+            if profiler:
+                from kubetorch.serving.profiling import parse_profiler_output
+
+                fn_output = parse_profiler_output(
+                    call_output=deserialize_response,
+                    profiler=profiler,
+                    service_name=self.service_name,
+                    request_id=request_id,
+                )
+                return fn_output
+
+            return deserialize_response
         finally:
             stop_event.set()
             # Block main thread to allow log streaming to complete if shutdown_grace_period > 0
@@ -1043,7 +1058,7 @@ class HTTPClient:
             stop_event,
             log_task,
             monitoring_task,
-            _,
+            request_id,
         ) = self._prepare_request_async(endpoint, stream_logs, stream_metrics, headers, serialization, logging_config)
         try:
             json_data = _serialize_body(body, serialization)
@@ -1053,6 +1068,21 @@ class HTTPClient:
 
             if stream_logs and log_task:
                 await asyncio.sleep(0.5)
+
+            profiler: ProfilerConfig = body.get(
+                "profiler", None
+            )  # instance of PyspyProfilerConfig or TorchProfilerConfig
+            if profiler:
+                profiler: ProfilerConfig = body.get(
+                    "profiler", None
+                )  # instance of PyspyProfilerConfig or TorchProfilerConfig
+                if profiler:
+                    from kubetorch.serving.profiling import parse_profiler_output
+
+                    fn_output = parse_profiler_output(
+                        call_output=result, profiler=profiler, service_name=self.service_name, request_id=request_id
+                    )
+                    return fn_output
 
             return result
         finally:

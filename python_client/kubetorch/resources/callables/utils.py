@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Callable, Optional, Type, Union
 
-from kubetorch.globals import DebugConfig
+from kubetorch.globals import DebugConfig, ProfilerConfig
 from kubetorch.logger import get_logger
 from kubetorch.provisioning.constants import DEFAULT_DEBUG_PORT
 
@@ -252,10 +252,11 @@ def add_debugger_config_to_body(body: dict, debug: Union[bool, DebugConfig], pdb
     return body
 
 
-def build_call_body(*args, debug: Union[bool, DebugConfig] = None, pdb=None, **kwargs):
+def build_call_body(*args, debug: Union[bool, DebugConfig] = None, profiler: ProfilerConfig = None, pdb=None, **kwargs):
     body = {"args": list(args), "kwargs": kwargs}
 
     if debug or pdb:
         body = add_debugger_config_to_body(body=body, debug=debug, pdb=pdb)
-
+    if profiler:
+        body["profiler"] = profiler
     return body

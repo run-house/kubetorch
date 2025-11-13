@@ -105,6 +105,53 @@ class DebugConfig:
         return {"mode": self.mode, "port": self.port}
 
 
+@dataclass
+class ProfilerConfig:
+    """Configuration for profiling behavior on a Kubetorch service.
+
+    Attributes:
+        profiler_type: profiler type - "pyspy" (for CPU workloads) or "pytorch" (for GPU workloads)
+        output_path: Local directory path for saving profiling output (default: None, auto-generated if not set).
+        output_format: Output file format. Defaults: "flamegraph" for pyspy profiler, "chrometrace" for pytorch.
+        output_filename: Base name for the profiling output file (without extensions like .svg, .json, etc.; default: None, auto-generated if not set)
+        analyze_stack_traces: Should the profiler analyze Python and TorchScript stack traces. Relevant only to pytorch profiler.
+    """
+
+    profiler_type: Literal["pyspy", "pytorch"]
+    output_format: Literal["flamegraph", "raw", "speedscope", "chrometrace"] = None
+    output_path: str | None = None
+    output_filename: str | None = None
+    analyze_stack_traces: bool = True
+
+    def __post_init__(self):
+        if self.profiler_type not in SUPPORTED_PROFILERS:
+            raise ValueError(f"profiler_type must be 'pyspy' or 'pytorch', got {self.profiler_type!r}")
+        if self.profiler_type == "pytorch":
+            if not self.output_format:
+                self.output_format = "chrometrace"  # set default to "chrometrace"
+            elif self.output_format not in SUPPORTED_PYTORCH_OUTPUTS:
+                raise ValueError(
+                    f"Invalid profiler_output for Pytorch profiler: {self.output_format!r}. "
+                    f"Must be one of {SUPPORTED_PYTORCH_OUTPUTS}"
+                )
+        if self.profiler_type == "pyspy":
+            if not self.output_format:
+                self.output_format = "flamegraph"  # set default to "flamegraph"
+            elif self.output_format not in SUPPORTED_PYSPY_OUTPUTS:
+                raise ValueError(
+                    f"Invalid profiler_output for Pyspy profiler: {self.output_format!r}. "
+                    f"Must be one of {SUPPORTED_PYSPY_OUTPUTS}"
+                )
+
+    def output_file_suffix(self):
+        if self.output_format == "flamegraph":
+            return "svg"
+        elif self.output_format == "raw":
+            return "txt"
+        else:
+            return "json"
+
+
 @dataclass(frozen=True)
 class PFHandle:
     process: subprocess.Popen

@@ -397,7 +397,7 @@ jobs:
       - name: Run monitoring tests
         run: |
           cd python_client
-          pytest -v --durations=25 --level minimal -k "monitoring"
+          pytest -v --durations=25 --level minimal -k "monitoring" -m "not gpu_test"
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: true
