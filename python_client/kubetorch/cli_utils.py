@@ -921,26 +921,31 @@ def validate_provided_pod(service_name, provided_pod, service_pods):
     return pod_name
 
 
-def load_kubetorch_volumes_for_service(namespace, service_name, core_v1) -> List[str]:
+def load_kubetorch_volumes_from_pods(pods: List[client.V1Pod]) -> List[str]:
     """Extract volume information from service definition"""
     volumes = []
 
+    if pods:
+        pod = pods[0]
+        for v in pod.spec.volumes or []:
+            if v.persistent_volume_claim:
+                volumes.append(v.name)
+
+    return volumes
+
+
+def load_kubetorch_volumes_for_service(namespace, service_name, core_v1) -> List[str]:
+    """Extract volume information from service definition"""
     try:
         pods = core_v1.list_namespaced_pod(
             namespace=namespace,
             label_selector=f"kubetorch.com/service={service_name}",
         )
-        if pods.items:
-            pod = pods.items[0]
-            for v in pod.spec.volumes or []:
-                if v.persistent_volume_claim:
-                    volumes.append(v.name)
-        return volumes
+        return load_kubetorch_volumes_from_pods(pods.items)
 
     except Exception as e:
         logger.warning(f"Failed to extract volumes from service: {e}")
-
-    return volumes
+        return []
 
 
 def create_table_for_output(columns: List[set], no_wrap_columns_names: list = None, header_style: dict = None):

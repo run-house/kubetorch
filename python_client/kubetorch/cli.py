@@ -13,6 +13,7 @@ from typing import List
 from urllib.parse import urlparse
 
 import httpx
+from kubernetes import client
 from kubernetes.client.rest import ApiException
 from rich.syntax import Syntax
 
@@ -27,7 +28,7 @@ from .cli_utils import (
     get_logs_from_loki,
     is_ingress_vpc_only,
     load_ingress,
-    load_kubetorch_volumes_for_service,
+    load_kubetorch_volumes_from_pods,
     notebook_placeholder,
     port_forward_to_pod,
     SecretAction,
@@ -659,9 +660,17 @@ def kt_list(
 
             unified_services.sort(key=get_update_time, reverse=True)
 
-        # Get pod maps
+        try:
+            pods = core_api.list_namespaced_pod(
+                namespace=namespace, label_selector=f"{serving_constants.KT_SERVICE_LABEL}"
+            )
+        except client.exceptions.ApiException as e:
+            logger.warning(f"Failed to list pods for all services in namespace {namespace}: {e}")
+            return
         pod_map = {
-            svc["name"]: BaseServiceManager.get_pods_for_service_static(svc["name"], namespace, core_api)
+            svc["name"]: [
+                pod for pod in pods.items if pod.metadata.labels.get(serving_constants.KT_SERVICE_LABEL) == svc["name"]
+            ]
             for svc in unified_services
         }
 
@@ -708,7 +717,7 @@ def kt_list(
             ttl = annotations.get(serving_constants.INACTIVITY_TTL_ANNOTATION, "None")
             creator = labels.get(serving_constants.KT_USERNAME_LABEL, "—")
 
-            volumes_display = load_kubetorch_volumes_for_service(namespace, name, core_api)
+            volumes_display = load_kubetorch_volumes_from_pods(pods)
 
             # Get resources from revision
             cpu = memory = gpu = None
