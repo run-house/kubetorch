@@ -2,7 +2,6 @@ from kubetorch.data_store import BroadcastWindow, DataStoreError, get, ls, put, 
 from kubetorch.globals import (  # noqa: F401
     config,
     DebugConfig,
-    KubernetesCredentialsError,
     LoggingConfig,
     MetricsConfig,
     ProfilerConfig,
@@ -26,6 +25,7 @@ from kubetorch.resources.compute.utils import (
     ServiceTimeoutError,
     VersionMismatchError,
 )  # noqa: F401
+from kubetorch.provisioning.utils import KubernetesCredentialsError # noqa: F401
 from kubetorch.resources.images.image import Image  # noqa: F401
 from kubetorch.resources.secrets import Secret, secret  # noqa: F401
 from kubetorch.resources.volumes.volume import Volume  # noqa: F401  # noqa: F401
