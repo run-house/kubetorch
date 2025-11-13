@@ -13,9 +13,5 @@ runs:
       run: |
         python -m pip install --upgrade pip
         python -m pip install uv build
-        uv pip install --system httpx pytest torch pytest-asyncio
-        cd python_client
-        python -m build --wheel
-        WHEEL_FILE=$(ls -t "$(pwd)/dist"/*.whl 2>/dev/null | head -n 1)
-        uv pip install --system --force-reinstall "$WHEEL_FILE[server,client]"
+        uv pip install --system torch prometheus_api_client
       shell: bash

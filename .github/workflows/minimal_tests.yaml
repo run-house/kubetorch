@@ -48,8 +48,8 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        uses: ./.github/workflows/install_dependencies
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
 
       - name: Setup authentications
         uses: ./.github/workflows/gke_authentications
@@ -97,8 +97,8 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        uses: ./.github/workflows/install_dependencies
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
 
       - name: Setup authentications
         uses: ./.github/workflows/gke_authentications
@@ -146,11 +146,11 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        uses: ./.github/workflows/install_dependencies
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
 
-      - name: Install monitoring tests requirements
-        run: pip install prometheus_api_client
+      - name: Install Additional Dependencies
+        uses: ./.github/workflows/install_additional_dependencies
 
       - name: Setup authentications
         uses: ./.github/workflows/gke_authentications
@@ -198,8 +198,8 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        uses: ./.github/workflows/install_dependencies
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
 
       - name: Setup authentications
         uses: ./.github/workflows/gke_authentications
@@ -246,8 +246,11 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        uses: ./.github/workflows/install_dependencies
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
+
+      - name: Install Additional Dependencies
+        uses: ./.github/workflows/install_additional_dependencies
 
       - name: Install Ray
         run: |
@@ -298,8 +301,8 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        uses: ./.github/workflows/install_dependencies
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
 
       - name: Setup authentications
         uses: ./.github/workflows/gke_authentications
@@ -346,8 +349,8 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        uses: ./.github/workflows/install_dependencies
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
 
       - name: Setup authentications
         uses: ./.github/workflows/gke_authentications
@@ -394,8 +397,8 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        uses: ./.github/workflows/install_dependencies
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
 
       - name: Setup authentications
         uses: ./.github/workflows/gke_authentications
@@ -444,8 +447,8 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        uses: ./.github/workflows/install_dependencies
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
 
       - name: Setup authentications
         uses: ./.github/workflows/gke_authentications
@@ -492,8 +495,8 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        uses: ./.github/workflows/install_dependencies
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
 
       - name: Setup authentications
         uses: ./.github/workflows/gke_authentications
@@ -538,8 +541,8 @@ jobs:
       - name: Checkout repository code
         uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        uses: ./.github/workflows/install_dependencies
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
 
       - name: Setup authentications
         uses: ./.github/workflows/gke_authentications
