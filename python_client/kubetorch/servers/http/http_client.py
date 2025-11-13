@@ -458,6 +458,10 @@ class HTTPClient:
     # ----------------- Metrics Helpers ----------------- #
 
     def _get_stream_metrics_queries(self, scope: Literal["pod", "resource"], interval: int):
+        # lookback window for each Prometheus query
+        # For short intervals (1–60s polling): look back ≤ 2 min
+        # For slow polling (≥ 1 min): allow up to 5 min lookback
+        effective_window = min(max(30, interval * 3), 120 if interval < 60 else 300)
         metric_queries = {}
         if scope == "pod":
             active_pods = self.compute.pod_names()
@@ -467,25 +471,27 @@ class HTTPClient:
 
             pod_regex = "|".join(active_pods)
             metric_queries = {
-                # CPU: Use rate of CPU seconds - cores utilized
-                "CPU": f'sum by (pod) (rate(container_cpu_usage_seconds_total{{container!="",pod=~"{pod_regex}"}}[{interval}s]))',
+                # CPU: seconds of CPU used per second (i.e. cores used)
+                # Note: using irate ensures we always capture at least 2 samples in the window
+                # https://prometheus.io/docs/prometheus/latest/querying/functions/#irate
+                "CPU": f'sum by (pod) (irate(container_cpu_usage_seconds_total{{container!="",pod=~"{pod_regex}"}}[{effective_window}s]))',
                 # Memory: Working set in MiB
-                "Mem": f'avg_over_time(container_memory_working_set_bytes{{container!="",pod=~"{pod_regex}"}}[{interval}s]) / 1024 / 1024',
+                "Mem": f'last_over_time(container_memory_working_set_bytes{{container!="",pod=~"{pod_regex}"}}[{effective_window}s]) / 1024 / 1024',
                 # GPU metrics from DCGM
-                "GPU_SM": f'avg by (pod) (avg_over_time(DCGM_FI_DEV_GPU_UTIL{{pod=~"{pod_regex}"}}[{interval}s]))',
-                "GPUMiB": f'avg by (pod) (avg_over_time(DCGM_FI_DEV_FB_USED{{pod=~"{pod_regex}"}}[{interval}s]))',
+                "GPU_SM": f'avg by (pod) (last_over_time(DCGM_FI_DEV_GPU_UTIL{{pod=~"{pod_regex}"}}[{effective_window}s]))',
+                "GPUMiB": f'avg by (pod) (last_over_time(DCGM_FI_DEV_FB_USED{{pod=~"{pod_regex}"}}[{effective_window}s]))',
             }
 
         elif scope == "resource":
             service_name_regex = f"{self.compute.service_name}.+"
             metric_queries = {
                 # CPU: Use rate of CPU seconds - cores utilized
-                "CPU": f'avg((rate(container_cpu_usage_seconds_total{{container!="",pod=~"{service_name_regex}"}}[{interval}s])))',
+                "CPU": f'avg((irate(container_cpu_usage_seconds_total{{container!="",pod=~"{service_name_regex}"}}[{effective_window}s])))',
                 # Memory: Working set in MiB
-                "Mem": f'avg(avg_over_time(container_memory_working_set_bytes{{container!="",pod=~"{service_name_regex}"}}[{interval}s]) / 1024 / 1024)',
+                "Mem": f'avg(last_over_time(container_memory_working_set_bytes{{container!="",pod=~"{service_name_regex}"}}[{effective_window}s]) / 1024 / 1024)',
                 # GPU metrics from DCGM
-                "GPU_SM": f'avg(avg_over_time(DCGM_FI_DEV_GPU_UTIL{{pod=~"{service_name_regex}"}}[{interval}s]))',
-                "GPUMiB": f'avg(avg_over_time(DCGM_FI_DEV_FB_USED{{pod=~"{service_name_regex}"}}[{interval}s]))',
+                "GPU_SM": f'avg(last_over_time(DCGM_FI_DEV_GPU_UTIL{{pod=~"{service_name_regex}"}}[{effective_window}s]))',
+                "GPUMiB": f'avg(last_over_time(DCGM_FI_DEV_FB_USED{{pod=~"{service_name_regex}"}}[{effective_window}s]))',
             }
 
         return metric_queries
