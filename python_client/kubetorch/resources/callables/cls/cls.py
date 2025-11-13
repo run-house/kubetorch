@@ -1,6 +1,6 @@
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.module import Module
-from kubetorch.resources.callables.utils import extract_pointers, SHELL_COMMANDS
+from kubetorch.resources.callables.utils import extract_pointers, SHELL_COMMANDS, update_http_call_body
 
 logger = get_logger(__name__)
 
@@ -65,17 +65,21 @@ class Cls(Module):
         stream_logs = kwargs.pop("stream_logs", None)
         stream_metrics = kwargs.pop("stream_metrics", None)
         pdb = kwargs.pop("pdb", None)
+        profiler = kwargs.pop("profiler", None)
+
         if pdb:
             logger.info(f"Debugging remote cls {self.name}.{method_name}")
         elif stream_logs:
             logger.info(f"Calling remote cls {self.name}.{method_name}")
+
+        body = update_http_call_body(*args, **kwargs, profiler=profiler)
 
         response = client.call_method(
             self.endpoint(method_name),
             stream_logs=stream_logs,
             stream_metrics=stream_metrics,
             headers=self.request_headers,
-            body={"args": list(args), "kwargs": kwargs},
+            body=body,
             pdb=pdb,
             serialization=kwargs.pop("serialization", self.serialization),
         )
@@ -87,17 +91,21 @@ class Cls(Module):
         stream_logs = kwargs.pop("stream_logs", None)
         stream_metrics = kwargs.pop("stream_metrics", None)
         pdb = kwargs.pop("pdb", None)
+        profiler = kwargs.pop("profiler", None)
+
         if pdb:
             logger.info(f"Debugging remote cls {self.name}.{method_name} (async)")
         elif stream_logs:
             logger.info(f"Calling remote cls {self.name}.{method_name} (async)")
+
+        body = update_http_call_body(*args, **kwargs, profiler=profiler)
 
         response = await client.call_method_async(
             self.endpoint(method_name),
             stream_logs=stream_logs,
             stream_metrics=stream_metrics,
             headers=self.request_headers,
-            body={"args": list(args), "kwargs": kwargs},
+            body=body,
             pdb=pdb,
             serialization=kwargs.pop("serialization", self.serialization),
         )
