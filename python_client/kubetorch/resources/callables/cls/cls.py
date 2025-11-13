@@ -66,13 +66,14 @@ class Cls(Module):
         stream_metrics = kwargs.pop("stream_metrics", None)
         debug = kwargs.pop("debug", None)
         pdb = kwargs.pop("pdb", None)  # Keep for backward compatibility
+        profiler = kwargs.pop("profiler", None)
         serialization = kwargs.pop("serialization", self.serialization)
 
         # debug takes precedence over pdb
         if debug is None and pdb is not None:
             debug = pdb
 
-        body = build_call_body(*args, **kwargs, debug=debug, pdb=pdb)
+        body = build_call_body(*args, **kwargs, debug=debug, pdb=pdb, profiler=profiler)
 
         # Resolve stream_logs using module's property if not explicitly set
         stream_logs = stream_logs if stream_logs is not None else self.stream_logs
@@ -100,13 +101,14 @@ class Cls(Module):
         stream_metrics = kwargs.pop("stream_metrics", None)
         debug = kwargs.pop("debug", None)
         pdb = kwargs.pop("pdb", None)  # Keep for backward compatibility
+        profiler = kwargs.pop("profiler", None)
         serialization = kwargs.pop("serialization", self.serialization)
 
         # debug takes precedence over pdb
         if debug is None and pdb is not None:
             debug = pdb
 
-        body = build_call_body(*args, **kwargs, debug=debug, pdb=pdb)
+        body = build_call_body(*args, **kwargs, debug=debug, pdb=pdb, profiler=profiler)
 
         # Resolve stream_logs using module's property if not explicitly set
         stream_logs = stream_logs if stream_logs is not None else self.stream_logs
