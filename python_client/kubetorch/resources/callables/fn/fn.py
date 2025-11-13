@@ -1,6 +1,6 @@
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.module import Module
-from kubetorch.resources.callables.utils import extract_pointers
+from kubetorch.resources.callables.utils import extract_pointers, prepare_notebook_fn
 
 logger = get_logger(__name__)
 
@@ -113,6 +113,9 @@ def fn(function_obj=None, name: str = None, get_if_exists=True, reload_prefixes=
     """
     if function_obj:
         fn_pointers = extract_pointers(function_obj)
+        if fn_pointers[1] == "notebook":
+            fn_pointers = prepare_notebook_fn(fn_pointers, name=fn_pointers[2] or name)
+
         name = name or (fn_pointers[2] if fn_pointers else function_obj.__name__)
         new_fn = Fn(
             name=name,

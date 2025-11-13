@@ -436,6 +436,30 @@ def test_global_kt_cache():
     assert "rich" in stdout
 
 
+@pytest.mark.level("minimal")
+def test_notebook_fn():
+    from pathlib import Path
+    from unittest.mock import patch
+
+    import kubetorch as kt
+
+    def notebook_fn(a, b):
+        return a + b
+
+    fn_file = Path.cwd() / f"{notebook_fn.__name__}_fn.py"
+    try:
+        # Patch _extract_module_path to return None, simulating notebook/ipython (no __file__)
+        with patch("kubetorch.resources.callables.utils._extract_module_path", return_value=None):
+            compute = kt.Compute(cpus=".01", gpu_anti_affinity=True)
+            remote_fn = kt.fn(notebook_fn, name=get_test_fn_name()).to(compute)
+
+            assert fn_file.exists()
+            assert remote_fn(1, 2) == 3
+    finally:
+        if fn_file.exists():
+            fn_file.unlink()
+
+
 # --------- Error handling tests ---------
 @pytest.mark.skip("Too slow for CI but useful for manual testing")
 @pytest.mark.level("minimal")

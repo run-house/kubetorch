@@ -1,6 +1,7 @@
 from kubetorch.globals import config, MetricsConfig  # noqa: F401
 from kubetorch.resources.callables.cls.cls import Cls, cls  # noqa: F401
 from kubetorch.resources.callables.fn.fn import Fn, fn  # noqa: F401
+from kubetorch.resources.callables.utils import NotebookError
 from kubetorch.resources.compute.app import App, app  # noqa: F401
 from kubetorch.resources.compute.compute import Compute  # noqa: F401
 from kubetorch.resources.compute.decorators import async_, autoscale, compute, distribute  # noqa: F401
@@ -42,6 +43,7 @@ EXCEPTION_REGISTRY = {
     "ServiceTimeoutError": ServiceTimeoutError,
     "StartupError": StartupError,
     "PodTerminatedError": PodTerminatedError,
+    "NotebookError": NotebookError,
     "QueueUnschedulableError": QueueUnschedulableError,
     "KnativeServiceConflictError": KnativeServiceConflictError,
     "RsyncError": RsyncError,
