@@ -1,6 +1,6 @@
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.module import Module
-from kubetorch.resources.callables.utils import extract_pointers, SHELL_COMMANDS
+from kubetorch.resources.callables.utils import extract_pointers, SHELL_COMMANDS, update_http_call_body
 
 logger = get_logger(__name__)
 
@@ -66,6 +66,8 @@ class Cls(Module):
         stream_metrics = kwargs.pop("stream_metrics", None)
         debug = kwargs.pop("debug", None)
         pdb = kwargs.pop("pdb", None)  # Keep for backward compatibility
+        profiler = kwargs.pop("profiler", None)
+        serialization = kwargs.pop("serialization", self.serialization)
 
         # debug takes precedence over pdb
         if debug is None and pdb is not None:
@@ -74,10 +76,12 @@ class Cls(Module):
         # Resolve stream_logs using module's property if not explicitly set
         stream_logs = stream_logs if stream_logs is not None else self.stream_logs
 
-        if debug:
+        if pdb:
             logger.info(f"Debugging remote cls {self.name}.{method_name}")
         elif stream_logs:
             logger.info(f"Calling remote cls {self.name}.{method_name}")
+
+        body = update_http_call_body(*args, **kwargs, profiler=profiler)
 
         response = client.call_method(
             self.endpoint(method_name),
@@ -85,10 +89,10 @@ class Cls(Module):
             self.logging_config,
             stream_metrics=stream_metrics,
             headers=self.request_headers,
-            body={"args": list(args), "kwargs": kwargs},
             debug=debug,
             pdb=pdb,  # Keep for backward compatibility
-            serialization=kwargs.pop("serialization", self.serialization),
+            body=body,
+            serialization=serialization,
         )
         return response
 
@@ -99,6 +103,8 @@ class Cls(Module):
         stream_metrics = kwargs.pop("stream_metrics", None)
         debug = kwargs.pop("debug", None)
         pdb = kwargs.pop("pdb", None)  # Keep for backward compatibility
+        profiler = kwargs.pop("profiler", None)
+        serialization = kwargs.pop("serialization", self.serialization)
 
         # debug takes precedence over pdb
         if debug is None and pdb is not None:
@@ -107,10 +113,12 @@ class Cls(Module):
         # Resolve stream_logs using module's property if not explicitly set
         stream_logs = stream_logs if stream_logs is not None else self.stream_logs
 
-        if debug:
+        if pdb:
             logger.info(f"Debugging remote cls {self.name}.{method_name} (async)")
         elif stream_logs:
             logger.info(f"Calling remote cls {self.name}.{method_name} (async)")
+
+        body = update_http_call_body(*args, **kwargs, profiler=profiler)
 
         response = await client.call_method_async(
             self.endpoint(method_name),
@@ -118,10 +126,10 @@ class Cls(Module):
             self.logging_config,
             stream_metrics=stream_metrics,
             headers=self.request_headers,
-            body={"args": list(args), "kwargs": kwargs},
             debug=debug,
             pdb=pdb,  # Keep for backward compatibility
-            serialization=kwargs.pop("serialization", self.serialization),
+            body=body,
+            serialization=serialization,
         )
         return response
 

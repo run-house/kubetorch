@@ -498,31 +498,35 @@ def is_running_in_container():
     return Path("/.dockerenv").exists()
 
 
-async def run_in_executor_with_context(executor, func, *args):
+async def run_in_executor_with_context(executor, func, *args, **kwargs):
     """
     Helper to run a function in an executor while preserving the request_id context.
-
     This wrapper captures the current request_id from the context before running
     the function in a thread pool executor, then sets it in the new thread.
+    Args:
+        executor: Optional executor to use.
+        func: The callable to execute in a background thread.
+        *args, **kwargs: Arguments to pass directly to func(*args, **kwargs).
     """
     import asyncio
 
     # Capture the current request_id before switching threads
     current_request_id = request_id_ctx_var.get("-")
 
-    def wrapper(*args):
+    def wrapper():
         # Set the request_id in the executor thread
         token = None
         if current_request_id != "-":
             token = request_id_ctx_var.set(current_request_id)
         try:
-            return func(*args)
+            return func(*args, **kwargs)
         finally:
             # Clean up the context to avoid leaking between requests
             if token is not None:
                 request_id_ctx_var.reset(token)
 
-    return await asyncio.get_event_loop().run_in_executor(executor, wrapper, *args)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(executor, wrapper)
 
 
 def should_reload(deployed_as_of: Optional[str] = None) -> bool:
@@ -1441,6 +1445,7 @@ async def run_callable_internal(
     # Process the call
     args = []
     kwargs = {}
+    profiler = None
     if params:
         if serialization == "pickle":
             # Handle pickle serialization - extract data from dictionary wrapper
@@ -1458,6 +1463,7 @@ async def run_callable_internal(
         # Default JSON handling
         args = params.get("args", [])
         kwargs = params.get("kwargs", {})
+        profiler = params.get("profiler", {})
 
     if method_name:
         if not hasattr(callable_obj, method_name):
@@ -1490,6 +1496,28 @@ async def run_callable_internal(
                 return user_method(*args, **kwargs)
 
         result = await run_in_executor_with_context(None, debug_and_run)
+    elif profiler:
+
+        from kubetorch.servers.http.profiling import run_with_profile
+
+        request_id = request_id_ctx_var.get("-")
+        logger.debug(
+            f"Running {cls_or_fn_name} with profiler: {profiler} (callable_name={callable_name}, request_id={request_id})"
+        )
+
+        fn_output, profiler_output = await run_in_executor_with_context(
+            None,
+            run_with_profile,
+            user_method,
+            *args,
+            profiler=profiler,
+            request_id=request_id,
+            callable_name=callable_name,
+            **kwargs,
+        )
+
+        result = {"fn_output": fn_output, "profiler_output": profiler_output}
+
     else:
         logger.debug(f"Calling remote callable {callable_name}")
         if is_async_method:

@@ -5,7 +5,7 @@ import os
 import threading
 import time
 import urllib.parse
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from datetime import datetime
 from typing import Literal, Union
 
@@ -22,7 +22,9 @@ from kubetorch.servers.http.utils import (
     _deserialize_response,
     _serialize_body,
     generate_unique_request_id,
+    PYSPY_SAMPLE_RATE_HZ,
     request_id_ctx_var,
+    SUPPORTED_PROFILERS,
 )
 
 from kubetorch.serving.constants import DEFAULT_DEBUG_PORT, DEFAULT_NGINX_PORT
@@ -929,6 +931,75 @@ class HTTPClient:
 
         self._collect_metrics(stop_event, sync_http_get, sync_sleep, metrics_config)
 
+    def _parse_pyspy_raw_data(self, raw_data, user_func_name, sampling_rate_hz=PYSPY_SAMPLE_RATE_HZ):
+        """
+        Parses pyspy raw data and prints user's function pyspy data to the terminal as a table.
+        """
+        if not isinstance(raw_data, str) or not raw_data.strip():
+            print("Error: No raw data provided for processing.")
+            return
+
+        samples = raw_data.strip().split("\n")
+
+        # Counters
+        line_self_samples_counter = Counter()  # Stores {line_frame_name: self_samples_count}
+        target_cumulative_samples = 0  # Total time spent in the function stack (samples)
+        all_samples_count = 0
+        # 1. First Pass: Calculate Total Cumulative Samples and Self-Samples per function line / frame
+        for sample in samples:
+            sample = sample.strip()
+            if not sample or " " not in sample:
+                continue
+
+            try:
+                stack_part, count_str = sample.rsplit(" ", 1)
+                count = int(count_str)
+                all_samples_count = all_samples_count + count
+            except ValueError:
+                continue
+
+            frames = stack_part.split(";")
+
+            # Check if the target function is in the stack at all (Cumulative)
+            if any(user_func_name in f for f in frames):
+                target_cumulative_samples += count
+
+                # Find the deepest frame containing the target function name
+                deepest_target_frame = next((frame for frame in reversed(frames) if user_func_name in frame), None)
+
+                # If the target function is the deepest visible frame, count the samples for that specific line
+                if deepest_target_frame and deepest_target_frame.split(" (")[0].strip() == user_func_name:
+                    line_self_samples_counter[deepest_target_frame] += count
+
+        # 2. Convert Samples to Time (Seconds)
+        if target_cumulative_samples == 0:
+            print(f"No samples were collected while '{user_func_name}' was actively running.")
+            return
+
+        # Total estimated CPU time for the function's stack
+        total_estimated_time_s = target_cumulative_samples / sampling_rate_hz
+
+        print(f"\n## 📊 Estimated CPU usage for '{user_func_name}'")
+        print(f"  (Sampling Rate: {sampling_rate_hz} Hz)")
+        print("------------------------------------------------------------------")
+        print(f"Total Estimated CPU Time (Cumulative): {total_estimated_time_s:.2f} seconds")
+        print("------------------------------------------------------------------")
+        print(" Est. Time (s) | % of Total Func. Time | Function Frame")
+        print("------------------------------------------------------------------")
+
+        # 3. Display Results
+        for frame_name, samples in line_self_samples_counter.most_common():
+            # Estimated time for this specific line (Self Time)
+            estimated_time_s = samples / sampling_rate_hz
+
+            # Percentage of the function's total time (Cumulative Time)
+            percentage = (samples / target_cumulative_samples) * 100
+
+            print(f" {estimated_time_s:<13.2f} | {percentage:^20.2f}% | {frame_name}")
+
+        print("------------------------------------------------------------------")
+        print("*Time is estimated CPU time spent directly on that frame.")
+
     def call_method(
         self,
         endpoint: str,
@@ -948,7 +1019,21 @@ class HTTPClient:
             json_data = _serialize_body(body, serialization)
             response = self.post(endpoint=endpoint, json=json_data, headers=headers)
             response.raise_for_status()
-            return _deserialize_response(response, serialization)
+            deserialize_response = _deserialize_response(response, serialization)
+
+            profiler_type = body.get("profiler", None)
+            if profiler_type in SUPPORTED_PROFILERS:
+                profiler_output = deserialize_response.pop("profiler_output")
+                profiler_name = "PyTorch" if profiler_type == "torch" else "py-spy"
+                print(f"================  {profiler_name} Profiling Output ================ ")
+                if profiler_type == "pyspy":
+                    target_func_name = endpoint.split(f"{self.service_name}/")[-1].replace("/", ".")
+                    self._parse_pyspy_raw_data(profiler_output, user_func_name=target_func_name)
+                else:
+                    print(profiler_output)
+                return deserialize_response.pop("fn_output")
+
+            return deserialize_response
         finally:
             stop_event.set()
             # Block main thread to allow log streaming to complete if shutdown_grace_period > 0

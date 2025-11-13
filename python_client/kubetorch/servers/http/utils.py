@@ -46,6 +46,10 @@ LOG_CONFIG = {
     },
 }
 
+# Profiling constants
+PYSPY_SAMPLE_RATE_HZ = 100
+SUPPORTED_PROFILERS = ["torch", "pyspy"]
+
 
 def ensure_structured_logging():
     """Add our structured JSON handler to all loggers without removing user's handlers. We do this both when we
