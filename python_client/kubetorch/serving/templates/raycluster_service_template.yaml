@@ -12,8 +12,8 @@ spec:
   sessionAffinity: ClientIP  # Ensure requests from same client go to same pod
   {% endif %}
   selector:
-    kubetorch.com/service: {{ deployment_name }}
-    kubetorch.com/module: {{ module_name }}
+    kubetorch.com/service: "{{ deployment_name }}"
+    kubetorch.com/module: "{{ module_name }}"
     ray.io/node-type: head  # Only select head node pods
   ports:
     - name: http
