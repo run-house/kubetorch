@@ -40,33 +40,21 @@ class BaseServiceManager:
     def username(self):
         return self.global_config.username
 
-    @property
-    def base_labels(self):
-        """Base labels for all resources created by the service manager."""
-        from kubetorch import __version__
-
-        labels = {
-            serving_constants.KT_VERSION_LABEL: __version__,
-        }
-        if self.username:
-            labels[serving_constants.KT_USERNAME_LABEL] = self.username
-
-        return labels
-
+    @staticmethod
     def _get_labels(
-        self,
-        clean_module_name: str,
-        service_name: str,
+        template_label: str,
         custom_labels: dict = None,
         scheduler_name: str = None,
         queue_name: str = None,
     ) -> dict:
+        from kubetorch import __version__
+
         labels = {
-            **self.base_labels,
-            serving_constants.KT_MODULE_LABEL: clean_module_name,
-            serving_constants.KT_SERVICE_LABEL: service_name,
-            serving_constants.KT_TEMPLATE_LABEL: self.template_label,
+            serving_constants.KT_VERSION_LABEL: __version__,
+            serving_constants.KT_TEMPLATE_LABEL: template_label,
+            serving_constants.KT_USERNAME_LABEL: globals.config.username,
         }
+
         if custom_labels:
             labels.update(custom_labels)
 
@@ -75,7 +63,8 @@ class BaseServiceManager:
 
         return labels
 
-    def _get_annotations(self, custom_annotations: dict = None, inactivity_ttl: str = None) -> dict:
+    @staticmethod
+    def _get_annotations(custom_annotations: dict = None, inactivity_ttl: str = None) -> dict:
         annotations = {
             "prometheus.io/scrape": "true",
             "prometheus.io/path": serving_constants.PROMETHEUS_HEALTH_ENDPOINT,
@@ -378,11 +367,13 @@ class BaseServiceManager:
 
     def get_pods_for_service(self, service_name: str, **kwargs) -> List[client.V1Pod]:
         """Get all pods associated with this service."""
-        return self.get_pods_for_service_static(
-            service_name=service_name,
-            namespace=self.namespace,
-            core_api=self.core_api,
-        )
+        label_selector = f"{serving_constants.KT_SERVICE_LABEL}={service_name}"
+        try:
+            pods = self.core_api.list_namespaced_pod(namespace=self.namespace, label_selector=label_selector)
+            return pods.items
+        except client.exceptions.ApiException as e:
+            logger.warning(f"Failed to list pods for service {service_name}: {e}")
+            return []
 
     def check_service_ready(self, service_name: str, launch_timeout: int, **kwargs) -> bool:
         """Check if service is ready to serve requests.
