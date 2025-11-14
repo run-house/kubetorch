@@ -16,6 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: System :: Distributed Computing",
 ]
@@ -28,7 +29,7 @@ include = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.9,<=3.13"
+python = "^3.9"
 jinja2 = ">=3.0"
 kubernetes = ">=20.0.0,!=32.0.0"
 pydantic = ">=2.5.0"
