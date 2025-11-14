@@ -1,6 +1,7 @@
 import importlib
-
+import re
 from abc import abstractmethod
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import yaml
@@ -52,6 +53,50 @@ class BaseServiceManager:
 
         return labels
 
+    def _get_labels(
+        self,
+        clean_module_name: str,
+        service_name: str,
+        custom_labels: dict = None,
+        scheduler_name: str = None,
+        queue_name: str = None,
+    ) -> dict:
+        labels = {
+            **self.base_labels,
+            serving_constants.KT_MODULE_LABEL: clean_module_name,
+            serving_constants.KT_SERVICE_LABEL: service_name,
+            serving_constants.KT_TEMPLATE_LABEL: self.template_label,
+        }
+        if custom_labels:
+            labels.update(custom_labels)
+
+        if scheduler_name and queue_name:
+            labels["kai.scheduler/queue"] = queue_name
+
+        return labels
+
+    def _get_annotations(self, custom_annotations: dict = None, inactivity_ttl: str = None) -> dict:
+        annotations = {
+            "prometheus.io/scrape": "true",
+            "prometheus.io/path": serving_constants.PROMETHEUS_HEALTH_ENDPOINT,
+            "prometheus.io/port": "8080",
+        }
+        if custom_annotations:
+            annotations.update(custom_annotations)
+
+        if inactivity_ttl:
+            annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
+            logger.info(f"Configuring auto-down after idle timeout ({inactivity_ttl})")
+
+        return annotations
+
+    def _get_deployment_timestamp(self) -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def _clean_module_name(self, module_name: str) -> str:
+        """Clean module name to remove invalid characters for Kubernetes labels."""
+        return re.sub(r"[^A-Za-z0-9.-]|^[-.]|[-.]$", "", module_name)
+
     def _apply_yaml_template(self, yaml_file, replace_existing=False, **kwargs):
         with importlib.resources.files("kubetorch.serving.templates").joinpath(yaml_file).open("r") as f:
             template = Template(f.read())
@@ -79,14 +124,36 @@ class BaseServiceManager:
                 else:
                     raise
 
-    @abstractmethod
     def get_deployment_timestamp_annotation(self, service_name: str) -> Optional[str]:
-        """Get deployment timestamp annotation for this service type."""
-        pass
+        """Get deployment timestamp annotation for any service type."""
+        try:
+            resource = self.get_resource(service_name)
+            if resource:
+                # Handle both dict (Knative/RayCluster) and object (Deployment) formats
+                if isinstance(resource, dict):  # Knative/RayCluster
+                    return (
+                        resource.get("metadata", {})
+                        .get("annotations", {})
+                        .get("kubetorch.com/deployment_timestamp", None)
+                    )
+                else:  # V1Deployment object
+                    return resource.metadata.annotations.get("kubetorch.com/deployment_timestamp", None)
+        except client.exceptions.ApiException:
+            pass
+        return None
 
     @abstractmethod
     def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
         """Update deployment timestamp annotation for this service type."""
+        pass
+
+    def _create_timestamp_patch_body(self, new_timestamp: str) -> dict:
+        """Create the standard patch body for timestamp annotation updates."""
+        return {"metadata": {"annotations": {"kubetorch.com/deployment_timestamp": new_timestamp}}}
+
+    @abstractmethod
+    def get_resource(self, service_name: str) -> dict:
+        """Get a resource by name. Must be implemented by subclasses."""
         pass
 
     def fetch_kubetorch_config(self) -> dict:
@@ -310,7 +377,12 @@ class BaseServiceManager:
         raise NotImplementedError("Subclasses must implement get_endpoint")
 
     def get_pods_for_service(self, service_name: str, **kwargs) -> List[client.V1Pod]:
-        raise NotImplementedError("Subclasses must implement get_pods_for_service")
+        """Get all pods associated with this service."""
+        return self.get_pods_for_service_static(
+            service_name=service_name,
+            namespace=self.namespace,
+            core_api=self.core_api,
+        )
 
     def check_service_ready(self, service_name: str, launch_timeout: int, **kwargs) -> bool:
         """Check if service is ready to serve requests.
