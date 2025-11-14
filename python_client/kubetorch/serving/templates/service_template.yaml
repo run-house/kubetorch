@@ -12,8 +12,8 @@ spec:
   sessionAffinity: ClientIP  # Ensure requests from same client go to same pod
   {% endif %}
   selector:
-    kubetorch.com/service: {{ deployment_name }}
-    kubetorch.com/module: {{ module_name }}  # Only deployment pods have this set, so allows us to exclude the jump pod
+    kubetorch.com/service: "{{ deployment_name }}"
+    kubetorch.com/module: "{{ module_name }}"  # Only deployment pods have this set, so allows us to exclude the jump pod
   ports:
     - name: http
       port: 80

@@ -9,7 +9,7 @@ spec:
   replicas: {{ replicas }}
   selector:
     matchLabels:
-      kubetorch.com/service: {{ name }}
+      kubetorch.com/service: "{{ name }}"
   template:
     metadata:
       annotations: {{ template_annotations | tojson }}
