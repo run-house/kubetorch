@@ -189,7 +189,7 @@ class Compute:
             self._manifest = None
             return
 
-        # determine pod template vars
+        # determine pod spec vars
         namespace = namespace or globals.config.namespace
         server_port = serving_constants.DEFAULT_KT_SERVER_PORT
         service_account_name = service_account_name or serving_constants.DEFAULT_SERVICE_ACCOUNT_NAME
@@ -243,7 +243,7 @@ class Compute:
             "setup_script": "",
         }
 
-        pod_template = load_template(
+        pod_spec = load_template(
             template_file=serving_constants.POD_TEMPLATE_FILE,
             template_dir=os.path.join(
                 os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
@@ -261,7 +261,7 @@ class Compute:
             manifest_annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
 
         self._manifest = DeploymentServiceManager._build_base_manifest(
-            pod_template=pod_template,
+            pod_spec=pod_spec,
             namespace=namespace,
             replicas=replicas,
             inactivity_ttl=inactivity_ttl,
@@ -336,7 +336,7 @@ class Compute:
         return self._manifest
 
     @property
-    def pod_template(self):
+    def pod_spec(self):
         """Get the pod spec from the manifest."""
         # Extract pod spec from the appropriate resource in the manifest
         kind = self._manifest.get("kind")
@@ -410,9 +410,9 @@ class Compute:
 
     def _container(self):
         """Get the container from the pod spec."""
-        if "containers" not in self.pod_template:
-            raise ValueError("pod_template missing 'containers' field.")
-        return self.pod_template["containers"][0]
+        if "containers" not in self.pod_spec:
+            raise ValueError("pod_spec missing 'containers' field.")
+        return self.pod_spec["containers"][0]
 
     def _container_env(self):
         container = self._container()
@@ -451,7 +451,7 @@ class Compute:
 
     @server_image.setter
     def server_image(self, value: str):
-        """Set the server image in the pod template."""
+        """Set the server image in the pod spec."""
         self._container()["image"] = value
 
     @property
@@ -460,12 +460,12 @@ class Compute:
 
     @server_port.setter
     def server_port(self, value: int):
-        """Set the server port in the pod template."""
+        """Set the server port in the pod spec."""
         self._container()["ports"][0]["containerPort"] = value
 
     @property
     def env_vars(self):
-        # extract user-defined environment variables from rendered pod template
+        # extract user-defined environment variables from rendered pod spec
         kt_env_vars = [
             "POD_NAME",
             "POD_NAMESPACE",
@@ -552,7 +552,7 @@ class Compute:
 
     @property
     def gpu_type(self):
-        node_selector = self.pod_template.get("nodeSelector")
+        node_selector = self.pod_spec.get("nodeSelector")
         return node_selector.get("nvidia.com/gpu.product")
 
     @gpu_type.setter
@@ -561,13 +561,13 @@ class Compute:
         Args:
             value: GPU product name (e.g., "L4", "V100", "A100", "T4")
         """
-        if "nodeSelector" not in self.pod_template:
-            self.pod_template["nodeSelector"] = {}
-        self.pod_template["nodeSelector"]["nvidia.com/gpu.product"] = value
+        if "nodeSelector" not in self.pod_spec:
+            self.pod_spec["nodeSelector"] = {}
+        self.pod_spec["nodeSelector"]["nvidia.com/gpu.product"] = value
 
     @property
     def gpu_memory(self):
-        annotations = self.pod_template.get("annotations", {})
+        annotations = self.pod_spec.get("annotations", {})
         return annotations.get("gpu-memory")
 
     @gpu_memory.setter
@@ -576,16 +576,16 @@ class Compute:
         Args:
             value: GPU memory in MiB (e.g., "4096", "8192", "16384")
         """
-        if "annotations" not in self.pod_template:
-            self.pod_template["annotations"] = {}
-        self.pod_template["annotations"]["gpu-memory"] = value
+        if "annotations" not in self.pod_spec:
+            self.pod_spec["annotations"] = {}
+        self.pod_spec["annotations"]["gpu-memory"] = value
 
     @property
     def volumes(self):
         if not self._volumes:
             volumes = []
-            if "volumes" in self.pod_template:
-                for volume in self.pod_template["volumes"]:
+            if "volumes" in self.pod_spec:
+                for volume in self.pod_spec["volumes"]:
                     # Skip the shared memory volume
                     if volume["name"] == "dshm":
                         continue
@@ -600,10 +600,10 @@ class Compute:
 
     @property
     def shared_memory_limit(self):
-        if "volumes" not in self.pod_template:
+        if "volumes" not in self.pod_spec:
             return None
 
-        for volume in self.pod_template["volumes"]:
+        for volume in self.pod_spec["volumes"]:
             if volume.get("name") == "dshm" and "emptyDir" in volume:
                 empty_dir = volume["emptyDir"]
                 return empty_dir.get("sizeLimit")
@@ -616,17 +616,17 @@ class Compute:
         Args:
             value: Size limit (e.g., "512Mi", "1Gi", "2G")
         """
-        if "volumes" not in self.pod_template:
-            self.pod_template["volumes"] = []
+        if "volumes" not in self.pod_spec:
+            self.pod_spec["volumes"] = []
 
         # Find existing dshm volume and update it
-        for volume in self.pod_template["volumes"]:
+        for volume in self.pod_spec["volumes"]:
             if volume.get("name") == "dshm" and "emptyDir" in volume:
                 volume["emptyDir"]["sizeLimit"] = value
                 return
 
         # Add new dshm volume if not found
-        self.pod_template["volumes"].append({"name": "dshm", "emptyDir": {"medium": "Memory", "sizeLimit": value}})
+        self.pod_spec["volumes"].append({"name": "dshm", "emptyDir": {"medium": "Memory", "sizeLimit": value}})
 
     # Alias for backward compatibility (deprecated)
     @property
@@ -641,7 +641,7 @@ class Compute:
 
     @property
     def node_selector(self):
-        return self.pod_template.get("nodeSelector")
+        return self.pod_spec.get("nodeSelector")
 
     @node_selector.setter
     def node_selector(self, value: dict):
@@ -649,7 +649,7 @@ class Compute:
         Args:
             value: Label key-value pairs (e.g., {"node-type": "gpu"})
         """
-        self.pod_template["nodeSelector"] = value
+        self.pod_spec["nodeSelector"] = value
 
     @property
     def secret_env_vars(self):
@@ -681,8 +681,8 @@ class Compute:
     @property
     def secret_volumes(self):
         secret_volumes = []
-        if "volumes" in self.pod_template:
-            for volume in self.pod_template["volumes"]:
+        if "volumes" in self.pod_spec:
+            for volume in self.pod_spec["volumes"]:
                 if "secret" in volume:
                     secret_name = volume["secret"]["secretName"]
                     # Find corresponding volume mount
@@ -716,12 +716,12 @@ class Compute:
 
     @property
     def service_account_name(self):
-        return self.pod_template.get("serviceAccountName")
+        return self.pod_spec.get("serviceAccountName")
 
     @service_account_name.setter
     def service_account_name(self, value: str):
-        """Set service account name in the pod template."""
-        self.pod_template["serviceAccountName"] = value
+        """Set service account name in the pod spec."""
+        self.pod_spec["serviceAccountName"] = value
 
     @property
     def config_env_vars(self):
@@ -743,7 +743,7 @@ class Compute:
 
     @image_pull_policy.setter
     def image_pull_policy(self, value: str):
-        """Set image pull policy in the pod template."""
+        """Set image pull policy in the pod spec."""
         self._container()["imagePullPolicy"] = value
 
     @property
@@ -792,8 +792,8 @@ class Compute:
                             secrets.append(secret_ref["name"])
 
             # Extract secrets from volumes
-            if "volumes" in self.pod_template:
-                for volume in self.pod_template["volumes"]:
+            if "volumes" in self.pod_spec:
+                for volume in self.pod_spec["volumes"]:
                     if "secret" in volume:
                         secret_name = volume["secret"]["secretName"]
                         if secret_name not in secrets:
@@ -805,8 +805,8 @@ class Compute:
 
     @property
     def gpu_anti_affinity(self):
-        if "affinity" in self.pod_template and "nodeAffinity" in self.pod_template["affinity"]:
-            node_affinity = self.pod_template["affinity"]["nodeAffinity"]
+        if "affinity" in self.pod_spec and "nodeAffinity" in self.pod_spec["affinity"]:
+            node_affinity = self.pod_spec["affinity"]["nodeAffinity"]
             if "requiredDuringSchedulingIgnoredDuringExecution" in node_affinity:
                 required = node_affinity["requiredDuringSchedulingIgnoredDuringExecution"]
                 if "nodeSelectorTerms" in required:
@@ -819,11 +819,11 @@ class Compute:
 
     @property
     def concurrency(self):
-        return self.pod_template.get("containerConcurrency")
+        return self.pod_spec.get("containerConcurrency")
 
     @concurrency.setter
     def concurrency(self, value: int):
-        self.pod_template["containerConcurrency"] = value
+        self.pod_spec["containerConcurrency"] = value
 
     @property
     def working_dir(self):
@@ -831,17 +831,17 @@ class Compute:
 
     @working_dir.setter
     def working_dir(self, value: str):
-        """Set working directory in the pod template."""
+        """Set working directory in the pod spec."""
         self._container()["workingDir"] = value
 
     @property
     def priority_class_name(self):
-        return self.pod_template.get("priorityClassName")
+        return self.pod_spec.get("priorityClassName")
 
     @priority_class_name.setter
     def priority_class_name(self, value: str):
-        """Set priority class name in the pod template."""
-        self.pod_template["priorityClassName"] = value
+        """Set priority class name in the pod spec."""
+        self.pod_spec["priorityClassName"] = value
 
     @property
     def otel_enabled(self):
@@ -874,7 +874,7 @@ class Compute:
     def queue(self):
         """Get queue name from manifest or stored fallback value."""
         # Try to extract from pod spec schedulerName
-        if "schedulerName" in self.pod_template:
+        if "schedulerName" in self.pod_spec:
             # If schedulerName is set, we have a queue
             # Extract queue from labels
             metadata = self._get_manifest_metadata()
@@ -889,8 +889,8 @@ class Compute:
 
     @queue.setter
     def queue(self, value: str):
-        pod_template = self.pod_template
-        pod_template["schedulerName"] = self._get_scheduler_name(value)
+        pod_spec = self.pod_spec
+        pod_spec["schedulerName"] = self._get_scheduler_name(value)
 
         metadata = self._get_manifest_metadata()
         if "labels" not in metadata:
@@ -978,7 +978,7 @@ class Compute:
 
     @property
     def distributed_config(self):
-        # First try to get from pod template
+        # First try to get from pod spec
         template_config = None
         container = self._container()
         if "env" in container:
@@ -1000,8 +1000,8 @@ class Compute:
             return {"distribution_type": "ray"}
         elif kind == "Deployment":
             # Check if this is a distributed deployment by looking for distributed env vars
-            pod_template = self.pod_template
-            containers = pod_template.get("containers", [])
+            pod_spec = self.pod_spec
+            containers = pod_spec.get("containers", [])
             if containers:
                 env_vars = containers[0].get("env", [])
                 for env_var in env_vars:
@@ -1019,7 +1019,7 @@ class Compute:
 
     @distributed_config.setter
     def distributed_config(self, config: dict):
-        # Update pod template with distributed config
+        # Update pod spec with distributed config
         container = self._container()
         if "env" not in container:
             container["env"] = []
@@ -1405,7 +1405,7 @@ class Compute:
     ):
         """Creates a new service on the compute for the provided service. If the service already exists,
         it will update the service with the latest copy of the code."""
-        # Finalize pod template with launch time env vars
+        # Finalize pod spec with launch time env vars
         self._update_launch_env_vars(service_name, pointer_env_vars, metadata_env_vars, launch_id)
         self._upload_secrets_list()
 

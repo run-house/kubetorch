@@ -21,7 +21,7 @@ spec:
       metadata:
         annotations: {{ template_annotations | tojson }}
         labels: {{ head_template_labels | tojson }}
-      spec: {{ pod_template | tojson }}
+      spec: {{ pod_spec | tojson }}
   workerGroupSpecs:
   - groupName: worker-group
     rayStartParams: {}
@@ -32,4 +32,4 @@ spec:
       metadata:
         annotations: {{ template_annotations | tojson }}
         labels: {{ worker_template_labels | tojson }}
-      spec: {{ pod_template | tojson }}
+      spec: {{ pod_spec | tojson }}

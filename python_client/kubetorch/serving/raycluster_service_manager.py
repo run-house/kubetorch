@@ -113,13 +113,13 @@ class RayClusterServiceManager(BaseServiceManager):
 
         # Ensure worker pod specs match head pod spec or sync over any changes
         if "spec" in manifest and "headGroupSpec" in manifest["spec"]:
-            head_pod_template = manifest["spec"]["headGroupSpec"].get("template", {}).get("spec")
-            if head_pod_template and "workerGroupSpecs" in manifest["spec"]:
+            head_pod_spec = manifest["spec"]["headGroupSpec"].get("template", {}).get("spec")
+            if head_pod_spec and "workerGroupSpecs" in manifest["spec"]:
                 # Copy head pod spec to all worker groups
                 for worker_group in manifest["spec"]["workerGroupSpecs"]:
                     if "template" not in worker_group:
                         worker_group["template"] = {}
-                    worker_group["template"]["spec"] = copy.deepcopy(head_pod_template)
+                    worker_group["template"]["spec"] = copy.deepcopy(head_pod_spec)
 
         updated_manifest = self._update_launchtime_manifest(manifest, service_name, module_name)
         created_service, _ = self._create_or_update_resource_from_manifest(updated_manifest, dryrun)
@@ -132,7 +132,7 @@ class RayClusterServiceManager(BaseServiceManager):
         replicas: int,
     ) -> dict:
         """Convert a deployment manifest to a RayCluster manifest."""
-        pod_template = deployment_manifest["spec"]["template"]["spec"]
+        pod_spec = deployment_manifest["spec"]["template"]["spec"]
         deployment_labels = deployment_manifest["metadata"]["labels"]
         deployment_annotations = deployment_manifest["metadata"]["annotations"]
 
@@ -174,7 +174,7 @@ class RayClusterServiceManager(BaseServiceManager):
             "labels": labels,
             "head_template_labels": head_template_labels,
             "worker_template_labels": worker_template_labels,
-            "pod_template": pod_template,
+            "pod_spec": pod_spec,
             "worker_replicas": worker_replicas,
         }
 
@@ -192,8 +192,8 @@ class RayClusterServiceManager(BaseServiceManager):
         service_name = raycluster["metadata"]["name"]
         module_name = raycluster["metadata"]["labels"][serving_constants.KT_MODULE_LABEL]
 
-        pod_template = raycluster.get("spec", {}).get("headGroupSpec", {}).get("template", {}).get("spec", {})
-        server_port = pod_template.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
+        pod_spec = raycluster.get("spec", {}).get("headGroupSpec", {}).get("template", {}).get("spec", {})
+        server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
 
         labels = raycluster.get("metadata", {}).get("labels", {})
         annotations = raycluster.get("metadata", {}).get("annotations", {})
