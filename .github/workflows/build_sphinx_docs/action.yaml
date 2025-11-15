@@ -1,0 +1,89 @@
+name: "Build and Sync Sphinx Documentation"
+description: "Build Sphinx documentation (JSON) and sync it to an external repository."
+
+inputs:
+  version:
+    description: "Version number for the documentation"
+    required: false
+    default: "latest"
+  target_branch:
+    description: "Target branch in destination repo"
+    required: false
+    default: "main"
+  docs_source_dir:
+    description: "Directory containing your Sphinx configuration"
+    required: false
+    default: "python_client/kubetorch/docs"
+  python_version:
+    description: "Python version to use"
+    required: false
+    default: "3.10"
+  sphinx_build_dir:
+    description: "Sphinx build directory"
+    required: false
+    default: "_build"
+  dest_repo:
+    description: "Destination GitHub repository for syncing documentation (e.g., run-house/kubetorch-docs)"
+    required: true
+  dest_repo_token:
+    description: "GitHub token with write access to destination repository"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout source repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ inputs.python_version }}
+
+    - name: Install kubetorch
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install uv
+        uv pip install --system -e ./python_client[client]
+
+    - name: Install docs requirements
+      shell: bash
+      run: |
+        pip install -r ${{ inputs.docs_source_dir }}/requirements.txt
+
+    - name: Determine version
+      id: version
+      shell: bash
+      run: |
+        if [ "${{ inputs.version }}" = "latest" ]; then
+          VERSION="${{ github.sha }}"
+        else
+          VERSION="${{ inputs.version }}"
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Building documentation for version: $VERSION"
+
+    - name: Build Sphinx documentation (JSON)
+      shell: bash
+      run: |
+        cd ${{ inputs.docs_source_dir }}
+        make json
+        find ${{ inputs.sphinx_build_dir }}/json -name "*.fjson" -o -name "*.json" | head -10
+
+    - name: Prepare JSON files
+      shell: bash
+      run: |
+        mkdir -p staging
+        if [ -d "${{ inputs.docs_source_dir }}/${{ inputs.sphinx_build_dir }}/json" ]; then
+          cp -r ${{ inputs.docs_source_dir }}/${{ inputs.sphinx_build_dir }}/json/* staging/
+        else
+          echo "Error: JSON build directory not found"
+          exit 1
+        fi
+
+        cat > staging/build-info.json << EOF
+        {
+          "version": "${{ steps.version.outputs.version }}",
+          "build_time": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+          "source_commit": "${{ github.sha }}",
