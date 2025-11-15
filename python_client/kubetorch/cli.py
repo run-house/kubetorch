@@ -13,8 +13,7 @@ from typing import List
 from urllib.parse import urlparse
 
 import httpx
-from kubernetes import client
-from kubernetes.client.rest import ApiException
+from kubernetes.client.exceptions import ApiException
 from rich.syntax import Syntax
 
 from kubetorch.servers.http.utils import is_running_in_kubernetes
@@ -664,7 +663,7 @@ def kt_list(
             pods = core_api.list_namespaced_pod(
                 namespace=namespace, label_selector=f"{serving_constants.KT_SERVICE_LABEL}"
             )
-        except client.exceptions.ApiException as e:
+        except ApiException as e:
             logger.warning(f"Failed to list pods for all services in namespace {namespace}: {e}")
             return
         pod_map = {
