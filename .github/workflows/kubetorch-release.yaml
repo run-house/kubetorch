@@ -84,7 +84,7 @@ jobs:
 
   helm_upgrade_ci:
     runs-on: ubuntu-latest
-    needs: release_additional_steps
+    needs: release
     if: ${{ github.event.inputs.upgrade_ci_cluster == 'yes' }}
     permissions:
       id-token: write
