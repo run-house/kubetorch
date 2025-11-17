@@ -80,7 +80,8 @@ jobs:
         if: ${{ github.event.inputs.build_api_docs == 'yes' }}
         uses: ./.github/workflows/build_sphinx_docs
         with:
-          version: ${{ github.event.inputs.kt_version }}
+          kt_version: ${{ github.event.inputs.kt_version }}
+          dest_repo_token: ${{ secrets.KUBETORCH_DOCS_TOKEN }}
 
   helm_upgrade_ci:
     runs-on: ubuntu-latest
@@ -90,14 +91,21 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+
       - name: Setup authentications
-        uses: ./.github/actions/setup_gke
+        uses: ./.github/workflows/gke_authentications
         with:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_SA_KEY: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
-          CI_CLUSTER_NAME: ${{ secrets.CI_CLUSTER_NAME }}
-          CI_CLUSTER_REGION: ${{ secrets.CI_CLUSTER_REGION }}
-          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials ${{ secrets.CI_CLUSTER_NAME }} \
+            --region ${{ secrets.CI_CLUSTER_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }}
+
 
       - name: Helm upgrade kubetorch on CI
         run: |
@@ -111,7 +119,7 @@ jobs:
         with:
           channel-id: ${{ secrets.CHANNEL_ID }}
           slack-message: |
-            [*kubetorch*] Upgraded CI cluster with Helm chart version *v${{ github.event.inputs.kt_version }}* ✅
+            [*kubetorch*] Upgraded CI cluster with Helm chart version *v${{ github.event.inputs.kt_version }}* 🤖
             Run by: *${{ github.actor }}*
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}

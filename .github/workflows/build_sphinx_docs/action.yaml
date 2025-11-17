@@ -2,10 +2,13 @@ name: "Build and Sync Sphinx Documentation"
 description: "Build Sphinx documentation (JSON) and sync it to an external repository."
 
 inputs:
-  version:
+  kt_version:
     description: "Version number for the documentation"
     required: false
     default: "latest"
+  dest_repo_token:
+    description: "GitHub token to push to destination repository"
+    required: true
 
 runs:
   using: "composite"
@@ -16,7 +19,7 @@ runs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: 3.10
+        python-version: "3.10"
 
     - name: Install kubetorch
       shell: bash
@@ -34,35 +37,31 @@ runs:
       id: version
       shell: bash
       run: |
-        if [ "${{ inputs.version }}" = "latest" ]; then
+        if [ "${{ inputs.kt_version }}" = "latest" ]; then
           VERSION="${{ github.sha }}"
         else
-          VERSION="${{ inputs.version }}"
+          VERSION="${{ inputs.kt_version }}"
         fi
         echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-        echo "Determined docs version: $VERSION"
+        echo "Building documentation for version: $VERSION"
 
     - name: Build Sphinx documentation (JSON)
       shell: bash
       run: |
         cd python_client/kubetorch/docs
         make json
-        echo "Preview generated JSON files:"
         find _build/json -name "*.fjson" -o -name "*.json" | head -10
 
     - name: Prepare JSON files
       shell: bash
       run: |
         mkdir -p staging
-
         JSON_DIR="python_client/kubetorch/docs/_build/json"
         if [ ! -d "$JSON_DIR" ]; then
           echo "Error: JSON build directory not found: $JSON_DIR"
           exit 1
         fi
-
         cp -r "$JSON_DIR"/* staging/
-
         cat > staging/build-info.json << EOF
         {
           "version": "${{ steps.version.outputs.version }}",
@@ -74,52 +73,45 @@ runs:
         }
         EOF
 
-    - name: Checkout destination documentation repository
+    - name: Checkout destination repository
       uses: actions/checkout@v4
+      with:
+        repository: run-house/kubetorch-docs
+        token: ${{ inputs.dest_repo_token }}
+        path: dest-repo
+        ref: main
 
-    - name: Sync documentation files
+    - name: Sync files to destination repository
       shell: bash
       run: |
-        VERSION="${{ steps.version.outputs.version }}"
         cd dest-repo
-
-        git config user.name "Docs Bot"
+        git config user.name "Documentation Bot"
         git config user.email "action@github.com"
-
-        mkdir -p "v$VERSION"
-        rm -rf "v$VERSION/*"
-
-        cp -r ../staging/* "v$VERSION/"
+        mkdir -p v${{ steps.version.outputs.version }}
+        rm -rf v${{ steps.version.outputs.version }}/*
+        cp -r ../staging/* v${{ steps.version.outputs.version }}/
 
     - name: Commit and push changes
       shell: bash
       run: |
-        VERSION="${{ steps.version.outputs.version }}"
         cd dest-repo
-
-        git add "v$VERSION/"
-
+        git add v${{ steps.version.outputs.version }}/
         if git diff --staged --quiet; then
-          echo "No changes to commit."
+          echo "No changes to commit"
           exit 0
         fi
-
-        git commit -m "Update documentation for version $VERSION
-
-        Source repo: ${{ github.repository }}
-        Commit: ${{ github.sha }}
-        Workflow run: ${{ github.run_id }}
-        Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-        "
-
-        git push origin "main"
+        git commit -m "Update documentation for version ${{ steps.version.outputs.version }}
+        Source: ${{ github.repository }}@${{ github.sha }}
+        Workflow: ${{ github.run_id }}
+        Build time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                git push origin main
 
     - name: Create summary
       shell: bash
       run: |
-        VERSION="${{ steps.version.outputs.version }}"
         echo "## Documentation Build Summary" >> $GITHUB_STEP_SUMMARY
-        echo "- **Version:** $VERSION" >> $GITHUB_STEP_SUMMARY
+        echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Source Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Files Synced:** $(find staging -type f | wc -l)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Destination:** dest-repo/v${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Build Time:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_STEP_SUMMARY
