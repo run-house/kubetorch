@@ -1,16 +1,16 @@
 name: Kubetorch Release
 
 # This action performs the following steps:
-# * Publish new Kubetorch in PyPi
-# * Release Kubetorch in GHCR
-# * Build Sphinx Documentation
-# * Upgrade CI Cluster with the new helm chart
+# * Publish new Kubetorch python client in PyPi
+# * Publish new Kubetorch Helm chart in GHCR
+# * Build Sphinx Python API Docs
+# * Upgrade CI Cluster Helm version
 
 on:
   workflow_dispatch:
     inputs:
       kt_version:
-        description: "Kubetorch Helm Version (for CI)"
+        description: "Kubetorch Version (e.g. 0.2.5)"
         required: true
       publish_in_pypi:
         description: 'Publish in PyPi?'
