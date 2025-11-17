@@ -1,0 +1,61 @@
+name: "Release Kubetorch in GHCR"
+description: "Packages and releases the Kubetorch Helm chart to GHCR, then posts an update to Slack."
+
+inputs:
+  gh_helm_token:
+    description: "GitHub token for authenticating to GHCR"
+    required: true
+  slack_bot_token:
+    description: "Slack bot token for sending release notifications"
+    required: true
+  slack_channel_id:
+    description: "Slack channel ID for posting the notification"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: latest
+
+    - name: Package Helm chart
+      shell: bash
+      run: |
+        cd charts/kubetorch
+        helm dependency update .
+        helm package . --destination ../../
+
+    - name: Extract Helm chart version
+      id: get_version
+      shell: bash
+      run: |
+        VERSION=$(yq -r '.version' charts/kubetorch/Chart.yaml)
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+    - name: Login to GHCR
+      shell: bash
+      run: |
+        echo "${{ inputs.gh_helm_token }}" | helm registry login ghcr.io \
+          --username run-house --password-stdin
+
+    - name: Push chart to GHCR
+      shell: bash
+      run: |
+        CHART_TGZ=$(ls kubetorch-*.tgz)
+        helm push "$CHART_TGZ" oci://ghcr.io/run-house/charts
+
+    - name: Post to Runhouse Slack channel
+      if: always()
+      uses: slackapi/slack-github-action@v1.24.0
+      with:
+        channel-id: ${{ inputs.slack_channel_id }}
+        slack-message: |
+          [*kubetorch*] Updated Helm chart in GHCR with version *v${{ steps.get_version.outputs.version }}* 🚀
+          Run by: *${{ github.actor }}*
+      env:
+        SLACK_BOT_TOKEN: ${{ inputs.slack_bot_token }}

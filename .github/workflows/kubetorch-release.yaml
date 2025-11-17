@@ -1,0 +1,117 @@
+name: Kubetorch Release
+
+# This action performs the following steps:
+# * Publish new Kubetorch in PyPi
+# * Release Kubetorch in GHCR
+# * Build Sphinx Documentation
+# * Upgrade CI Cluster with the new helm chart
+
+on:
+  workflow_dispatch:
+    inputs:
+      kt_version:
+        description: "Kubetorch Helm Version (for CI)"
+        required: true
+      publish_in_pypi:
+        description: 'Publish in PyPi?'
+        required: false
+        type: choice
+        options:
+          - "yes"
+          - "no"
+        default: "yes"
+      publish_in_ghcr:
+        description: 'Publish chart in GHCR?'
+        required: false
+        type: choice
+        options:
+          - "yes"
+          - "no"
+        default: "yes"
+      build_api_docs:
+        description: "Build API Documentation?"
+        required: false
+        type: choice
+        options:
+          - "yes"
+          - "no"
+        default: "yes"
+      upgrade_ci_cluster:
+        description: 'Helm upgrade CI cluster?'
+        required: false
+        type: choice
+        options:
+          - "yes"
+          - "no"
+        default: "yes"
+
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+
+      - name: Set Python Source Root
+        run: echo "PYTHONPATH=$(pwd)/python_client" >> $GITHUB_ENV
+
+      - name: publish_kubetorch_in_pypi
+        if: ${{ github.event.inputs.publish_in_pypi == 'yes' }}
+        run: |
+          cd python_client
+          poetry config pypi-token.pypi ${{ secrets.PYPI_TOKEN }}
+          poetry check
+          poetry build
+          poetry publish
+
+      - name: publish_kubetorch_image_in_ghcr
+        if: ${{ github.event.inputs.publish_in_ghcr == 'yes' }}
+        uses: ./.github/workflows/release_kubetorch_ghcr
+        with:
+          gh_helm_token: ${{ secrets.GH_HELM_TOKEN }}
+          slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+          slack_channel_id: ${{ secrets.CHANNEL_ID }}
+
+      - name: build_and_sync_sphinx_docs
+        if: ${{ github.event.inputs.build_api_docs == 'yes' }}
+        uses: ./.github/workflows/build_sphinx_docs
+        with:
+          version: ${{ github.event.inputs.kt_version }}
+
+  helm_upgrade_ci:
+    runs-on: ubuntu-latest
+    needs: release_additional_steps
+    if: ${{ github.event.inputs.upgrade_ci_cluster == 'yes' }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Setup authentications
+        uses: ./.github/actions/setup_gke
+        with:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_SA_KEY: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+          CI_CLUSTER_NAME: ${{ secrets.CI_CLUSTER_NAME }}
+          CI_CLUSTER_REGION: ${{ secrets.CI_CLUSTER_REGION }}
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+
+      - name: Helm upgrade kubetorch on CI
+        run: |
+          helm upgrade --install kubetorch \
+            oci://ghcr.io/run-house/charts/kubetorch \
+            --version ${{ github.event.inputs.kt_version }} \
+            -n kubetorch --create-namespace
+
+      - name: Post to Runhouse Slack channel
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          channel-id: ${{ secrets.CHANNEL_ID }}
+          slack-message: |
+            [*kubetorch*] Upgraded CI cluster with Helm chart version *v${{ github.event.inputs.kt_version }}* ✅
+            Run by: *${{ github.actor }}*
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
