@@ -58,14 +58,6 @@ nginxProxy:
   backends:
     logging:
       route: "/loki"
-      host: loki-gateway.kubetorch.svc.cluster.local
-    metrics:
-      persistent:
-        host: runhouse-kube-prometheus-s-prometheus.runhouse.svc.cluster.local
-        port: 9090
-      ephemeral:
-        host: kubetorch-metrics.kubetorch.svc.cluster.local
-        port: 9090
     health:
       route: "/health"
 

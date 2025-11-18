@@ -72,12 +72,7 @@ A Helm chart for kubetorch
 | metrics.scrapeKubelet | bool | `true` |  |
 | nginx.resolver | string | `"kube-dns.kube-system.svc.cluster.local"` |  |
 | nginxProxy.backends.health.route | string | `"/health"` |  |
-| nginxProxy.backends.logging.host | string | `"loki-gateway.kubetorch.svc.cluster.local"` |  |
 | nginxProxy.backends.logging.route | string | `"/loki"` |  |
-| nginxProxy.backends.metrics.ephemeral.host | string | `"kubetorch-metrics.kubetorch.svc.cluster.local"` |  |
-| nginxProxy.backends.metrics.ephemeral.port | int | `9090` |  |
-| nginxProxy.backends.metrics.persistent.host | string | `"runhouse-kube-prometheus-s-prometheus.runhouse.svc.cluster.local"` |  |
-| nginxProxy.backends.metrics.persistent.port | int | `9090` |  |
 | nginxProxy.image.pullPolicy | string | `"IfNotPresent"` |  |
 | nginxProxy.image.repository | string | `"nginx"` |  |
 | nginxProxy.image.tag | string | `"1.29.0-alpine"` |  |

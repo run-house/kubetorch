@@ -47,13 +47,7 @@ data:
             ##############################################
             location ^~ /prometheus/ {
                 resolver {{ .Values.nginx.resolver }} valid=5s;
-                {{- if .Values.metrics.enabled }}
-                # Route to ephemeral Prometheus inside the same namespace
-                set $prom_host "{{ .Values.nginxProxy.backends.metrics.ephemeral.host }}:{{ .Values.nginxProxy.backends.metrics.ephemeral.port }}";
-                {{- else }}
-                # Route to persistent (Runhouse) Prometheus
-                set $prom_host "{{ .Values.nginxProxy.backends.metrics.persistent.host }}:{{ .Values.nginxProxy.backends.metrics.persistent.port }}";
-                {{- end }}
+                set $prom_host "kubetorch-metrics.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.metrics.prometheus.port }}";
                 # Strip the /prometheus/ prefix before forwarding
                 rewrite ^/prometheus/(.*)$ /$1 break;
                 proxy_pass http://$prom_host;
@@ -69,11 +63,7 @@ data:
             ##############################################
             location ^~ {{ .Values.nginxProxy.backends.logging.route }}/ {
                 resolver {{ .Values.nginx.resolver }} valid=5s;
-                {{- if .Values.logStreaming.enabled }}
-                set $loki_host "{{ .Values.nginxProxy.backends.logging.host }}:{{ .Values.logStreaming.port }}";
-                {{- else }}
-                set $loki_host "{{ .Values.nginxProxy.backends.logging.host }}:80";
-                {{- end }}
+                set $loki_host "loki-gateway.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.logStreaming.port }}";
                 proxy_pass http://$loki_host;
                 proxy_http_version 1.1;
                 # WebSocket headers
