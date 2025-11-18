@@ -122,6 +122,11 @@ class RequestedPodResources:
         if cpu_val is None:
             return None
 
+        try:
+            cpu_val = float(cpu_val)
+        except ValueError:
+            return cpu_val
+
         # Ensure minimum CPU value
         cpu_val = max(float(cpu_val), cls.MIN_CPU_CORES)
 
