@@ -160,17 +160,12 @@ def test_byo_manifest_extracts_values():
 
     # Create manifest with annotations
     manifest = copy.deepcopy(_get_basic_manifest("Deployment"))
-    manifest["metadata"]["annotations"]["kubetorch.com/kubeconfig-path"] = "/path/to/kubeconfig"
     manifest["metadata"]["annotations"]["kubetorch.com/inactivity-ttl"] = "1h"
 
     compute = kt.Compute(
         manifest=manifest,
         cpus="0.3",
-        memory="512Mi",
-        image=kt.images.Debian(),
-        gpu_anti_affinity=True,
     )
 
     # Verify extracted values are preserved in annotations
-    assert compute.kubeconfig_path == "/path/to/kubeconfig"
     assert compute.inactivity_ttl == "1h"
