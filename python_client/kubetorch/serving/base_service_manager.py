@@ -3,7 +3,7 @@ import importlib
 import re
 from abc import abstractmethod
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Type
 
 import yaml
 from jinja2 import Template
@@ -74,6 +74,23 @@ class BaseServiceManager:
             logger.info(f"Configuring auto-down after idle timeout ({inactivity_ttl})")
 
         return annotations
+
+    @staticmethod
+    def _get_service_manager_class(kind: str) -> Type["BaseServiceManager"]:
+        from kubetorch.serving.service_manager import (
+            DeploymentServiceManager,
+            KnativeServiceManager,
+            RayClusterServiceManager,
+        )
+
+        if kind == "Deployment":
+            return DeploymentServiceManager
+        elif kind == "Service":
+            return KnativeServiceManager
+        elif kind == "RayCluster":
+            return RayClusterServiceManager
+        else:
+            raise ValueError(f"Invalid service manager class for kind: {kind}")
 
     def _get_deployment_timestamp(self) -> str:
         return datetime.now(timezone.utc).isoformat()

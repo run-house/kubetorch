@@ -69,6 +69,34 @@ class DeploymentServiceManager(BaseServiceManager):
 
         return deployment
 
+    @staticmethod
+    def _apply_kubetorch_updates(
+        manifest: dict,
+        inactivity_ttl: str = None,
+        custom_labels: dict = None,
+        custom_annotations: dict = None,
+        custom_template: dict = None,
+    ):
+        labels = BaseServiceManager._get_labels(
+            template_label="deployment",
+            custom_labels=custom_labels,
+        )
+        template_labels = labels.copy()
+        template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+        annotations = BaseServiceManager._get_annotations(custom_annotations, inactivity_ttl)
+
+        # Ensure nested dictionaries exist before updating
+        manifest["metadata"].setdefault("labels", {}).update(labels)
+        manifest["metadata"].setdefault("annotations", {}).update(annotations)
+        manifest["spec"].setdefault("template", {}).setdefault("metadata", {})
+        manifest["spec"]["template"]["metadata"].setdefault("labels", {}).update(template_labels)
+        manifest["spec"]["template"]["metadata"].setdefault("annotations", {}).update(annotations)
+
+        if custom_template:
+            nested_override(manifest, custom_template)
+
+        return manifest
+
     def _update_launchtime_manifest(self, manifest: dict, service_name: str, module_name: str) -> dict:
         """Update manifest with service name and deployment timestamp."""
         clean_module_name = self._clean_module_name(module_name)
