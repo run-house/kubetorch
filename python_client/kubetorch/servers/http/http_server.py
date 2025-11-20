@@ -971,6 +971,12 @@ class HealthCheckFilter(logging.Filter):
         )
 
 
+class ScrapeMetricsLogsFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return "/metrics" not in msg
+
+
 class RequestContextFilter(logging.Filter):
     def filter(self, record):
         record.request_id = request_id_ctx_var.get("-")
@@ -1226,6 +1232,7 @@ async def lifespan(app: FastAPI):
 
 # Add the filter to uvicorn's access logger
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+logging.getLogger("uvicorn.access").addFilter(ScrapeMetricsLogsFilter())
 root_logger = logging.getLogger()
 root_logger.addFilter(RequestContextFilter())
 for handler in root_logger.handlers:
