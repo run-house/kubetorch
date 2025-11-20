@@ -100,10 +100,14 @@ class DeploymentServiceManager(BaseServiceManager):
         if not containers:
             return False
 
-        # Check for distributed environment variables in the first container
+        # Check if distributed environment variable is set in the first container
         env_vars = containers[0].get("env", [])
         for env_var in env_vars:
-            if env_var.get("name") == "KT_DISTRIBUTED_CONFIG":
+            if (
+                env_var.get("name") == "KT_DISTRIBUTED_CONFIG"
+                and env_var.get("value") != "null"
+                and env_var.get("value")
+            ):
                 return True
         return False
 
