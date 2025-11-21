@@ -302,13 +302,12 @@ class HTTPClient:
         if stream_logs is None:
             stream_logs = config.stream_logs or False
 
-        metrics_config = None
+        metrics_config = MetricsConfig()
         if isinstance(stream_metrics, MetricsConfig):
             metrics_config = stream_metrics
             stream_metrics = True
         elif stream_metrics is None:
             stream_metrics = config.stream_metrics or False
-            metrics_config = None
 
         if pdb:
             debug_port = DEFAULT_DEBUG_PORT if isinstance(pdb, bool) else pdb
@@ -538,7 +537,6 @@ class HTTPClient:
             return obj
 
         async def run():
-
             interval = int(metrics_config.interval)
             metric_queries = self._get_stream_metrics_queries(scope=metrics_config.scope, interval=interval)
             show_gpu = True
