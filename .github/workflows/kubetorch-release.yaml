@@ -59,6 +59,10 @@ jobs:
       - name: Set Python Source Root
         run: echo "PYTHONPATH=$(pwd)/python_client" >> $GITHUB_ENV
 
+      - name: Install Poetry
+        if: ${{ github.event.inputs.publish_in_pypi == 'yes' }}
+        run: pip install poetry
+
       - name: publish_kubetorch_in_pypi
         if: ${{ github.event.inputs.publish_in_pypi == 'yes' }}
         run: |
