@@ -821,9 +821,15 @@ def check_pod_status_for_errors(pod: client.V1Pod, queue_name: str = None, sched
                         f"Pod {pod.metadata.name} could not be scheduled: {condition.message}"
                     )
 
-            # Check for specific node selector/affinity/GPU type mismatches
-            # without matching temporary resource exhaustion messages
-            if any(
+            # Skip instant-fail if autoscaler taints are present (wait for autoscaler to provision)
+            has_autoscaler_taints = any(
+                x in condition.message
+                for x in [
+                    "scheduling.cast.ai/node-template",  # CAST AI node templates
+                ]
+            )
+
+            if not has_autoscaler_taints and any(
                 x in msg
                 for x in [
                     "node selector not matched",
