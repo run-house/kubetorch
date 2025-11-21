@@ -17,6 +17,16 @@ spec:
       annotations:
         chart-version: "{{ .Chart.Version }}"
     spec:
+      {{- if .Values.nginxProxy.affinity }}
+      affinity:
+        {{- toYaml .Values.nginxProxy.affinity | nindent 8 }}
+      {{- end }}
+
+      {{- if .Values.nginxProxy.tolerations }}
+      tolerations:
+        {{- toYaml .Values.nginxProxy.tolerations | nindent 8 }}
+      {{- end }}
+
       containers:
         - name: nginx
           image: "{{ .Values.nginxProxy.image.repository }}:{{ .Values.nginxProxy.image.tag }}"
