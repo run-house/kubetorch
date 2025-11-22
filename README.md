@@ -13,19 +13,23 @@ Since Kubetorch has no local runtime or code serialization, you can access large
 ```python
 import kubetorch as kt
 
-def hello_world():
-    return "Hello from Kubetorch!"
+def simulate_workload(num_iterations: int = 5, vector_size: int = 10000):
+    import numpy as np
+
+    return sum(np.dot(np.random.rand(vector_size), np.random.rand(vector_size)) for _ in range(num_iterations))
+
 
 if __name__ == "__main__":
-    # Define your compute
-    compute = kt.Compute(cpus=".1")
+    # Define your compute - use a python:3.12-slim image and install numpy
+    image = kt.images.Python312().pip_install(["numpy"])
+    compute = kt.Compute(cpus=1, image=image)
 
     # Send local function to freshly launched remote compute
-    remote_hello = kt.fn(hello_world).to(compute)
+    remote_fn = kt.fn(simulate_workload).to(compute)
 
     # Runs remotely on your Kubernetes cluster
-    result = remote_hello()
-    print(result)  # "Hello from Kubetorch!"
+    result = remote_fn()
+    print(result)
 ```
 
 ## What Kubetorch Enables
