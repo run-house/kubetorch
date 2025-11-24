@@ -459,7 +459,7 @@ def service_deployer_with_raycluster(service_name: str):
             cpus="2",
             memory="4Gi",
             image=kt.images.Ray(),
-            launch_timeout=300,
+            launch_timeout=450,
         ).distribute("ray", workers=2)
     )
 

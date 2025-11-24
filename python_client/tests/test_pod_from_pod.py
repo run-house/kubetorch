@@ -42,11 +42,7 @@ def test_run_to_on_pod_with_raycluster():
     child_name = f"{prefix}-to-to-child"
 
     deployer_fn = kt.fn(service_deployer_with_raycluster, name).to(
-        kt.Compute(
-            cpus=".1",
-            image=kt.images.Debian(),
-            gpu_anti_affinity=True,
-        )
+        kt.Compute(cpus=".1", image=kt.images.Debian(), gpu_anti_affinity=True, launch_timeout=450)
     )
 
     # Check that the function returns the correct value

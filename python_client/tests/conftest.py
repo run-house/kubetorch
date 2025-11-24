@@ -103,7 +103,7 @@ def get_compute(compute_type: str):
             memory="3Gi",
             labels={"test-label": "test_value"},
             gpu_anti_affinity=True,
-            launch_timeout=300,
+            launch_timeout=450,
             image=kt.images.Ray()
             .pip_install(["pytest", "pytest-asyncio"])
             .run_bash("uv pip install --system --break-system-packages numpy"),
@@ -114,7 +114,7 @@ def get_compute(compute_type: str):
         cpus=".01",
         labels={"test-label": "test_value"},
         gpu_anti_affinity=True,
-        launch_timeout=300,
+        launch_timeout=450,
         shared_memory_limit="512Mi",
         allowed_serialization=["json", "pickle"],
         image=kt.images.Debian(),
