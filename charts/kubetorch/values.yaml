@@ -46,6 +46,8 @@ rsync:
     limit: 10Gi
   cleanupCron:
     enabled: false # set to true to enable pod cleanup
+  tolerations: []
+  affinity: {}
 
 nginxProxy:
   image:
@@ -60,6 +62,8 @@ nginxProxy:
       route: "/loki"
     health:
       route: "/health"
+  tolerations: []
+  affinity: {}
 
 logStreaming:
   enabled: true # set to `false` to disable log streaming

@@ -41,12 +41,22 @@ spec:
       labels:
         app: kubetorch-rsync
     spec:
+      {{- if $.Values.rsync.affinity }}
+      affinity:
+        {{- toYaml $.Values.rsync.affinity | nindent 8 }}
+      {{- end }}
+
+      {{- if $.Values.rsync.tolerations }}
+      tolerations:
+        {{- toYaml $.Values.rsync.tolerations | nindent 8 }}
+      {{- end }}
+
       containers:
         - name: rsync
           image: {{ $.Values.rsync.image }}
           ports:
-            - containerPort: 873   # rsync daemon
-            - containerPort: 8080  # HTTP/WebSocket tunnel
+            - containerPort: 873
+            - containerPort: 8080
           volumeMounts:
             - name: rsync-data
               mountPath: /data
@@ -62,11 +72,10 @@ spec:
               cpu: {{ $.Values.rsync.cpu.limit }}
               memory: {{ $.Values.rsync.memory.limit }}
               ephemeral-storage: {{ $.Values.rsync.ephemeralStorage.limit }}
+
       volumes:
         - name: rsync-data
-          emptyDir: {} # Note: data is ephemeral - will be lost from rsync service on restart
-#          persistentVolumeClaim: # replace with your own PVC if you want persistent storage
-#            claimName: kubetorch-juicefs-pvc
+          emptyDir: {}
         - name: rsyncd-config
           configMap:
             name: kubetorch-rsyncd-config
