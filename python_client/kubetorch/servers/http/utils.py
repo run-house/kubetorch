@@ -480,7 +480,9 @@ def print_log_stream_client(message, last_timestamp, print_pod_name: bool = Fals
 def print_log_stream_cli(message, last_timestamp, print_pod_name: bool = False):
     if message.get("streams"):
         for stream in message["streams"]:
-            pod_name = f'({stream.get("stream").get("pod")}) ' if print_pod_name else ""
+            stream_labels = stream.get("stream", {})
+            pod_name_value = stream_labels.get("pod") or stream_labels.get("k8s_pod_name")
+            pod_name = f"({pod_name_value}) " if print_pod_name and pod_name_value else ""
             for value in stream["values"]:
                 # Skip if we've already seen this timestamp
                 if last_timestamp is not None and value[0] <= last_timestamp:
@@ -497,10 +499,10 @@ def print_log_stream_cli(message, last_timestamp, print_pod_name: bool = False):
                         # the print outputs for a specific request ID. For the CLI --follow option, we
                         # print all logs, so at the moment we don't need to filter by request_id.
                     elif log_name != "uvicorn.access":
-                        formatted_log = f"({pod_name}{log_line.get('asctime')} | {log_line.get('levelname')} | {log_line.get('message')}".strip()
+                        formatted_log = f"{pod_name}{log_line.get('asctime')} | {log_line.get('levelname')} | {log_line.get('message')}".strip()
                         print(formatted_log)
                 except json.JSONDecodeError:
-                    print(log_line.strip())
+                    print(f"{pod_name}{log_line}".strip())
 
     return last_timestamp
 
@@ -559,9 +561,13 @@ async def stream_logs_websocket_helper(
             if websocket:
                 try:
                     # Use wait_for to prevent hanging on close
-                    await asyncio.wait_for(websocket.close(), timeout=1.0)
-                except (asyncio.TimeoutError, Exception):
+                    await asyncio.wait_for(websocket.close(), timeout=0.5)
+                except Exception:
+                    # Suppress all errors during cleanup
                     pass
+    except asyncio.CancelledError:
+        # Task was cancelled - this is expected during shutdown
+        pass
     except Exception as e:
         logger.error(f"Error in websocket stream: {e}")
     finally:
@@ -569,8 +575,9 @@ async def stream_logs_websocket_helper(
         if websocket:
             try:
                 # Use wait_for to prevent hanging on close
-                await asyncio.wait_for(websocket.close(), timeout=1.0)
-            except (asyncio.TimeoutError, Exception):
+                await asyncio.wait_for(websocket.close(), timeout=0.5)
+            except Exception:
+                # Suppress all errors during final cleanup
                 pass
 
 
