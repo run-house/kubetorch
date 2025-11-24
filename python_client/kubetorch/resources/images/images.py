@@ -45,6 +45,7 @@ Python311 = lambda: python("3.11")
 Python312 = lambda: python("3.12")
 Ray = lambda: ray("latest")
 Pytorch2312 = lambda: pytorch("23.12-py3")
+Pytorch2402 = lambda: pytorch("24.02-py3")
 Debian = lambda: debian()
 Ubuntu = lambda: ubuntu()
 
@@ -59,6 +60,7 @@ __all__ = [
     "Python312",
     "Ray",
     "Pytorch2312",
+    "Pytorch2402",
     "Debian",
     "Ubuntu",
 ]

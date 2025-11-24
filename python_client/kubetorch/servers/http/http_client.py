@@ -24,7 +24,6 @@ from kubetorch.servers.http.utils import (
     generate_unique_request_id,
     PYSPY_SAMPLE_RATE_HZ,
     request_id_ctx_var,
-    SUPPORTED_PROFILERS,
 )
 
 from kubetorch.serving.constants import DEFAULT_DEBUG_PORT, DEFAULT_NGINX_PORT
@@ -979,7 +978,7 @@ class HTTPClient:
         # Total estimated CPU time for the function's stack
         total_estimated_time_s = target_cumulative_samples / sampling_rate_hz
 
-        print(f"\n## 📊 Estimated CPU usage for '{user_func_name}'")
+        print(f"## Estimated CPU usage for '{user_func_name}'")
         print(f"  (Sampling Rate: {sampling_rate_hz} Hz)")
         print("------------------------------------------------------------------")
         print(f"Total Estimated CPU Time (Cumulative): {total_estimated_time_s:.2f} seconds")
@@ -1021,17 +1020,24 @@ class HTTPClient:
             response.raise_for_status()
             deserialize_response = _deserialize_response(response, serialization)
 
-            profiler_type = body.get("profiler", None)
-            if profiler_type in SUPPORTED_PROFILERS:
+            profiler_info = body.get("profiler", None)
+            if profiler_info:
+                profiler_name = profiler_info.get("name", None)
                 profiler_output = deserialize_response.pop("profiler_output")
-                profiler_name = "PyTorch" if profiler_type == "torch" else "py-spy"
-                print(f"================  {profiler_name} Profiling Output ================ ")
-                if profiler_type == "pyspy":
-                    target_func_name = endpoint.split(f"{self.service_name}/")[-1].replace("/", ".")
-                    self._parse_pyspy_raw_data(profiler_output, user_func_name=target_func_name)
-                else:
-                    print(profiler_output)
-                return deserialize_response.pop("fn_output")
+                if profiler_name:
+                    sort_by_info = ""
+                    if profiler_name == "torch":
+                        profiler_name = "PyTorch"
+                        sort_by_info = f' (sorted by: {profiler_info.get("sort_by")})'
+                    else:
+                        profiler_name = "py-spy"
+                    print(f"================  {profiler_name} Profiling Output{sort_by_info} ================ ")
+                    if profiler_name == "py-spy":
+                        target_func_name = endpoint.split(f"{self.service_name}/")[-1].replace("/", ".")
+                        self._parse_pyspy_raw_data(profiler_output, user_func_name=target_func_name)
+                    else:
+                        print(profiler_output)
+                    return deserialize_response.pop("fn_output")
 
             return deserialize_response
         finally:

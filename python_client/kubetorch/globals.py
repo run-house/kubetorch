@@ -7,10 +7,11 @@ import subprocess
 import threading
 import time
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Literal, Optional
 
 from kubetorch.config import KubetorchConfig
+from kubetorch.logger import get_logger
 from kubetorch.serving.constants import (
     DEFAULT_NGINX_HEALTH_ENDPOINT,
     DEFAULT_NGINX_PORT,
@@ -22,6 +23,20 @@ from kubetorch.serving.constants import (
 disable_decorators = False
 
 config = KubetorchConfig()
+logger = get_logger(__name__)
+
+
+TORCH_ALLOWED_SORT_BY = {
+    "cpu_time",
+    "cuda_time",
+    "cpu_time_total",
+    "cuda_time_total",
+    "cpu_memory_usage",
+    "cuda_memory_usage",
+    "self_cpu_memory_usage",
+    "self_cuda_memory_usage",
+    "count",
+}
 
 
 @dataclass
@@ -90,6 +105,29 @@ class DebugConfig:
 
     mode: Literal["pdb", "pdb-ui"] = "pdb"
     port: int = 5678  # DEFAULT_DEBUG_PORT
+
+
+class ProfilerConfig:
+    name: str
+
+
+@dataclass
+class PyspyProfilerConfig(ProfilerConfig):
+    name: str = field(init=False, default="pyspy")
+
+
+@dataclass
+class TorchProfilerConfig(ProfilerConfig):
+
+    name: str = field(init=False, default="torch")
+    sort_by: str = "cuda_time_total"
+
+    def __post_init__(self):
+        if self.sort_by not in TORCH_ALLOWED_SORT_BY:
+            logger.warning(
+                f"Invalid sort_by '{self.sort_by}'. Must be one of: {', '.join(sorted(TORCH_ALLOWED_SORT_BY))}. Setting to cuda_time_total"
+            )
+            self.sort_by = "cuda_time_total"
 
 
 @dataclass(frozen=True)

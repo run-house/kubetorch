@@ -1,4 +1,11 @@
-from kubetorch.globals import config, DebugConfig, LoggingConfig, MetricsConfig  # noqa: F401
+from kubetorch.globals import (  # noqa: F401
+    config,
+    DebugConfig,
+    LoggingConfig,
+    MetricsConfig,
+    PyspyProfilerConfig,
+    TorchProfilerConfig,
+)
 from kubetorch.resources.callables.cls.cls import Cls, cls  # noqa: F401
 from kubetorch.resources.callables.fn.fn import Fn, fn  # noqa: F401
 from kubetorch.resources.callables.utils import NotebookError
