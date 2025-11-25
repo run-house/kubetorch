@@ -12,76 +12,88 @@ data:
     uid = root
     gid = root
     use chroot = false
-    max connections = {{ $.Values.dataSync.maxConnections | default 100 }}
-    timeout = {{ $.Values.dataSync.timeout | default 600 }}
+    max connections = {{ $.Values.dataStore.maxConnections | default 100 }}
+    timeout = {{ $.Values.dataStore.timeout | default 600 }}
     # Performance tuning
     socket options = SO_KEEPALIVE TCP_NODELAY IPTOS_LOWDELAY
     # Log verbosity (0-4, lower is better for performance)
-    max verbosity = {{ $.Values.dataSync.maxVerbosity | default 0 }}
+    max verbosity = {{ $.Values.dataStore.maxVerbosity | default 0 }}
     [data]
     path = /data
     comment = Shared rsync data
     read only = false
     mkdir mode = 0777
     # Per-module connection limit (optional, 0 = use global limit)
-    max connections = {{ $.Values.dataSync.maxConnectionsPerModule | default 0 }}
+    max connections = {{ $.Values.dataStore.maxConnectionsPerModule | default 0 }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: kubetorch-data-sync-pvc
+  name: kubetorch-data-store-pvc
   namespace: {{ . }}
 spec:
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
-      storage: {{ $.Values.dataSync.storage.size | default "100Gi" }}
-  {{- if $.Values.dataSync.storage.storageClassName }}
-  storageClassName: {{ $.Values.dataSync.storage.storageClassName }}
+      storage: {{ $.Values.dataStore.storage.size | default "100Gi" }}
+  {{- if $.Values.dataStore.storage.storageClassName }}
+  storageClassName: {{ $.Values.dataStore.storage.storageClassName }}
   {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: kubetorch-data-sync
+  name: kubetorch-data-store
   namespace: {{ . }}
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: kubetorch-data-sync
+      app: kubetorch-data-store
   template:
     metadata:
       labels:
-        app: kubetorch-data-sync
+        app: kubetorch-data-store
     spec:
+      {{- if $.Values.dataStore.affinity }}
+      affinity:
+        {{- toYaml $.Values.dataStore.affinity | nindent 8 }}
+      {{- end }}
+      {{- if $.Values.dataStore.tolerations }}
+      tolerations:
+        {{- toYaml $.Values.dataStore.tolerations | nindent 8 }}
+      {{- end }}
+      {{- if $.Values.dataStore.serviceAccount }}
+      serviceAccountName: {{ $.Values.dataStore.serviceAccount }}
+      {{- end }}
       containers:
-        - name: rsync
-          image: {{ $.Values.dataSync.image }}
+        - name: data-store
+          image: {{ $.Values.dataStore.image }}
+          imagePullPolicy: {{ $.Values.dataStore.imagePullPolicy | default "IfNotPresent" }}
           ports:
             - containerPort: 873   # rsync daemon
             - containerPort: 8080  # HTTP/WebSocket tunnel
             - containerPort: 8081  # Metadata server API
           volumeMounts:
-            - name: data-sync-storage
+            - name: data-store-storage
               mountPath: /data
             - name: rsyncd-config
               mountPath: /etc/rsyncd.conf
               subPath: rsyncd.conf
           resources:
             requests:
-              cpu: {{ $.Values.dataSync.cpu.request }}
-              memory: {{ $.Values.dataSync.memory.request }}
-              ephemeral-storage: {{ $.Values.dataSync.ephemeralStorage.request }}
+              cpu: {{ $.Values.dataStore.cpu.request }}
+              memory: {{ $.Values.dataStore.memory.request }}
+              ephemeral-storage: {{ $.Values.dataStore.ephemeralStorage.request }}
             limits:
-              cpu: {{ $.Values.dataSync.cpu.limit }}
-              memory: {{ $.Values.dataSync.memory.limit }}
-              ephemeral-storage: {{ $.Values.dataSync.ephemeralStorage.limit }}
+              cpu: {{ $.Values.dataStore.cpu.limit }}
+              memory: {{ $.Values.dataStore.memory.limit }}
+              ephemeral-storage: {{ $.Values.dataStore.ephemeralStorage.limit }}
       volumes:
-        - name: data-sync-storage
+        - name: data-store-storage
           persistentVolumeClaim:
-            claimName: kubetorch-data-sync-pvc
+            claimName: kubetorch-data-store-pvc
         - name: rsyncd-config
           configMap:
             name: kubetorch-rsyncd-config
@@ -89,11 +101,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: kubetorch-data-sync
+  name: kubetorch-data-store
   namespace: {{ . }}
 spec:
   selector:
-    app: kubetorch-data-sync
+    app: kubetorch-data-store
   ports:
     - name: rsync
       port: 873
