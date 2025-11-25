@@ -216,12 +216,8 @@ def test_store_error_handling():
         kt.put(key="../test", src=str(test_file))
         kt.put(key="/absolute/path", src=str(test_file))
 
-        # Cleanup
-        try:
-            kt.rm(key="../test", recursive=True)
-            kt.rm(key="/absolute/path", recursive=True)
-        except Exception:
-            pass
+        kt.rm(key="../test", recursive=True)
+        kt.rm(key="/absolute/path", recursive=True)
 
 
 # ==================== Listing Operations ====================
@@ -296,7 +292,7 @@ async def test_store_peer_to_peer_transfer(store_helper, store_peer):
     """Test peer-to-peer data transfer using vput and get."""
     publisher_data_path = "peer_pub/shared_model.pkl"
     publisher_data_content = "Peer-to-peer model data\nVersion 1.0"
-    publish_key = f"{store_helper.service_name}/peer-shared/model"
+    publish_key = f"/{store_helper.service_name}/peer-shared/model"
 
     pub_result = store_helper.vput_publish_data(
         key=publish_key, local_path=publisher_data_path, content=publisher_data_content
@@ -350,6 +346,102 @@ async def test_store_external_client_metadata_api(store_helper):
     assert isinstance(pod_info, dict), "Should return dict"
     assert "pod_name" in pod_info, "Should include pod_name"
     assert "namespace" in pod_info, "Should include namespace"
+
+
+# ==================== Seeding Verification ====================
+
+
+def _delete_from_store_filesystem(key: str, namespace: str = "default") -> dict:
+    """
+    Delete a key directly from the store pod's filesystem (bypassing metadata server).
+
+    This is useful for testing failover - delete from store but keep metadata entries
+    so we can verify retrieval from seeded peers.
+    """
+    import subprocess
+
+    # Build the path on the store pod
+    store_path = f"/data/{namespace}/{key}"
+
+    # Get the store pod name
+    result = subprocess.run(
+        [
+            "kubectl",
+            "get",
+            "pods",
+            "-n",
+            namespace,
+            "-l",
+            "app=kubetorch-data-store",
+            "-o",
+            "jsonpath={.items[0].metadata.name}",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    pod_name = result.stdout.strip()
+
+    if not pod_name:
+        raise RuntimeError("No store pod found")
+
+    # Delete the file/directory from the store pod
+    result = subprocess.run(
+        ["kubectl", "exec", pod_name, "-n", namespace, "--", "rm", "-rf", store_path],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    return {
+        "success": True,
+        "pod_name": pod_name,
+        "path": store_path,
+    }
+
+
+@pytest.mark.level("minimal")
+async def test_store_seeding_after_get(store_helper, store_peer):
+    """
+    Test that seeding works correctly after kt.get() - another pod can retrieve from the seeded pod.
+
+    Flow:
+    1. Upload data to the central store via kt.put
+    2. Pod B (store_peer) retrieves from store - this auto-seeds on Pod B
+    3. Delete the data from the store filesystem (but keep metadata entries)
+    4. Pod A (store_helper) retrieves the same key - must get it from Pod B since store is empty
+    """
+    service_name = store_helper.service_name
+
+    # Step 1: Upload data to the central store
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        seed_test_file = tmpdir / "seed_test.txt"
+        seed_test_file.write_text("Seeding test data\nOriginal from central store")
+
+        seeding_key = f"/{service_name}/seeding-test/data.txt"
+        kt.put(key=seeding_key, src=str(seed_test_file))
+
+    # Step 2: Pod B retrieves from store (this should auto-seed on Pod B)
+    get_result_b = store_peer.get_data_from_store(
+        key=seeding_key,
+        dest_path="seeding_test_download",
+    )
+    assert get_result_b["success"], f"Pod B get failed: {get_result_b.get('error')}"
+    assert get_result_b["file_count"] > 0, "Pod B should have downloaded files"
+
+    # Step 3: Delete the data directly from the store pod's filesystem (run locally, not in pod)
+    # This bypasses the metadata server, so Pod B's seeding entry remains
+    # This simulates the store becoming unavailable for this key
+    _delete_from_store_filesystem(seeding_key)  # Raises on failure
+
+    # Step 4: Pod A retrieves the same key - must get it from Pod B since store is empty
+    get_result_a = store_helper.get_data_from_store(
+        key=seeding_key,
+        dest_path="seeding_from_peer",
+    )
+    assert get_result_a["success"], f"Pod A get failed (seeding/failover didn't work): {get_result_a.get('error')}"
+    assert get_result_a["file_count"] > 0, "Pod A should have downloaded from seeded Pod B"
 
 
 # ==================== Edge Cases ====================

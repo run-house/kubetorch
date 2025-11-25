@@ -184,7 +184,8 @@ class DataStoreClient:
             logger.info(f"Downloading from key '{key}' to {dest}")
 
         # Get source information from metadata server
-        source_info, has_store_backup = self._resolve_source(key, in_cluster, verbose)
+        # Use parsed.full_key (without leading /) for metadata lookups
+        source_info, has_store_backup = self._resolve_source(parsed.full_key, in_cluster, verbose)
 
         # Try to retrieve the data
         if in_cluster and source_info and source_info.ip:
@@ -209,7 +210,9 @@ class DataStoreClient:
             self._get_from_store_pod(key, parsed, dest, contents, filter_options, force, in_cluster, verbose)
             self._maybe_seed_data(key, dest, seed_data, verbose)
         else:
-            raise DataStoreError(f"Key '{key}' not found - no peer sources and no store pod backup available")
+            raise DataStoreError(
+                f"Key '{parsed.full_key}' not found - no peer sources and no store pod backup available"
+            )
 
     def _normalize_dest(self, dest: Union[str, Path, List], contents: bool, key: str) -> str:
         """Normalize destination path for rsync."""
@@ -608,6 +611,7 @@ class DataStoreClient:
         key: str,
         src: Union[str, Path],
         start_rsyncd: bool = True,
+        base_path: str = "/",
         verbose: bool = False,
     ) -> None:
         """
@@ -619,19 +623,24 @@ class DataStoreClient:
             key: Storage key. Trailing slashes are stripped.
             src: Local path to the data (used for validation, not copied)
             start_rsyncd: If True, start rsync daemon to enable peer-to-peer transfers
+            base_path: Root path for the rsync daemon to serve from. Defaults to "/" which
+                allows serving files from anywhere. Set to a specific directory (e.g., "/app")
+                if the container doesn't have root permissions.
             verbose: Show detailed progress
         """
         if not is_running_in_kubernetes():
             raise RuntimeError("vput can only be called from inside a Kubernetes pod")
 
-        key = key.rstrip("/")
+        # Parse the key to get normalized version (without leading /)
+        parsed = parse_key(key.rstrip("/"), auto_prepend_service=False)
+        normalized_key = parsed.full_key
         src_path = Path(src)
 
         if not src_path.exists():
             raise ValueError(f"Source path does not exist: {src}")
 
         if start_rsyncd:
-            self._ensure_rsync_daemon(src_path, verbose)
+            self._ensure_rsync_daemon(src_path, base_path, verbose)
 
         # Get pod information
         pod_ip = os.getenv("POD_IP")
@@ -641,23 +650,23 @@ class DataStoreClient:
         pod_name = os.getenv("POD_NAME")
         pod_namespace = os.getenv("POD_NAMESPACE", self.namespace)
 
-        # Convert to relative path from working directory
-        working_dir = Path.cwd().absolute()
+        # Convert to path relative to base_path (since rsync daemon serves from base_path)
         src_path_absolute = src_path.absolute()
+        base_path_obj = Path(base_path).absolute()
 
         try:
-            src_path_relative = str(src_path_absolute.relative_to(working_dir)).replace("\\", "/")
+            src_path_relative = str(src_path_absolute.relative_to(base_path_obj)).replace("\\", "/")
         except ValueError:
             raise ValueError(
-                f"Source path {src_path_absolute} is not under working directory {working_dir}. "
-                f"vput() can only publish files within the working directory."
+                f"Source path {src_path_absolute} is not under base_path {base_path_obj}. "
+                f"Either move the file under {base_path} or set base_path to a parent directory."
             )
 
         if verbose:
             logger.info(f"Publishing key '{key}' from pod IP '{pod_ip}' (path: {src_path_relative})")
 
         success = self.metadata_client.publish_key(
-            key, pod_ip, pod_name=pod_name, namespace=pod_namespace, src_path=src_path_relative
+            normalized_key, pod_ip, pod_name=pod_name, namespace=pod_namespace, src_path=src_path_relative
         )
 
         if success:
@@ -666,7 +675,7 @@ class DataStoreClient:
         else:
             raise RuntimeError(f"Failed to publish key '{key}' with metadata server")
 
-    def _ensure_rsync_daemon(self, src_path: Path, verbose: bool = False) -> None:
+    def _ensure_rsync_daemon(self, src_path: Path, base_path: str = "/", verbose: bool = False) -> None:
         """Ensure rsync daemon is running for peer-to-peer transfers."""
         # Check if rsync is installed
         try:
@@ -676,7 +685,8 @@ class DataStoreClient:
         except (subprocess.CalledProcessError, FileNotFoundError):
             raise RuntimeError("rsync is not installed. Install with: apt-get install -y rsync")
 
-        serve_path = str(Path.cwd().absolute())
+        # Serve from base_path (defaults to "/" to allow vput of files anywhere)
+        serve_path = str(Path(base_path).absolute())
 
         # Check if daemon is already running with correct config
         try:

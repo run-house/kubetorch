@@ -172,6 +172,7 @@ def vput(
     key: str,
     src: Union[str, Path],
     start_rsyncd: bool = True,
+    base_path: str = "/",
     verbose: bool = False,
     namespace: Optional[str] = None,
     kubeconfig_path: Optional[str] = None,
@@ -185,6 +186,9 @@ def vput(
         key: Storage key (e.g., "my-service/models", "shared/dataset"). Trailing slashes are stripped.
         src: Local path to the data (used for validation, not copied)
         start_rsyncd: If True, start rsync daemon to enable peer-to-peer transfers (default: True)
+        base_path: Root path for the rsync daemon to serve from. Defaults to "/" which
+            allows serving files from anywhere. Set to a specific directory (e.g., "/app")
+            if the container doesn't have root permissions.
         verbose: Show detailed progress
         namespace: Kubernetes namespace
         kubeconfig_path: Path to kubeconfig file (for compatibility)
@@ -203,13 +207,14 @@ def vput(
         >>> kt.get(key="model-v1/weights", dest="./weights")
         >>> kt.vput(key="model-v1/weights", src="./weights")  # Other pods can now rsync from this pod
         >>> kt.vput(key="model-v1/weights", src="./weights", start_rsyncd=False)  # Don't start daemon
+        >>> kt.vput(key="data", src="/app/data", base_path="/app")  # For non-root containers
     """
     global _default_client
 
     if _default_client is None or namespace or kubeconfig_path:
         _default_client = DataStoreClient(namespace=namespace, kubeconfig_path=kubeconfig_path)
 
-    _default_client.vput(key=key, src=src, start_rsyncd=start_rsyncd, verbose=verbose)
+    _default_client.vput(key=key, src=src, start_rsyncd=start_rsyncd, base_path=base_path, verbose=verbose)
 
 
 def sync_workdir_from_store(namespace: str, service_name: str):
@@ -224,22 +229,20 @@ def sync_workdir_from_store(namespace: str, service_name: str):
     - Absolute path files (under __absolute__/...) into their absolute destinations
 
     Uses the DataStoreClient KV interface, which allows future scalability with peer-to-peer
-    transfer via a central metadata store. When called from inside a pod, empty key "" auto-prepends
-    the service name to download from the service's storage area.
+    transfer via a central metadata store.
     """
-    import os
-
     # Use DataStoreClient KV interface for future scalability
     dt_client = DataStoreClient(namespace=namespace)
 
+    # Use absolute key path (starting with /) to specify exactly which service's data to download
+    # This avoids any auto-prepending of the current pod's service name
+    service_key = f"/{service_name}"
+
     def sync_regular_files():
         """Sync regular files (excluding __absolute__*) to current directory."""
-        # Empty key "" auto-prepends service name when called from inside pod (KT_SERVICE_NAME is set)
-        # contents=True copies contents into current directory
-        # filter_options excludes __absolute__* files
         try:
             dt_client.get(
-                key="",
+                key=service_key,
                 dest=".",
                 contents=True,
                 filter_options="--exclude='__absolute__*'",
@@ -263,10 +266,10 @@ def sync_workdir_from_store(namespace: str, service_name: str):
         """Sync absolute path files (under __absolute__/) to root filesystem."""
         # Check if __absolute__ directory exists by trying to list it
         try:
-            items = dt_client.ls(key="__absolute__")
+            items = dt_client.ls(key=f"{service_key}/__absolute__")
             if items:
                 # Download __absolute__ contents to / with contents=True
-                dt_client.get(key="__absolute__", dest="/", contents=True)
+                dt_client.get(key=f"{service_key}/__absolute__", dest="/", contents=True)
             else:
                 logger.debug("No absolute path files to sync")
         except Exception as e:
@@ -276,15 +279,6 @@ def sync_workdir_from_store(namespace: str, service_name: str):
                 logger.debug("No absolute path files to sync")
             else:
                 raise
-
-    # KT_SERVICE_NAME should already be set by http_server.py, but verify it matches
-    # This ensures DataStoreClient.get() with empty key will use the correct service name
-    if os.environ.get("KT_SERVICE_NAME") != service_name:
-        logger.warning(
-            f"KT_SERVICE_NAME environment variable ({os.environ.get('KT_SERVICE_NAME')}) "
-            f"does not match service_name parameter ({service_name}). Setting it to {service_name}."
-        )
-        os.environ["KT_SERVICE_NAME"] = service_name
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         regular_future = executor.submit(sync_regular_files)

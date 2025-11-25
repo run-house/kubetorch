@@ -7,7 +7,7 @@ It contains the core rsync functionality used throughout kubetorch.
 
 from .data_store_client import DataStoreClient, DataStoreError
 from .data_store_cmds import get, ls, put, rm, rsync, rsync_async, sync_workdir_from_store, vput
-from .key_utils import is_service_name, parse_key, ParsedKey
+from .key_utils import parse_key, ParsedKey
 from .rsync_client import RsyncClient
 
 __all__ = [
@@ -16,7 +16,6 @@ __all__ = [
     "ParsedKey",
     "RsyncClient",
     "get",
-    "is_service_name",
     "ls",
     "parse_key",
     "put",
