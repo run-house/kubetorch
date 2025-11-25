@@ -24,10 +24,10 @@ class MetadataClient:
         Initialize the metadata client.
 
         Args:
-            namespace: Kubernetes namespace (same namespace as the data-sync service)
+            namespace: Kubernetes namespace (same namespace as the data-store service)
             metadata_port: Port where metadata server is running
         """
-        self.namespace = namespace  # Namespace where the data-sync service is deployed
+        self.namespace = namespace  # Namespace where the data-store service is deployed
         self.metadata_port = metadata_port
         self._base_url = None
 
@@ -35,7 +35,7 @@ class MetadataClient:
     def base_url(self) -> str:
         """Get the base URL for the metadata server."""
         if self._base_url is None:
-            service_name = "kubetorch-data-sync"
+            service_name = "kubetorch-data-store"
             if is_running_in_kubernetes():
                 # Service is in the same namespace
                 self._base_url = f"http://{service_name}.{self.namespace}.svc.cluster.local:{self.metadata_port}"

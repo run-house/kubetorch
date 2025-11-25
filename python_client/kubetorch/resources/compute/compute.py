@@ -15,7 +15,7 @@ from kubernetes.client import V1ResourceRequirements
 import kubetorch.constants as constants
 import kubetorch.serving.constants as serving_constants
 
-from kubetorch import data_sync, globals
+from kubetorch import data_store, globals
 from kubetorch.globals import LoggingConfig
 
 from kubetorch.logger import get_logger
@@ -2136,7 +2136,7 @@ class Compute:
 
     def _rsync_svc_url(self):
         """Get the rsync pod URL for startup commands."""
-        client = data_sync.RsyncClient(self.namespace, self.service_name)
+        client = data_store.RsyncClient(self.namespace, self.service_name)
         return client.get_rsync_pod_url()
 
     def ssh(self, pod_name: str = None):
@@ -2213,7 +2213,7 @@ class Compute:
         full_path, dest_dir = _get_sync_package_paths(package)
         logger.info(f"Syncing over package at {full_path} to {dest_dir}")
         # Use RsyncClient directly - files go to rsync pod, then sync to service pods at startup
-        client = data_sync.RsyncClient(self.namespace, self.service_name)
+        client = data_store.RsyncClient(self.namespace, self.service_name)
         client.upload(source=full_path, dest=dest_dir)
 
     def run_bash(
@@ -2282,7 +2282,7 @@ class Compute:
                 full_path, dest_dir = _get_sync_package_paths(step.kwargs.get("package"))
                 if rsync:
                     # Use RsyncClient directly - files go to rsync pod, then sync to service pods at startup
-                    client = data_sync.RsyncClient(self.namespace, self.service_name)
+                    client = data_store.RsyncClient(self.namespace, self.service_name)
                     client.upload(source=full_path, dest=dest_dir)
                 instructions += f"COPY {full_path} {dest_dir}"
             elif step.step_type == ImageSetupStepType.RSYNC:
@@ -2294,7 +2294,7 @@ class Compute:
 
                 if rsync:
                     # Use RsyncClient directly - files go to rsync pod, then sync to service pods at startup
-                    client = data_sync.RsyncClient(self.namespace, self.service_name)
+                    client = data_store.RsyncClient(self.namespace, self.service_name)
                     client.upload(
                         source=source_path,
                         dest=dest_dir,
