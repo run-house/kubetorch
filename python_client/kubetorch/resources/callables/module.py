@@ -1084,6 +1084,8 @@ class Module:
                                     if start_timestamp is not None and ts_ns < start_timestamp:
                                         continue
                                     log_line = value[1]
+                                    if "no such key: username" in log_line:
+                                        continue
                                     if is_event:
                                         event_type = labels.get("detected_level", "")
                                         if log_verbosity == LogVerbosity.CRITICAL and event_type == "Normal":
