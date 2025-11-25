@@ -197,7 +197,7 @@ async def test_store_overwrite(store_helper):
 @pytest.mark.level("minimal")
 def test_store_error_handling():
     """Test error handling for key-value operations."""
-    DataSyncError = kt.DataSyncError
+    DataStoreError = kt.DataStoreError
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
@@ -207,7 +207,7 @@ def test_store_error_handling():
             kt.put(key="test/nonexistent", src="/non/existent/file.txt")
 
         # Non-existent key
-        with pytest.raises(DataSyncError):
+        with pytest.raises(DataStoreError):
             kt.get(key="nonexistent/key", dest=str(tmpdir))
 
         # These should work - keys are flexible
@@ -340,7 +340,7 @@ async def test_store_external_client_metadata_api(store_helper):
 
     assert result["success"], "vput should succeed"
 
-    from kubetorch.data_sync.metadata_client import MetadataClient
+    from kubetorch.data_store.metadata_client import MetadataClient
 
     metadata_client = MetadataClient(namespace=store_helper.compute.namespace)
 

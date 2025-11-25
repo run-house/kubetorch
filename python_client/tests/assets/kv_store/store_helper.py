@@ -33,7 +33,7 @@ class StoreTestHelper:
         This allows paths like "ls-test" to correctly become "donny-store-test-helper/ls-test"
         while explicit service prefixes like "other-service/data" remain unchanged.
         """
-        from kubetorch.data_sync.key_utils import parse_key
+        from kubetorch.data_store.key_utils import parse_key
 
         if not path:
             return self.service_name
