@@ -22,6 +22,7 @@ from kubetorch.servers.http.utils import is_running_in_kubernetes
 from .key_utils import parse_key, ParsedKey
 from .metadata_client import MetadataClient
 from .rsync_client import RsyncClient
+from .types import BroadcastWindow, Lifespan, Locale
 
 logger = get_logger(__name__)
 
@@ -62,76 +63,192 @@ class DataStoreClient:
             namespace=self.namespace, metadata_port=serving_constants.DATA_STORE_METADATA_PORT
         )
 
-    def _parse_key_for_put(self, key: str) -> ParsedKey:
-        """Parse key for put operations (auto-prepends service name in-cluster)."""
-        return parse_key(key, auto_prepend_service=True)
-
-    def _parse_key_for_get(self, key: str) -> ParsedKey:
-        """Parse key for get operations (does NOT auto-prepend service name)."""
-        return parse_key(key, auto_prepend_service=False)
-
     def put(
         self,
-        key: str,
+        key: Union[str, List[str]],
         src: Union[str, Path, List[Union[str, Path]]],
+        locale: Locale = "store",
+        lifespan: Lifespan = "cluster",
+        broadcast: Optional[BroadcastWindow] = None,
         contents: bool = False,
         filter_options: Optional[str] = None,
         force: bool = False,
         verbose: bool = False,
+        start_rsyncd: bool = True,
+        base_path: str = "/",
     ) -> None:
         """
         Upload files or directories to the cluster using a key-value store interface.
 
         Args:
-            key: Storage key (e.g., "my-service/models", "shared/dataset"). Trailing slashes are stripped.
-            src: Local file(s) or directory(s) to upload
-            contents: If True, copy directory contents (adds trailing slashes for rsync)
-            filter_options: Additional rsync filter options
-            force: Force overwrite of existing files
-            verbose: Show detailed progress
+            key: Storage key(s). Can be a single key or list of keys.
+            src: Local file(s) or directory(s) to upload.
+            locale: Where data is stored ("store" or "local").
+            lifespan: How long data persists ("cluster" or "resource").
+            broadcast: Optional BroadcastWindow for coordinated transfers.
+            contents: If True, copy directory contents.
+            filter_options: Additional rsync filter options.
+            force: Force overwrite of existing files.
+            verbose: Show detailed progress.
+            start_rsyncd: For locale="local": Start rsync daemon (default: True).
+            base_path: For locale="local": Root path for rsync daemon (default: "/").
         """
-        parsed = self._parse_key_for_put(key)
+        # Normalize keys to list
+        keys = [key] if isinstance(key, str) else key
 
-        # Create rsync client with appropriate service name
-        rsync_client = RsyncClient(namespace=self.namespace, service_name=parsed.service_name or "store")
+        if locale == "store":
+            self._put_to_store(
+                keys=keys,
+                src=src,
+                lifespan=lifespan,
+                contents=contents,
+                filter_options=filter_options,
+                force=force,
+                verbose=verbose,
+            )
+        elif locale == "local":
+            self._put_local(
+                keys=keys,
+                src=src,
+                lifespan=lifespan,
+                start_rsyncd=start_rsyncd,
+                base_path=base_path,
+                verbose=verbose,
+            )
+        else:
+            raise ValueError(f"Invalid locale: {locale}. Must be 'store' or 'local'.")
 
-        if verbose:
-            logger.info(f"Uploading to key '{key}' from {src}")
+        # Handle broadcast if specified
+        if broadcast:
+            self._handle_put_broadcast(keys, src, broadcast, verbose)
 
+    def _put_to_store(
+        self,
+        keys: List[str],
+        src: Union[str, Path, List[Union[str, Path]]],
+        lifespan: Lifespan,
+        contents: bool,
+        filter_options: Optional[str],
+        force: bool,
+        verbose: bool,
+    ) -> None:
+        """Upload data to the central store pod."""
         # Convert Path objects to strings
         if isinstance(src, Path):
             src = str(src)
         elif isinstance(src, list):
             src = [str(s) if isinstance(s, Path) else s for s in src]
 
-        # Build destination path
-        dest_path = parsed.storage_path
+        for key in keys:
+            parsed = parse_key(key)
 
-        # If contents=True, add trailing slash for rsync "copy contents" behavior
-        if contents and dest_path:
-            dest_path = dest_path.rstrip("/") + "/"
-
-        try:
-            logger.debug(
-                f"DataStoreClient.put: in_cluster={is_running_in_kubernetes()}, "
-                f"service_name={parsed.service_name}, dest_path={dest_path}, contents={contents}"
-            )
-
-            rsync_client.upload(
-                source=src, dest=dest_path, contents=contents, filter_options=filter_options, force=force
-            )
-
-            # After successful upload, register with metadata server
-            self._register_store_pod(key, verbose)
+            # Create rsync client with appropriate service name
+            rsync_client = RsyncClient(namespace=self.namespace, service_name=parsed.service_name or "store")
 
             if verbose:
-                logger.info(f"Successfully stored at key '{key}'")
+                logger.info(f"Uploading to key '{key}' from {src}")
 
-        except RsyncError as e:
-            logger.error(f"Failed to store at key '{key}': {e}")
-            raise
+            # Build destination path
+            dest_path = parsed.storage_path
 
-    def _register_store_pod(self, key: str, verbose: bool = False) -> None:
+            # If contents=True, add trailing slash for rsync "copy contents" behavior
+            if contents and dest_path:
+                dest_path = dest_path.rstrip("/") + "/"
+
+            try:
+                logger.debug(
+                    f"DataStoreClient.put: in_cluster={is_running_in_kubernetes()}, "
+                    f"service_name={parsed.service_name}, dest_path={dest_path}, contents={contents}"
+                )
+
+                rsync_client.upload(
+                    source=src, dest=dest_path, contents=contents, filter_options=filter_options, force=force
+                )
+
+                # After successful upload, register with metadata server
+                self._register_store_pod(key, lifespan, verbose)
+
+                if verbose:
+                    logger.info(f"Successfully stored at key '{key}'")
+
+            except RsyncError as e:
+                logger.error(f"Failed to store at key '{key}': {e}")
+                raise
+
+    def _put_local(
+        self,
+        keys: List[str],
+        src: Union[str, Path, List[Union[str, Path]]],
+        lifespan: Lifespan,
+        start_rsyncd: bool,
+        base_path: str,
+        verbose: bool,
+    ) -> None:
+        """Register local data with metadata server (zero-copy mode)."""
+        if not is_running_in_kubernetes():
+            raise RuntimeError("locale='local' can only be used inside a Kubernetes pod")
+
+        # Convert src to Path
+        if isinstance(src, list):
+            src_path = Path(src[0]) if src else Path(".")
+        elif isinstance(src, str):
+            src_path = Path(src)
+        else:
+            src_path = src
+
+        if not src_path.exists():
+            raise ValueError(f"Source path does not exist: {src}")
+
+        if start_rsyncd:
+            self._ensure_rsync_daemon(src_path, base_path, verbose)
+
+        # Get pod information
+        pod_ip = os.getenv("POD_IP")
+        if not pod_ip:
+            raise RuntimeError("POD_IP environment variable not set")
+
+        pod_name = os.getenv("POD_NAME")
+        pod_namespace = os.getenv("POD_NAMESPACE", self.namespace)
+
+        # Determine service_name for lifespan="resource"
+        service_name = os.getenv("KT_SERVICE_NAME") if lifespan == "resource" else None
+
+        # Convert to path relative to base_path
+        src_path_absolute = src_path.absolute()
+        base_path_obj = Path(base_path).absolute()
+
+        try:
+            src_path_relative = str(src_path_absolute.relative_to(base_path_obj)).replace("\\", "/")
+        except ValueError:
+            raise ValueError(
+                f"Source path {src_path_absolute} is not under base_path {base_path_obj}. "
+                f"Either move the file under {base_path} or set base_path to a parent directory."
+            )
+
+        for key in keys:
+            parsed = parse_key(key)
+            normalized_key = parsed.full_key
+
+            if verbose:
+                logger.info(f"Publishing key '{key}' from pod IP '{pod_ip}' (path: {src_path_relative})")
+
+            success = self.metadata_client.publish_key(
+                normalized_key,
+                pod_ip,
+                pod_name=pod_name,
+                namespace=pod_namespace,
+                src_path=src_path_relative,
+                lifespan=lifespan,
+                service_name=service_name,
+            )
+
+            if success:
+                if verbose:
+                    logger.info(f"Successfully published key '{key}'")
+            else:
+                raise RuntimeError(f"Failed to publish key '{key}' with metadata server")
+
+    def _register_store_pod(self, key: str, lifespan: Lifespan, verbose: bool = False) -> None:
         """Register the store pod with metadata server after upload."""
         if not is_running_in_kubernetes():
             return
@@ -144,72 +261,304 @@ class DataStoreClient:
             )
             if pod_list.items:
                 store_pod_ip = pod_list.items[0].status.pod_ip
-                self.metadata_client.register_store_pod(key, store_pod_ip)
+
+                # Determine service_name for lifespan="resource"
+                service_name = os.getenv("KT_SERVICE_NAME") if lifespan == "resource" else None
+
+                self.metadata_client.register_store_pod(key, store_pod_ip, lifespan=lifespan, service_name=service_name)
                 if verbose:
                     logger.debug(f"Registered key '{key}' with metadata server (store pod IP: {store_pod_ip})")
         except Exception as e:
             logger.warning(f"Failed to register key '{key}' with metadata server: {e}")
 
+    def _handle_put_broadcast(
+        self,
+        keys: List[str],
+        src: Union[str, Path, List[Union[str, Path]]],
+        broadcast: BroadcastWindow,
+        verbose: bool,
+    ) -> None:
+        """Handle broadcast window for put() - this pod is a putter."""
+        if not is_running_in_kubernetes():
+            logger.warning("Broadcast window ignored - not running in Kubernetes")
+            return
+
+        pod_ip = os.getenv("POD_IP")
+        pod_name = os.getenv("POD_NAME")
+
+        if verbose:
+            logger.info(f"Joining broadcast quorum as putter for keys: {keys}")
+
+        # Join the broadcast quorum as a putter
+        broadcast_info = self.metadata_client.join_broadcast(
+            keys=keys,
+            role="putter",
+            pod_ip=pod_ip,
+            pod_name=pod_name,
+            broadcast=broadcast,
+        )
+
+        broadcast_id = broadcast_info.get("broadcast_id")
+        if not broadcast_id:
+            logger.warning("Failed to join broadcast quorum")
+            return
+
+        # Poll until quorum is ready
+        max_wait = broadcast.timeout or 300
+        start_time = time.time()
+
+        while time.time() - start_time < max_wait:
+            status_info = self.metadata_client.get_broadcast_status(broadcast_id, pod_ip)
+            status = status_info.get("status")
+
+            if status == "ready":
+                if verbose:
+                    logger.info(f"Broadcast quorum ready. Getters: {status_info.get('getters', [])}")
+
+                # Send data to all getters
+                getters = status_info.get("getters", [])
+                for getter in getters:
+                    getter_ip = getter.get("pod_ip")
+                    if getter_ip:
+                        try:
+                            if verbose:
+                                logger.info(f"Sending data to getter {getter_ip}")
+                            # Note: For now, getters pull from putters, not the other way around
+                            # This is simpler and works with existing rsync daemon setup
+                        except Exception as e:
+                            logger.warning(f"Failed to send to getter {getter_ip}: {e}")
+
+                # Mark complete
+                self.metadata_client.complete_broadcast(broadcast_id, pod_ip)
+                return
+            elif status == "missed":
+                logger.warning("Missed the broadcast window")
+                return
+
+            time.sleep(0.5)
+
+        logger.warning(f"Broadcast quorum timed out after {max_wait}s")
+
     def get(
         self,
-        key: str,
+        key: Union[str, List[str]],
         dest: Optional[Union[str, Path]] = None,
+        broadcast: Optional[BroadcastWindow] = None,
         contents: bool = False,
         filter_options: Optional[str] = None,
         force: bool = False,
-        seed_data: bool = True,
         verbose: bool = False,
     ) -> None:
         """
         Download files or directories from the cluster using a key-value store interface.
 
         Args:
-            key: Storage key to retrieve. Trailing slashes are stripped.
+            key: Storage key(s) to retrieve.
             dest: Local destination path (defaults to current working directory).
-            contents: If True, copy directory contents (adds trailing slashes for rsync)
-            filter_options: Additional rsync filter options
-            force: Force overwrite of existing files
-            seed_data: If True, automatically call vput() after successful retrieval (default: True)
-            verbose: Show detailed progress
+            broadcast: Optional BroadcastWindow for coordinated transfers.
+            contents: If True, copy directory contents.
+            filter_options: Additional rsync filter options.
+            force: Force overwrite of existing files.
+            verbose: Show detailed progress.
         """
+        # Normalize keys to list
+        keys = [key] if isinstance(key, str) else key
+
         # Default to current working directory if dest not specified
         if dest is None:
             dest = os.getcwd()
 
-        dest = self._normalize_dest(dest, contents, key)
-        parsed = self._parse_key_for_get(key)
+        if broadcast:
+            self._get_with_broadcast(
+                keys=keys,
+                dest=dest,
+                broadcast=broadcast,
+                contents=contents,
+                filter_options=filter_options,
+                force=force,
+                verbose=verbose,
+            )
+        else:
+            # Regular get without broadcast
+            for k in keys:
+                self._get_single(
+                    key=k,
+                    dest=dest,
+                    contents=contents,
+                    filter_options=filter_options,
+                    force=force,
+                    verbose=verbose,
+                )
+
+    def _get_with_broadcast(
+        self,
+        keys: List[str],
+        dest: Union[str, Path],
+        broadcast: BroadcastWindow,
+        contents: bool,
+        filter_options: Optional[str],
+        force: bool,
+        verbose: bool,
+    ) -> None:
+        """Get with broadcast window - coordinate with putters."""
+        if not is_running_in_kubernetes():
+            logger.warning("Broadcast window ignored - not running in Kubernetes. Falling back to regular get.")
+            for k in keys:
+                self._get_single(k, dest, contents, filter_options, force, verbose)
+            return
+
+        pod_ip = os.getenv("POD_IP")
+        pod_name = os.getenv("POD_NAME")
+
+        if verbose:
+            logger.info(f"Joining broadcast quorum as getter for keys: {keys}")
+
+        # Join the broadcast quorum as a getter
+        broadcast_info = self.metadata_client.join_broadcast(
+            keys=keys,
+            role="getter",
+            pod_ip=pod_ip,
+            pod_name=pod_name,
+            broadcast=broadcast,
+        )
+
+        broadcast_id = broadcast_info.get("broadcast_id")
+        if not broadcast_id:
+            logger.warning("Failed to join broadcast quorum, falling back to regular get")
+            for k in keys:
+                self._get_single(k, dest, contents, filter_options, force, verbose)
+            return
+
+        # Poll until quorum is ready
+        max_wait = broadcast.timeout or 300
+        start_time = time.time()
+
+        while time.time() - start_time < max_wait:
+            status_info = self.metadata_client.get_broadcast_status(broadcast_id, pod_ip)
+            status = status_info.get("status")
+
+            if status == "ready":
+                if verbose:
+                    logger.info(f"Broadcast quorum ready. Putters: {status_info.get('putters', [])}")
+
+                # Get data from putters
+                putters = status_info.get("putters", [])
+                if putters:
+                    # For simple flow, get from first putter for each key
+                    putter = putters[0]
+                    putter_ip = putter.get("pod_ip")
+
+                    if putter_ip:
+                        for k in keys:
+                            try:
+                                if verbose:
+                                    logger.info(f"Getting key '{k}' from putter {putter_ip}")
+                                self._get_from_putter(
+                                    key=k,
+                                    putter_ip=putter_ip,
+                                    dest=dest,
+                                    contents=contents,
+                                    filter_options=filter_options,
+                                    force=force,
+                                    verbose=verbose,
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to get from putter {putter_ip}: {e}")
+                                raise
+
+                # Mark complete
+                self.metadata_client.complete_broadcast(broadcast_id, pod_ip)
+                return
+            elif status == "missed":
+                logger.warning("Missed the broadcast window, falling back to regular get")
+                for k in keys:
+                    self._get_single(k, dest, contents, filter_options, force, verbose)
+                return
+
+            time.sleep(0.5)
+
+        logger.warning(f"Broadcast quorum timed out after {max_wait}s, falling back to regular get")
+        for k in keys:
+            self._get_single(k, dest, contents, filter_options, force, verbose)
+
+    def _get_from_putter(
+        self,
+        key: str,
+        putter_ip: str,
+        dest: Union[str, Path],
+        contents: bool,
+        filter_options: Optional[str],
+        force: bool,
+        verbose: bool,
+    ) -> None:
+        """Get data directly from a putter pod."""
+        parsed = parse_key(key)
+        rsync_client = RsyncClient(namespace=self.namespace, service_name=parsed.service_name or "store")
+
+        dest_str = self._normalize_dest(dest, contents, key)
+
+        # Build peer rsync URL - putter is serving via rsync daemon
+        # The src_path is the key's path segment
+        src_path = parsed.path if parsed.path else key.split("/")[-1]
+        peer_url = f"rsync://{putter_ip}:{serving_constants.REMOTE_RSYNC_PORT}/data/"
+        remote_source = peer_url + src_path
+        if contents:
+            remote_source = remote_source.rstrip("/") + "/"
+
+        if verbose:
+            logger.info(f"Downloading from putter: {remote_source} to {dest_str}")
+
+        rsync_client.download(
+            source=remote_source, dest=dest_str, contents=contents, filter_options=filter_options, force=force
+        )
+
+        if verbose:
+            logger.info(f"Successfully retrieved key '{key}' from putter {putter_ip}")
+
+    def _get_single(
+        self,
+        key: str,
+        dest: Union[str, Path],
+        contents: bool,
+        filter_options: Optional[str],
+        force: bool,
+        verbose: bool,
+    ) -> None:
+        """Get a single key without broadcast coordination."""
+        dest_str = self._normalize_dest(dest, contents, key)
+        parsed = parse_key(key)
         in_cluster = is_running_in_kubernetes()
 
         if verbose:
-            logger.info(f"Downloading from key '{key}' to {dest}")
+            logger.info(f"Downloading from key '{key}' to {dest_str}")
 
         # Get source information from metadata server
-        source_info, has_store_backup = self._resolve_source(key, in_cluster, verbose)
+        source_info, has_store_backup = self._resolve_source(parsed.full_key, in_cluster, verbose)
 
         # Try to retrieve the data
         if in_cluster and source_info and source_info.ip:
             # In-cluster peer-to-peer transfer
             success = self._get_from_peer_in_cluster(
-                key, parsed, source_info, dest, contents, filter_options, force, has_store_backup, verbose
+                key, parsed, source_info, dest_str, contents, filter_options, force, has_store_backup, verbose
             )
             if success:
-                self._maybe_seed_data(key, dest, seed_data, verbose)
                 return
 
         if not in_cluster and source_info and source_info.pod_name and not has_store_backup:
             # External peer-to-peer transfer (only when store doesn't have it)
             success = self._get_from_peer_external(
-                key, parsed, source_info, dest, contents, filter_options, force, verbose
+                key, parsed, source_info, dest_str, contents, filter_options, force, verbose
             )
             if success:
                 return
 
         # Fall back to store pod
         if has_store_backup:
-            self._get_from_store_pod(key, parsed, dest, contents, filter_options, force, in_cluster, verbose)
-            self._maybe_seed_data(key, dest, seed_data, verbose)
+            self._get_from_store_pod(key, parsed, dest_str, contents, filter_options, force, in_cluster, verbose)
         else:
-            raise DataStoreError(f"Key '{key}' not found - no peer sources and no store pod backup available")
+            raise DataStoreError(
+                f"Key '{parsed.full_key}' not found - no peer sources and no store pod backup available"
+            )
 
     def _normalize_dest(self, dest: Union[str, Path, List], contents: bool, key: str) -> str:
         """Normalize destination path for rsync."""
@@ -518,26 +867,6 @@ class DataStoreClient:
         except Exception as e:
             logger.debug(f"Failed to notify store pod completion: {e}")
 
-    def _maybe_seed_data(self, key: str, dest: str, seed_data: bool, verbose: bool) -> None:
-        """Optionally seed data after successful retrieval."""
-        if not seed_data or not is_running_in_kubernetes():
-            return
-
-        dest_path = Path(dest.rstrip("/"))
-        if not dest_path.exists():
-            if verbose:
-                logger.debug(f"Skipping auto-seed - destination does not exist: {dest_path}")
-            return
-
-        try:
-            if verbose:
-                logger.info(f"Auto-seeding key '{key}' after successful retrieval")
-            self.vput(key=key, src=dest_path, start_rsyncd=True, verbose=verbose)
-            if verbose:
-                logger.info(f"Successfully seeded key '{key}'")
-        except Exception as e:
-            logger.warning(f"Failed to auto-seed key '{key}': {e}")
-
     def ls(self, key: str = "", verbose: bool = False) -> List[dict]:
         """
         List files and directories under a key path in the store.
@@ -549,7 +878,7 @@ class DataStoreClient:
         Returns:
             List of dicts with item information.
         """
-        parsed = parse_key(key, auto_prepend_service=True)
+        parsed = parse_key(key)
 
         if verbose:
             logger.info(f"Listing contents of key '{key}' (query: '{parsed.full_key}')")
@@ -580,7 +909,7 @@ class DataStoreClient:
             recursive: If True, delete directories recursively
             verbose: Show detailed progress
         """
-        parsed = parse_key(key, auto_prepend_service=True)
+        parsed = parse_key(key)
 
         if verbose:
             logger.info(f"Deleting key '{key}'")
@@ -603,70 +932,7 @@ class DataStoreClient:
             else:
                 logger.info(f"Key '{key}' does not exist")
 
-    def vput(
-        self,
-        key: str,
-        src: Union[str, Path],
-        start_rsyncd: bool = True,
-        verbose: bool = False,
-    ) -> None:
-        """
-        Virtual put - publish that this pod has data for the given key without copying it.
-
-        This enables zero-copy peer-to-peer data transfer.
-
-        Args:
-            key: Storage key. Trailing slashes are stripped.
-            src: Local path to the data (used for validation, not copied)
-            start_rsyncd: If True, start rsync daemon to enable peer-to-peer transfers
-            verbose: Show detailed progress
-        """
-        if not is_running_in_kubernetes():
-            raise RuntimeError("vput can only be called from inside a Kubernetes pod")
-
-        key = key.rstrip("/")
-        src_path = Path(src)
-
-        if not src_path.exists():
-            raise ValueError(f"Source path does not exist: {src}")
-
-        if start_rsyncd:
-            self._ensure_rsync_daemon(src_path, verbose)
-
-        # Get pod information
-        pod_ip = os.getenv("POD_IP")
-        if not pod_ip:
-            raise RuntimeError("POD_IP environment variable not set")
-
-        pod_name = os.getenv("POD_NAME")
-        pod_namespace = os.getenv("POD_NAMESPACE", self.namespace)
-
-        # Convert to relative path from working directory
-        working_dir = Path.cwd().absolute()
-        src_path_absolute = src_path.absolute()
-
-        try:
-            src_path_relative = str(src_path_absolute.relative_to(working_dir)).replace("\\", "/")
-        except ValueError:
-            raise ValueError(
-                f"Source path {src_path_absolute} is not under working directory {working_dir}. "
-                f"vput() can only publish files within the working directory."
-            )
-
-        if verbose:
-            logger.info(f"Publishing key '{key}' from pod IP '{pod_ip}' (path: {src_path_relative})")
-
-        success = self.metadata_client.publish_key(
-            key, pod_ip, pod_name=pod_name, namespace=pod_namespace, src_path=src_path_relative
-        )
-
-        if success:
-            if verbose:
-                logger.info(f"Successfully published key '{key}'")
-        else:
-            raise RuntimeError(f"Failed to publish key '{key}' with metadata server")
-
-    def _ensure_rsync_daemon(self, src_path: Path, verbose: bool = False) -> None:
+    def _ensure_rsync_daemon(self, src_path: Path, base_path: str = "/", verbose: bool = False) -> None:
         """Ensure rsync daemon is running for peer-to-peer transfers."""
         # Check if rsync is installed
         try:
@@ -676,7 +942,8 @@ class DataStoreClient:
         except (subprocess.CalledProcessError, FileNotFoundError):
             raise RuntimeError("rsync is not installed. Install with: apt-get install -y rsync")
 
-        serve_path = str(Path.cwd().absolute())
+        # Serve from base_path (defaults to "/" to allow vput of files anywhere)
+        serve_path = str(Path(base_path).absolute())
 
         # Check if daemon is already running with correct config
         try:
