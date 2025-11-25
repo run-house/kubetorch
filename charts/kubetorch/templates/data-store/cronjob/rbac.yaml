@@ -1,16 +1,16 @@
-{{- if .Values.rsync.cleanupCron.enabled }}
+{{- if .Values.dataStore.cleanupCron.enabled }}
 {{- range (.Values.kubetorchConfig.deployment_namespaces | default list | concat (list .Release.Namespace) | uniq) }}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: rsync-cleaner
+  name: data-store-cleaner
   namespace: {{ . }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: rsync-cleaner-role
+  name: data-store-cleaner-role
   namespace: {{ . }}
 rules:
   - apiGroups: [""]
@@ -20,15 +20,15 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: rsync-cleaner-binding
+  name: data-store-cleaner-binding
   namespace: {{ . }}
 subjects:
   - kind: ServiceAccount
-    name: rsync-cleaner
+    name: data-store-cleaner
     namespace: {{ . }}
 roleRef:
   kind: Role
-  name: rsync-cleaner-role
+  name: data-store-cleaner-role
   apiGroup: rbac.authorization.k8s.io
 {{- end }}
 {{- end }}

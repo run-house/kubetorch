@@ -489,15 +489,15 @@ def delete_cached_service_data(
     namespace: str,
     console: "Console" = None,
 ):
-    """Delete service data from the data sync pod (both filesystem and metadata)."""
+    """Delete service data from the data store pod (both filesystem and metadata)."""
     controller_client = kubetorch.globals.controller_client()
     try:
-        # 1. Find the data sync pod name in the provided namespace
-        pods = controller_client.list_pods(namespace=namespace, label_selector="app=kubetorch-data-sync")
+        # 1. Find the data store pod name in the provided namespace
+        pods = controller_client.list_pods(namespace=namespace, label_selector="app=kubetorch-data-store")
         items = pods.get("items", []) if isinstance(pods, dict) else pods.items
         if not items:
             if console:
-                console.print(f"[yellow] No data sync pod found in namespace {namespace}[/yellow]")
+                console.print(f"[yellow] No data store pod found in namespace {namespace}[/yellow]")
             return
 
         pod_name = pods.items[0].metadata.name

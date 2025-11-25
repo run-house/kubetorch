@@ -61,9 +61,9 @@ class RsyncClient:
         return self._core_api
 
     def get_rsync_pod_url(self) -> str:
-        """Get the data sync pod service URL."""
+        """Get the data store pod service URL."""
         # Service is in the same namespace as the data
-        return f"rsync://{serving_constants.DATA_SYNC_SERVICE_NAME}.{self.namespace}.svc.cluster.local:{serving_constants.REMOTE_RSYNC_PORT}/data/{self.namespace}/{self.service_name}/"
+        return f"rsync://{serving_constants.DATA_STORE_SERVICE_NAME}.{self.namespace}.svc.cluster.local:{serving_constants.REMOTE_RSYNC_PORT}/data/{self.namespace}/{self.service_name}/"
 
     def get_base_rsync_url(self, local_port: int) -> str:
         """Get the base rsync URL for local connections."""
@@ -86,7 +86,7 @@ class RsyncClient:
         """Create the subdirectory for this particular service in the rsync pod."""
         subdir = f"/data/{self.namespace}/{self.service_name}"
 
-        label_selector = f"app={serving_constants.DATA_SYNC_SERVICE_NAME}"
+        label_selector = f"app={serving_constants.DATA_STORE_SERVICE_NAME}"
         # Pod is in the same namespace
         pod_name = (
             self.core_api.list_namespaced_pod(namespace=self.namespace, label_selector=label_selector)
