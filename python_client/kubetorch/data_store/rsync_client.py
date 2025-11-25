@@ -512,9 +512,9 @@ class RsyncClient:
         # Log user-friendly success message
         if synced_items:
             items_str = ", ".join(synced_items)
-            logger.info(f"{items_str} successfully synced to cluster")
+            logger.info(f"{items_str} successfully synced")
         else:
-            logger.info("Rsync operation completed successfully")
+            logger.debug("Rsync operation completed successfully")
 
     async def run_rsync_command_async(self, rsync_cmd: str, create_target_dir: bool = True):
         """Execute rsync command asynchronously."""

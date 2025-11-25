@@ -5,13 +5,15 @@ The metadata server tracks which pods have published data for each key,
 enabling peer-to-peer data transfer and load balancing.
 """
 
-from typing import Optional, Union
+from typing import List, Optional, Union
 from urllib.parse import quote
 
 import requests
 
 from kubetorch.logger import get_logger
 from kubetorch.servers.http.utils import is_running_in_kubernetes
+
+from .types import BroadcastWindow, Lifespan
 
 logger = get_logger(__name__)
 
@@ -128,6 +130,8 @@ class MetadataClient:
         pod_name: Optional[str] = None,
         namespace: Optional[str] = None,
         src_path: Optional[str] = None,
+        lifespan: Lifespan = "cluster",
+        service_name: Optional[str] = None,
     ) -> bool:
         """
         Publish that this pod has data for the given key.
@@ -138,6 +142,8 @@ class MetadataClient:
             pod_name: Optional pod name (for external client support)
             namespace: Optional namespace (for external client support)
             src_path: Optional relative path from working directory to the data on the pod (for peer-to-peer rsync)
+            lifespan: "cluster" for persistent, "resource" for service-scoped cleanup
+            service_name: Service name for resource-scoped cleanup
 
         Returns:
             True if successful, False otherwise
@@ -145,13 +151,15 @@ class MetadataClient:
         try:
             # URL-encode the key to handle special characters
             encoded_key = quote(key, safe="")
-            payload = {"ip": pod_ip}
+            payload = {"ip": pod_ip, "lifespan": lifespan}
             if pod_name:
                 payload["pod_name"] = pod_name
             if namespace:
                 payload["namespace"] = namespace
             if src_path:
                 payload["src_path"] = src_path
+            if service_name:
+                payload["service_name"] = service_name
 
             response = requests.post(
                 f"{self.base_url}/api/v1/keys/{encoded_key}/publish",
@@ -252,7 +260,7 @@ class MetadataClient:
     def delete_key(self, key: str, recursive: bool = False) -> dict:
         """
         Delete a key from both the metadata server and filesystem.
-        This removes virtual keys (vput-published) from the metadata server AND deletes files from the filesystem.
+        This removes virtual keys (locally-published) from the metadata server AND deletes files from the filesystem.
 
         Args:
             key: Storage key to delete
@@ -276,7 +284,7 @@ class MetadataClient:
 
     def list_keys(self, prefix: str = "") -> dict:
         """
-        List all keys matching a prefix, combining virtual keys (vput) and filesystem contents.
+        List all keys matching a prefix, combining virtual keys and filesystem contents.
 
         Args:
             prefix: Key prefix to match (default: empty string for root)
@@ -284,7 +292,7 @@ class MetadataClient:
         Returns:
             dict with "prefix" and "items" list, where each item has:
             - name: Item name (relative to prefix)
-            - is_virtual: True if published via vput (not in filesystem)
+            - is_virtual: True if published via locale="local" (not in filesystem)
             - is_directory: True if directory
             - pod_name: Pod name where virtual key is stored (if virtual)
             - pod_namespace: Namespace of pod (if virtual)
@@ -301,7 +309,13 @@ class MetadataClient:
             logger.warning(f"Failed to list keys with prefix '{prefix}': {e}")
             return {"prefix": prefix, "items": []}
 
-    def register_store_pod(self, key: str, store_pod_ip: str) -> bool:
+    def register_store_pod(
+        self,
+        key: str,
+        store_pod_ip: str,
+        lifespan: Lifespan = "cluster",
+        service_name: Optional[str] = None,
+    ) -> bool:
         """
         Register that the store pod itself has data for a key.
         Called by the store pod after storing data.
@@ -309,6 +323,8 @@ class MetadataClient:
         Args:
             key: Storage key
             store_pod_ip: IP address of the store pod
+            lifespan: "cluster" for persistent, "resource" for service-scoped cleanup
+            service_name: Service name for resource-scoped cleanup
 
         Returns:
             True if successful, False otherwise
@@ -316,9 +332,13 @@ class MetadataClient:
         try:
             # URL-encode the key to handle special characters
             encoded_key = quote(key, safe="")
+            payload = {"ip": store_pod_ip, "lifespan": lifespan}
+            if service_name:
+                payload["service_name"] = service_name
+
             response = requests.post(
                 f"{self.base_url}/api/v1/keys/{encoded_key}/store",
-                json={"ip": store_pod_ip},
+                json=payload,
                 timeout=5,
             )
             response.raise_for_status()
@@ -326,3 +346,120 @@ class MetadataClient:
         except requests.RequestException as e:
             logger.warning(f"Failed to register store pod IP '{store_pod_ip}' for key '{key}': {e}")
             return False
+
+    # ==================== Broadcast Quorum Methods ====================
+
+    def join_broadcast(
+        self,
+        keys: List[str],
+        role: str,
+        pod_ip: str,
+        pod_name: Optional[str] = None,
+        broadcast: Optional[BroadcastWindow] = None,
+    ) -> dict:
+        """
+        Join a broadcast quorum for coordinated data transfer.
+
+        Args:
+            keys: List of keys to transfer
+            role: "putter" (data source) or "getter" (data destination)
+            pod_ip: IP address of this pod
+            pod_name: Name of this pod
+            broadcast: BroadcastWindow configuration
+
+        Returns:
+            dict with broadcast_id and status
+        """
+        try:
+            payload = {
+                "keys": keys,
+                "role": role,
+                "pod_ip": pod_ip,
+            }
+            if pod_name:
+                payload["pod_name"] = pod_name
+            if broadcast:
+                payload["timeout"] = broadcast.timeout
+                payload["world_size"] = broadcast.world_size
+                payload["ips"] = broadcast.ips
+                payload["group_id"] = broadcast.group_id
+
+            response = requests.post(
+                f"{self.base_url}/api/v1/broadcast/join",
+                json=payload,
+                timeout=10,
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            logger.warning(f"Failed to join broadcast quorum: {e}")
+            return {}
+
+    def get_broadcast_status(self, broadcast_id: str, pod_ip: str) -> dict:
+        """
+        Get the status of a broadcast quorum.
+
+        Args:
+            broadcast_id: ID of the broadcast quorum
+            pod_ip: IP address of this pod (to get role-specific info)
+
+        Returns:
+            dict with status, putters, getters, and other info
+        """
+        try:
+            response = requests.get(
+                f"{self.base_url}/api/v1/broadcast/{broadcast_id}/status",
+                params={"pod_ip": pod_ip},
+                timeout=5,
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            logger.warning(f"Failed to get broadcast status for {broadcast_id}: {e}")
+            return {"status": "error", "error": str(e)}
+
+    def complete_broadcast(self, broadcast_id: str, pod_ip: str) -> bool:
+        """
+        Mark this participant as having completed the broadcast transfer.
+
+        Args:
+            broadcast_id: ID of the broadcast quorum
+            pod_ip: IP address of this pod
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/v1/broadcast/{broadcast_id}/complete",
+                params={"pod_ip": pod_ip},
+                timeout=5,
+            )
+            response.raise_for_status()
+            return True
+        except requests.RequestException as e:
+            logger.warning(f"Failed to complete broadcast {broadcast_id}: {e}")
+            return False
+
+    def cleanup_service_keys(self, service_name: str) -> dict:
+        """
+        Delete all keys with lifespan='resource' for a service.
+        Called when a service is torn down.
+
+        Args:
+            service_name: Name of the service to clean up
+
+        Returns:
+            dict with deleted_count and success status
+        """
+        try:
+            response = requests.delete(
+                f"{self.base_url}/api/v1/services/{quote(service_name, safe='')}/cleanup",
+                params={"namespace": self.namespace},
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            logger.warning(f"Failed to cleanup keys for service '{service_name}': {e}")
+            return {"success": False, "error": str(e), "deleted_count": 0}

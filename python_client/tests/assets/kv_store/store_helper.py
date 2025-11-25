@@ -4,7 +4,7 @@ Helper class for store operations testing on remote cluster.
 This helper runs inside a Kubernetes pod and provides methods for:
 - Verifying file uploads
 - Creating test files for downloads
-- Testing vput/peer-to-peer operations
+- Testing locale="local" / peer-to-peer operations
 - Checking metadata server state
 """
 
@@ -29,19 +29,14 @@ class StoreTestHelper:
     def _key(self, path: str) -> str:
         """Build a full key with service name prefix.
 
-        Uses parse_key with auto_prepend_service=True to handle the logic consistently.
-        This allows paths like "ls-test" to correctly become "donny-store-test-helper/ls-test"
-        while explicit service prefixes like "other-service/data" remain unchanged.
+        Keys are now explicit - this helper prefixes with service name for convenience.
         """
-        from kubetorch.data_store.key_utils import parse_key
-
         if not path:
             return self.service_name
         if path.startswith("/"):
             return path
-        # Use parse_key with auto_prepend to handle service name logic correctly
-        parsed = parse_key(path, auto_prepend_service=True, in_cluster_service_name=self.service_name)
-        return parsed.full_key
+        # Simple prefix with service name
+        return f"{self.service_name}/{path}"
 
     # ==================== Upload Verification ====================
 
@@ -222,11 +217,11 @@ class StoreTestHelper:
         """List contents of a key in the store (called from inside cluster)."""
         return kt.ls(self._key(key) if key else self.service_name)
 
-    # ==================== vput / Peer-to-Peer Operations ====================
+    # ==================== Local Publish / Peer-to-Peer Operations ====================
 
-    def vput_publish_data(self, key: str, local_path: str, content: Optional[str] = None) -> dict:
+    def publish_data_local(self, key: str, local_path: str, content: Optional[str] = None) -> dict:
         """
-        Publish data using vput (zero-copy).
+        Publish data using locale="local" (zero-copy).
 
         Creates the data locally on the pod and publishes it.
         """
@@ -236,7 +231,7 @@ class StoreTestHelper:
             path.write_text(content or f"Published data for {key}\nTest content")
 
         try:
-            kt.vput(key=key, src=local_path, verbose=True)
+            kt.put(key=key, src=local_path, locale="local", verbose=True)
             return {
                 "success": True,
                 "pod_ip": os.getenv("POD_IP", "unknown"),

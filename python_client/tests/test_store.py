@@ -8,7 +8,7 @@ These tests verify:
 - Force overwrite functionality
 - Error handling
 - ls (listing) operations
-- vput (virtual put) for peer-to-peer transfers
+- locale="local" for peer-to-peer transfers
 - Metadata server integration
 """
 
@@ -216,12 +216,8 @@ def test_store_error_handling():
         kt.put(key="../test", src=str(test_file))
         kt.put(key="/absolute/path", src=str(test_file))
 
-        # Cleanup
-        try:
-            kt.rm(key="../test", recursive=True)
-            kt.rm(key="/absolute/path", recursive=True)
-        except Exception:
-            pass
+        kt.rm(key="../test", recursive=True)
+        kt.rm(key="/absolute/path", recursive=True)
 
 
 # ==================== Listing Operations ====================
@@ -261,31 +257,31 @@ async def test_store_ls(store_helper):
         assert len(items) >= 3, "Helper should list uploaded files"
 
 
-# ==================== vput / Peer-to-Peer Operations ====================
+# ==================== locale="local" / Peer-to-Peer Operations ====================
 
 
 @pytest.mark.level("minimal")
-async def test_vput_get_external(store_helper):
-    """Test kt.vput() for zero-copy publishing of data."""
+async def test_put_locale_local_get_external(store_helper):
+    """Test kt.put(locale="local") for zero-copy publishing of data."""
     service_name = store_helper.service_name
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
 
-        test_data_path = "vput_test/data.txt"
-        test_data_content = "Published via vput\nZero-copy content"
+        test_data_path = "local_test/data.txt"
+        test_data_content = "Published via locale=local\nZero-copy content"
 
-        vput_key = f"{service_name}/vput-published/data"
-        result = store_helper.vput_publish_data(key=vput_key, local_path=test_data_path, content=test_data_content)
+        publish_key = f"{service_name}/local-published/data"
+        result = store_helper.publish_data_local(key=publish_key, local_path=test_data_path, content=test_data_content)
 
-        assert result["success"], f"vput failed: {result.get('error')}"
+        assert result["success"], f"put with locale=local failed: {result.get('error')}"
         assert result["pod_ip"] != "unknown", "POD_IP should be set"
 
         # Test external client retrieval
         download_dir = tmpdir / "external_download"
         download_dir.mkdir()
 
-        kt.get(key=vput_key, dest=str(download_dir), verbose=True, seed_data=False)
+        kt.get(key=publish_key, dest=str(download_dir), verbose=True)
 
         downloaded_files = list(download_dir.rglob("*.txt"))
         assert len(downloaded_files) > 0, "Should have downloaded file via external client"
@@ -293,15 +289,15 @@ async def test_vput_get_external(store_helper):
 
 @pytest.mark.level("minimal")
 async def test_store_peer_to_peer_transfer(store_helper, store_peer):
-    """Test peer-to-peer data transfer using vput and get."""
+    """Test peer-to-peer data transfer using locale='local' and get."""
     publisher_data_path = "peer_pub/shared_model.pkl"
     publisher_data_content = "Peer-to-peer model data\nVersion 1.0"
-    publish_key = f"{store_helper.service_name}/peer-shared/model"
+    publish_key = f"/{store_helper.service_name}/peer-shared/model"
 
-    pub_result = store_helper.vput_publish_data(
+    pub_result = store_helper.publish_data_local(
         key=publish_key, local_path=publisher_data_path, content=publisher_data_content
     )
-    assert pub_result["success"], f"Publisher vput failed: {pub_result.get('error')}"
+    assert pub_result["success"], f"Publisher put with locale=local failed: {pub_result.get('error')}"
 
     # Retrieve from second service
     get_result = store_peer.get_data_from_store(
@@ -321,9 +317,9 @@ async def test_store_metadata_server_integration(store_helper):
 
     metadata_test_path = "metadata_test/tracked.txt"
     metadata_key = f"{service_name}/metadata-tracked/data"
-    result = store_helper.vput_publish_data(key=metadata_key, local_path=metadata_test_path)
+    result = store_helper.publish_data_local(key=metadata_key, local_path=metadata_test_path)
 
-    assert result["success"], "vput should succeed"
+    assert result["success"], "put with locale=local should succeed"
 
     check_result = store_helper.check_metadata_server(metadata_key)
     assert check_result.get("registered") or check_result.get("retrievable"), f"Key should be tracked: {check_result}"
@@ -336,9 +332,9 @@ async def test_store_external_client_metadata_api(store_helper):
 
     metadata_api_test_path = "metadata_api_test/data.txt"
     metadata_api_key = f"{service_name}/metadata-api-test/data"
-    result = store_helper.vput_publish_data(key=metadata_api_key, local_path=metadata_api_test_path)
+    result = store_helper.publish_data_local(key=metadata_api_key, local_path=metadata_api_test_path)
 
-    assert result["success"], "vput should succeed"
+    assert result["success"], "put with locale=local should succeed"
 
     from kubetorch.data_store.metadata_client import MetadataClient
 
@@ -350,6 +346,106 @@ async def test_store_external_client_metadata_api(store_helper):
     assert isinstance(pod_info, dict), "Should return dict"
     assert "pod_name" in pod_info, "Should include pod_name"
     assert "namespace" in pod_info, "Should include namespace"
+
+
+# ==================== Seeding Verification ====================
+
+
+def _delete_from_store_filesystem(key: str, namespace: str = "default") -> dict:
+    """
+    Delete a key directly from the store pod's filesystem (bypassing metadata server).
+
+    This is useful for testing failover - delete from store but keep metadata entries
+    so we can verify retrieval from seeded peers.
+    """
+    import subprocess
+
+    # Build the path on the store pod
+    store_path = f"/data/{namespace}/{key}"
+
+    # Get the store pod name
+    result = subprocess.run(
+        [
+            "kubectl",
+            "get",
+            "pods",
+            "-n",
+            namespace,
+            "-l",
+            "app=kubetorch-data-store",
+            "-o",
+            "jsonpath={.items[0].metadata.name}",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    pod_name = result.stdout.strip()
+
+    if not pod_name:
+        raise RuntimeError("No store pod found")
+
+    # Delete the file/directory from the store pod
+    result = subprocess.run(
+        ["kubectl", "exec", pod_name, "-n", namespace, "--", "rm", "-rf", store_path],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    return {
+        "success": True,
+        "pod_name": pod_name,
+        "path": store_path,
+    }
+
+
+@pytest.mark.level("minimal")
+async def test_store_seeding_with_broadcast(store_helper, store_peer):
+    """
+    Test that broadcast window works correctly for coordinated data transfer.
+
+    Flow:
+    1. Upload data to the central store via kt.put
+    2. Pod B (store_peer) retrieves from store
+    3. Delete the data from the store filesystem (but keep metadata entries)
+    4. Pod A (store_helper) retrieves the same key - must get it from Pod B since store is empty
+    """
+    service_name = store_helper.service_name
+
+    # Step 1: Upload data to the central store
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        seed_test_file = tmpdir / "seed_test.txt"
+        seed_test_file.write_text("Seeding test data\nOriginal from central store")
+
+        seeding_key = f"/{service_name}/seeding-test/data.txt"
+        kt.put(key=seeding_key, src=str(seed_test_file))
+
+    # Step 2: Pod B retrieves from store (uses locale="local" to seed)
+    get_result_b = store_peer.get_data_from_store(
+        key=seeding_key,
+        dest_path="seeding_test_download",
+    )
+    assert get_result_b["success"], f"Pod B get failed: {get_result_b.get('error')}"
+    assert get_result_b["file_count"] > 0, "Pod B should have downloaded files"
+
+    # Pod B publishes the data locally so others can get it from Pod B
+    store_peer.publish_data_local(
+        key=seeding_key,
+        local_path="seeding_test_download/data.txt",
+    )
+
+    # Step 3: Delete the data directly from the store pod's filesystem
+    _delete_from_store_filesystem(seeding_key)  # Raises on failure
+
+    # Step 4: Pod A retrieves the same key - must get it from Pod B since store is empty
+    get_result_a = store_helper.get_data_from_store(
+        key=seeding_key,
+        dest_path="seeding_from_peer",
+    )
+    assert get_result_a["success"], f"Pod A get failed (failover didn't work): {get_result_a.get('error')}"
+    assert get_result_a["file_count"] > 0, "Pod A should have downloaded from seeded Pod B"
 
 
 # ==================== Edge Cases ====================
