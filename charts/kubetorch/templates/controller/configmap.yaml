@@ -12,7 +12,7 @@ data:
     # TCP proxying (for direct rsync)
     stream {
         upstream rsync_backend {
-            server kubetorch-rsync.{{ .Release.Namespace }}.svc.cluster.local:873;
+            server kubetorch-data-sync.{{ .Release.Namespace }}.svc.cluster.local:873;
         }
 
         server {
@@ -79,7 +79,8 @@ data:
             location ~ ^/rsync/([^/]+)/?(.*)$ {
                 set $namespace $1;
                 client_max_body_size {{ .Values.nginxProxy.maxBodySize.rsync }};
-                proxy_pass http://kubetorch-rsync.$namespace.svc.cluster.local:8080;
+                # Data sync service is in the same namespace as the request
+                proxy_pass http://kubetorch-data-sync.$namespace.svc.cluster.local:8080;
                 proxy_http_version 1.1;
                 proxy_set_header Upgrade $http_upgrade;
                 proxy_set_header Connection $connection_upgrade;

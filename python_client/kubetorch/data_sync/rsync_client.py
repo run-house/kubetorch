@@ -10,7 +10,6 @@ import os
 import pty
 import re
 import select
-import shlex
 import subprocess
 from pathlib import Path
 from typing import List, Optional, Union
@@ -43,10 +42,10 @@ class RsyncClient:
         Initialize the rsync client.
 
         Args:
-            namespace: Kubernetes namespace
+            namespace: Kubernetes namespace (user namespace for data paths)
             service_name: Optional service name for service-specific transfers
         """
-        self.namespace = namespace
+        self.namespace = namespace  # Namespace for both service and data paths
         self.service_name = service_name or "store"
         self._core_api = None
 
@@ -62,8 +61,9 @@ class RsyncClient:
         return self._core_api
 
     def get_rsync_pod_url(self) -> str:
-        """Get the rsync pod service URL."""
-        return f"rsync://kubetorch-rsync.{self.namespace}.svc.cluster.local:{serving_constants.REMOTE_RSYNC_PORT}/data/{self.namespace}/{self.service_name}/"
+        """Get the data sync pod service URL."""
+        # Service is in the same namespace as the data
+        return f"rsync://{serving_constants.DATA_SYNC_SERVICE_NAME}.{self.namespace}.svc.cluster.local:{serving_constants.REMOTE_RSYNC_PORT}/data/{self.namespace}/{self.service_name}/"
 
     def get_base_rsync_url(self, local_port: int) -> str:
         """Get the base rsync URL for local connections."""
@@ -86,7 +86,8 @@ class RsyncClient:
         """Create the subdirectory for this particular service in the rsync pod."""
         subdir = f"/data/{self.namespace}/{self.service_name}"
 
-        label_selector = f"app={serving_constants.RSYNC_SERVICE_NAME}"
+        label_selector = f"app={serving_constants.DATA_SYNC_SERVICE_NAME}"
+        # Pod is in the same namespace
         pod_name = (
             self.core_api.list_namespaced_pod(namespace=self.namespace, label_selector=label_selector)
             .items[0]
@@ -351,13 +352,14 @@ class RsyncClient:
         """Execute rsync command with proper error handling."""
         logger.debug(f"Executing rsync command: {rsync_cmd}")
         backup_rsync_cmd = rsync_cmd
-        
+
         # Extract source paths from rsync command for user-friendly logging
         # Rsync command format: rsync [options] source1 source2 ... dest
         # For uploads: sources are local paths, dest is rsync://...
         # For downloads: source is rsync://..., dest is local path
         try:
             import shlex
+
             cmd_parts = shlex.split(rsync_cmd)
             source_paths = []
             # Find all non-option, non-rsync arguments
@@ -375,7 +377,7 @@ class RsyncClient:
                     # We'll collect these and use them if we don't find an rsync:// URL (download case)
                     if not found_rsync_url:
                         source_paths.append(part)
-            
+
             # If we found an rsync:// URL, sources are everything before it (for uploads)
             # If we didn't find one, we might be in a download case - but we can't easily tell
             # For now, just use the paths we collected
@@ -455,6 +457,19 @@ class RsyncClient:
 
                             if "total size is" in decoded_line and "speedup is" in decoded_line:
                                 transfer_completed = True
+                                # Parse the total size to verify something was transferred
+                                # Format: "total size is 1,234 speedup is 1.23"
+                                size_match = re.search(r"total size is\s+([\d,]+)", decoded_line)
+                                if size_match:
+                                    size_str = size_match.group(1).replace(",", "")
+                                    try:
+                                        total_size = int(size_str)
+                                        if total_size == 0:
+                                            logger.warning(
+                                                "Rsync reported 0 bytes transferred - file may not exist on source"
+                                            )
+                                    except ValueError:
+                                        pass  # Couldn't parse size, but completion message seen
 
                         if transfer_completed:
                             break
@@ -489,12 +504,10 @@ class RsyncClient:
             pass
         elif final_exit_code != 0:
             # No completion message and non-zero exit code - this is an error
-            raise RsyncError(
-                rsync_cmd, final_exit_code, "", decoded_line if "decoded_line" in locals() else ""
-            )
+            raise RsyncError(rsync_cmd, final_exit_code, "", decoded_line if "decoded_line" in locals() else "")
         else:
             # Exit code is 0 but no completion message - might be okay, but log
-            logger.debug("Rsync completed without seeing completion message, but exit code was 0")
+            logger.warning("Rsync completed without seeing completion message - transfer may have failed silently")
 
         # Log user-friendly success message
         if synced_items:
@@ -652,4 +665,3 @@ class RsyncClient:
                     in_cluster=False,
                 )
                 self.run_rsync_command(rsync_cmd, create_target_dir=False)
-

@@ -2087,7 +2087,7 @@ def kt_put(
     namespace: str = typer.Option(globals.config.namespace, "-n", "--namespace", help="Kubernetes namespace"),
 ):
     """Store files or directories in the cluster using a key-value interface"""
-    from kubetorch.data_transfer import put
+    from kubetorch.data_sync import put
 
     try:
         # Build filter options if exclude or include is provided
@@ -2141,11 +2141,16 @@ def kt_get(
         "-c",
         help="Copy directory contents (adds trailing slashes for rsync 'copy contents' behavior)",
     ),
+    seed_data: bool = typer.Option(
+        True,
+        "--seed-data/--no-seed-data",
+        help="Automatically seed data after retrieval (start rsync daemon and publish for peer-to-peer)",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress"),
     namespace: str = typer.Option(globals.config.namespace, "-n", "--namespace", help="Kubernetes namespace"),
 ):
     """Retrieve files or directories from the cluster using a key-value interface"""
-    from kubetorch.data_transfer import get
+    from kubetorch.data_sync import get
 
     try:
         # Build filter options if exclude or include is provided
@@ -2170,6 +2175,7 @@ def kt_get(
             contents=contents,
             filter_options=filter_options,
             force=force,
+            seed_data=seed_data,
             verbose=verbose,
             namespace=namespace,
         )
@@ -2191,7 +2197,7 @@ def kt_ls(
     namespace: str = typer.Option(globals.config.namespace, "-n", "--namespace", help="Kubernetes namespace"),
 ):
     """List files and directories in the cluster store"""
-    from kubetorch.data_transfer import ls
+    from kubetorch.data_sync import ls
 
     try:
         # List the contents
@@ -2210,18 +2216,35 @@ def kt_ls(
                 console.print("\n[bold]Contents of store root:[/bold]")
 
             # Separate directories and files
-            dirs = [item for item in items if item.endswith("/")]
-            files = [item for item in items if not item.endswith("/")]
+            dirs = [item for item in items if item.get("is_directory", False)]
+            files = [item for item in items if not item.get("is_directory", False)]
 
             # Display directories first
-            for dir_name in sorted(dirs):
-                console.print(f"  📁 [blue]{dir_name}[/blue]")
+            for dir_item in sorted(dirs, key=lambda x: x["name"].lower()):
+                dir_name = dir_item["name"]
+                if not dir_name.endswith("/"):
+                    dir_name += "/"
+
+                if dir_item.get("is_virtual"):
+                    pod_info = f" [dim](virtual, pod: {dir_item.get('pod_name', 'unknown')})[/dim]"
+                    console.print(f"  📁 [blue]{dir_name}[/blue]{pod_info}")
+                else:
+                    console.print(f"  📁 [blue]{dir_name}[/blue]")
 
             # Display files
-            for file_name in sorted(files):
-                console.print(f"  📄 {file_name}")
+            for file_item in sorted(files, key=lambda x: x["name"].lower()):
+                file_name = file_item["name"]
 
+                if file_item.get("is_virtual"):
+                    pod_info = f" [dim](virtual, pod: {file_item.get('pod_name', 'unknown')})[/dim]"
+                    console.print(f"  📄 {file_name}{pod_info}")
+                else:
+                    console.print(f"  📄 {file_name}")
+
+            virtual_count = sum(1 for item in items if item.get("is_virtual"))
             console.print(f"\n[green]Total: {len(dirs)} directories, {len(files)} files[/green]")
+            if virtual_count > 0:
+                console.print(f"[dim]  ({virtual_count} virtual key(s) published via vput)[/dim]")
 
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -2236,7 +2259,7 @@ def kt_rm(
     namespace: str = typer.Option(globals.config.namespace, "-n", "--namespace", help="Kubernetes namespace"),
 ):
     """Delete files or directories from the cluster store"""
-    from kubetorch.data_transfer import rm
+    from kubetorch.data_sync import rm
 
     try:
         rm(key=key, recursive=recursive, verbose=verbose, namespace=namespace)
