@@ -69,7 +69,9 @@ KT_TERMINATION_REASONS = ["OOMKilled", "Evicted", "Not Found"]
 KUBETORCH_CONTROLLER = "kubetorch-controller"
 DEFAULT_NGINX_HEALTH_ENDPOINT = "/health"
 
-# Rsync
+# Data Sync (formerly Rsync)
 RSYNC_LOCAL_PORT = 3873
 REMOTE_RSYNC_PORT = 873
-RSYNC_SERVICE_NAME = "kubetorch-rsync"
+RSYNC_SERVICE_NAME = "kubetorch-rsync"  # Deprecated, use DATA_SYNC_SERVICE_NAME
+DATA_SYNC_SERVICE_NAME = "kubetorch-data-sync"
+DATA_SYNC_METADATA_PORT = 8081

@@ -489,38 +489,24 @@ def delete_cached_service_data(
     namespace: str,
     console: "Console" = None,
 ):
-    """Delete service data from the rsync pod."""
+    """Delete service data from the data sync pod (both filesystem and metadata)."""
     controller_client = kubetorch.globals.controller_client()
     try:
-        # 1. Find the rsync pod name in the provided namespace
-        pods = controller_client.list_pods(namespace=namespace, label_selector="app=kubetorch-rsync")
+        # 1. Find the data sync pod name in the provided namespace
+        pods = controller_client.list_pods(namespace=namespace, label_selector="app=kubetorch-data-sync")
         items = pods.get("items", []) if isinstance(pods, dict) else pods.items
         if not items:
             if console:
-                console.print(f"[yellow] No rsync pod found in namespace {namespace}[/yellow]")
+                console.print(f"[yellow] No data sync pod found in namespace {namespace}[/yellow]")
             return
 
-        pod_name = items[0]["metadata"]["name"] if isinstance(items[0], dict) else items[0].metadata.name
+        pod_name = pods.items[0].metadata.name
 
-        # 2. Figure out which container to exec in (first container in pod)
-        pod_obj = controller_client.get_pod(namespace=namespace, name=pod_name)
-
-        if isinstance(pod_obj, dict):
-            containers = pod_obj.get("spec", {}).get("containers", [])
-            if not containers:
-                raise Exception(f"No containers found in rsync pod {pod_name}")
-            container_name = containers[0]["name"]
-        else:
-            # legacy fallback if controller ever returns object (unlikely)
-            if not pod_obj.spec.containers:
-                raise Exception(f"No containers found in rsync pod {pod_name}")
-            container_name = pod_obj.spec.containers[0].name
-
-        service_path = f"/data/{namespace}/{service_name}"
-
+        # Delete from both metadata server and filesystem using the metadata server's DELETE API
+        # This ensures vput registrations (pod IPs) are cleaned up along with files
         shell_cmd = (
-            f"if [ -d '{service_path}' ]; then rm -rf '{service_path}' && echo 'Deleted {service_path}'; "
-            f"else echo 'Path {service_path} not found'; fi"
+            f"curl -s -X DELETE 'http://localhost:8081/api/v1/keys/{service_name}?recursive=true' "
+            f"| grep -q '\"success\":true' && echo 'Deleted {service_name}' || echo 'Nothing to delete for {service_name}'"
         )
 
         # 4. Execute via centralized controller

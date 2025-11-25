@@ -56,21 +56,9 @@ spec:
       labels:
         app: kubetorch-data-sync
     spec:
-      {{- if $.Values.dataSync.affinity }}
-      affinity:
-        {{- toYaml $.Values.dataSync.affinity | nindent 8 }}
-      {{- end }}
-      {{- if $.Values.dataSync.tolerations }}
-      tolerations:
-        {{- toYaml $.Values.dataSync.tolerations | nindent 8 }}
-      {{- end }}
-      {{- if $.Values.dataSync.serviceAccount }}
-      serviceAccountName: {{ $.Values.dataSync.serviceAccount }}
-      {{- end }}
       containers:
         - name: rsync
           image: {{ $.Values.dataSync.image }}
-          imagePullPolicy: {{ $.Values.dataSync.imagePullPolicy | default "IfNotPresent" }}
           ports:
             - containerPort: 873   # rsync daemon
             - containerPort: 8080  # HTTP/WebSocket tunnel
@@ -86,6 +74,10 @@ spec:
               cpu: {{ $.Values.dataSync.cpu.request }}
               memory: {{ $.Values.dataSync.memory.request }}
               ephemeral-storage: {{ $.Values.dataSync.ephemeralStorage.request }}
+            limits:
+              cpu: {{ $.Values.dataSync.cpu.limit }}
+              memory: {{ $.Values.dataSync.memory.limit }}
+              ephemeral-storage: {{ $.Values.dataSync.ephemeralStorage.limit }}
       volumes:
         - name: data-sync-storage
           persistentVolumeClaim:
