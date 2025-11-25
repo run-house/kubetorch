@@ -49,6 +49,28 @@ rsync:
   tolerations: []
   affinity: {}
 
+dataSync:
+  image: ghcr.io/run-house/kubetorch-data-sync:v1  # New image with metadata server
+  # serviceAccount: kubetorch-service-account  # Optional: use specific service account for Workload Identity
+  maxConnections: 500  # Maximum concurrent rsync connections (increase for many worker pods)
+  timeout: 600  # Connection timeout in seconds
+  maxVerbosity: 0  # Log verbosity (0-4, use 0 for production, higher for debugging)
+  maxConnectionsPerModule: 0  # Per-module limit (0 = unlimited, inherits global limit)
+  cpu:
+    request: 2
+    limit: 4
+  memory:
+    request: 4Gi
+    limit: 8Gi
+  ephemeralStorage: # adjust based on expected node disk size
+    request: 5Gi
+    limit: 10Gi
+  storage:
+    size: 100Gi  # Size of persistent volume
+    storageClassName: ""  # Leave empty to use default storage class
+  tolerations: []
+  affinity: {}
+
 nginxProxy:
   image:
     repository: nginx

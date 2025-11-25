@@ -13,7 +13,7 @@ from typing import List, Optional, Union
 from kubetorch.logger import get_logger
 from kubetorch.resources.compute.utils import RsyncError
 
-from .data_sync_client import DataSyncClient
+from .data_sync_client import DataSyncClient, DataSyncError
 
 logger = get_logger(__name__)
 
@@ -66,6 +66,7 @@ def get(
     contents: bool = False,
     filter_options: Optional[str] = None,
     force: bool = False,
+    seed_data: bool = True,
     verbose: bool = False,
     namespace: Optional[str] = None,
     kubeconfig_path: Optional[str] = None,
@@ -79,16 +80,17 @@ def get(
         contents: If True, copy directory contents (adds trailing slashes to both source and dest for rsync)
         filter_options: Additional rsync filter options
         force: Force overwrite of existing files
+        seed_data: If True, automatically call vput() after successful retrieval to seed the data (default: True)
         verbose: Show detailed progress
         namespace: Kubernetes namespace
         kubeconfig_path: Path to kubeconfig file (for compatibility)
 
     Examples:
         >>> import kubetorch as kt
-        >>> kt.get(key="model-v1/weights")  # Downloads to current directory
+        >>> kt.get(key="model-v1/weights")  # Downloads to current directory and auto-seeds
         >>> kt.get(key="model-v1/weights", dest="./local_model")  # Creates local_model/weights/
         >>> kt.get(key="model-v1/weights", dest="./local_model", contents=True)  # Copies contents into local_model/
-        >>> kt.get(key="datasets/train.csv", dest="./data/train.csv")  # Downloads to specific file
+        >>> kt.get(key="datasets/train.csv", dest="./data/train.csv", seed_data=False)  # Download without seeding
         >>> kt.get(key="my-service/outputs", dest="./results", contents=True)  # Copies contents into results/
     """
     global _default_client
@@ -97,15 +99,22 @@ def get(
         _default_client = DataSyncClient(namespace=namespace, kubeconfig_path=kubeconfig_path)
 
     _default_client.get(
-        key=key, dest=dest, contents=contents, filter_options=filter_options, force=force, verbose=verbose
+        key=key,
+        dest=dest,
+        contents=contents,
+        filter_options=filter_options,
+        force=force,
+        seed_data=seed_data,
+        verbose=verbose,
     )
 
 
 def ls(
     key: str = "", verbose: bool = False, namespace: Optional[str] = None, kubeconfig_path: Optional[str] = None
-) -> List[str]:
+) -> List[dict]:
     """
     List files and directories under a key path in the store.
+    Combines virtual keys (vput-published) and filesystem contents.
 
     Examples:
         >>> import kubetorch as kt
@@ -114,7 +123,12 @@ def ls(
         >>> kt.ls("my-service/models")  # List models directory
 
     Returns:
-        List of file/directory paths (directories have trailing /)
+        List of dicts with item information:
+        - name: Item name (directories have trailing /)
+        - is_virtual: True if published via vput (not in filesystem)
+        - is_directory: True if directory
+        - pod_name: Pod name where virtual key is stored (if virtual)
+        - pod_namespace: Namespace of pod (if virtual)
     """
     global _default_client
 
@@ -154,17 +168,61 @@ def rm(
     _default_client.rm(key=key, recursive=recursive, verbose=verbose)
 
 
+def vput(
+    key: str,
+    src: Union[str, Path],
+    start_rsyncd: bool = True,
+    verbose: bool = False,
+    namespace: Optional[str] = None,
+    kubeconfig_path: Optional[str] = None,
+) -> None:
+    """
+    Virtual put - publish that this pod has data for the given key without copying it.
+    This enables zero-copy peer-to-peer data transfer. Other pods can then rsync
+    directly from this pod when requesting the key.
+
+    Args:
+        key: Storage key (e.g., "my-service/models", "shared/dataset"). Trailing slashes are stripped.
+        src: Local path to the data (used for validation, not copied)
+        start_rsyncd: If True, start rsync daemon to enable peer-to-peer transfers (default: True)
+        verbose: Show detailed progress
+        namespace: Kubernetes namespace
+        kubeconfig_path: Path to kubeconfig file (for compatibility)
+
+    Note:
+        This does NOT copy data to the store pod. It only registers with the metadata
+        server that this pod has the data. Use regular `put()` if you want to store
+        data in the persistent store pod.
+
+        If start_rsyncd=True, the rsync daemon will be started to serve the data.
+        Rsync must be installed in the pod (raises RuntimeError if not found).
+
+    Examples:
+        >>> import kubetorch as kt
+        >>> # After downloading data, publish that this pod has it
+        >>> kt.get(key="model-v1/weights", dest="./weights")
+        >>> kt.vput(key="model-v1/weights", src="./weights")  # Other pods can now rsync from this pod
+        >>> kt.vput(key="model-v1/weights", src="./weights", start_rsyncd=False)  # Don't start daemon
+    """
+    global _default_client
+
+    if _default_client is None or namespace or kubeconfig_path:
+        _default_client = DataSyncClient(namespace=namespace, kubeconfig_path=kubeconfig_path)
+
+    _default_client.vput(key=key, src=src, start_rsyncd=start_rsyncd, verbose=verbose)
+
+
 def sync_workdir_from_store(namespace: str, service_name: str):
     """
     Sync files from the rsync pod into the current working directory inside the server pod.
-    
+
     This function is called by http_server.py during pod startup to sync files that were
     uploaded via the KV interface (kt.put or DataSyncClient.put) into the server pod's working directory.
-    
+
     Performs two download operations (potentially in parallel):
     - Regular files (excluding __absolute__*) into the working directory
     - Absolute path files (under __absolute__/...) into their absolute destinations
-    
+
     Uses the DataSyncClient KV interface, which allows future scalability with peer-to-peer
     transfer via a central metadata store. When called from inside a pod, empty key "" auto-prepends
     the service name to download from the service's storage area.
@@ -186,7 +244,7 @@ def sync_workdir_from_store(namespace: str, service_name: str):
                 contents=True,
                 filter_options="--exclude='__absolute__*'",
             )
-        except RsyncError as e:
+        except (RsyncError, DataSyncError) as e:
             # If the service storage area doesn't exist yet, that's okay
             error_msg = str(e).lower()
             if "no such file or directory" in error_msg or "not found" in error_msg:
@@ -289,4 +347,3 @@ async def rsync_async(
         force=force,
         local_port=local_port,
     )
-

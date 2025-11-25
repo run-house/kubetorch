@@ -494,22 +494,23 @@ def delete_cached_service_data(
     namespace: str,
     console: "Console" = None,
 ):
-    """Delete service data from the rsync pod."""
+    """Delete service data from the data sync pod (both filesystem and metadata)."""
     try:
-        # Find the rsync pod name in the provided namespace
-        pods = core_api.list_namespaced_pod(namespace=namespace, label_selector="app=kubetorch-rsync")
+        # Find the data sync pod name in the provided namespace
+        pods = core_api.list_namespaced_pod(namespace=namespace, label_selector="app=kubetorch-data-sync")
 
         if not pods.items:
             if console:
-                console.print(f"[yellow] No rsync pod found in namespace {namespace}[/yellow]")
+                console.print(f"[yellow] No data sync pod found in namespace {namespace}[/yellow]")
             return
 
         pod_name = pods.items[0].metadata.name
-        service_path = f"/data/{namespace}/{service_name}"
 
+        # Delete from both metadata server and filesystem using the metadata server's DELETE API
+        # This ensures vput registrations (pod IPs) are cleaned up along with files
         shell_cmd = (
-            f"if [ -d '{service_path}' ]; then rm -rf '{service_path}' && echo 'Deleted {service_path}'; "
-            f"else echo 'Path {service_path} not found'; fi"
+            f"curl -s -X DELETE 'http://localhost:8081/api/v1/keys/{service_name}?recursive=true' "
+            f"| grep -q '\"success\":true' && echo 'Deleted {service_name}' || echo 'Nothing to delete for {service_name}'"
         )
 
         # Execute command based on environment

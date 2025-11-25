@@ -14,7 +14,7 @@ from kubernetes.client import V1ResourceRequirements
 import kubetorch.constants as constants
 import kubetorch.serving.constants as serving_constants
 
-from kubetorch import data_transfer, globals
+from kubetorch import data_sync, globals
 
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.utils import find_locally_installed_version
@@ -1721,14 +1721,9 @@ class Compute:
             return False
         return True
 
-    def _base_rsync_url(self, local_port: int):
-        # Delegate to data_transfer module
-        client = data_transfer.RsyncClient(self.namespace, self.service_name)
-        return client.get_base_rsync_url(local_port)
-
     def _rsync_svc_url(self):
-        # Delegate to data_transfer module
-        client = data_transfer.RsyncClient(self.namespace, self.service_name)
+        """Get the rsync pod URL for startup commands."""
+        client = data_sync.RsyncClient(self.namespace, self.service_name)
         return client.get_rsync_pod_url()
 
     def ssh(self, pod_name: str = None):
@@ -1804,7 +1799,9 @@ class Compute:
         """Sync package (locally installed, or path to package) to compute pod(s)."""
         full_path, dest_dir = _get_sync_package_paths(package)
         logger.info(f"Syncing over package at {full_path} to {dest_dir}")
-        self.rsync(source=full_path, dest=dest_dir)
+        # Use RsyncClient directly - files go to rsync pod, then sync to service pods at startup
+        client = data_sync.RsyncClient(self.namespace, self.service_name)
+        client.upload(source=full_path, dest=dest_dir)
 
     def run_bash(
         self,
@@ -1824,160 +1821,6 @@ class Compute:
             namespace=self.namespace,
             container=container,
         )
-
-    def _create_rsync_target_dir(self):
-        """Create the subdirectory for this particular service in the rsync pod."""
-        # Delegate to data_transfer module
-        client = data_transfer.RsyncClient(self.namespace, self.service_name)
-        client.create_rsync_target_dir()
-
-    def _run_rsync_command(self, rsync_cmd, create_target_dir: bool = True):
-        """Delegate rsync command execution to data_transfer module."""
-        client = data_transfer.RsyncClient(self.namespace, self.service_name)
-        client.run_rsync_command(rsync_cmd, create_target_dir)
-
-    async def _run_rsync_command_async(self, rsync_cmd: str, create_target_dir: bool = True):
-        """Async version - delegate to data_transfer module."""
-        client = data_transfer.RsyncClient(self.namespace, self.service_name)
-        await client.run_rsync_command_async(rsync_cmd, create_target_dir)
-
-    def _get_rsync_cmd(
-        self,
-        source: Union[str, List[str]],
-        dest: str,
-        rsync_local_port: int,
-        contents: bool = False,
-        filter_options: str = None,
-        force: bool = False,
-    ):
-        """Build rsync command - delegate to data_transfer module."""
-        client = data_transfer.RsyncClient(self.namespace, self.service_name)
-        return client.build_rsync_command(
-            source=source,
-            dest=dest,
-            rsync_local_port=rsync_local_port,
-            contents=contents,
-            filter_options=filter_options,
-            force=force,
-            is_download=False,
-            in_cluster=False,
-        )
-
-    def _get_rsync_in_cluster_cmd(
-        self,
-        source: Union[str, List[str]],
-        dest: str,
-        contents: bool = False,
-        filter_options: str = None,
-        force: bool = False,
-    ):
-        """Build rsync command for in-cluster - delegate to data_transfer module."""
-        client = data_transfer.RsyncClient(self.namespace, self.service_name)
-        return client.build_rsync_command(
-            source=source,
-            dest=dest,
-            contents=contents,
-            filter_options=filter_options,
-            force=force,
-            is_download=False,
-            in_cluster=True,
-        )
-
-    def _rsync(
-        self,
-        source: Union[str, List[str]],
-        dest: str,
-        rsync_local_port: int,
-        contents: bool = False,
-        filter_options: str = None,
-        force: bool = False,
-    ):
-        rsync_cmd = self._get_rsync_cmd(source, dest, rsync_local_port, contents, filter_options, force)
-        self._run_rsync_command(rsync_cmd)
-
-    async def _rsync_async(
-        self,
-        source: Union[str, List[str]],
-        dest: str,
-        rsync_local_port: int,
-        contents: bool = False,
-        filter_options: str = None,
-        force: bool = False,
-    ):
-        """Async version of _rsync."""
-        rsync_cmd = self._get_rsync_cmd(source, dest, rsync_local_port, contents, filter_options, force)
-        await self._run_rsync_command_async(rsync_cmd)
-
-    def _get_websocket_info(self, local_port: int):
-        """Get websocket info - delegate to data_transfer module."""
-        client = data_transfer.RsyncClient(self.namespace, self.service_name)
-        return client.get_websocket_info(local_port)
-
-    def rsync(
-        self,
-        source: Union[str, List[str]],
-        dest: str = None,
-        local_port: int = None,
-        contents: bool = False,
-        filter_options: str = None,
-        force: bool = False,
-    ):
-        """Rsync from local to the rsync pod - delegate to data_transfer."""
-        data_transfer.rsync(
-            source=source,
-            dest=dest,
-            namespace=self.namespace,
-            service_name=self.service_name,
-            contents=contents,
-            filter_options=filter_options,
-            force=force,
-            local_port=local_port,
-        )
-
-    async def rsync_async(
-        self,
-        source: Union[str, List[str]],
-        dest: str = None,
-        local_port: int = None,
-        contents: bool = False,
-        filter_options: str = None,
-        force: bool = False,
-    ):
-        """Async rsync - delegate to data_transfer."""
-        await data_transfer.rsync_async(
-            source=source,
-            dest=dest,
-            namespace=self.namespace,
-            service_name=self.service_name,
-            contents=contents,
-            filter_options=filter_options,
-            force=force,
-            local_port=local_port,
-        )
-
-    def rsync_in_cluster(
-        self,
-        source: Union[str, List[str]],
-        dest: str = None,
-        contents: bool = False,
-        filter_options: str = None,
-        force: bool = False,
-    ):
-        """Rsync from inside the cluster - delegate to data_transfer."""
-        rsync_command = self._get_rsync_in_cluster_cmd(source, dest, contents, filter_options, force)
-        self._run_rsync_command(rsync_command)
-
-    async def rsync_in_cluster_async(
-        self,
-        source: Union[str, List[str]],
-        dest: str = None,
-        contents: bool = False,
-        filter_options: str = None,
-        force: bool = False,
-    ):
-        """Async rsync from inside the cluster - delegate to data_transfer."""
-        rsync_command = self._get_rsync_in_cluster_cmd(source, dest, contents, filter_options, force)
-        await self._run_rsync_command_async(rsync_command)
 
     def _image_setup_and_instructions(self, rsync: bool = True):
         """
@@ -2026,7 +1869,9 @@ class Compute:
                 # using package name instead of paths, since the folder path in the rsync pod will just be the package name
                 full_path, dest_dir = _get_sync_package_paths(step.kwargs.get("package"))
                 if rsync:
-                    self.rsync(full_path, dest=dest_dir)
+                    # Use RsyncClient directly - files go to rsync pod, then sync to service pods at startup
+                    client = data_sync.RsyncClient(self.namespace, self.service_name)
+                    client.upload(source=full_path, dest=dest_dir)
                 instructions += f"COPY {full_path} {dest_dir}"
             elif step.step_type == ImageSetupStepType.RSYNC:
                 source_path = step.kwargs.get("source")
@@ -2036,22 +1881,15 @@ class Compute:
                 force = step.kwargs.get("force")
 
                 if rsync:
-                    if is_running_in_kubernetes():
-                        self.rsync_in_cluster(
-                            source_path,
-                            dest=dest_dir,
-                            contents=contents,
-                            filter_options=filter_options,
-                            force=force,
-                        )
-                    else:
-                        self.rsync(
-                            source_path,
-                            dest=dest_dir,
-                            contents=contents,
-                            filter_options=filter_options,
-                            force=force,
-                        )
+                    # Use RsyncClient directly - files go to rsync pod, then sync to service pods at startup
+                    client = data_sync.RsyncClient(self.namespace, self.service_name)
+                    client.upload(
+                        source=source_path,
+                        dest=dest_dir,
+                        contents=contents,
+                        filter_options=filter_options,
+                        force=force,
+                    )
                 # Generate COPY instruction with explicit destination
                 if dest_dir:
                     instructions += f"COPY {source_path} {dest_dir}"

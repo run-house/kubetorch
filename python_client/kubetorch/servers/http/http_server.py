@@ -838,8 +838,8 @@ def import_from_file(file_path: str, module_name: str):
 ########## Rsync Helpers ############
 #####################################
 def rsync_file_updates():
-    """Sync files from rsync pod into the server pod using centralized data_transfer helper."""
-    from kubetorch import data_transfer as _dt
+    """Sync files from rsync pod into the server pod using centralized data_sync helper."""
+    from kubetorch import data_sync as _dt
 
     service_name = os.getenv("KT_SERVICE_NAME")
     namespace = os.getenv("POD_NAMESPACE")
