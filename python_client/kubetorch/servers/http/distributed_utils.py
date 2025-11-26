@@ -1221,7 +1221,7 @@ class PyTorchProcess(DistributedProcess):
             dist.destroy_process_group()
             logger.info("Destroyed PyTorch process group.")
         except Exception:
-            logger.info("Failed to destroy PyTorch process group, it may not have been initialized: {e}")
+            logger.info(f"Failed to destroy PyTorch process group, it may not have been initialized: {e}")
             pass
         # Call parent cleanup for debugging sessions
         super().proc_cleanup()
