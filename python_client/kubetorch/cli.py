@@ -15,27 +15,28 @@ from urllib.parse import urlparse
 import httpx
 from kubernetes import client
 from kubernetes.client.rest import ApiException
-from rich.syntax import Syntax
 
 from kubetorch.servers.http.utils import is_running_in_kubernetes
 
 from .cli_utils import (
     create_table_for_output,
     default_typer_values,
+    follow_logs_in_cli,
+    generate_logs_query,
     get_deployment_mode,
     get_ingress_host,
     get_last_updated,
-    get_logs_from_loki,
     is_ingress_vpc_only,
     load_ingress,
     load_kubetorch_volumes_from_pods,
+    load_logs_for_pod,
+    load_selected_pod,
     notebook_placeholder,
     port_forward_to_pod,
     SecretAction,
     service_name_argument,
     validate_config_key,
     validate_pods_exist,
-    validate_provided_pod,
     VolumeAction,
 )
 
@@ -46,9 +47,10 @@ try:
 
     from rich.console import Console
     from rich.panel import Panel
+    from rich.syntax import Syntax
     from rich.table import Table
 except ImportError:
-    raise ImportError("Please install the required CLI dependencies: `pip install 'kubetorch[client] @ <install_url>'`")
+    raise ImportError("Please install the required CLI dependencies: `pip install 'kubetorch[client]'`")
 
 
 import kubetorch.serving.constants as serving_constants
@@ -57,7 +59,7 @@ from kubetorch import globals
 from kubetorch.config import ENV_MAPPINGS
 from kubetorch.servers.http.utils import DEFAULT_DEBUG_PORT
 
-from .constants import BULLET_UNICODE, KT_MOUNT_FOLDER
+from .constants import BULLET_UNICODE, DEFAULT_TAIL_LENGTH, KT_MOUNT_FOLDER
 
 try:
     from .internal.cli import register_internal_commands
@@ -141,6 +143,9 @@ def kt_check(
                     expand=False,
                 )
             )
+        except subprocess.TimeoutExpired:
+            console.print(f"[yellow]Timed out while fetching debug info for pod {pod_name}[/yellow]")
+
         except Exception as e:
             console.print(f"[red]Failed to dump pod info: {e}[/red]")
 
@@ -297,7 +302,7 @@ def kt_check(
                 console.print("[bold blue]Checking log streaming...[/bold blue]")
                 query = f'{{k8s_pod_name="{deploy_pod_name}", k8s_container_name="kubetorch"}}'
                 try:
-                    logs = get_logs_from_loki(query=query, print_pod_name=False, timeout=5.0)
+                    logs = load_logs_for_pod(query=query, print_pod_name=False, timeout=2.0)
                     if logs is None:
                         fail("No logs found for service", [deploy_pod_name])
 
@@ -873,7 +878,7 @@ def kt_port_forward(
     sorted_by_time = sorted(pods, key=lambda pod: pod.metadata.creation_timestamp)
 
     if pod:  # case when the user provides a pod
-        pod_name = validate_provided_pod(service_name=name, provided_pod=pod, service_pods=sorted_by_time)
+        pod_name = load_selected_pod(service_name=name, provided_pod=pod, service_pods=sorted_by_time)
     else:  # if user does not provide pod, port-forward to the first pod by default
         pod_name = sorted_by_time[0].metadata.name
 
@@ -1272,7 +1277,7 @@ def kt_ssh(
 
         # case when the user provides a specific pod to ssh into
         if pod:
-            pod_name = validate_provided_pod(service_name=name, provided_pod=pod, service_pods=pods)
+            pod_name = load_selected_pod(service_name=name, provided_pod=pod, service_pods=pods)
         else:
             # select based on deployment mode
             running_pods = [p for p in pods if pod_is_running(p)]
@@ -1930,6 +1935,95 @@ def kt_notebook(
 
     except Exception as e:
         console.print(f"[red]Error setting up notebook: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command("logs")
+def kt_logs(
+    name: str = service_name_argument(help="Service name"),
+    follow: bool = typer.Option(False, "-f", "--follow", help="Follow the logs"),
+    tail: int = typer.Option(None, "-t", "--tail", help=f"Number of lines to show (default: {DEFAULT_TAIL_LENGTH})"),
+    pod: str = typer.Option(
+        None,
+        "-p",
+        "--pod",
+        help="Name or index of a specific pod to load logs from (0-based)",
+    ),
+    namespace: str = typer.Option(
+        globals.config.namespace,
+        "-n",
+        "--namespace",
+    ),
+):
+    """Load logs for a Kubetorch service.
+
+    Examples:
+
+    .. code-block:: bash
+
+        $ kt logs my-service         # logs from all pods
+
+        $ kt logs my-service -p 1    # logs only from a particular pod index
+
+        $ kt logs my-service -f      # follow logs
+
+        $ kt logs my-service -t 50   # tail last 50 lines
+    """
+
+    core_api, custom_api, apps_v1_api = initialize_k8s_clients()
+
+    console.print(f"Looking for service [blue]{name}[/blue]...")
+
+    # Validate service exists and get deployment mode
+    name, deployment_mode = get_deployment_mode(name, namespace, custom_api, apps_v1_api)
+
+    try:
+        # Get pods using the correct label selector for the deployment mode
+        pods = validate_pods_exist(name, namespace, core_api)
+        sorted_by_time = sorted(pods, key=lambda pod: pod.metadata.creation_timestamp)
+
+        if pod:
+            # specific pod is requested
+            selected_pod = load_selected_pod(service_name=name, provided_pod=pod, service_pods=sorted_by_time)
+        else:
+            # display logs from all pods by default
+            selected_pod = None
+    except typer.Exit as e:
+        raise e
+    except Exception as e:
+        console.print(f"[red]Failed to load pods for service {name} in namespace {namespace}: {str(e)}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        # Always show pod name unless a specific pod was selected
+        print_pod_name: bool = not selected_pod
+
+        try:
+            if follow:
+                console.print("[dim]Press Ctrl+C to quit[/dim]\n")
+                follow_logs_in_cli(name, namespace, selected_pod, deployment_mode, print_pod_name)
+            else:
+                query = generate_logs_query(name, namespace, selected_pod, deployment_mode)
+                if not query:
+                    return
+
+                logs = load_logs_for_pod(query=query, print_pod_name=print_pod_name, timeout=2.0)
+                if logs is None:
+                    console.print("[red]No logs found for service[/red]")
+                    return
+
+                tail_length = tail if tail else DEFAULT_TAIL_LENGTH
+                if len(logs) > tail_length:
+                    logs = logs[-tail_length:]
+
+                for log_line in logs:
+                    print(log_line.rstrip("\n"))
+
+        except KeyboardInterrupt:
+            return
+
+    except Exception as e:
+        console.print(f"[red]Failed to load logs for service {name} in namespace {namespace}[/red]\n\n {str(e)}")
         raise typer.Exit(1)
 
 

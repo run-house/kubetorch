@@ -4,7 +4,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
 from urllib.parse import urlparse
@@ -281,3 +281,10 @@ def load_head_node_pod(all_pods: list, deployment_mode: str):
         pod_name = running_pods[0].metadata.name
 
     return pod_name
+
+
+def hours_to_ns(hours: int = 24) -> int:
+    """Convert hours ago to nanosecond timestamp"""
+    start_time = datetime.now() - timedelta(hours=hours)
+    start_ns = int(start_time.timestamp() * 1e9)
+    return start_ns

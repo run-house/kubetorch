@@ -6,10 +6,11 @@ import os
 import signal
 
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+import warnings
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from enum import Enum
@@ -37,7 +38,7 @@ from kubetorch.constants import MAX_PORT_TRIES
 from kubetorch.resources.compute.utils import is_port_available
 from kubetorch.servers.http.utils import stream_logs_websocket_helper, StreamType
 from kubetorch.serving.utils import wait_for_port_forward
-from kubetorch.utils import load_kubeconfig
+from kubetorch.utils import hours_to_ns, load_kubeconfig
 
 from .constants import BULLET_UNICODE, CPU_RATE, DOUBLE_SPACE_UNICODE, GPU_RATE
 
@@ -602,11 +603,12 @@ def print_pod_info(pod_name, pod_idx, is_gpu, metrics=None, queue_name=None):
         console.print(f"{DOUBLE_SPACE_UNICODE}[yellow]Metrics unavailable[/yellow]")
 
 
-def _get_logs_from_loki_worker(uri: str, print_pod_name: bool):
+def _get_logs_from_loki_worker(uri: str, print_pod_name: bool, timeout: float = 2.0):
     """Worker function for getting logs from Loki - runs in a separate thread."""
     ws = None
     try:
-        ws = create_connection(uri)
+        # Set timeout on websocket connection to fail fast if no logs available
+        ws = create_connection(uri, timeout=timeout)
         message = ws.recv()
         if not message:
             return None
@@ -614,7 +616,9 @@ def _get_logs_from_loki_worker(uri: str, print_pod_name: bool):
         logs = []
         if data.get("streams"):
             for stream in data["streams"]:
-                pod_name = f'({stream.get("stream").get("pod")}) ' if print_pod_name else ""
+                stream_labels = stream.get("stream", {})
+                pod_name_value = stream_labels.get("pod") or stream_labels.get("k8s_pod_name")
+                pod_name = f"({pod_name_value}) " if print_pod_name and pod_name_value else ""
                 for value in stream.get("values"):
                     try:
                         log_line = json.loads(value[1])
@@ -628,7 +632,7 @@ def _get_logs_from_loki_worker(uri: str, print_pod_name: bool):
                             )
                             logs.append(formatted_log)
                     except Exception:
-                        logs.append(value[1])
+                        logs.append(f"{pod_name}{value[1]}")
         return logs
     finally:
         if ws:
@@ -638,57 +642,79 @@ def _get_logs_from_loki_worker(uri: str, print_pod_name: bool):
                 pass
 
 
-def get_logs_from_loki(
+def load_logs_for_pod(
     query: str = None,
     uri: str = None,
     print_pod_name: bool = False,
-    timeout: float = 5.0,
+    timeout: float = 2.0,
 ):
     """Get logs from Loki with fail-fast approach to avoid hanging."""
     try:
         # If URI is provided, use it directly (skip cluster checks)
         if uri:
-            return _get_logs_from_loki_worker(uri, print_pod_name)
+            return _get_logs_from_loki_worker(uri, print_pod_name, timeout)
 
         import urllib.parse
 
         # Now safe to proceed with service URL setup
-        from kubetorch import globals
         from kubetorch.utils import http_to_ws
 
-        base_url = globals.service_url()
-        target_uri = f"{http_to_ws(base_url)}/loki/api/v1/tail?query={urllib.parse.quote_plus(query)}"
+        # Wrap service_url call in daemon thread with timeout
+        url_result = [None]
 
-        # Use thread timeout for websocket worker since websocket timeouts don't work reliably
-        executor = ThreadPoolExecutor(max_workers=1)
-        try:
-            future = executor.submit(_get_logs_from_loki_worker, target_uri, print_pod_name)
+        def get_url():
             try:
-                result = future.result(timeout=timeout)
-                return result
-            except TimeoutError:
-                logger.debug(f"Loki websocket connection timed out after {timeout}s")
-                return None
-            except Exception as e:
-                logger.debug(f"Error in Loki websocket worker: {e}")
-                return None
-        finally:
-            # Don't wait for stuck threads to complete
-            executor.shutdown(wait=False)
+                url_result[0] = globals.service_url()
+            except Exception:
+                # Silence exceptions in daemon thread
+                pass
+
+        url_thread = threading.Thread(target=get_url, daemon=True)
+        url_thread.start()
+        url_thread.join(timeout=5.0)
+
+        if url_thread.is_alive():
+            logger.debug("Timeout getting service URL")
+            return None
+
+        base_url = url_result[0]
+        if not base_url:
+            return None
+
+        start_ns = hours_to_ns()
+        target_uri = f"{http_to_ws(base_url)}/loki/api/v1/tail?query={urllib.parse.quote_plus(query)}&start={start_ns}"
+
+        # Use daemon thread so Python exits even if websocket hangs
+        result = [None]
+
+        def worker():
+            try:
+                result[0] = _get_logs_from_loki_worker(target_uri, print_pod_name, timeout)
+            except Exception:
+                # Silence exceptions in daemon thread
+                pass
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        thread.join(timeout=timeout + 1.0)
+
+        return result[0] if not thread.is_alive() else None
 
     except Exception as e:
         logger.debug(f"Error getting logs from Loki: {e}")
         return None
 
 
-def stream_logs_websocket(uri, stop_event, service_name, print_pod_name: bool = False):
+def stream_logs_websocket(uri, stop_event, print_pod_name: bool = False):
     """Stream logs using Loki's websocket tail endpoint"""
-
-    console.print(f"\nFollowing logs of [reset]{service_name}\n")
-
     # Create and run event loop in a separate thread
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+
+    # Suppress asyncio warnings during cleanup
+    warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*coroutine.*was never awaited")
+    warnings.filterwarnings("ignore", message=".*asynchronous generator.*")
+
     try:
         loop.run_until_complete(
             stream_logs_websocket_helper(
@@ -698,14 +724,54 @@ def stream_logs_websocket(uri, stop_event, service_name, print_pod_name: bool = 
                 print_pod_name=print_pod_name,
             )
         )
-    finally:
-        loop.close()
-        # Signal the log thread to stop
+    except KeyboardInterrupt:
+        # Set stop event to signal graceful shutdown
         stop_event.set()
-        # Don't wait for the log thread - it will handle its own cleanup
+    finally:
+        # Suppress stderr during cleanup
+        import os
+
+        stderr_fd = sys.stderr.fileno()
+        old_stderr = os.dup(stderr_fd)
+        devnull = os.open(os.devnull, os.O_WRONLY)
+
+        try:
+            # Redirect stderr to /dev/null during cleanup
+            os.dup2(devnull, stderr_fd)
+
+            # Cancel any remaining tasks
+            pending = asyncio.all_tasks(loop)
+            if pending:
+                for task in pending:
+                    task.cancel()
+
+                # Give tasks a very short time to handle cancellation
+                try:
+                    loop.run_until_complete(
+                        asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=0.1)
+                    )
+                except:
+                    pass
+
+            # Close the loop without shutting down async generators
+            # (which causes race conditions)
+            loop.close()
+        except:
+            pass
+        finally:
+            # Restore stderr
+            try:
+                os.dup2(old_stderr, stderr_fd)
+                os.close(old_stderr)
+                os.close(devnull)
+            except:
+                pass
+
+            # Ensure stop event is set
+            stop_event.set()
 
 
-def get_logs_query(name: str, namespace: str, selected_pod: str, deployment_mode):
+def generate_logs_query(name: str, namespace: str, selected_pod: str, deployment_mode):
     if not selected_pod:
         if deployment_mode in ["knative", "deployment"]:
             # we need to get the pod names first since Loki doesn't have a service_name label
@@ -727,7 +793,7 @@ def follow_logs_in_cli(
     deployment_mode,
     print_pod_name: bool = False,
 ):
-    """Stream logs when triggerd by the CLI command."""
+    """Stream logs when triggered by the CLI."""
     from kubetorch.utils import http_to_ws
 
     stop_event = threading.Event()
@@ -740,19 +806,20 @@ def follow_logs_in_cli(
     original_handler = signal.signal(signal.SIGINT, signal_handler)
 
     # setting up the query
-    query = get_logs_query(name, namespace, selected_pod, deployment_mode)
+    query = generate_logs_query(name, namespace, selected_pod, deployment_mode)
     if not query:
         return
+
     encoded_query = urllib.parse.quote_plus(query)
 
+    start_ns = hours_to_ns()
     base_url = globals.service_url()
-    uri = f"{http_to_ws(base_url)}/loki/api/v1/tail?query={encoded_query}"
+    uri = f"{http_to_ws(base_url)}/loki/api/v1/tail?query={encoded_query}&start={start_ns}"
 
     try:
         stream_logs_websocket(
             uri=uri,
             stop_event=stop_event,
-            service_name=name,
             print_pod_name=print_pod_name,
         )
     finally:
@@ -898,7 +965,7 @@ def detect_deployment_mode(name: str, namespace: str, custom_api, apps_v1_api):
     return None
 
 
-def validate_provided_pod(service_name, provided_pod, service_pods):
+def load_selected_pod(service_name, provided_pod, service_pods):
     if provided_pod is None:
         return provided_pod
 
