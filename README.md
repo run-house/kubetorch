@@ -47,10 +47,10 @@ pip install "kubetorch[client]"
 ```bash
 # Option 1: Install directly from OCI registry
 helm upgrade --install kubetorch oci://ghcr.io/run-house/charts/kubetorch \
-  --version 0.2.6 -n kubetorch --create-namespace
+  --version 0.2.7 -n kubetorch --create-namespace
 
 # Option 2: Download chart locally first
-helm pull oci://ghcr.io/run-house/charts/kubetorch --version 0.2.6 --untar
+helm pull oci://ghcr.io/run-house/charts/kubetorch --version 0.2.7 --untar
 helm upgrade --install kubetorch ./kubetorch -n kubetorch --create-namespace
 ```
 
