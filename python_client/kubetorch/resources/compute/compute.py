@@ -35,7 +35,7 @@ from kubetorch.serving.autoscaling import AutoscalingConfig
 from kubetorch.serving.service_manager import DeploymentServiceManager, KnativeServiceManager, RayClusterServiceManager
 from kubetorch.serving.utils import GPUConfig, pod_is_running, RequestedPodResources
 
-from kubetorch.utils import extract_host_port, http_to_ws, load_kubeconfig
+from kubetorch.utils import extract_host_port, http_to_ws, load_head_node_pod, load_kubeconfig
 
 logger = get_logger(__name__)
 
@@ -1736,7 +1736,15 @@ class Compute:
         return f"rsync://kubetorch-rsync.{self.namespace}.svc.cluster.local:{serving_constants.REMOTE_RSYNC_PORT}/data/{self.namespace}/{self.service_name}/"
 
     def ssh(self, pod_name: str = None):
-        pod_name = pod_name or self.pod_names()[0]
+        if pod_name is None:
+            pods = self.pods()
+            running_pods = [pod for pod in pods if pod_is_running(pod)]
+
+            if not running_pods:
+                raise RuntimeError(f"No running pods found for service {self.service_name}")
+
+            pod_name = load_head_node_pod(running_pods, deployment_mode=self.deployment_mode)
+
         ssh_cmd = f"kubectl exec -it {pod_name} -n {self.namespace} -- /bin/bash"
         subprocess.run(shlex.split(ssh_cmd), check=True)
 

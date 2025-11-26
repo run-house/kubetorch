@@ -39,7 +39,7 @@ from .cli_utils import (
     VolumeAction,
 )
 
-from .utils import initialize_k8s_clients
+from .utils import initialize_k8s_clients, load_head_node_pod
 
 try:
     import typer
@@ -1250,7 +1250,8 @@ def kt_ssh(
         help="Name or index of a specific pod to load logs from (0-based)",
     ),
 ):
-    """SSH into a remote service. By default, will SSH into the first pod.
+    """SSH into a remote service. By default, will SSH into the first running pod.
+    For Ray clusters, prioritizes the head node.
 
     Examples:
 
@@ -1258,6 +1259,8 @@ def kt_ssh(
 
         $ kt ssh my_service
     """
+    from kubetorch.serving.utils import pod_is_running
+
     core_api, custom_api, apps_v1_api = initialize_k8s_clients()
 
     try:
@@ -1267,14 +1270,18 @@ def kt_ssh(
         # Get and validate pods
         pods = validate_pods_exist(name, namespace, core_api)
 
-        sorted_by_time = sorted(pods, key=lambda pod: pod.metadata.creation_timestamp)
-
         # case when the user provides a specific pod to ssh into
         if pod:
-            pod_name = validate_provided_pod(service_name=name, provided_pod=pod, service_pods=sorted_by_time)
-        # if pod is not provided, ssh into the first pod.
+            pod_name = validate_provided_pod(service_name=name, provided_pod=pod, service_pods=pods)
         else:
-            pod_name = sorted_by_time[0].metadata.name
+            # select based on deployment mode
+            running_pods = [p for p in pods if pod_is_running(p)]
+
+            if not running_pods:
+                console.print(f"[red]No running pods found for service {name}[/red]")
+                raise typer.Exit(1)
+
+            pod_name = load_head_node_pod(running_pods, deployment_mode=deployment_mode)
 
         console.print(f"[green]Found pod:[/green] [blue]{pod_name}[/blue] ({deployment_mode})")
         console.print("[yellow]Connecting to pod...[/yellow]")
