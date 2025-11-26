@@ -1995,8 +1995,8 @@ def kt_logs(
         raise typer.Exit(1)
 
     try:
-        # Always show pod name unless a specific pod was selected
-        print_pod_name: bool = not selected_pod
+        # Only show pod name when there are multiple pods and no specific pod was selected
+        print_pod_name: bool = not selected_pod and len(pods) > 1
 
         try:
             if follow:
@@ -2007,7 +2007,7 @@ def kt_logs(
                 if not query:
                     return
 
-                logs = load_logs_for_pod(query=query, print_pod_name=print_pod_name, timeout=2.0)
+                logs = load_logs_for_pod(query=query, print_pod_name=print_pod_name, timeout=5.0)
                 if logs is None:
                     console.print("[red]No logs found for service[/red]")
                     return
