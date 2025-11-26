@@ -29,25 +29,29 @@ class KnativeServiceManager(BaseServiceManager):
         resource_api: client.CustomObjectsApi,
         core_api: client.CoreV1Api,
         namespace: str,
+        template_label: str = "ksvc",
+        api_group: str = "serving.knative.dev",
+        api_plural: str = "services",
+        api_version: str = "v1",
         service_annotations: dict = None,
     ):
-        # Merge Knative-specific annotations with user-provided ones
-        knative_annotations = {
+        # Set Knative-specific default annotations
+        default_service_annotations = {
             "serving.knative.dev/container-name": "kubetorch",
             "serving.knative.dev/probe-path": "/health",
         }
         if service_annotations:
-            knative_annotations.update(service_annotations)
+            default_service_annotations.update(service_annotations)
 
         super().__init__(
             resource_api=resource_api,
             core_api=core_api,
             namespace=namespace,
-            template_label="ksvc",
-            api_group="serving.knative.dev",
-            api_plural="services",
-            api_version="v1",
-            service_annotations=knative_annotations,
+            template_label=template_label,
+            api_group=api_group,
+            api_plural=api_plural,
+            api_version=api_version,
+            service_annotations=default_service_annotations,
         )
 
         # Knative-specific template annotations
@@ -99,6 +103,11 @@ class KnativeServiceManager(BaseServiceManager):
 
         # Get base annotations (Knative-specific ones already in deployment_annotations)
         annotations = deployment_annotations.copy()
+        default_knative_annotations = {
+            "serving.knative.dev/container-name": "kubetorch",
+            "serving.knative.dev/probe-path": "/health",
+        }
+        annotations.update(default_knative_annotations)
 
         # Note: KAI wraps the Knative revision in a podgroup, expecting at least 1 pod to schedule initially
         # Only set min-scale=1 if user hasn't explicitly provided a min_scale value

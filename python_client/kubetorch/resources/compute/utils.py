@@ -270,7 +270,15 @@ def delete_resources_for_service(
 
     service_manager_class = BaseServiceManager._get_service_manager_class(service_type)
     resource_api = AppsV1Api() if service_type.lower() == "deployment" else custom_api
-    service_manager = service_manager_class(resource_api=resource_api, core_api=core_api, namespace=namespace)
+    kwargs = {
+        "resource_api": resource_api,
+        "core_api": core_api,
+        "namespace": namespace,
+    }
+    if service_manager_class.__name__ == "TrainJobServiceManager":
+        kwargs["kind"] = service_type
+    service_manager = service_manager_class(**kwargs)
+
     service_manager.teardown_service(name, console=console, force=force)
 
     # Delete configmaps
@@ -418,7 +426,7 @@ def fetch_resources_for_teardown(
         [service_name]: {
             "configmaps": List[str],
             "pods": List[str],
-            "type": str,  # "knative" or "deployment"
+            "type": str,
         }
     }
     """
@@ -500,6 +508,52 @@ def fetch_resources_for_teardown(
             if e.status != 404:  # Ignore if Ray operator is not installed
                 logger.warning(f"Failed to list RayClusters: {e}")
 
+        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+
+        for job_kind in TrainJobServiceManager.SUPPORTED_KINDS:
+            try:
+                plural = job_kind.lower() + "s"
+                if username:
+                    label_selector = f"{KT_USERNAME_LABEL}={username}"
+                else:
+                    label_selector = None
+
+                if label_selector:
+                    response = custom_api.list_namespaced_custom_object(
+                        group="kubeflow.org",
+                        version="v1",
+                        namespace=namespace,
+                        plural=plural,
+                        label_selector=label_selector,
+                    )
+                else:
+                    # Search all jobs when no username filter
+                    response = custom_api.list_namespaced_custom_object(
+                        group="kubeflow.org",
+                        version="v1",
+                        namespace=namespace,
+                        plural=plural,
+                    )
+
+                items = response.get("items", [])
+                # Filter by prefix if provided, and ensure it's a kubetorch service (has template label)
+                job_services = []
+                for item in items:
+                    item_name = item["metadata"]["name"]
+                    labels = item.get("metadata", {}).get("labels", {})
+                    template_label = labels.get(serving_constants.KT_TEMPLATE_LABEL)
+                    # Check if it's a kubetorch service (has template label with value matching job kind or "generic")
+                    if template_label in (job_kind.lower(), "generic"):
+                        # If prefix is provided, check if name starts with prefix
+                        if prefix and item_name.startswith(prefix):
+                            job_services.append(item_name)
+                        elif username and labels.get(KT_USERNAME_LABEL) == username:
+                            job_services.append(item_name)
+                services.extend(job_services)
+            except client.exceptions.ApiException as e:
+                if e.status != 404:  # Ignore if Kubeflow Training Operator is not installed
+                    logger.warning(f"Failed to list {job_kind}s: {e}")
+
     else:
         if not target:
             raise ValueError("Please provide a service name or use the --all or --prefix flags")
@@ -564,10 +618,53 @@ def fetch_resources_for_teardown(
             except client.exceptions.ApiException:
                 pass
 
+        # Check if it's a custom training job (PyTorchJob, TFJob, MXJob, XGBoostJob) if not found as other types
+        if not service_found:
+            from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+
+            for job_kind in TrainJobServiceManager.SUPPORTED_KINDS:
+                try:
+                    plural = job_kind.lower() + "s"
+                    job_resource = custom_api.get_namespaced_custom_object(
+                        group="kubeflow.org",
+                        version="v1",
+                        namespace=namespace,
+                        plural=plural,
+                        name=service_name,
+                    )
+                    if job_resource:
+                        service_type = job_kind.lower()
+                        service_found = True
+                        break
+                except client.exceptions.ApiException:
+                    continue
+
         # Get associated resources if service exists
         configmaps = load_configmaps(core_api, service_name, namespace)
-        pods = core_api.list_namespaced_pod(namespace=namespace, label_selector=f"{KT_SERVICE_LABEL}={service_name}")
-        pods = [pod.metadata.name for pod in pods.items]
+
+        # Validate service name before using in label selector (K8s labels can't end with hyphen)
+        # Label values must match: ^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$
+        import re
+
+        label_value_pattern = re.compile(r"^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$")
+        pods = []
+        if label_value_pattern.match(service_name):
+            try:
+                pods_response = core_api.list_namespaced_pod(
+                    namespace=namespace, label_selector=f"{KT_SERVICE_LABEL}={service_name}"
+                )
+                pods = [pod.metadata.name for pod in pods_response.items]
+            except client.exceptions.ApiException as e:
+                if e.status == 400:
+                    # Invalid label selector - service name is not a valid label value
+                    logger.warning(
+                        f"Service name '{service_name}' is not a valid Kubernetes label value. Skipping pod lookup."
+                    )
+                else:
+                    raise
+        else:
+            # Service name is not a valid label value (e.g., ends with hyphen)
+            logger.warning(f"Service name '{service_name}' is not a valid Kubernetes label value. Skipping pod lookup.")
 
         # Only add the service to the resources if it has configmaps, pods, or we found the service
         if service_found or configmaps or pods:
