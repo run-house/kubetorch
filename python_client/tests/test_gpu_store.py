@@ -1,0 +1,230 @@
+"""
+Tests for GPU tensor transfer via kt.put(data=tensor) and kt.get(dest=tensor).
+
+These tests verify:
+- GPU tensor publishing via put with GPU data
+- GPU tensor retrieval via get with pre-allocated tensor destination (NCCL broadcast)
+- Tensor value correctness after transfer
+
+The GPU Data Server architecture:
+- kt.put(data=tensor) registers tensor IPC handles with a per-node GPU server
+- kt.get(dest=tensor) triggers automatic server-to-server NCCL broadcast
+- No explicit "serve" step needed - transfers are automatic
+"""
+import asyncio
+
+import kubetorch as kt
+import pytest
+
+from tests.assets.kv_store.gpu_helper import GPUTestHelper
+
+
+@pytest.fixture(scope="session")
+async def gpu_source():
+    """Fixture that provides a GPU helper instance for publishing tensors (source/training worker)."""
+    gpu = kt.Compute(gpus=1, memory="4Gi", image=kt.images.pytorch("23.10-py3"))
+    helper_cls = await kt.cls(GPUTestHelper, name="gpu-source").to_async(gpu)
+
+    result = helper_cls.check_gpu_available()
+    # If we're rerunning with SPMD
+    if isinstance(result, list):
+        result = result[0]
+    assert result["cuda_available"], f"GPU not available on source: {result}"
+    assert result["device_count"] > 0, "No GPU devices found on source"
+    return helper_cls
+
+
+@pytest.fixture(scope="session")
+async def gpu_consumer():
+    """Fixture that provides a GPU helper instance for consuming tensors (inference worker)."""
+    gpu = kt.Compute(gpus=1, memory="4Gi", image=kt.images.pytorch("23.10-py3"))
+    helper_cls = await kt.cls(GPUTestHelper, name="gpu-consumer").to_async(gpu)
+
+    result = helper_cls.check_gpu_available()
+    # If we're rerunning with SPMD
+    if isinstance(result, list):
+        result = result[0]
+    assert result["cuda_available"], f"GPU not available on consumer: {result}"
+    assert result["device_count"] > 0, "No GPU devices found on consumer"
+
+    return helper_cls
+
+
+# ==================== Basic GPU Transfer Tests ====================
+
+
+@pytest.mark.level("gpu")
+async def test_gpu_put_registers_key(gpu_source):
+    """Test that put with GPU data correctly registers a key with the metadata server."""
+    service_name = gpu_source.service_name
+    key = f"{service_name}/gpu-test/basic"
+    shape = [1024, 1024]
+    fill_value = 2.5
+
+    result = gpu_source.publish_tensor(key=key, shape=shape, fill_value=fill_value)
+
+    assert result["success"], f"put failed: {result.get('error')}"
+    assert result["shape"] == shape
+    assert result["fill_value"] == fill_value
+
+
+@pytest.mark.level("gpu")
+async def test_gpu_transfer_single_consumer(gpu_source, gpu_consumer):
+    """
+    Test GPU tensor transfer from source to a single consumer.
+
+    Flow:
+    1. Source publishes tensor via put(data=tensor)
+    2. Consumer requests tensor via get(dest=tensor)
+    3. GPU servers handle the NCCL broadcast automatically
+    4. Verify tensor values match
+    """
+    service_name = gpu_source.service_name
+    key = f"{service_name}/gpu-test/single-consumer"
+    shape = [512, 512]
+    fill_value = 3.14
+    expected_sum = fill_value * shape[0] * shape[1]
+
+    # Step 1: Source publishes tensor
+    pub_result = gpu_source.publish_tensor(key=key, shape=shape, fill_value=fill_value)
+    assert pub_result["success"], f"put failed: {pub_result.get('error')}"
+
+    # Step 2: Consumer retrieves tensor - GPU servers handle NCCL automatically
+    consumer_result = gpu_consumer.verify_tensor_values(
+        key=key,
+        expected_sum=expected_sum,
+        expected_shape=shape,
+    )
+
+    # Step 3: Verify results
+    assert consumer_result["success"], f"Consumer get failed: {consumer_result.get('error')}"
+    assert consumer_result["all_correct"], (
+        f"Tensor values don't match: shape={consumer_result['actual_shape']} "
+        f"(expected {consumer_result['expected_shape']}), "
+        f"sum={consumer_result['actual_sum']} (expected {consumer_result['expected_sum']})"
+    )
+
+
+# ==================== Edge Cases ====================
+
+
+@pytest.mark.level("gpu")
+async def test_gpu_transfer_different_dtypes(gpu_source, gpu_consumer):
+    """Test GPU transfer with different tensor dtypes."""
+    service_name = gpu_source.service_name
+
+    for dtype in ["float32", "float16"]:
+        key = f"{service_name}/gpu-test/dtype-{dtype}"
+        shape = [128, 128]
+        fill_value = 1.0
+
+        pub_result = gpu_source.publish_tensor(key=key, shape=shape, fill_value=fill_value, dtype=dtype)
+        assert pub_result["success"], f"put failed for {dtype}: {pub_result.get('error')}"
+
+        consumer_result = gpu_consumer.get_tensor(key=key, shape=shape, dtype=dtype)
+
+        assert consumer_result["success"], f"Get failed for {dtype}: {consumer_result.get('error')}"
+        assert dtype in consumer_result["dtype"], f"Wrong dtype: {consumer_result['dtype']}"
+
+
+@pytest.mark.level("gpu")
+async def test_gpu_transfer_large_tensor(gpu_source, gpu_consumer):
+    """Test GPU transfer with a larger tensor (simulating model weights)."""
+    service_name = gpu_source.service_name
+    key = f"{service_name}/gpu-test/large-tensor"
+    # ~100MB tensor (25M floats * 4 bytes)
+    shape = [5000, 5000]
+    fill_value = 0.01
+    expected_sum = fill_value * shape[0] * shape[1]
+
+    pub_result = gpu_source.publish_tensor(key=key, shape=shape, fill_value=fill_value)
+    assert pub_result["success"], f"put failed: {pub_result.get('error')}"
+
+    consumer_result = gpu_consumer.get_tensor(key=key, shape=shape)
+
+    assert consumer_result["success"], f"Get failed: {consumer_result.get('error')}"
+    assert consumer_result["shape"] == shape
+    # More tolerance for large tensor sum due to float precision
+    assert abs(consumer_result["sum"] - expected_sum) < expected_sum * 0.01  # 1% tolerance
+
+
+@pytest.mark.level("gpu")
+async def test_gpu_transfer_many_to_many(gpu_source, gpu_consumer):
+    """
+    Test many-to-many GPU tensor transfer with coordinated BroadcastWindow.
+
+    This test verifies:
+    - Multiple putters and getters can coordinate through a unified NCCL process group
+    - All participants join the same BroadcastWindow group and transfer completes atomically
+    - Tensors flow correctly from putters to getters based on key matching
+
+    Architecture:
+    - 2 source ranks (putters): rank 0 puts t0, rank 1 puts t1
+    - 2 consumer ranks (getters): rank 0 gets t0, rank 1 gets t1
+    - All 4 participants join the same BroadcastWindow group (world_size=4)
+    """
+    # Create SPMD-distributed source with 2 worker processes
+    gpu_source.compute.distribute("pytorch", num_proc=2)
+    gpu_source_task = gpu_source.to_async(gpu_source.compute)
+
+    # Create SPMD-distributed consumer with 2 worker processes
+    gpu_consumer.compute.distribute("pytorch", num_proc=2)
+    gpu_consumer_task = gpu_consumer.to_async(gpu_consumer.compute)
+    gpu_source, gpu_consumer = await asyncio.gather(gpu_source_task, gpu_consumer_task)
+
+    import uuid
+
+    service_name = gpu_source.service_name
+    # Use unique group_id to avoid conflicts with previous test runs
+    group_id = f"{service_name}/broadcast-group-{uuid.uuid4().hex[:8]}"
+
+    # Define 2 tensors to transfer - each rank will extract its own based on LOCAL_RANK
+    keys = [f"{group_id}/t0", f"{group_id}/t1"]
+    shapes = [[128, 128], [256, 128]]
+    fill_values = [1.0, 2.0]
+
+    # Create BroadcastWindow - all 4 participants (2 putters + 2 getters) will join
+    broadcast_window = kt.BroadcastWindow(
+        group_id=group_id,
+        world_size=4,  # 2 putters + 2 getters
+        timeout=30.0,  # 30 second timeout as fallback
+    )
+
+    # Launch all 4 participants concurrently
+    # Each participant calls kt.put or kt.get with the BroadcastWindow
+    # Each rank extracts its own key/shape/fill_value based on LOCAL_RANK
+
+    # Source ranks publish tensors (each rank picks its own from the lists)
+    put_task = gpu_source.publish_tensor_with_broadcast(
+        keys=keys,
+        shapes=shapes,
+        fill_values=fill_values,
+        broadcast_window=broadcast_window.to_dict(),
+        async_=True,
+    )
+
+    # Consumer ranks get tensors (each rank picks its own from the lists)
+    get_task = gpu_consumer.get_tensor_with_broadcast(
+        keys=keys,
+        shapes=shapes,
+        broadcast_window=broadcast_window.to_dict(),
+        async_=True,
+    )
+
+    # Wait for all participants to complete
+    # Results come back as lists (one per rank)
+    put_results, get_results = await asyncio.gather(put_task, get_task)
+
+    # Verify all operations succeeded
+    for i, result in enumerate(put_results):
+        assert result.get("success"), f"Putter rank {i} failed: {result}"
+
+    for i, result in enumerate(get_results):
+        assert result.get("success"), f"Getter rank {i} failed: {result}"
+
+    # Verify tensor values for each rank
+    for i, get_result in enumerate(get_results):
+        expected_sum = fill_values[i] * shapes[i][0] * shapes[i][1]
+        assert (
+            abs(get_result["sum"] - expected_sum) < 1e-3
+        ), f"Getter rank {i} sum mismatch: {get_result['sum']} vs {expected_sum}"

@@ -1518,6 +1518,75 @@ async def health():
     return {"status": "healthy"}
 
 
+#####################################
+######## GPU Transfer Support #######
+#####################################
+# Storage for pending GPU tensors that have been published via gpu_put
+_GPU_PENDING_TENSORS = {}
+
+
+@app.post("/_gpu/publish")
+async def gpu_publish(
+    request: Request,
+    key: str = Body(...),
+    nccl_port: int = Body(29500),
+):
+    """
+    Internal endpoint called after gpu_put to register the tensor.
+    The actual tensor is stored in the callable's memory.
+    """
+    # This is called internally by gpu_put - tensor is already stored in GPUTransferClient
+    return {"success": True, "key": key}
+
+
+@app.post("/_gpu/serve_broadcast")
+async def gpu_serve_broadcast(
+    request: Request,
+    key: str = Body(...),
+    broadcast_id: str = Body(...),
+    world_size: int = Body(...),
+):
+    """
+    Serve a GPU tensor broadcast as the source pod (rank 0).
+
+    Called when the quorum is ready and all participants are waiting for the broadcast.
+    """
+    try:
+        from kubetorch.data_store.gpu_transfer import _get_gpu_client
+
+        client = _get_gpu_client()
+        await run_in_executor_with_context(
+            None,
+            client.serve_broadcast,
+            key,
+            broadcast_id,
+            world_size,
+            True,  # verbose
+        )
+        return {"success": True, "key": key, "broadcast_id": broadcast_id}
+    except Exception as e:
+        logger.error(f"Failed to serve GPU broadcast for key '{key}': {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/_gpu/pending")
+async def gpu_pending_keys():
+    """List keys with pending GPU tensors for broadcast (debugging endpoint)."""
+    try:
+        from kubetorch.data_store.gpu_transfer import _get_gpu_client
+
+        client = _get_gpu_client()
+        pending = getattr(client, "_pending_broadcasts", {})
+        return {
+            "keys": list(pending.keys()),
+            "details": {
+                k: {"shape": list(v["tensor"].shape), "dtype": str(v["tensor"].dtype)} for k, v in pending.items()
+            },
+        }
+    except Exception as e:
+        return {"keys": [], "error": str(e)}
+
+
 if __name__ == "__main__" and not is_running_in_container():
     # NOTE: this will only run in local development, otherwise we start the uvicorn server in the pod template setup
     import uvicorn

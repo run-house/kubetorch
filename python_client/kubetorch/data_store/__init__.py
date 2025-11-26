@@ -3,6 +3,15 @@ Data store utilities for kubetorch.
 
 This package provides a key-value store interface for transferring data to and from the cluster.
 It contains the core rsync functionality used throughout kubetorch.
+
+Supports multiple data types:
+- filesystem: Traditional file/directory data (rsync-based transfer)
+- gpu: GPU tensor data (NCCL broadcast-based transfer)
+- memory: In-memory data blobs (future)
+
+GPU data is accessed through the same put/get API as filesystem data:
+- put(key, data=tensor) - publish GPU tensor or state dict
+- get(key, dest=tensor) - retrieve GPU tensor or state dict into pre-allocated tensor
 """
 
 from .data_store_client import DataStoreClient, DataStoreError
