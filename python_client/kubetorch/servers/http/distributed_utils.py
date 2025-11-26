@@ -780,22 +780,19 @@ class DistributedSupervisor:
             return os.environ["LOCAL_IPS"].split(",")
 
         # Use DNS-based service discovery instead of Kubernetes API
-        # Check if pre-computed DNS name is available (should point to headless service for distributed)
-        service_dns = os.environ.get("KT_SERVICE_DNS")
+        # Always compute headless service DNS for distributed mode to ensure we get pod IPs
+        # (KT_SERVICE_DNS may have been set before distributed config was applied)
+        service_name = os.environ.get("KT_SERVICE_NAME")
+        namespace = os.environ.get("POD_NAMESPACE")
 
-        if not service_dns:
-            # Fall back to computing DNS name from service and namespace
-            service_name = os.environ.get("KT_SERVICE_NAME")
-            namespace = os.environ.get("POD_NAMESPACE")
+        if not service_name:
+            raise RuntimeError("KT_SERVICE_NAME environment variable not found")
+        if not namespace:
+            raise RuntimeError("POD_NAMESPACE environment variable not found")
 
-            if not service_name:
-                raise RuntimeError("KT_SERVICE environment variable not found")
-            if not namespace:
-                raise RuntimeError("POD_NAMESPACE environment variable not found")
-
-            # Kubernetes headless service DNS name for distributed pod discovery
-            # Format: <service-name>-headless.<namespace>.svc.cluster.local
-            service_dns = f"{service_name}-headless.{namespace}.svc.cluster.local"
+        # Kubernetes headless service DNS name for distributed pod discovery
+        # Format: <service-name>-headless.<namespace>.svc.cluster.local
+        service_dns = f"{service_name}-headless.{namespace}.svc.cluster.local"
 
         import socket
         import time
@@ -833,7 +830,17 @@ class DistributedSupervisor:
                 logger.info(f"Found {len(pod_ips)}/{expected_workers} workers after {elapsed:.1f}s")
                 return pod_ips
 
-            # If we don't have expected count or timeout is reached, decide what to do
+            # If no expected count is set, return immediately with whatever we found
+            if not expected_workers:
+                if pod_ips:
+                    logger.debug(f"{len(pod_ips)} workers found, no quorum set")
+                    return pod_ips
+                # No pods found yet and no quorum to wait for - wait briefly and retry once
+                if elapsed >= 5.0:
+                    logger.debug(f"No workers found after {elapsed:.1f}s, no quorum set")
+                    return pod_ips
+
+            # If timeout is reached, return what we have
             if elapsed >= max_wait:
                 if expected_workers:
                     logger.warning(f"Only found {len(pod_ips)}/{expected_workers} workers after {elapsed:.1f}s timeout")
@@ -845,8 +852,6 @@ class DistributedSupervisor:
             if len(pod_ips) != last_count:
                 if expected_workers:
                     logger.info(f"{len(pod_ips)}/{expected_workers} workers found, waiting for quorum...")
-                else:
-                    logger.debug(f"{len(pod_ips)} workers found, no quorum set")
                 last_count = len(pod_ips)
 
             # Wait before retrying
@@ -859,16 +864,15 @@ class DistributedSupervisor:
             return os.environ["LOCAL_IPS"].split(",")
 
         # Use DNS-based service discovery
-        service_dns = os.environ.get("KT_SERVICE_DNS")
+        # Always compute headless service DNS for distributed mode to ensure we get pod IPs
+        # (KT_SERVICE_DNS may have been set before distributed config was applied)
+        service_name = os.environ.get("KT_SERVICE_NAME")
+        namespace = os.environ.get("POD_NAMESPACE")
 
-        if not service_dns:
-            service_name = os.environ.get("KT_SERVICE")
-            namespace = os.environ.get("POD_NAMESPACE")
+        if not service_name or not namespace:
+            return []
 
-            if not service_name or not namespace:
-                return []
-
-            service_dns = f"{service_name}-headless.{namespace}.svc.cluster.local"
+        service_dns = f"{service_name}-headless.{namespace}.svc.cluster.local"
 
         import socket
 

@@ -24,6 +24,7 @@ class TestLevels(str, enum.Enum):
     UNIT = "unit"
     MINIMAL = "minimal"
     RELEASE = "release"
+    GPU = "gpu"
 
 
 DEFAULT_LEVEL = TestLevels.MINIMAL
@@ -32,6 +33,7 @@ TEST_LEVEL_HIERARCHY = {
     TestLevels.UNIT: 0,
     TestLevels.MINIMAL: 1,
     TestLevels.RELEASE: 2,
+    TestLevels.GPU: 3,
 }
 
 
