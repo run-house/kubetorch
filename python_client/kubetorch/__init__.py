@@ -28,10 +28,14 @@ from kubetorch.servers.http.utils import (  # noqa: F401
 )
 from kubetorch.serving.utils import KubernetesCredentialsError
 
+from . import distributed
 from .resources import images
 
 # Alias to expose as kt.images
 images = images
+
+# Alias to expose as kt.distributed
+distributed = distributed
 
 # Registry of all kubetorch exceptions for serialization/deserialization
 EXCEPTION_REGISTRY = {
