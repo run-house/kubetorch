@@ -39,13 +39,17 @@ def pod_ips(
         RuntimeError: If required environment variables are not set
 
     Example:
-        >>> import kubetorch as kt
-        >>> # Get all pod IPs immediately
-        >>> ips = kt.distributed.pod_ips()
-        >>> print(f"Found {len(ips)} pods: {ips}")
 
-        >>> # Wait for 4 workers with 60 second timeout
-        >>> ips = kt.distributed.pod_ips(quorum_workers=4, quorum_timeout=60)
+    .. code-block:: python
+
+        import kubetorch as kt
+
+        # Get all pod IPs immediately
+        ips = kt.distributed.pod_ips()
+        print(f"Found {len(ips)} pods: {ips}")
+
+        # Wait for 4 workers with 60 second timeout
+        ips = kt.distributed.pod_ips(quorum_workers=4, quorum_timeout=60)
     """
     # For testing outside of Kubernetes
     if not is_running_in_kubernetes():

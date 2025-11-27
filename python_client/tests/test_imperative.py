@@ -418,22 +418,22 @@ def test_global_kt_cache():
 
     remote_fn = kt.fn(get_env_var, name=get_test_fn_name()).to(compute)
     result1 = remote_fn.compute.run_bash(
-        f"uv pip install rich --system --cache-dir /{KT_MOUNT_FOLDER}/kt-global-cache/uv_cache -v"
+        f"uv pip install pandas --system --cache-dir /{KT_MOUNT_FOLDER}/kt-global-cache/uv_cache -v"
     )
     stdout = "".join(line[1] for line in result1 if len(line) > 1)
     assert "Installed 4 packages" in stdout
 
     result2 = remote_fn.compute.run_bash(
-        f"uv pip install rich --system --cache-dir /{KT_MOUNT_FOLDER}/kt-global-cache/uv_cache -v"
+        f"uv pip install pandas --system --cache-dir /{KT_MOUNT_FOLDER}/kt-global-cache/uv_cache -v"
     )
     stdout = "".join(line[1] for line in result2 if len(line) > 1)
     assert "Requirement satisfied" in stdout
 
     result3 = remote_fn.compute.run_bash(
-        f"ls -l /{KT_MOUNT_FOLDER}/kt-global-cache/uv_cache/wheels-v5/pypi | grep rich"
+        f"ls -l /{KT_MOUNT_FOLDER}/kt-global-cache/uv_cache/wheels-v5/pypi | grep pandas"
     )
     stdout = "".join(line[1] for line in result3 if len(line) > 1)
-    assert "rich" in stdout
+    assert "pandas" in stdout
 
 
 @pytest.mark.level("minimal")
