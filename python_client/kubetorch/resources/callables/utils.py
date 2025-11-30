@@ -2,8 +2,11 @@ import importlib.metadata as metadata
 import inspect
 import json
 import os
+from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Optional, Type, Union
+
+from kubetorch import PyspyProfilerConfig, TorchProfilerConfig
 
 from kubetorch.logger import get_logger
 
@@ -203,14 +206,20 @@ def get_names_for_reload_fallbacks(name: str, prefixes: list[str] = []):
     return potential_names
 
 
-def update_http_call_body(*args, profiler=None, **kwargs):
+def update_http_call_body(*args, profiler: Union[PyspyProfilerConfig, TorchProfilerConfig, str] = None, **kwargs):
     from kubetorch.servers.http.utils import SUPPORTED_PROFILERS
 
     body = {"args": list(args), "kwargs": kwargs}
     if not profiler:
         return body
-    elif profiler in SUPPORTED_PROFILERS:
-        body["profiler"] = profiler
-    else:
-        logger.warning(f"{profiler} is not supported, Valid profilers: {SUPPORTED_PROFILERS}")
+    elif isinstance(profiler, str):
+        if profiler not in SUPPORTED_PROFILERS:
+            logger.warning(f"{profiler} is not supported, Valid profilers: {SUPPORTED_PROFILERS}")
+        elif profiler == "torch":
+            body["profiler"] = asdict(TorchProfilerConfig())
+        else:
+            body["profiler"] = asdict(PyspyProfilerConfig())
+    else:  # profiler is PyspyProfilerConfig or TorchProfilerConfig
+        body["profiler"] = asdict(profiler)
+
     return body

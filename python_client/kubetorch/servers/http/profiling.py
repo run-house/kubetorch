@@ -5,6 +5,9 @@ import signal
 import subprocess
 import time
 
+from typing import Union
+
+from kubetorch import PyspyProfilerConfig, TorchProfilerConfig
 from kubetorch.servers.http.utils import PYSPY_SAMPLE_RATE_HZ, SUPPORTED_PROFILERS
 
 logger = logging.getLogger(__name__)
@@ -85,32 +88,36 @@ def pyspy_profiler(output: dict, request_id: str, pid=None, rate=PYSPY_SAMPLE_RA
 def run_with_profile(
     fn,
     *args,
-    profiler: str = None,
+    profiler: Union[PyspyProfilerConfig, TorchProfilerConfig] = None,
     request_id: str = None,
     callable_name: str = None,
     **kwargs,
 ):
     """Run the function with optional profiling, using Pyroscope as the backend."""
-    if profiler not in SUPPORTED_PROFILERS:
+    profiler_name = profiler.get("name", None)
+    if profiler_name not in SUPPORTED_PROFILERS:
         return fn(*args, **kwargs), None
 
-    if profiler == "torch":
-        from torch.profiler import profile, ProfilerActivity, record_function
+    if profiler_name == "torch":
+        import torch
+        from torch.profiler import profile, ProfilerActivity
 
-        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], profile_memory=True) as prof:
-            callable_name = callable_name or fn.__name__
-            with record_function(callable_name):
-                result = fn(*args, **kwargs)
+        with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            profile_memory=True,
+            with_stack=True,
+            experimental_config=torch._C._profiler._ExperimentalConfig(verbose=True),
+        ) as prof:
+            result = fn(*args, **kwargs)
 
-        table = prof.key_averages(group_by_input_shape=False).table(
-            sort_by="cuda_time_total",
-            row_limit=1,
-            max_src_column_width=40,
+        table = prof.key_averages(group_by_stack_n=2).table(
+            sort_by=profiler.get("sort_by", "cuda_time_total"),
+            row_limit=5,
+            max_src_column_width=70,
             max_name_column_width=30,
-            max_shapes_column_width=40,
         )
         return result, table
-    if profiler == "pyspy":
+    if profiler_name == "pyspy":
 
         pyspy_output_data = {"result": None}
 
