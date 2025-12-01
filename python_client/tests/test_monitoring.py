@@ -3,6 +3,8 @@ import re
 import time
 
 import pytest
+
+from kubetorch import Cls as kt_cls, Fn as kt_fn
 from kubetorch.globals import service_url
 
 from kubetorch.utils import capture_stdout
@@ -263,3 +265,285 @@ def test_metrics_config(remote_fn):
 
     # passing stream_metrics as None
     test_metrics_config_helper(service_name=service_name, metrics_config=None, a=3, b=2, expected_result=5)
+
+
+def check_only_user_fn_name_in_pyspy_output(fn_name: str, output: str):
+    import re
+
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
+
+    # Extract profiling table rows: lines that start with a number and contain a pipe
+    rows = re.findall(r"^\s*\d+\.\d+\s+\|\s+.*$", clean, flags=re.MULTILINE)
+
+    if not rows:
+        return False
+
+    for row in rows:
+        # Ensure only user's function name appears in the function frame column
+        if fn_name not in row:
+            return False
+
+    return True
+
+
+def check_only_user_fn_name_in_torch_output(fn_name: str, output: str):
+    lines = output.splitlines()
+
+    # Detect table section
+    start = None
+    end = None
+
+    for i, line in enumerate(lines):
+        if line.strip().startswith("---") and start is None:
+            start = i + 1
+        elif line.strip().startswith("---") and start is not None:
+            end = i
+            break
+
+    # Extract only the data rows inside the table
+    data_rows = lines[start:end]
+
+    for row in data_rows:
+        if fn_name not in row:
+            return False
+
+    return True
+
+
+def get_remote_profiling_compute(compute_type: str, autoscale_replicas: int = 1):
+    from .conftest import get_compute
+
+    compute = get_compute(compute_type=compute_type, autoscale_replicas=autoscale_replicas)
+    compute.image.pip_install(["numpy"])
+
+    return compute
+
+
+async def test_pyspy_profiling_helper_fn(profiler_remote_fn: kt_fn, is_async: bool):
+    out = ""
+    with capture_stdout() as stdout:
+        if is_async:
+            fn_result = await profiler_remote_fn(profiler="pyspy")
+        else:
+            fn_result = profiler_remote_fn(profiler="pyspy")
+        out = out + str(stdout)
+
+    assert fn_result == "matrix_dot_np ran successfully!"
+    assert "================  py-spy Profiling Output ================" in out
+    assert f"Estimated CPU usage for '{profiler_remote_fn.module_name}'" in out
+    assert "Est. Time (s) | % of Total Func. Time | Function Frame" in out
+    assert check_only_user_fn_name_in_pyspy_output(fn_name=profiler_remote_fn.module_name, output=out)
+
+
+async def test_pyspy_profiling_helper_cls(profiler_remote_cls: kt_cls, is_async: bool):
+    out = ""
+    with capture_stdout() as stdout:
+        if is_async:
+            method_result = await profiler_remote_cls.dot_np(profiler="pyspy")
+        else:
+            method_result = profiler_remote_cls.dot_np(profiler="pyspy")
+        out = out + str(stdout)
+
+    assert method_result == "dot_np in Matrix class instance ran successfully!"
+    assert "================  py-spy Profiling Output ================" in out
+    assert f"Estimated CPU usage for '{profiler_remote_cls.module_name}'" in out
+    assert "Est. Time (s) | % of Total Func. Time | Function Frame" in out
+    assert check_only_user_fn_name_in_pyspy_output(fn_name=profiler_remote_cls.module_name, output=out)
+
+
+async def test_torch_profiling_helper_fn(profiler_remote_fn: kt_fn, is_async: bool):
+    out = ""
+    with capture_stdout() as stdout:
+        if is_async:
+            fn_result = await profiler_remote_fn(profiler="torch")
+        else:
+            fn_result = profiler_remote_fn(profiler="torch")
+        out = out + str(stdout)
+
+    assert fn_result == "matrix_dot_torch ran successfully!"
+    assert "================  PyTorch Profiling Output ================'" in out
+    output_col_names = [
+        "Name",
+        "Self CPU %",
+        "Self CPU",
+        "CPU total %",
+        "CPU total",
+        "CPU time avg",
+        "Self CUDA",
+        "Self CUDA %",
+        "CUDA total",
+        "CUDA time avg",
+        "CPU Mem",
+        "Self CPU Mem",
+        "CUDA Mem",
+        "Self CUDA Mem",
+    ]
+    for col_name in output_col_names:
+        assert col_name in out
+    assert check_only_user_fn_name_in_torch_output(fn_name=profiler_remote_fn.module_name, output=out)
+
+
+async def test_torch_profiling_helper_cls(profiler_remote_cls: kt_cls, is_async: bool):
+    out = ""
+    with capture_stdout() as stdout:
+        if is_async:
+            fn_result = await profiler_remote_cls.dot_torch(profiler="torch")
+        else:
+            fn_result = profiler_remote_cls.dot_torch(profiler="torch")
+        out = out + str(stdout)
+
+    assert fn_result == "matrix_dot_torch ran successfully!"
+    assert "================  PyTorch Profiling Output ================'" in out
+    output_col_names = [
+        "Name",
+        "Self CPU %",
+        "Self CPU",
+        "CPU total %",
+        "CPU total",
+        "CPU time avg",
+        "Self CUDA",
+        "Self CUDA %",
+        "CUDA total",
+        "CUDA time avg",
+        "CPU Mem",
+        "Self CPU Mem",
+        "CUDA Mem",
+        "Self CUDA Mem",
+    ]
+    for col_name in output_col_names:
+        assert col_name in out
+    assert check_only_user_fn_name_in_torch_output(fn_name=profiler_remote_cls.module_name, output=out)
+
+
+@pytest.mark.level("minimal")
+def test_profiling_pyspy_fn():
+    import kubetorch as kt
+
+    from .utils import matrix_dot_np
+
+    # 1. single pod
+    compute = get_remote_profiling_compute(compute_type="deployment")
+
+    # async
+    remote_fn = kt.fn(matrix_dot_np, name="fn-pyspy-async-single").to_async(compute)
+    test_pyspy_profiling_helper_fn(remote_fn, is_async=True)
+
+    # sync
+    remote_fn = kt.fn(matrix_dot_np, name="fn-pyspy-sync-single").to(compute)
+    test_pyspy_profiling_helper_fn(remote_fn, is_async=False)
+
+    # 2. multi pod
+    compute = get_remote_profiling_compute(compute_type="knative", autoscale_replicas=2)
+
+    # async
+    remote_fn = kt.fn(matrix_dot_np, name="fn-pyspy-async-multi").to_async(compute)
+    test_pyspy_profiling_helper_fn(remote_fn, is_async=True)
+
+    # sync
+    remote_fn = kt.fn(matrix_dot_np, name="fn-pyspy-sync-multi").to(compute)
+    test_pyspy_profiling_helper_fn(remote_fn, is_async=False)
+
+
+@pytest.mark.level("minimal")
+def test_profiling_pyspy_cls():
+    import kubetorch as kt
+
+    from .utils import Matrix
+
+    # 1. single pod
+    compute = get_remote_profiling_compute(compute_type="deployment")
+
+    # async
+    remote_cls = kt.cls(Matrix, name="cls-pyspy-async-single").to_async(compute)
+    test_pyspy_profiling_helper_cls(remote_cls, is_async=True)
+
+    # sync
+    remote_cls = kt.cls(Matrix, name="cls-pyspy-sync-single").to(compute)
+    test_pyspy_profiling_helper_cls(remote_cls, is_async=False)
+
+    # 2. multi pod
+    compute = get_remote_profiling_compute(compute_type="knative", autoscale_replicas=2)
+
+    # async
+    remote_cls = kt.cls(Matrix, name="cls-pyspy-async-multi").to_async(compute)
+    test_pyspy_profiling_helper_cls(remote_cls, is_async=True)
+
+    # sync
+    remote_cls = kt.cls(Matrix, name="fn-pyspy-sync-multi").to(compute)
+    test_pyspy_profiling_helper_cls(remote_cls, is_async=False)
+
+
+@pytest.mark.gpu_test
+@pytest.mark.level("minimal")
+def test_profiling_torch_fn():
+    import kubetorch as kt
+
+    from .utils import matrix_dot_torch
+
+    gpu = kt.Compute(cpus=0.1, image=kt.images.Pytorch2312().pip_install(["numpy"]), gpus=1)
+
+    # async
+    remote_fn_00 = kt.fn(matrix_dot_torch, name="fn-torch-async-single").to_async(gpu)
+    test_torch_profiling_helper_fn(remote_fn_00, is_async=True)
+
+    # sync
+    remote_fn_01 = kt.fn(matrix_dot_torch, name="fn-torch-sync-single").to(gpu)
+    test_torch_profiling_helper_fn(remote_fn_01, is_async=False)
+
+    # 2. multi pod
+    gpus = gpu.autoscale(min_scale=2, initial_scale=2)
+
+    # async
+    remote_fn_02 = kt.fn(matrix_dot_torch, name="fn-torch-async-multi").to_async(gpus)
+    test_torch_profiling_helper_fn(remote_fn_02, is_async=True)
+
+    # sync
+    remote_fn_03 = kt.fn(matrix_dot_torch, name="fn-torch-sync-multi").to(gpus)
+    test_torch_profiling_helper_fn(remote_fn_03, is_async=False)
+
+
+@pytest.mark.gpu_test
+@pytest.mark.level("minimal")
+def test_profiling_torch_cls():
+    import kubetorch as kt
+
+    from .utils import Matrix_GPU
+
+    gpu = kt.Compute(cpus=0.1, image=kt.images.Pytorch2312().pip_install(["numpy"]), gpus=1)
+
+    # async
+    remote_cls_00 = kt.cls(Matrix_GPU, name="cls-torch-async-single").to_async(gpu)
+    test_torch_profiling_helper_cls(remote_cls_00, is_async=True)
+
+    # sync
+    remote_cls_01 = kt.cls(Matrix_GPU, name="cls-torch-sync-single").to(gpu)
+    test_torch_profiling_helper_cls(remote_cls_01, is_async=False)
+
+    # 2. multi pod
+    gpus = gpu.autoscale(min_scale=2, initial_scale=2)
+
+    # async
+    remote_cls_02 = kt.cls(Matrix_GPU, name="cls-torch-async-multi").to_async(gpus)
+    test_torch_profiling_helper_cls(remote_cls_02, is_async=True)
+
+    # sync
+    remote_cls_03 = kt.cls(Matrix_GPU, name="cls-torch-sync-multi").to(gpus)
+    test_torch_profiling_helper_cls(remote_cls_03, is_async=False)
+
+
+@pytest.mark.level("minimal")
+async def test_unsupported_profiler():
+    import kubetorch as kt
+
+    from .utils import matrix_dot_np
+
+    compute = get_remote_profiling_compute(compute_type="deployment")
+    remote_fn = await kt.fn(matrix_dot_np).to_async(compute)
+    out = ""
+    with capture_stdout() as stdout:
+        fn_result = remote_fn(profiler="unsupported-profiler")
+        out = out + str(stdout)
+
+    assert fn_result == "matrix_dot_np ran successfully!"
+    assert "================  py-spy Profiling Output ================" not in out
+    assert "================  PyTorch Profiling Output ================'" not in out

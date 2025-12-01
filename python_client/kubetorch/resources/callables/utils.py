@@ -201,3 +201,16 @@ def get_names_for_reload_fallbacks(name: str, prefixes: list[str] = []):
         potential_names.append(name)
 
     return potential_names
+
+
+def update_http_call_body(*args, profiler=None, **kwargs):
+    from kubetorch.servers.http.utils import SUPPORTED_PROFILERS
+
+    body = {"args": list(args), "kwargs": kwargs}
+    if not profiler:
+        return body
+    elif profiler in SUPPORTED_PROFILERS:
+        body["profiler"] = profiler
+    else:
+        logger.warning(f"{profiler} is not supported, Valid profilers: {SUPPORTED_PROFILERS}")
+    return body
