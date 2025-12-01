@@ -102,17 +102,22 @@ class KnativeServiceManager(BaseServiceManager):
     def _update_launchtime_manifest(self, manifest: dict, service_name: str, module_name: str) -> dict:
         """Update manifest with service name and deployment timestamp."""
         clean_module_name = self._clean_module_name(module_name)
+        deployment_timestamp, deployment_id = self._get_deployment_timestamp_and_id(service_name)
 
         service = manifest.copy()
         service["metadata"]["name"] = service_name
         service["metadata"]["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
         service["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
+        service["metadata"]["labels"][serving_constants.KT_APP_LABEL] = service_name
+        service["metadata"]["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
         service["spec"]["template"]["metadata"]["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
         service["spec"]["template"]["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
+        service["spec"]["template"]["metadata"]["labels"][serving_constants.KT_APP_LABEL] = service_name
+        service["spec"]["template"]["metadata"]["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
 
         service["spec"]["template"]["metadata"]["annotations"][
             "kubetorch.com/deployment_timestamp"
-        ] = self._get_deployment_timestamp()
+        ] = deployment_timestamp
 
         return service
 

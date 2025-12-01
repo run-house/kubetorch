@@ -53,12 +53,14 @@ class RayClusterServiceManager(BaseServiceManager):
     def _update_launchtime_manifest(self, manifest: dict, service_name: str, module_name: str) -> dict:
         """Update manifest with service name and deployment timestamp."""
         clean_module_name = self._clean_module_name(module_name)
-        deployment_timestamp = self._get_deployment_timestamp()
+        deployment_timestamp, deployment_id = self._get_deployment_timestamp_and_id(service_name)
 
         raycluster = manifest.copy()
         raycluster["metadata"]["name"] = service_name
         raycluster["metadata"]["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
         raycluster["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
+        raycluster["metadata"]["labels"][serving_constants.KT_APP_LABEL] = service_name
+        raycluster["metadata"]["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
 
         # Collect all pod templates to update (head + all worker groups)
         pod_templates = []
@@ -84,6 +86,8 @@ class RayClusterServiceManager(BaseServiceManager):
                 metadata["labels"] = {}
             metadata["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
             metadata["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
+            metadata["labels"][serving_constants.KT_APP_LABEL] = service_name
+            metadata["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
 
             if "annotations" not in metadata:
                 metadata["annotations"] = {}
