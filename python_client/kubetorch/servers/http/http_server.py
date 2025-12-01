@@ -22,7 +22,7 @@ try:
 except:
     pass
 
-from fastapi import Body, FastAPI, Header, HTTPException, Request
+from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -1366,8 +1366,8 @@ async def run_callable(
     request: Request,
     cls_or_fn_name: str,
     method_name: Optional[str] = None,
-    distributed_subcall=False,
-    debug_port: Optional[int] = None,
+    distributed_subcall: bool = Query(False),
+    debug_port: Optional[int] = Query(None),
     params: Optional[Union[Dict, str]] = Body(default=None),
     deployed_as_of: Optional[str] = Header(None, alias="X-Deployed-As-Of"),
     serialization: str = Header("json", alias="X-Serialization"),
