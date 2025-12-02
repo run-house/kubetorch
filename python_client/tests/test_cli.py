@@ -1262,3 +1262,342 @@ def test_cli_secrets_describe_show():
             in output.replace("\n", "")  # Remove newlines from the output
         )
         assert "Type: Opaque" in output
+
+
+########################################################################################################################
+#################################################### kt logs tests #####################################################
+# *NOTE*: We expect log output length to be less the 200 and not less than 200 (default tail length per pod is 100,
+# and we have 2 pods) because some logs are split into 2 lines, due the lack of space (the width of the output
+# terminal is not big enough). Moreover, we parse the output in order to get only the logs. (By parsing the results in
+# the tests, we remove additional info that is printed, such as `looking for service <SERVICE_NAME>` etc).
+########################################################################################################################
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_logs_cli_basic(remote_logs_fn):
+    log_msg = "Tests logs msg"
+    log_amount = 10
+
+    remote_logs_fn(log_msg, log_amount)
+
+    assert len(remote_logs_fn.compute.pod_names()) == 1
+
+    service_name = remote_logs_fn.service_name
+
+    result = runner.invoke(app, ["logs", service_name], color=False)
+    assert result.exit_code == 0
+
+    logs_output = result.stdout
+    assert service_name in logs_output
+    for i in range(log_amount):
+        assert f"{log_msg} {i}" in logs_output
+
+    parsed_logs = logs_output.strip().replace("\n\n", "\n").split("\n")[5:-1]
+    assert len(parsed_logs) <= 111
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_logs_cli_basic_no_username(remote_logs_fn):
+    log_msg = "Tests logs msg"
+    log_amount = 10
+
+    remote_logs_fn(log_msg, log_amount)
+
+    assert len(remote_logs_fn.compute.pod_names()) == 1
+
+    function_name = remote_logs_fn.name
+    service_name = remote_logs_fn.service_name
+
+    result = runner.invoke(app, ["logs", function_name], color=False)
+    assert result.exit_code == 0
+
+    logs_output = result.stdout
+    assert service_name in logs_output
+    for i in range(log_amount):
+        assert f"{log_msg} {i}" in logs_output
+
+    parsed_logs = logs_output.strip().replace("\n\n", "\n").split("\n")[5:-1]
+    assert len(parsed_logs) <= 111
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_logs_cli_single_pod_index(remote_logs_fn):
+    log_msg = "Tests logs msg"
+    log_amount = 1
+
+    remote_logs_fn(log_msg, log_amount)
+
+    assert len(remote_logs_fn.compute.pod_names()) == 1
+
+    service_name = remote_logs_fn.service_name
+
+    result = runner.invoke(app, ["logs", service_name, "-p", "0"], color=False)
+    assert result.exit_code == 0
+
+    logs_output = result.stdout
+    assert service_name in logs_output
+    for i in range(log_amount):
+        assert f"{log_msg} {i}" in logs_output
+
+    parsed_logs = logs_output.strip().replace("\n\n", "\n").split("\n")[5:-1]
+    assert len(parsed_logs) <= 111
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_logs_cli_single_pod_name(remote_logs_fn):
+    log_msg = "Tests logs msg"
+    log_amount = 1
+
+    remote_logs_fn(log_msg, log_amount)
+
+    assert len(remote_logs_fn.compute.pod_names()) == 1
+
+    service_name = remote_logs_fn.service_name
+    pod_name = remote_logs_fn.compute.pod_names()[0]
+
+    result = runner.invoke(app, ["logs", service_name, "-p", pod_name], color=False)
+    assert result.exit_code == 0
+
+    logs_output = result.stdout
+    assert service_name in logs_output
+    for i in range(log_amount):
+        assert f"{log_msg} {i}" in logs_output
+
+    parsed_logs = logs_output.strip().replace("\n\n", "\n").split("\n")[5:-1]
+    assert len(parsed_logs) <= 111
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_logs_cli_single_pod_tail(remote_logs_fn):
+    log_msg = "Tests logs msg"
+    log_amount = 1
+
+    remote_logs_fn(log_msg, log_amount)
+
+    assert len(remote_logs_fn.compute.pod_names()) == 1
+
+    service_name = remote_logs_fn.service_name
+    result = runner.invoke(app, ["logs", service_name, "-t", "10"], color=False)
+    assert result.exit_code == 0
+    logs_output = result.stdout
+
+    assert service_name in logs_output
+    for i in range(log_amount):
+        assert f"{log_msg} {i}" in logs_output
+    assert remote_logs_fn.service_name in logs_output
+
+    parsed_logs = logs_output.strip().replace("\n\n", "\n").split("\n")[5:-1]
+    assert len(parsed_logs) <= 15
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_logs_cli_single_pod_namespace(remote_logs_fn):
+    log_msg = "Tests logs msg"
+    log_amount = 1
+
+    remote_logs_fn(log_msg, log_amount)
+
+    assert len(remote_logs_fn.compute.pod_names()) == 1
+
+    service_name = remote_logs_fn.service_name
+
+    result = runner.invoke(app, ["logs", service_name, "-n", "default"], color=False)
+    assert result.exit_code == 0
+    logs_output = result.stdout
+
+    assert service_name in logs_output
+    for i in range(log_amount):
+        assert f"{log_msg} {i}" in logs_output
+    assert remote_logs_fn.service_name in logs_output
+
+    parsed_logs = logs_output.strip().replace("\n\n", "\n").split("\n")[5:-1]
+    assert len(parsed_logs) <= 111
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_logs_cli_basic_multi_pod(remote_logs_fn_autoscaled):
+    log_msg = "Tests logs msg"
+    log_amount = 10
+
+    remote_logs_fn_autoscaled(log_msg, log_amount)
+
+    assert len(remote_logs_fn_autoscaled.compute.pod_names()) == 2
+
+    service_name = remote_logs_fn_autoscaled.service_name
+
+    result = runner.invoke(app, ["logs", service_name], color=False)
+    assert result.exit_code == 0
+    logs_output = result.stdout
+
+    assert service_name in logs_output
+    for i in range(log_amount):
+        assert f"{log_msg} {i}" in logs_output
+
+    parsed_logs = logs_output.strip().replace("\n\n", "\n").split("\n")[5:-1]
+    assert len(parsed_logs) <= 200
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_logs_cli_multi_pod_index(remote_logs_fn_autoscaled):
+    log_msg = "Tests logs msg"
+    log_amount = 10
+
+    remote_logs_fn_autoscaled(log_msg, log_amount)
+
+    assert len(remote_logs_fn_autoscaled.compute.pod_names()) == 2
+
+    service_name = remote_logs_fn_autoscaled.service_name
+    pod_names = remote_logs_fn_autoscaled.compute.pod_names()
+
+    result = runner.invoke(app, ["logs", service_name, "-p", "1"], color=False)
+    assert result.exit_code == 0
+    logs_output = result.stdout
+
+    assert logs_output
+    assert service_name in logs_output
+    assert all(p for p in pod_names if p in logs_output)
+
+    parsed_logs = logs_output.strip().replace("\n\n", "\n").split("\n")[5:-1]
+    assert len(parsed_logs) <= 200
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_logs_cli_multi_pod_name(remote_logs_fn_autoscaled):
+    log_msg = "Tests logs msg"
+    log_amount = 10
+
+    remote_logs_fn_autoscaled(log_msg, log_amount)
+
+    assert len(remote_logs_fn_autoscaled.compute.pod_names()) == 2
+
+    service_name = remote_logs_fn_autoscaled.service_name
+    pod_names = remote_logs_fn_autoscaled.compute.pod_names()
+
+    result = runner.invoke(app, ["logs", service_name, "-p", pod_names[1]], color=False)
+    assert result.exit_code == 0
+    logs_output = result.stdout
+
+    assert logs_output
+    assert service_name in logs_output
+    assert all(p for p in pod_names if p in logs_output)
+
+    parsed_logs = logs_output.strip().replace("\n\n", "\n").split("\n")[5:-1]
+    assert len(parsed_logs) <= 200
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_logs_cli_multi_pod_tail(remote_logs_fn_autoscaled):
+    log_msg = "Tests logs msg"
+    log_amount = 50
+
+    remote_logs_fn_autoscaled(log_msg, log_amount)
+
+    assert len(remote_logs_fn_autoscaled.compute.pod_names()) == 2
+
+    service_name = remote_logs_fn_autoscaled.service_name
+
+    result = runner.invoke(app, ["logs", service_name, "-t", "20"], color=False, env={"COLUMNS": "200"})
+    assert result.exit_code == 0
+    logs_output = result.stdout
+
+    assert service_name in logs_output
+    # assert latest logs appear in logs tail output
+    assert f"{log_msg} 49" in logs_output
+
+    # assert more early logs don't appear in logs tail output
+    assert f"{log_msg} 0" not in logs_output
+    assert f"{log_msg} 1" not in logs_output
+    assert f"{log_msg} 2" not in logs_output
+    assert remote_logs_fn_autoscaled.service_name in logs_output
+
+    parsed_logs = logs_output.strip().replace("\n\n", "\n").split("\n")[5:-1]
+    assert len(parsed_logs) <= 30
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_logs_cli_multi_pod_namespace(remote_logs_fn_autoscaled):
+    log_msg = "Tests logs msg"
+    log_amount = 10
+
+    remote_logs_fn_autoscaled(log_msg, log_amount)
+    assert len(remote_logs_fn_autoscaled.compute.pod_names()) == 2
+
+    service_name = remote_logs_fn_autoscaled.service_name
+
+    result = runner.invoke(app, ["logs", service_name, "-n", "default"], color=False)
+    assert result.exit_code == 0
+    logs_output = result.stdout
+
+    assert service_name in logs_output
+    for i in range(log_amount):
+        assert f"{log_msg} {i}" in logs_output
+
+    assert remote_logs_fn_autoscaled.service_name in logs_output
+    parsed_logs = logs_output.strip().replace("\n\n", "\n").split("\n")[5:-1]
+    assert len(parsed_logs) <= 200
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_logs_cli_non_existing_service():
+    non_existing_service_name = "no-such-service"
+
+    result = runner.invoke(app, ["logs", non_existing_service_name], color=False)
+    assert result.exit_code == 1
+    logs_output = result.stdout
+    assert f"Failed to load service {non_existing_service_name}" in logs_output
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_logs_cli_single_pod_wrong_index(remote_logs_fn):
+    log_msg = "Tests logs msg"
+    log_amount = 1
+
+    remote_logs_fn(log_msg, log_amount)
+
+    assert len(remote_logs_fn.compute.pod_names()) == 1
+
+    service_name = remote_logs_fn.service_name
+    cmd = ["logs", service_name, "-p", "1"]
+    result = runner.invoke(app, cmd, color=False)
+    assert result.exit_code == 1
+    logs_output = result.stdout
+
+    pod_index = cmd[-1]
+
+    assert f"Pod index {pod_index} is out of range" in logs_output
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_logs_cli_single_pod_wrong_name(remote_logs_fn):
+    log_msg = "Tests logs msg"
+    log_amount = 1
+
+    remote_logs_fn(log_msg, log_amount)
+
+    non_existing_pod_name = "wrong_pod_name"
+
+    service_name = remote_logs_fn.service_name
+    cmd = ["logs", service_name, "-p", non_existing_pod_name]
+    result = runner.invoke(app, cmd, color=False)
+    assert result.exit_code == 1
+    logs_output = result.stdout
+
+    # Using regex because the GitHub stdout is causing a line break in the middle of the error message.
+    regex_expression = (
+        f".*{remote_logs_fn.service_name} does not have an associated pod called.*{non_existing_pod_name}.*"
+    )
+    assert re.search(regex_expression, logs_output, re.DOTALL)
