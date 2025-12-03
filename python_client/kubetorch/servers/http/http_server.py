@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import importlib
 import importlib.util
@@ -12,6 +13,7 @@ import sys
 import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,6 +87,12 @@ _CACHED_IMAGE = []
 DISTRIBUTED_SUPERVISOR = None
 APP_PROCESS = None
 _CALLABLE_LOAD_LOCK = threading.Lock()  # Lock for thread-safe callable loading
+
+# Dedicated executor for load_callable operations (rsync, pip install, imports)
+# This isolates blocking operations from FastAPI's default thread pool,
+# ensuring health checks and other async handlers remain responsive.
+LOAD_CALLABLE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="load-callable-")
+
 LOKI_HOST = os.environ.get("LOKI_HOST", "loki-gateway.kubetorch.svc.cluster.local")
 LOKI_PORT = int(os.environ.get("LOKI_PORT", 80))  # Default Loki port
 KT_OTEL_ENABLED = os.environ.get("KT_OTEL_ENABLED", "False").lower() == "true"
@@ -441,6 +449,11 @@ def cached_image_setup():
 
 
 def run_image_setup(deployed_time: Optional[float] = None):
+    """Set up image by syncing files and running cached image setup.
+
+    This function is blocking and should be called from the dedicated
+    LOAD_CALLABLE_EXECUTOR to avoid blocking the event loop.
+    """
     if os.environ["KT_FREEZE"] == "True" or not is_running_in_kubernetes():
         return
 
@@ -504,7 +517,6 @@ async def run_in_executor_with_context(executor, func, *args):
     This wrapper captures the current request_id from the context before running
     the function in a thread pool executor, then sets it in the new thread.
     """
-    import asyncio
 
     # Capture the current request_id before switching threads
     current_request_id = request_id_ctx_var.get("-")
@@ -546,6 +558,11 @@ def load_callable(
     distributed_subprocess: bool = False,
     reload_cleanup_fn: [Callable, None] = None,
 ):
+    """Load or reload the callable, with caching and thread-safe locking.
+
+    This function is blocking and should be called from the dedicated
+    LOAD_CALLABLE_EXECUTOR to avoid blocking the event loop.
+    """
     global _LAST_DEPLOYED
 
     callable_name = os.environ["KT_CLS_OR_FN_NAME"]
@@ -859,12 +876,14 @@ def generate_rsync_command(subdir: str = ".", exclude_absolute: bool = True):
 def rsync_file_updates():
     """Rsync files from the jump pod to the worker pod.
 
-    Performs two rsync operations in parallel:
+    Performs two rsync operations in parallel using a thread pool:
     1. Regular files (excluding __absolute__*) to the working directory
     2. Absolute path files (under __absolute__/) to their absolute destinations
+
+    This function is blocking and should be called from the dedicated
+    LOAD_CALLABLE_EXECUTOR to avoid blocking the event loop.
     """
     import concurrent.futures
-    from concurrent.futures import ThreadPoolExecutor
 
     service_name = os.getenv("KT_SERVICE_NAME")
     namespace = os.getenv("POD_NAMESPACE")
@@ -939,7 +958,7 @@ def rsync_file_updates():
         else:
             logger.debug("No absolute path files to sync")
 
-    # Run both rsync operations in parallel
+    # Run both rsync operations in parallel using a small thread pool
     with ThreadPoolExecutor(max_workers=2) as executor:
         # Submit both tasks
         regular_future = executor.submit(rsync_regular_files)
@@ -993,7 +1012,6 @@ class TerminationCheckMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Run the actual request in the background
-        import asyncio
 
         request_task = asyncio.create_task(call_next(request))
 
@@ -1193,10 +1211,11 @@ async def lifespan(app: FastAPI):
         logger.debug("No TTL annotation found, heartbeat disabled")
 
     try:
+        # Run blocking setup operations in dedicated executor to keep event loop responsive
         if os.getenv("KT_CALLABLE_TYPE") == "app":
-            run_image_setup()
+            await run_in_executor_with_context(LOAD_CALLABLE_EXECUTOR, run_image_setup)
         else:
-            load_callable()
+            await run_in_executor_with_context(LOAD_CALLABLE_EXECUTOR, load_callable)
 
         logger.info("Kubetorch Server started.")
         request_id_ctx_var.set("-")  # Reset request_id after launch sequence
@@ -1284,7 +1303,6 @@ class ErrorResponse(BaseModel):
 
 # Factor out the exception packaging so we can use it in the handler below and also inside distributed subprocesses
 def package_exception(exc: Exception):
-    import asyncio
     import concurrent
 
     error_type = exc.__class__.__name__
@@ -1339,7 +1357,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
 
 
 @app.post("/_reload_image", response_class=JSONResponse)
-def _reload_image(
+async def _reload_image(
     request: Request,
     deployed_as_of: Optional[str] = Header(None, alias="X-Deployed-As-Of"),
 ):
@@ -1352,7 +1370,8 @@ def _reload_image(
     deployed_time = (
         datetime.fromisoformat(deployed_as_of).timestamp() if deployed_as_of else datetime.now(timezone.utc).timestamp()
     )
-    run_image_setup(deployed_time)
+    # Run in dedicated executor to avoid blocking event loop during rsync/pip operations
+    await run_in_executor_with_context(LOAD_CALLABLE_EXECUTOR, run_image_setup, deployed_time)
     _LAST_DEPLOYED = deployed_time
     return JSONResponse(
         status_code=200,
@@ -1380,8 +1399,8 @@ async def run_callable(
 
     # NOTE: The distributed replica processes (e.g. PyTorchProcess:run) rely on this running here even though
     # they will reconstruct the callable themselves, because they skip image reloading as a performance optimization.
-    # Run load_callable in executor since it may do file I/O and other blocking operations
-    callable_obj = await run_in_executor_with_context(None, load_callable, deployed_as_of)
+    # Run load_callable in dedicated executor to avoid blocking the event loop during rsync/pip/imports
+    callable_obj = await run_in_executor_with_context(LOAD_CALLABLE_EXECUTOR, load_callable, deployed_as_of)
 
     # If this is a distributed call (and not a subcall from a different distributed replica),
     # and the type of distribution which requires a special call method (e.g. SIMD), use the
@@ -1523,7 +1542,6 @@ def run_callable_internal_sync(
     debug_port: Optional[int] = None,
 ):
     """Synchronous wrapper for run_callable_internal, used by distributed subprocesses."""
-    import asyncio
     import inspect
 
     # Check if serialization is allowed
@@ -1614,7 +1632,7 @@ def run_callable_internal_sync(
 
 @app.get("/health", include_in_schema=False)
 @app.get("/", include_in_schema=False)
-def health():
+async def health():
     return {"status": "healthy"}
 
 
