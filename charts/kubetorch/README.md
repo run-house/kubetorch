@@ -105,6 +105,9 @@ A Helm chart for kubetorch
 | opentelemetry-collector.serviceAccount.create | bool | `false` |  |
 | opentelemetry-collector.serviceAccount.name | string | `"kubetorch-opentelemetry-collector"` |  |
 | opentelemetry-collector.tolerations[0].operator | string | `"Exists"` |  |
+| platformController.enabled | bool | `false` |  |
+| platformController.managementPlaneURL | string | `"runhouse-platform-controller.runhouse.svc.cluster.local"` |  |
+| platformController.port | int | `8000` |  |
 | rsync.affinity | object | `{}` |  |
 | rsync.cleanupCron.enabled | bool | `false` |  |
 | rsync.cpu.limit | int | `4` |  |

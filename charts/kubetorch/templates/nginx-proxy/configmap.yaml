@@ -38,7 +38,7 @@ data:
             # Health check
             location {{ .Values.nginxProxy.backends.health.route }} {
                 access_log off;
-                return 200 '{"status":"ok","version":"{{ .Chart.Version }}","config":{"otel_enabled":{{ .Values.kubetorchConfig.otelEnabled }}}}';
+                return 200 '{"status":"ok","version":"{{ .Chart.Version }}","config":{"otel_enabled":{{ .Values.kubetorchConfig.otelEnabled }}{{- if .Values.platformController.enabled }},"management_plane_url":"{{ .Values.platformController.managementPlaneURL }}"{{- end }}}}';
                 add_header Content-Type text/plain;
             }
 
@@ -47,10 +47,17 @@ data:
             ##############################################
             location ^~ /prometheus/ {
                 resolver {{ .Values.nginx.resolver }} valid=5s;
+                {{- if .Values.platformController.enabled }}
+                # Route through platform controller
+                set $platform_host "{{ .Values.platformController.managementPlaneURL }}:{{ .Values.platformController.port }}";
+                proxy_pass http://$platform_host/platform/prometheus/;
+                {{- else }}
+                # Direct routing to Prometheus
                 set $prom_host "kubetorch-metrics.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.metrics.prometheus.port }}";
                 # Strip the /prometheus/ prefix before forwarding
                 rewrite ^/prometheus/(.*)$ /$1 break;
                 proxy_pass http://$prom_host;
+                {{- end }}
                 proxy_http_version 1.1;
                 proxy_set_header Host $host;
                 proxy_set_header X-Real-IP $remote_addr;
@@ -63,8 +70,15 @@ data:
             ##############################################
             location ^~ {{ .Values.nginxProxy.backends.logging.route }}/ {
                 resolver {{ .Values.nginx.resolver }} valid=5s;
+                {{- if .Values.platformController.enabled }}
+                # Route through platform controller
+                set $platform_host "{{ .Values.platformController.managementPlaneURL }}:{{ .Values.platformController.port }}";
+                proxy_pass http://$platform_host/platform/loki/;
+                {{- else }}
+                # Direct routing to Loki
                 set $loki_host "loki-gateway.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.logStreaming.port }}";
                 proxy_pass http://$loki_host;
+                {{- end }}
                 proxy_http_version 1.1;
                 # WebSocket headers
                 proxy_set_header Upgrade $http_upgrade;
@@ -81,7 +95,14 @@ data:
             location ~ ^/rsync/([^/]+)/?(.*)$ {
                 set $namespace $1;
                 client_max_body_size {{ .Values.nginxProxy.maxBodySize.rsync }};
+                {{- if .Values.platformController.enabled }}
+                # Route through platform controller
+                set $platform_host "{{ .Values.platformController.managementPlaneURL }}:{{ .Values.platformController.port }}";
+                proxy_pass http://$platform_host/platform/rsync/$namespace/$2;
+                {{- else }}
+                # Direct routing to rsync
                 proxy_pass http://kubetorch-rsync.$namespace.svc.cluster.local:8080;
+                {{- end }}
                 proxy_http_version 1.1;
                 proxy_set_header Upgrade $http_upgrade;
                 proxy_set_header Connection $connection_upgrade;
@@ -90,6 +111,35 @@ data:
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                 proxy_cache_bypass $http_upgrade;
             }
+
+            ##############################################
+            # PLATFORM — controller proxy
+            ##############################################
+            {{- if .Values.platformController.enabled }}
+            location ^~ /platform/ {
+                resolver {{ .Values.nginx.resolver }} valid=5s;
+                set $platform_host "{{ .Values.platformController.managementPlaneURL }}:{{ .Values.platformController.port }}";
+
+                client_max_body_size {{ .Values.nginxProxy.maxBodySize.api }};
+
+                proxy_pass http://$platform_host;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection $connection_upgrade;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_buffering off;
+                proxy_request_buffering off;
+
+                # Long-running connections
+                proxy_connect_timeout 300s;
+                proxy_send_timeout 300s;
+                proxy_read_timeout 30d;
+            }
+            {{- end }}
+
 
             ##############################################
             # DEFAULT — Namespace + service proxy
@@ -101,7 +151,14 @@ data:
 
                 client_max_body_size {{ .Values.nginxProxy.maxBodySize.api }};
 
+                {{- if .Values.platformController.enabled }}
+                # Route through platform controller
+                set $platform_host "{{ .Values.platformController.managementPlaneURL }}:{{ .Values.platformController.port }}";
+                proxy_pass http://$platform_host/platform/$namespace/$service$rest$is_args$args;
+                {{- else }}
+                # Direct routing to service
                 proxy_pass http://$service.$namespace.svc.cluster.local$rest$is_args$args;
+                {{- end }}
                 proxy_http_version 1.1;
                 proxy_set_header Upgrade $http_upgrade;
                 proxy_set_header Connection "upgrade";
