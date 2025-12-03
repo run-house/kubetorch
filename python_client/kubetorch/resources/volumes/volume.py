@@ -101,19 +101,19 @@ class Volume:
             return self._storage_class
 
         try:
-            result = self.controller_client.list_storage_classes()
-            storage_classes = result.get("items", [])
+            storage_v1 = client.StorageV1Api()
+            storage_classes = storage_v1.list_storage_class().items
 
             # If RWX is requested, prefer RWX-capable classes
             if self.access_mode == "ReadWriteMany":
                 for sc in storage_classes:
-                    provisioner = sc.get("provisioner", "")
+                    provisioner = getattr(sc, "provisioner", "")
                     if provisioner in {
                         "csi.juicefs.com",
                         "nfs.csi.k8s.io",
                         "cephfs.csi.ceph.com",
                     }:
-                        return sc["metadata"]["name"]
+                        return sc.metadata.name
                 raise ValueError("No RWX-capable storage class found")
 
             # Otherwise, pick the default StorageClass
@@ -169,7 +169,7 @@ class Volume:
             access_modes = pvc["spec"].get("accessModes", [])
             access_mode = access_modes[0] if access_modes else DEFAULT_VOLUME_ACCESS_MODE
             annotations = pvc.get("metadata", {}).get("annotations") or {}
-            mount_path = annotations.get("kubetorch.com/mount-path", f"/{KT_MOUNT_FOLDER}/{name}")
+            mount_path = mount_path or annotations.get("kubetorch.com/mount-path", f"/{KT_MOUNT_FOLDER}/{name}")
 
             # Create Volume with actual attributes from PVC
             vol = cls(
