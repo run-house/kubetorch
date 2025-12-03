@@ -1,4 +1,4 @@
-from kubetorch.data_sync import DataSyncError, get, ls, put, rm, vput  # noqa: F401
+from kubetorch.data_store import DataStoreError, get, ls, put, rm, vput  # noqa: F401
 from kubetorch.globals import config, MetricsConfig  # noqa: F401
 from kubetorch.resources.callables.cls.cls import Cls, cls  # noqa: F401
 from kubetorch.resources.callables.fn.fn import Fn, fn  # noqa: F401
@@ -52,7 +52,7 @@ EXCEPTION_REGISTRY = {
     "QueueUnschedulableError": QueueUnschedulableError,
     "KnativeServiceConflictError": KnativeServiceConflictError,
     "RsyncError": RsyncError,
-    "DataSyncError": DataSyncError,
+    "DataStoreError": DataStoreError,
     "VersionMismatchError": VersionMismatchError,
     "SecretNotFound": SecretNotFound,
     "WorkerMembershipChanged": WorkerMembershipChanged,

@@ -1,7 +1,7 @@
 """
 High-level client for key-value store interface.
 
-This module provides the DataSyncClient class that provides a key-value store
+This module provides the DataStoreClient class that provides a key-value store
 interface on top of the low-level RsyncClient, with support for peer-to-peer
 data transfer via a metadata server.
 """
@@ -26,8 +26,8 @@ from .rsync_client import RsyncClient
 logger = get_logger(__name__)
 
 
-class DataSyncError(Exception):
-    """Exception raised for data sync operations (key-value store) errors."""
+class DataStoreError(Exception):
+    """Exception raised for data store operations (key-value store) errors."""
 
     def __init__(self, message: str):
         self.message = message
@@ -46,12 +46,12 @@ class SourceInfo:
     peer_ip: Optional[str] = None
 
 
-class DataSyncClient:
+class DataStoreClient:
     """High-level client for key-value store interface."""
 
     def __init__(self, namespace: Optional[str] = None, kubeconfig_path: Optional[str] = None):
         """
-        Initialize the data sync client.
+        Initialize the data store client.
 
         Args:
             namespace: Kubernetes namespace (defaults to global config)
@@ -59,7 +59,7 @@ class DataSyncClient:
         """
         self.namespace = namespace or globals.config.namespace
         self.metadata_client = MetadataClient(
-            namespace=self.namespace, metadata_port=serving_constants.DATA_SYNC_METADATA_PORT
+            namespace=self.namespace, metadata_port=serving_constants.DATA_STORE_METADATA_PORT
         )
 
     def _parse_key_for_put(self, key: str) -> ParsedKey:
@@ -113,7 +113,7 @@ class DataSyncClient:
 
         try:
             logger.debug(
-                f"DataSyncClient.put: in_cluster={is_running_in_kubernetes()}, "
+                f"DataStoreClient.put: in_cluster={is_running_in_kubernetes()}, "
                 f"service_name={parsed.service_name}, dest_path={dest_path}, contents={contents}"
             )
 
@@ -138,7 +138,7 @@ class DataSyncClient:
 
         try:
             rsync_client = RsyncClient(namespace=self.namespace, service_name="store")
-            label_selector = f"app={serving_constants.DATA_SYNC_SERVICE_NAME}"
+            label_selector = f"app={serving_constants.DATA_STORE_SERVICE_NAME}"
             pod_list = rsync_client.core_api.list_namespaced_pod(
                 namespace=self.namespace, label_selector=label_selector
             )
@@ -209,7 +209,7 @@ class DataSyncClient:
             self._get_from_store_pod(key, parsed, dest, contents, filter_options, force, in_cluster, verbose)
             self._maybe_seed_data(key, dest, seed_data, verbose)
         else:
-            raise DataSyncError(f"Key '{key}' not found - no peer sources and no store pod backup available")
+            raise DataStoreError(f"Key '{key}' not found - no peer sources and no store pod backup available")
 
     def _normalize_dest(self, dest: Union[str, Path, List], contents: bool, key: str) -> str:
         """Normalize destination path for rsync."""
@@ -318,7 +318,7 @@ class DataSyncClient:
             self.metadata_client.complete_request(key, source_info.ip)
 
             if not has_store_backup:
-                raise DataSyncError(
+                raise DataStoreError(
                     f"Peer {source_info.ip} unreachable and no store pod backup available for key '{key}'"
                 )
             return False
@@ -350,13 +350,13 @@ class DataSyncClient:
 
         try:
             # Resolve service name to actual pod name if needed
-            if pod_name == serving_constants.DATA_SYNC_SERVICE_NAME:
-                label_selector = f"app={serving_constants.DATA_SYNC_SERVICE_NAME}"
+            if pod_name == serving_constants.DATA_STORE_SERVICE_NAME:
+                label_selector = f"app={serving_constants.DATA_STORE_SERVICE_NAME}"
                 pod_list = rsync_client.core_api.list_namespaced_pod(
                     namespace=pod_namespace, label_selector=label_selector
                 )
                 if not pod_list.items:
-                    raise RuntimeError(f"No {serving_constants.DATA_SYNC_SERVICE_NAME} pod found")
+                    raise RuntimeError(f"No {serving_constants.DATA_STORE_SERVICE_NAME} pod found")
                 pod_name = pod_list.items[0].metadata.name
 
             if verbose:
@@ -451,9 +451,9 @@ class DataSyncClient:
             if verbose:
                 logger.info(f"New files downloaded: {sorted(new_files)}")
             if not new_files:
-                raise DataSyncError(f"Rsync completed but no files were transferred from peer for key '{key}'")
+                raise DataStoreError(f"Rsync completed but no files were transferred from peer for key '{key}'")
         elif not dest_path.exists():
-            raise DataSyncError(f"Destination does not exist after download: {dest_path}")
+            raise DataStoreError(f"Destination does not exist after download: {dest_path}")
 
         if verbose:
             logger.info(f"Successfully retrieved key '{key}' from peer via port-forward")
@@ -508,7 +508,7 @@ class DataSyncClient:
         """Notify metadata server that store pod request completed."""
         try:
             rsync_client = RsyncClient(namespace=self.namespace, service_name="store")
-            label_selector = f"app={serving_constants.DATA_SYNC_SERVICE_NAME}"
+            label_selector = f"app={serving_constants.DATA_STORE_SERVICE_NAME}"
             pod_list = rsync_client.core_api.list_namespaced_pod(
                 namespace=self.namespace, label_selector=label_selector
             )

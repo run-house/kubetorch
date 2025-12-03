@@ -2046,7 +2046,7 @@ def kt_put(
     namespace: str = typer.Option(globals.config.namespace, "-n", "--namespace", help="Kubernetes namespace"),
 ):
     """Store files or directories in the cluster using a key-value interface"""
-    from kubetorch.data_sync import put
+    from kubetorch.data_store import put
 
     try:
         # Build filter options if exclude or include is provided
@@ -2109,7 +2109,7 @@ def kt_get(
     namespace: str = typer.Option(globals.config.namespace, "-n", "--namespace", help="Kubernetes namespace"),
 ):
     """Retrieve files or directories from the cluster using a key-value interface"""
-    from kubetorch.data_sync import get
+    from kubetorch.data_store import get
 
     try:
         # Build filter options if exclude or include is provided
@@ -2156,7 +2156,7 @@ def kt_ls(
     namespace: str = typer.Option(globals.config.namespace, "-n", "--namespace", help="Kubernetes namespace"),
 ):
     """List files and directories in the cluster store"""
-    from kubetorch.data_sync import ls
+    from kubetorch.data_store import ls
 
     try:
         # List the contents
@@ -2218,7 +2218,7 @@ def kt_rm(
     namespace: str = typer.Option(globals.config.namespace, "-n", "--namespace", help="Kubernetes namespace"),
 ):
     """Delete files or directories from the cluster store"""
-    from kubetorch.data_sync import rm
+    from kubetorch.data_store import rm
 
     try:
         rm(key=key, recursive=recursive, verbose=verbose, namespace=namespace)
