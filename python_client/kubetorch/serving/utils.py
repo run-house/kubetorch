@@ -13,7 +13,6 @@ from kubetorch import globals
 from kubetorch.logger import get_logger
 from kubetorch.servers.http.utils import is_running_in_kubernetes
 from kubetorch.serving.constants import LOKI_GATEWAY_SERVICE_NAME, PROMETHEUS_SERVICE_NAME
-from kubetorch.utils import load_kubeconfig
 
 logger = get_logger(__name__)
 
@@ -125,73 +124,63 @@ def pod_is_running(pod: V1Pod):
     return pod.status.phase == "Running" and pod.metadata.deletion_timestamp is None
 
 
-def check_loki_enabled(core_api: CoreV1Api = None) -> bool:
-    """Check if loki is enabled"""
-    if core_api is None:
-        load_kubeconfig()
-        core_api = CoreV1Api()
-
+def check_loki_enabled() -> bool:
+    """Check if Loki is enabled using the centralized controller."""
+    controller = globals.controller_client()
     kt_namespace = globals.config.install_namespace
 
     try:
-        # Check if loki-gateway service exists in the namespace
-        core_api.read_namespaced_service(name=LOKI_GATEWAY_SERVICE_NAME, namespace=kt_namespace)
+        controller.get_service(namespace=kt_namespace, name=LOKI_GATEWAY_SERVICE_NAME)
         logger.debug(f"Loki gateway service found in namespace {kt_namespace}")
-    except ApiException as e:
-        if e.status == 404:
+        return True
+
+    except Exception as e:
+        # controller wraps K8s 404 properly
+        if "404" in str(e):
             logger.debug(f"Loki gateway service not found in namespace {kt_namespace}")
             return False
 
-        # Additional permission-proof check: try to ping the internal Loki gateway URL
-        # Needed if running in kubernetes without full kubeconfig permissions
+        # fallback check: inside cluster, try resolving service DNS
         if is_running_in_kubernetes():
+            loki_url = f"http://{LOKI_GATEWAY_SERVICE_NAME}.{kt_namespace}.svc.cluster.local/loki/api/v1/labels"
             try:
-                loki_url = f"http://loki-gateway.{kt_namespace}.svc.cluster.local/loki/api/v1/labels"
-                response = httpx.get(loki_url, timeout=2)
-                if response.status_code == 200:
-                    logger.debug("Loki gateway is reachable")
-                else:
-                    logger.debug(f"Loki gateway returned status {response.status_code}")
-                    return False
-            except Exception as e:
-                logger.debug(f"Loki gateway is not reachable: {e}")
-                return False
+                resp = httpx.get(loki_url, timeout=2)
+                if resp.status_code == 200:
+                    return True
+            except Exception:
+                pass
 
-    return True
+        return False
 
 
-def check_prometheus_enabled(core_api: CoreV1Api = None) -> bool:
-    """Check if prometheus is enabled"""
-    if core_api is None:
-        load_kubeconfig()
-        core_api = CoreV1Api()
-
+def check_prometheus_enabled() -> bool:
+    """
+    Check if Prometheus is enabled using the centralized controller.
+    """
+    controller = globals.controller_client()
     kt_namespace = globals.config.install_namespace
 
     try:
-        # Check if prometheus service exists in the namespace
-        core_api.read_namespaced_service(name=PROMETHEUS_SERVICE_NAME, namespace=kt_namespace)
-        logger.debug(f"Metrics service found in namespace {kt_namespace}")
-    except ApiException as e:
-        if e.status == 404:
-            logger.debug(f"Metrics service not found in namespace {kt_namespace}")
+        controller.get_service(namespace=kt_namespace, name=PROMETHEUS_SERVICE_NAME)
+        logger.debug(f"Prometheus service found in namespace {kt_namespace}")
+        return True
+
+    except Exception as e:
+        if "404" in str(e):
+            logger.debug(f"Prometheus service not found in namespace {kt_namespace}")
             return False
 
-        # If running inside the cluster, try hitting the service directly
+        # DNS fallback for in-cluster execution
         if is_running_in_kubernetes():
+            prom_url = f"http://{PROMETHEUS_SERVICE_NAME}.{kt_namespace}.svc.cluster.local/api/v1/labels"
             try:
-                prom_url = f"http://{PROMETHEUS_SERVICE_NAME}.{kt_namespace}.svc.cluster.local/api/v1/labels"
-                response = httpx.get(prom_url, timeout=2)
-                if response.status_code == 200:
-                    logger.debug("Metrics service is reachable")
-                else:
-                    logger.debug(f"Metrics service returned status {response.status_code}")
-                    return False
-            except Exception as e:
-                logger.debug(f"Metrics service is not reachable: {e}")
-                return False
+                resp = httpx.get(prom_url, timeout=2)
+                if resp.status_code == 200:
+                    return True
+            except Exception:
+                pass
 
-    return True
+        return False
 
 
 def nested_override(original_dict, override_dict):

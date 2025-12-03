@@ -8,7 +8,7 @@ from io import StringIO
 from pathlib import Path
 from urllib.parse import urlparse
 
-from kubernetes import client, config
+from kubernetes import config
 
 from kubetorch.constants import DEFAULT_KUBECONFIG_PATH, MAX_USERNAME_LENGTH
 from kubetorch.globals import config as kt_config
@@ -236,16 +236,6 @@ class ServerLogsFormatter:
         self.name = name
         self.start_color = ColoredFormatter.get_color("cyan")
         self.reset_color = ColoredFormatter.get_color("reset")
-
-
-def initialize_k8s_clients():
-    """Initialize Kubernetes API clients."""
-    load_kubeconfig()
-    return (
-        client.CoreV1Api(),
-        client.CustomObjectsApi(),
-        client.AppsV1Api(),
-    )
 
 
 def string_to_dict(value):

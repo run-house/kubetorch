@@ -219,7 +219,6 @@ class Module:
         reload_prefixes: Union[str, List[str]] = [],
     ):
         """Reload an existing callable by its service name."""
-        from kubernetes import client
         from kubernetes.config import ConfigException, load_incluster_config, load_kube_config
 
         import kubetorch as kt
@@ -228,7 +227,10 @@ class Module:
             load_incluster_config()
         except ConfigException:
             load_kube_config()
-        core_v1_api = client.CoreV1Api()
+
+        from kubetorch import globals
+
+        controller_client = globals.controller_client()
 
         namespace = namespace or config.namespace
         if isinstance(reload_prefixes, str):
@@ -251,19 +253,21 @@ class Module:
 
             compute = kt.Compute.from_template(service_info)
 
-            pods = core_v1_api.list_namespaced_pod(
+            pods_result = controller_client.list_pods(
                 namespace=namespace,
                 label_selector=f"kubetorch.com/service={name}",
             )
             volumes = []
 
             # TODO: handle case where service is scaled to 0?
-            if pods.items:
+            pod_items = pods_result.get("items", [])
+            if pod_items:
                 # Use runtime Pod spec
-                pod = pods.items[0]
-                for v in pod.spec.volumes or []:
-                    if v.persistent_volume_claim:
-                        existing_volume = kt.Volume.from_name(name=v.name)
+                pod = pod_items[0]
+                volumes_list = pod.get("spec", {}).get("volumes", [])
+                for v in volumes_list:
+                    if v.get("persistentVolumeClaim"):
+                        existing_volume = kt.Volume.from_name(name=v.get("name"))
                         volumes.append(existing_volume)
 
             module_args = compute.get_env_vars(
@@ -804,21 +808,18 @@ class Module:
             return
 
         configmaps = load_configmaps(
-            core_api=self.compute.core_api,
             service_name=self.service_name,
             namespace=self.compute.namespace,
         )
         if configmaps:
             logger.info(f"Deleting {len(configmaps)} configmap{'' if len(configmaps) == 1 else 's'}")
             delete_configmaps(
-                core_api=self.compute.core_api,
                 configmaps=configmaps,
                 namespace=self.compute.namespace,
             )
 
         logger.info("Deleting service data from cache in rsync pod")
         delete_cached_service_data(
-            core_api=self.compute.core_api,
             service_name=self.service_name,
             namespace=self.compute.namespace,
         )

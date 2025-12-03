@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubetorch-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: kubetorch-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubetorch-controller
+  template:
+    metadata:
+      labels:
+        app: kubetorch-controller
+      annotations:
+        chart-version: "{{ .Chart.Version }}"
+    spec:
+      serviceAccountName: kubetorch-controller
+
+      {{- if .Values.nginxProxy.affinity }}
+      affinity:
+        {{- toYaml .Values.nginxProxy.affinity | nindent 8 }}
+      {{- end }}
+
+      {{- if .Values.nginxProxy.tolerations }}
+      tolerations:
+        {{- toYaml .Values.nginxProxy.tolerations | nindent 8 }}
+      {{- end }}
+
+      containers:
+        # --------------------------------------------------------------------
+        # NGINX sidecar (public-facing) running on port 8080
+        # --------------------------------------------------------------------
+        - name: nginx
+          image: "{{ .Values.nginxProxy.image.repository }}:{{ .Values.nginxProxy.image.tag }}"
+          imagePullPolicy: {{ .Values.nginxProxy.image.pullPolicy }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Starting nginx with static config"
+              cat /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
+              nginx -g 'daemon off;'
+          ports:
+            - containerPort: 8080
+              name: nginx
+            - containerPort: 8873
+              name: rsync
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf.template
+              subPath: nginx.conf
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+
+        # --------------------------------------------------------------------
+        # Controller container (the K8s API proxy)
+        # --------------------------------------------------------------------
+        - name: controller
+          image: "{{ .Values.controller.image }}:{{ .Values.controller.tag }}"
+          imagePullPolicy: {{ .Values.controller.imagePullPolicy }}
+          ports:
+            - containerPort: 8081
+              name: controller
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: {{ .Values.controller.resources.cpu.request | quote }}
+              memory: {{ .Values.controller.resources.memory.request | quote }}
+            limits:
+              cpu: {{ .Values.controller.resources.cpu.limit | quote }}
+              memory: {{ .Values.controller.resources.memory.limit | quote }}
+
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: kubetorch-controller-config

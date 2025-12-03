@@ -1,0 +1,6 @@
+"""low-privilege runtime SA for user pods - not as privileged as the controller SA"""
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubetorch-service-account
+  namespace: {{ .Release.Namespace }}

@@ -16,6 +16,15 @@ A Helm chart for kubetorch
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| controller.affinity | object | `{}` |  |
+| controller.image | string | `"ghcr.io/run-house/kubetorch-controller"` |  |
+| controller.imagePullPolicy | string | `"Always"` |  |
+| controller.resources.cpu.limit | string | `"500m"` |  |
+| controller.resources.cpu.request | string | `"100m"` |  |
+| controller.resources.memory.limit | string | `"512Mi"` |  |
+| controller.resources.memory.request | string | `"256Mi"` |  |
+| controller.tag | string | `"v0.1.0"` |  |
+| controller.tolerations | list | `[]` |  |
 | dcgm-exporter.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key | string | `"karpenter.k8s.aws/instance-gpu-manufacturer"` |  |
 | dcgm-exporter.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator | string | `"In"` |  |
 | dcgm-exporter.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].values[0] | string | `"nvidia"` |  |
