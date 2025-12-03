@@ -494,7 +494,7 @@ class Module:
                     return existing_service
             except Exception as e:
                 logger.info(
-                    f"Service {self.compute.service_name} not found in namespace {self.compute.namespace} "
+                    f"Service {self.service_name} not found in namespace {compute.namespace} "
                     f"with reload_prefixes={reload_prefixes}: {str(e)}"
                 )
 
