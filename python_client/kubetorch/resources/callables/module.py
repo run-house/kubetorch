@@ -765,9 +765,10 @@ class Module:
             from kubetorch import data_store
 
             dt_client = data_store.DataStoreClient(namespace=self.compute.namespace)
-            # Key is service name, which puts files at /data/{namespace}/{service_name}/
-            # With contents=False, directories are preserved: /data/{namespace}/{service_name}/python_client/, .kt/, etc.
-            dt_client.put(key=self.compute.service_name, src=all_dirs, contents=False)
+            # Use absolute key path (starting with /) to prevent auto-prepending of caller's service name
+            # This is critical when a parent service creates a child service - we want files at
+            # /data/{namespace}/{child_service_name}/, not /data/{namespace}/{parent_service_name}/{child_service_name}/
+            dt_client.put(key=f"/{self.compute.service_name}", src=all_dirs, contents=False)
 
     async def _construct_and_rsync_files_async(self, rsync_dirs, service_dockerfile):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -786,10 +787,10 @@ class Module:
             from kubetorch import data_store
 
             dt_client = data_store.DataStoreClient(namespace=self.compute.namespace)
-            # Key is service name, which puts files at /data/{namespace}/{service_name}/
-            # With contents=False, directories are preserved: /data/{namespace}/{service_name}/python_client/, .kt/, etc.
-            # Note: put() is synchronous, but that's fine - we're already in an async context
-            dt_client.put(key=self.compute.service_name, src=all_dirs, contents=False)
+            # Use absolute key path (starting with /) to prevent auto-prepending of caller's service name
+            # This is critical when a parent service creates a child service - we want files at
+            # /data/{namespace}/{child_service_name}/, not /data/{namespace}/{parent_service_name}/{child_service_name}/
+            dt_client.put(key=f"/{self.compute.service_name}", src=all_dirs, contents=False)
 
     def _startup_rsync_command(self, use_editable, install_url, dryrun):
         if dryrun:
