@@ -171,3 +171,9 @@ dcgm-exporter:
           - matchExpressions:
               - key: nvidia.com/gpu.present
                 operator: Exists
+
+
+platformController:
+  enabled: false # Set to `true` if you have deployed the Kubetorch Platform Controller
+  managementPlaneURL: "runhouse-platform-controller.runhouse.svc.cluster.local"
+  port: 8000
