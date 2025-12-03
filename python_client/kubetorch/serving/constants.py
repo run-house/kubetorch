@@ -39,6 +39,8 @@ KT_USERNAME_LABEL = "kubetorch.com/username"
 KT_POD_TYPE_LABEL = "kubetorch.com/pod-type"
 KT_TEMPLATE_LABEL = "kubetorch.com/template"
 KT_SECRET_NAME_LABEL = "kubetorch.com/secret-name"
+KT_APP_LABEL = "app"  # Stable app identifier for easy querying
+KT_DEPLOYMENT_ID_LABEL = "kubetorch.com/deployment-id"  # Unique per deployment run
 
 # Templates
 TTL_CONTROLLER_CONFIGMAP_NAME = "kubetorch-ttl-controller-config"

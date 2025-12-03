@@ -90,6 +90,20 @@ def test_autodown_deployment():
     assert service.metadata.labels[serving_constants.KT_MODULE_LABEL] is not None
     assert service.metadata.annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
 
+    # Check that the new app and deployment-id labels exist on the pod
+    pod_labels = pod.metadata.labels
+    assert pod_labels.get(serving_constants.KT_APP_LABEL) == remote_fn.service_name
+    assert pod_labels.get(serving_constants.KT_DEPLOYMENT_ID_LABEL) is not None
+    assert pod_labels.get(serving_constants.KT_DEPLOYMENT_ID_LABEL).startswith(remote_fn.service_name)
+
+    # Check that the Deployment also has the new labels
+    apps_v1_api = client.AppsV1Api()
+    deployment = apps_v1_api.read_namespaced_deployment(name=remote_fn.service_name, namespace=namespace)
+    deployment_labels = deployment.metadata.labels
+    assert deployment_labels.get(serving_constants.KT_APP_LABEL) == remote_fn.service_name
+    assert deployment_labels.get(serving_constants.KT_DEPLOYMENT_ID_LABEL) is not None
+    assert deployment_labels.get(serving_constants.KT_DEPLOYMENT_ID_LABEL).startswith(remote_fn.service_name)
+
     # Check that the namespace is in the watch namespaces
     cronjob_configmap = core_api.read_namespaced_config_map(
         name=serving_constants.TTL_CONTROLLER_CONFIGMAP_NAME,
@@ -144,6 +158,12 @@ def test_autodown_raycluster():
     # Check that the service has the autodown annotation
     assert service.metadata.labels[serving_constants.KT_MODULE_LABEL] is not None
     assert service.metadata.annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
+
+    # Check that the new app and deployment-id labels exist on the pod
+    pod_labels = pod.metadata.labels
+    assert pod_labels.get(serving_constants.KT_APP_LABEL) == remote_fn.service_name
+    assert pod_labels.get(serving_constants.KT_DEPLOYMENT_ID_LABEL) is not None
+    assert pod_labels.get(serving_constants.KT_DEPLOYMENT_ID_LABEL).startswith(remote_fn.service_name)
 
 
 @pytest.mark.skip("Long running test, skipping for now")
