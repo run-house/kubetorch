@@ -754,14 +754,20 @@ class Module:
             temp_file.parent.mkdir(parents=True, exist_ok=True)
             temp_file.write_text(service_dockerfile)
 
+            # Add .kt directory to the list of directories to sync
             source_dir = str(Path(tmpdir) / ".kt")
-            rsync_dirs.append(source_dir)
+            all_dirs = rsync_dirs + [source_dir]
 
-            logger.debug(f"Rsyncing directories: {rsync_dirs}")
-            if is_running_in_kubernetes():
-                self.compute.rsync_in_cluster(rsync_dirs)
-            else:
-                self.compute.rsync(rsync_dirs)
+            logger.debug(f"Rsyncing directories: {all_dirs}")
+            # Use DataSyncClient KV interface - files go to rsync pod, then sync to service pods at startup
+            # Using contents=False preserves directory structure - each directory becomes a subdirectory
+            # This matches the old behavior where python_client/ and .kt/ were both preserved as subdirectories
+            from kubetorch import data_sync
+
+            dt_client = data_sync.DataSyncClient(namespace=self.compute.namespace)
+            # Key is service name, which puts files at /data/{namespace}/{service_name}/
+            # With contents=False, directories are preserved: /data/{namespace}/{service_name}/python_client/, .kt/, etc.
+            dt_client.put(key=self.compute.service_name, src=all_dirs, contents=False)
 
     async def _construct_and_rsync_files_async(self, rsync_dirs, service_dockerfile):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -769,14 +775,21 @@ class Module:
             temp_file.parent.mkdir(parents=True, exist_ok=True)
             temp_file.write_text(service_dockerfile)
 
+            # Add .kt directory to the list of directories to sync
             source_dir = str(Path(tmpdir) / ".kt")
-            rsync_dirs.append(source_dir)
+            all_dirs = rsync_dirs + [source_dir]
 
-            logger.debug(f"Rsyncing directories: {rsync_dirs}")
-            if is_running_in_kubernetes():
-                await self.compute.rsync_in_cluster_async(rsync_dirs)
-            else:
-                await self.compute.rsync_async(rsync_dirs)
+            logger.debug(f"Rsyncing directories: {all_dirs}")
+            # Use DataSyncClient KV interface - files go to rsync pod, then sync to service pods at startup
+            # Using contents=False preserves directory structure - each directory becomes a subdirectory
+            # This matches the old behavior where python_client/ and .kt/ were both preserved as subdirectories
+            from kubetorch import data_sync
+
+            dt_client = data_sync.DataSyncClient(namespace=self.compute.namespace)
+            # Key is service name, which puts files at /data/{namespace}/{service_name}/
+            # With contents=False, directories are preserved: /data/{namespace}/{service_name}/python_client/, .kt/, etc.
+            # Note: put() is synchronous, but that's fine - we're already in an async context
+            dt_client.put(key=self.compute.service_name, src=all_dirs, contents=False)
 
     def _startup_rsync_command(self, use_editable, install_url, dryrun):
         if dryrun:
