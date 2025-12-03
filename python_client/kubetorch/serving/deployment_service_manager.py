@@ -147,11 +147,7 @@ class DeploymentServiceManager(BaseServiceManager):
             )
 
             try:
-                self.core_api.create_namespaced_service(
-                    namespace=self.namespace,
-                    body=service,
-                    **kwargs,
-                )
+                self.controller_client.create_service(namespace=self.namespace, body=service, params=kwargs)
                 if not dryrun:
                     logger.info(f"Created service {service_name} in namespace {self.namespace}")
             except client.exceptions.ApiException as e:
@@ -176,52 +172,62 @@ class DeploymentServiceManager(BaseServiceManager):
                 )
 
                 try:
-                    self.core_api.create_namespaced_service(
+                    self.controller_client.create_service(
                         namespace=self.namespace,
                         body=headless_service,
-                        **kwargs,
                     )
                     if not dryrun:
                         logger.info(f"Created headless service {service_name}-headless in namespace {self.namespace}")
-                except client.exceptions.ApiException as e:
-                    if e.status == 409:
+                except Exception as e:
+                    if hasattr(e, "status") and e.status == 409:
+                        logger.info(f"Headless service {service_name}-headless already exists")
+                    elif "409" in str(e) or "already exists" in str(e).lower():
                         logger.info(f"Headless service {service_name}-headless already exists")
                     else:
                         raise
 
+            if dryrun:
+                # For dryrun, just return the manifest
+                return deployment, False
+
             # Create Deployment
-            created_deployment = self.apps_v1_api.create_namespaced_deployment(
+            created_deployment = self.controller_client.create_deployment(
                 namespace=self.namespace,
                 body=deployment,
-                **kwargs,
             )
-
-            if dryrun:
-                return created_deployment, False
 
             logger.info(f"Created Deployment {deployment['metadata']['name']} in namespace {self.namespace}")
             return created_deployment, True
 
-        except client.exceptions.ApiException as e:
-            if e.status == 409:
+        except Exception as e:
+            if hasattr(e, "status") and e.status == 409:
+                is_409 = True
+            elif "409" in str(e) or "already exists" in str(e).lower():
+                is_409 = True
+            else:
+                is_409 = False
+
+            if is_409:
                 logger.info(f"Deployment {deployment['metadata']['name']} already exists, updating")
                 existing_deployment = self.get_resource(deployment["metadata"]["name"])
 
                 # Update replicas if different
-                if existing_deployment.spec.replicas != deployment["spec"]["replicas"]:
-                    patch_body = {"spec": {"replicas": deployment["spec"]["replicas"]}}
+                existing_replicas = existing_deployment.get("spec", {}).get("replicas", 0)
+                desired_replicas = deployment["spec"]["replicas"]
+                if existing_replicas != desired_replicas:
+                    patch_body = {"spec": {"replicas": desired_replicas}}
                     try:
-                        self.apps_v1_api.patch_namespaced_deployment(
-                            name=deployment["metadata"]["name"],
+                        self.controller_client.patch_deployment(
                             namespace=self.namespace,
+                            name=deployment["metadata"]["name"],
                             body=patch_body,
                         )
                         logger.info(
-                            f"Updated Deployment {deployment['metadata']['name']} replicas to {deployment['spec']['replicas']}"
+                            f"Updated Deployment {deployment['metadata']['name']} replicas to {desired_replicas}"
                         )
-                    except Exception as e:
-                        logger.error(f"Failed to patch Deployment {deployment['metadata']['name']}: {e}")
-                        raise e
+                    except Exception as patch_error:
+                        logger.error(f"Failed to patch Deployment {deployment['metadata']['name']}: {patch_error}")
+                        raise patch_error
 
                 return existing_deployment, False
             else:
@@ -231,12 +237,12 @@ class DeploymentServiceManager(BaseServiceManager):
     def get_resource(self, service_name: str) -> dict:
         """Retrieve a Deployment by name."""
         try:
-            deployment = self.apps_v1_api.read_namespaced_deployment(
-                name=service_name,
+            deployment = self.controller_client.get_deployment(
                 namespace=self.namespace,
+                name=service_name,
             )
             return deployment
-        except client.exceptions.ApiException as e:
+        except Exception as e:
             logger.error(f"Failed to load Deployment '{service_name}': {str(e)}")
             raise
 
@@ -244,13 +250,13 @@ class DeploymentServiceManager(BaseServiceManager):
         """Update deployment timestamp annotation for Deployment services."""
         try:
             patch_body = self._create_timestamp_patch_body(new_timestamp)
-            self.apps_v1_api.patch_namespaced_deployment(
-                name=service_name,
+            self.controller_client.patch_deployment(
                 namespace=self.namespace,
+                name=service_name,
                 body=patch_body,
             )
             return new_timestamp
-        except client.exceptions.ApiException as e:
+        except Exception as e:
             logger.error(f"Failed to update deployment timestamp for '{service_name}': {str(e)}")
             raise
 
@@ -286,7 +292,6 @@ class DeploymentServiceManager(BaseServiceManager):
         self,
         service_name: str,
         launch_timeout: int,
-        core_api: client.CoreV1Api = None,
         **kwargs,
     ) -> bool:
         """Checks if the Deployment is ready to start serving requests.
@@ -294,7 +299,6 @@ class DeploymentServiceManager(BaseServiceManager):
         Args:
             service_name: Name of the Deployment service
             launch_timeout: Timeout in seconds to wait for readiness
-            core_api: Core API instance (uses self.core_api if None)
             **kwargs: Additional arguments (ignored for Deployments)
 
         Returns:
@@ -303,9 +307,6 @@ class DeploymentServiceManager(BaseServiceManager):
         Raises:
             ServiceTimeoutError: If service doesn't become ready within timeout
         """
-        if core_api is None:
-            core_api = self.core_api
-
         sleep_interval = 2
         start_time = time.time()
 
@@ -323,8 +324,10 @@ class DeploymentServiceManager(BaseServiceManager):
                     continue
 
                 # Check if all replicas are ready
-                ready_replicas = deployment.status.ready_replicas or 0
-                desired_replicas = deployment.spec.replicas or 0
+                status = deployment.get("status", {})
+                spec = deployment.get("spec", {})
+                ready_replicas = status.get("readyReplicas", 0)
+                desired_replicas = spec.get("replicas", 0)
 
                 if iteration % 3 == 0:
                     logger.debug(f"Deployment {service_name}: {ready_replicas}/{desired_replicas} replicas ready")
@@ -340,18 +343,16 @@ class DeploymentServiceManager(BaseServiceManager):
                     check_pod_status_for_errors(pod)
 
                     # Check pod events separately from the core API
-                    check_pod_events_for_errors(pod, self.namespace, core_api)
+                    check_pod_events_for_errors(pod, self.namespace)
 
                 # If no pods exist, check for ReplicaSet-level errors (like PriorityClass issues)
                 if not pods:
                     check_replicaset_events_for_errors(
                         namespace=self.namespace,
                         service_name=service_name,
-                        apps_v1_api=self.apps_v1_api,
-                        core_api=core_api,
                     )
 
-            except client.exceptions.ApiException as e:
+            except Exception as e:
                 logger.error(f"Error checking Deployment readiness: {e}")
                 raise
 
@@ -379,8 +380,6 @@ class DeploymentServiceManager(BaseServiceManager):
         try:
             # Delete the Deployment and its associated service
             delete_deployment(
-                apps_v1_api=self.apps_v1_api,
-                core_api=self.core_api,
                 name=service_name,
                 namespace=self.namespace,
                 console=console,

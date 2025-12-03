@@ -3,8 +3,6 @@ import os
 import time
 from typing import Optional, Tuple
 
-from kubernetes import client
-
 import kubetorch.serving.constants as serving_constants
 from kubetorch.logger import get_logger
 from kubetorch.servers.http.utils import load_template
@@ -21,7 +19,7 @@ class RayClusterServiceManager(BaseServiceManager):
     def get_resource(self, service_name: str) -> dict:
         """Retrieve a RayCluster by name."""
         try:
-            raycluster = self.objects_api.get_namespaced_custom_object(
+            raycluster = self.controller_client.get_namespaced_custom_object(
                 group="ray.io",
                 version="v1",
                 namespace=self.namespace,
@@ -29,7 +27,7 @@ class RayClusterServiceManager(BaseServiceManager):
                 name=service_name,
             )
             return raycluster
-        except client.exceptions.ApiException as e:
+        except Exception as e:
             logger.error(f"Failed to load RayCluster '{service_name}': {str(e)}")
             raise
 
@@ -37,7 +35,7 @@ class RayClusterServiceManager(BaseServiceManager):
         """Update deployment timestamp annotation for RayCluster services."""
         try:
             patch_body = {"metadata": {"annotations": {"kubetorch.com/deployment_timestamp": new_timestamp}}}
-            self.objects_api.patch_namespaced_custom_object(
+            self.controller_client.patch_namespaced_custom_object(
                 group="ray.io",
                 version="v1",
                 namespace=self.namespace,
@@ -46,7 +44,7 @@ class RayClusterServiceManager(BaseServiceManager):
                 body=patch_body,
             )
             return new_timestamp
-        except client.exceptions.ApiException as e:
+        except Exception as e:
             logger.error(f"Failed to update deployment timestamp for RayCluster '{service_name}': {str(e)}")
             raise
 
@@ -227,15 +225,13 @@ class RayClusterServiceManager(BaseServiceManager):
             service["spec"]["selector"]["ray.io/node-type"] = "head"
 
             try:
-                self.core_api.create_namespaced_service(
-                    namespace=self.namespace,
-                    body=service,
-                    **kwargs,
-                )
+                self.controller_client.create_service(namespace=self.namespace, body=service, params=kwargs)
                 if not dryrun:
                     logger.info(f"Created service {service_name} in namespace {self.namespace}")
-            except client.exceptions.ApiException as e:
-                if e.status == 409:
+            except Exception as e:
+                if hasattr(e, "status") and e.status == 409:
+                    logger.info(f"Service {service_name} already exists")
+                elif "409" in str(e) or "already exists" in str(e).lower():
                     logger.info(f"Service {service_name} already exists")
                 else:
                     raise
@@ -258,15 +254,16 @@ class RayClusterServiceManager(BaseServiceManager):
             headless_service["spec"]["selector"].pop("ray.io/node-type", None)
 
             try:
-                self.core_api.create_namespaced_service(
+                self.controller_client.create_service(
                     namespace=self.namespace,
                     body=headless_service,
-                    **kwargs,
                 )
                 if not dryrun:
                     logger.info(f"Created headless service {service_name}-headless in namespace {self.namespace}")
-            except client.exceptions.ApiException as e:
-                if e.status == 409:
+            except Exception as e:
+                if hasattr(e, "status") and e.status == 409:
+                    logger.info(f"Headless service {service_name}-headless already exists")
+                elif "409" in str(e) or "already exists" in str(e).lower():
                     logger.info(f"Headless service {service_name}-headless already exists")
                 else:
                     raise
@@ -274,16 +271,19 @@ class RayClusterServiceManager(BaseServiceManager):
             # Create RayCluster
             created_raycluster = None
             try:
-                created_raycluster = self.objects_api.create_namespaced_custom_object(
+                created_raycluster = self.controller_client.create_namespaced_custom_object(
                     group="ray.io",
                     version="v1",
                     namespace=self.namespace,
                     plural="rayclusters",
                     body=raycluster,
-                    **kwargs,
                 )
-            except client.exceptions.ApiException as e:
-                if e.status == 404:
+            except Exception as e:
+                if hasattr(e, "status") and e.status == 404:
+                    logger.error(
+                        "RayCluster Custom Resource Definition (CRD) not found, please install the KubeRay operator"
+                    )
+                elif "404" in str(e):
                     logger.error(
                         "RayCluster Custom Resource Definition (CRD) not found, please install the KubeRay operator"
                     )
@@ -295,13 +295,13 @@ class RayClusterServiceManager(BaseServiceManager):
             logger.info(f"Created RayCluster {service_name} in namespace {self.namespace}")
             return created_raycluster, True
 
-        except client.exceptions.ApiException as e:
-            if e.status == 409:
+        except Exception as e:
+            if (hasattr(e, "status") and e.status == 409) or "409" in str(e) or "already exists" in str(e).lower():
                 logger.info(f"RayCluster {service_name} already exists, updating")
                 try:
                     # For RayCluster, we can patch the spec
                     patch_body = {"spec": raycluster["spec"]}
-                    updated_raycluster = self.objects_api.patch_namespaced_custom_object(
+                    updated_raycluster = self.controller_client.patch_namespaced_custom_object(
                         group="ray.io",
                         version="v1",
                         namespace=self.namespace,
@@ -375,17 +375,26 @@ class RayClusterServiceManager(BaseServiceManager):
 
                 # Check pods are running
                 pods = self.get_pods_for_service(service_name)
-                running_pods = [pod for pod in pods if pod.status.phase == "Running"]
+                running_pods = [pod for pod in pods if pod.get("status", {}).get("phase") == "Running"]
 
                 # Count head and worker pods separately for better logging
-                head_pods = [pod for pod in running_pods if pod.metadata.labels.get("ray.io/node-type") == "head"]
-                worker_pods = [pod for pod in running_pods if pod.metadata.labels.get("ray.io/node-type") == "worker"]
+                head_pods = [
+                    pod
+                    for pod in running_pods
+                    if pod.get("metadata", {}).get("labels", {}).get("ray.io/node-type") == "head"
+                ]
+                worker_pods = [
+                    pod
+                    for pod in running_pods
+                    if pod.get("metadata", {}).get("labels", {}).get("ray.io/node-type") == "worker"
+                ]
 
                 # Check for specific error conditions
                 if head_pods:
                     head_pod = head_pods[0]
                     # Check for Ray installation errors in head pod
-                    ray_error = self._check_ray_installation_error(service_name, head_pod.metadata.name)
+                    head_pod_name = head_pod.get("metadata", {}).get("name")
+                    ray_error = self._check_ray_installation_error(service_name, head_pod_name)
                     if ray_error:
                         raise RuntimeError(ray_error)
 
@@ -430,7 +439,7 @@ class RayClusterServiceManager(BaseServiceManager):
 
         try:
             # Delete the RayCluster
-            self.objects_api.delete_namespaced_custom_object(
+            self.controller_client.delete_namespaced_custom_object(
                 group="ray.io",
                 version="v1",
                 namespace=self.namespace,
@@ -442,8 +451,8 @@ class RayClusterServiceManager(BaseServiceManager):
             else:
                 logger.info(f"Deleted RayCluster {service_name}")
 
-        except client.exceptions.ApiException as e:
-            if e.status == 404:
+        except Exception as e:
+            if (hasattr(e, "status") and e.status == 404) or "404" in str(e) or "not found" in str(e).lower():
                 if console:
                     console.print(f"[yellow]Note:[/yellow] RayCluster {service_name} not found or already deleted")
                 else:
@@ -458,14 +467,21 @@ class RayClusterServiceManager(BaseServiceManager):
         # Delete both regular and headless services
         for service_name_to_delete in [service_name, f"{service_name}-headless"]:
             try:
-                self.core_api.delete_namespaced_service(name=service_name_to_delete, namespace=self.namespace)
+                self.controller_client.delete_service(name=service_name_to_delete, namespace=self.namespace)
                 if console:
                     console.print(f"✓ Deleted service [blue]{service_name_to_delete}[/blue]")
                 else:
                     logger.info(f"Deleted service {service_name_to_delete}")
 
-            except client.exceptions.ApiException as e:
-                if e.status == 404:
+            except Exception as e:
+                if hasattr(e, "status") and e.status == 404:
+                    if console:
+                        console.print(
+                            f"[yellow]Note:[/yellow] Service {service_name_to_delete} not found or already deleted"
+                        )
+                    else:
+                        logger.info(f"Service {service_name_to_delete} not found or already deleted")
+                elif "404" in str(e) or "not found" in str(e).lower():
                     if console:
                         console.print(
                             f"[yellow]Note:[/yellow] Service {service_name_to_delete} not found or already deleted"
@@ -492,8 +508,8 @@ class RayClusterServiceManager(BaseServiceManager):
             Error message if Ray installation error is found, None otherwise
         """
         try:
-            head_logs = self.core_api.read_namespaced_pod_log(
-                name=head_pod_name, namespace=self.namespace, tail_lines=100
+            head_logs = self.controller_client.get_pod_logs(
+                namespace=self.namespace, name=head_pod_name, tail_lines=100
             )
 
             # Check for Ray installation errors
@@ -510,8 +526,9 @@ class RayClusterServiceManager(BaseServiceManager):
                     f"Check the head pod logs for more details."
                 )
 
-        except client.exceptions.ApiException as e:
-            if e.status != 404:  # Pod might not be ready yet
+        except Exception as e:
+            # Pod might not be ready yet - 404 is expected
+            if not (hasattr(e, "status") and e.status == 404) and "404" not in str(e):
                 logger.warning(f"Could not check head pod logs: {e}")
 
         return None

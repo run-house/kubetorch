@@ -49,6 +49,20 @@ rsync:
   tolerations: []
   affinity: {}
 
+controller:
+  image: ghcr.io/run-house/kubetorch-controller
+  tag: v0.1.0
+  imagePullPolicy: Always
+  resources:
+    cpu:
+      request: "100m"
+      limit: "500m"
+    memory:
+      request: "256Mi"
+      limit: "512Mi"
+  tolerations: []
+  affinity: {}
+
 nginxProxy:
   image:
     repository: nginx

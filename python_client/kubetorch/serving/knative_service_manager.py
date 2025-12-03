@@ -1,8 +1,5 @@
 import os
 import time
-from typing import List
-
-from kubernetes import client
 
 import kubetorch as kt
 import kubetorch.serving.constants as serving_constants
@@ -124,14 +121,12 @@ class KnativeServiceManager(BaseServiceManager):
     def _create_or_update_resource_from_manifest(self, manifest: dict, dryrun: bool = False) -> dict:
         """Create or update resources from a manifest."""
         try:
-            kwargs = {"dry_run": "All"} if dryrun else {}
-            created_service: dict = self.objects_api.create_namespaced_custom_object(
+            created_service: dict = self.controller_client.create_namespaced_custom_object(
                 group="serving.knative.dev",
                 version="v1",
                 namespace=self.namespace,
                 plural="services",
                 body=manifest,
-                **kwargs,
             )
 
             logger.info(
@@ -139,8 +134,8 @@ class KnativeServiceManager(BaseServiceManager):
             )
             return created_service
 
-        except client.exceptions.ApiException as e:
-            if e.status == 409:
+        except Exception as e:
+            if (hasattr(e, "status") and e.status == 409) or "409" in str(e) or "already exists" in str(e).lower():
                 logger.info(f"Service {manifest['metadata']['name']} already exists, updating")
                 existing_service = self.get_resource(manifest["metadata"]["name"])
                 return existing_service
@@ -153,7 +148,7 @@ class KnativeServiceManager(BaseServiceManager):
     def get_resource(self, service_name: str) -> dict:
         """Retrieve a Knative service by name."""
         try:
-            service = self.objects_api.get_namespaced_custom_object(
+            service = self.controller_client.get_namespaced_custom_object(
                 group="serving.knative.dev",
                 version="v1",
                 namespace=self.namespace,
@@ -162,7 +157,7 @@ class KnativeServiceManager(BaseServiceManager):
             )
             return service
 
-        except client.exceptions.ApiException as e:
+        except Exception as e:
             logger.error(f"Failed to load Knative service '{service_name}': {str(e)}")
             raise
 
@@ -170,7 +165,7 @@ class KnativeServiceManager(BaseServiceManager):
         """Update deployment timestamp annotation for Knative services."""
         try:
             patch_body = self._create_timestamp_patch_body(new_timestamp)
-            self.objects_api.patch_namespaced_custom_object(
+            self.controller_client.patch_namespaced_custom_object(
                 group="serving.knative.dev",
                 version="v1",
                 namespace=self.namespace,
@@ -179,7 +174,7 @@ class KnativeServiceManager(BaseServiceManager):
                 body=patch_body,
             )
             return new_timestamp
-        except client.exceptions.ApiException as e:
+        except Exception as e:
             logger.error(f"Failed to update deployment timestamp for Knative service '{service_name}': {str(e)}")
             raise
 
@@ -223,25 +218,39 @@ class KnativeServiceManager(BaseServiceManager):
         """Get the endpoint URL for a Knative service."""
         return self.get_knative_service_endpoint(service_name)
 
-    def get_pods_for_service(self, service_name: str, **kwargs) -> List[client.V1Pod]:
-        """Get all pods associated with this Knative service."""
+    def get_pods_for_service(self, service_name: str, **kwargs):
+        """
+        Unified pod lookup for Knative services using the controller client.
+
+        Returns only dict-normalized pods.
+        """
+        # 1. Try Knative revision-based lookup
         try:
-            # First try to get the service to find the latest revision
             service = self.get_resource(service_name)
             status = service.get("status", {})
-            latest_ready_revision = status.get("latestReadyRevisionName")
+            latest_rev = status.get("latestReadyRevisionName")
 
-            if latest_ready_revision:
-                # Look for pods with the revision label
-                label_selector = f"serving.knative.dev/revision={latest_ready_revision}"
-                pods = self.core_api.list_namespaced_pod(namespace=self.namespace, label_selector=label_selector)
-                return pods.items
-            else:
-                # Fallback to the base class method if no revision is ready yet
-                return super().get_pods_for_service(service_name, **kwargs)
+            if latest_rev:
+                label_selector = f"serving.knative.dev/revision={latest_rev}"
+
+                resp = self.controller_client.list_pods(
+                    namespace=self.namespace,
+                    label_selector=label_selector,
+                )
+
+                pods = resp.get("items", [])
+                return [self.normalize_pod(p) for p in pods]
+
         except Exception as e:
-            logger.warning(f"Failed to get pods for Knative service {service_name}: {e}")
+            logger.warning(f"Knative pod lookup failed for {service_name}: {e}")
+
+        # 2. Fallback: use normal KT service label lookup
+        try:
             return super().get_pods_for_service(service_name, **kwargs)
+
+        except Exception as e:
+            logger.warning(f"Fallback pod lookup failed for {service_name}: {e}")
+            return []
 
     def _status_condition_ready(self, status: dict) -> bool:
         """Check if service status conditions indicate ready state."""
@@ -255,8 +264,6 @@ class KnativeServiceManager(BaseServiceManager):
         self,
         service_name: str,
         launch_timeout: int,
-        objects_api: client.CustomObjectsApi = None,
-        core_api: client.CoreV1Api = None,
         **kwargs,
     ) -> bool:
         """Checks if the Knative service is ready to start serving requests.
@@ -287,8 +294,6 @@ class KnativeServiceManager(BaseServiceManager):
         Args:
             service_name: Name of the Knative service
             launch_timeout: Timeout in seconds to wait for readiness
-            objects_api: Objects API instance (uses self.objects_api if None)
-            core_api: Core API instance (uses self.core_api if None)
             **kwargs: Additional arguments
 
         Returns:
@@ -298,11 +303,6 @@ class KnativeServiceManager(BaseServiceManager):
             ServiceTimeoutError: If service doesn't become ready within timeout
             ResourceNotAvailableError: If required resources aren't available
         """
-        if objects_api is None:
-            objects_api = self.objects_api
-        if core_api is None:
-            core_api = self.core_api
-
         sleep_interval = 2
         start_time = time.time()
 
@@ -320,7 +320,7 @@ class KnativeServiceManager(BaseServiceManager):
         while (time.time() - start_time) < launch_timeout:
             iteration += 1
             try:
-                service = objects_api.get_namespaced_custom_object(
+                service = self.controller_client.get_namespaced_custom_object(
                     group="serving.knative.dev",
                     version="v1",
                     namespace=self.namespace,
@@ -374,7 +374,7 @@ class KnativeServiceManager(BaseServiceManager):
                         check_pod_status_for_errors(pod)
 
                         # Check pod events separately from the core API
-                        check_pod_events_for_errors(pod, self.namespace, core_api)
+                        check_pod_events_for_errors(pod, self.namespace, self.controller_client)
 
                     if (
                         displayed_msgs["waiting_for_pods"] is None
@@ -401,9 +401,9 @@ class KnativeServiceManager(BaseServiceManager):
 
                 latest_revision = status.get("latestCreatedRevisionName")
                 if latest_revision:
-                    check_revision_for_errors(latest_revision, self.namespace, objects_api)
+                    check_revision_for_errors(latest_revision, self.namespace)
 
-            except client.exceptions.ApiException:
+            except Exception:
                 raise
 
             if iteration % 10 == 0:
@@ -434,7 +434,6 @@ class KnativeServiceManager(BaseServiceManager):
         try:
             # Delete the Knative service
             delete_service(
-                custom_api=self.objects_api,
                 name=service_name,
                 namespace=self.namespace,
                 console=console,

@@ -1,5 +1,6 @@
 import os
 
+
 # Mimic CI for this test suite even locally, to ensure that
 # resources are created with the branch name prefix
 os.environ["CI"] = "true"
@@ -84,12 +85,10 @@ def test_default_images():
 @pytest.mark.level("minimal")
 def test_working_dir_for_custom_image():
     import kubetorch as kt
-    from kubernetes.client import CoreV1Api
     from kubernetes.config import load_kube_config
     from kubetorch.cli_utils import get_pods_for_service_cli
 
     load_kube_config()
-    core_api = CoreV1Api()
 
     # Note: working dir will be: /usr/src/app
     remote_fn = kt.fn(summer, name="summer-working-dir").to(
@@ -99,7 +98,7 @@ def test_working_dir_for_custom_image():
         )
     )
     namespace = remote_fn.compute.namespace
-    deploy_pods = get_pods_for_service_cli(remote_fn.service_name, namespace=namespace, core_api=core_api).items
+    deploy_pods = get_pods_for_service_cli(remote_fn.service_name, namespace=namespace).items
     deploy_pod = next(
         (p for p in deploy_pods if p.status.phase == "Running" and not p.metadata.deletion_timestamp),
         None,

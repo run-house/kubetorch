@@ -8,15 +8,21 @@ import threading
 import time
 
 from dataclasses import dataclass
-from typing import Dict, Literal, Optional
+from functools import cache
+from typing import Any, Dict, Literal, Optional
+
+import requests
 
 from kubetorch.config import KubetorchConfig
+from kubetorch.logger import get_logger
 from kubetorch.serving.constants import (
     DEFAULT_NGINX_HEALTH_ENDPOINT,
     DEFAULT_NGINX_PORT,
+    KUBETORCH_CONTROLLER,
     LOCAL_NGINX_PORT,
-    NGINX_GATEWAY_PROXY,
 )
+
+logger = get_logger(__name__)
 
 # For use in `kt deploy` decorators
 disable_decorators = False
@@ -267,7 +273,7 @@ async def _ensure_pf_async(service_name: str, namespace: str, remote_port: int, 
 
 
 def service_url(
-    service_name: str = NGINX_GATEWAY_PROXY,
+    service_name: str = KUBETORCH_CONTROLLER,
     namespace: str = config.install_namespace,
     remote_port: int = DEFAULT_NGINX_PORT,
     health_endpoint: str = DEFAULT_NGINX_HEALTH_ENDPOINT,
@@ -297,7 +303,7 @@ def service_url(
 
 
 async def service_url_async(
-    service_name: str = NGINX_GATEWAY_PROXY,
+    service_name: str = KUBETORCH_CONTROLLER,
     namespace: str = config.install_namespace,
     remote_port: int = DEFAULT_NGINX_PORT,
     health_endpoint: str = DEFAULT_NGINX_HEALTH_ENDPOINT,
@@ -329,3 +335,368 @@ async def service_url_async(
 
 
 atexit.register(_cleanup_port_forwards)
+
+
+# ----------------------------------------------------------------------
+# Controller Client
+# ----------------------------------------------------------------------
+class ControllerClient:
+    """
+    HTTP client for Kubetorch Controller API.
+
+    This client replaces direct Kubernetes API calls with HTTP requests to the controller.
+    The controller acts as a proxy that handles authentication and routing to the K8s API.
+    """
+
+    def __init__(self, base_url: str):
+        """
+        Initialize controller client.
+
+        Args:
+            base_url: Base URL for the controller (e.g., "http://localhost:8080")
+        """
+        self.base_url = base_url.rstrip("/")
+        self.session = requests.Session()
+        self.session.headers.update({"Content-Type": "application/json"})
+
+    def _request(self, method: str, path: str, **kwargs) -> requests.Response:
+        """Make HTTP request to controller."""
+        url = f"{self.base_url}{path}"
+
+        try:
+            response = self.session.request(method, url, **kwargs)
+
+            try:
+                response.raise_for_status()
+            except requests.HTTPError as e:
+                status = response.status_code
+
+                if status == 404:
+                    # TODO [JL] is this too aggressive? (ex: Ray or Knative CRDs are missing)
+                    return response
+
+                # Log & re-raise other statuses
+                logger.error(f"Controller request failed: {method} {url} - {e}")
+                raise
+
+            return response
+
+        except Exception as e:
+            logger.error(f"Controller request error: {method} {url} - {e}")
+            raise
+
+    def get(self, path: str, **kwargs) -> Dict[str, Any]:
+        """GET request to controller"""
+        response = self._request("GET", path, **kwargs)
+        return response.json()
+
+    def post(self, path: str, json: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+        """POST request to controller"""
+        response = self._request("POST", path, json=json, **kwargs)
+        return response.json()
+
+    def delete(self, path: str, **kwargs) -> Dict[str, Any]:
+        """DELETE request to controller"""
+        response = self._request("DELETE", path, **kwargs)
+        return response.json()
+
+    def patch(self, path: str, json: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+        """PATCH request to controller"""
+        response = self._request("PATCH", path, json=json, **kwargs)
+        return response.json()
+
+    # PersistentVolumeClaims
+    def create_pvc(self, namespace: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a PersistentVolumeClaim"""
+        return self.post(f"/api/v1/namespaces/{namespace}/persistentvolumeclaims", json=body)
+
+    def get_pvc(self, namespace: str, name: str) -> Dict[str, Any]:
+        """Get a PersistentVolumeClaim"""
+        return self.get(f"/api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}")
+
+    def delete_pvc(self, namespace: str, name: str) -> Dict[str, Any]:
+        """Delete a PersistentVolumeClaim"""
+        return self.delete(f"/api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}")
+
+    def list_pvcs(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
+        """List PersistentVolumeClaims"""
+        params = {"label_selector": label_selector} if label_selector else {}
+        return self.get(f"/api/v1/namespaces/{namespace}/persistentvolumeclaims", params=params)
+
+    # Services
+    def create_service(self, namespace: str, body: Dict[str, Any], params: Dict = None) -> Dict[str, Any]:
+        """Create a Service"""
+        return self.post(f"/api/v1/namespaces/{namespace}/services", json=body, params=params)
+
+    def get_service(self, namespace: str, name: str) -> Dict[str, Any]:
+        """Get a Service"""
+        return self.get(f"/api/v1/namespaces/{namespace}/services/{name}")
+
+    def delete_service(self, namespace: str, name: str) -> Dict[str, Any]:
+        """Delete a Service"""
+        return self.delete(f"/api/v1/namespaces/{namespace}/services/{name}")
+
+    def list_services(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
+        """List Services"""
+        params = {"label_selector": label_selector} if label_selector else {}
+        return self.get(f"/api/v1/namespaces/{namespace}/services", params=params)
+
+    # Deployments
+    def create_deployment(self, namespace: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a Deployment"""
+        return self.post(f"/apis/apps/v1/namespaces/{namespace}/deployments", json=body)
+
+    def get_deployment(self, namespace: str, name: str) -> Dict[str, Any]:
+        """Get a Deployment"""
+        return self.get(f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}")
+
+    def delete_deployment(self, namespace: str, name: str) -> Dict[str, Any]:
+        """Delete a Deployment"""
+        print(f"calling server with deletion of namespace {namespace} and name {name}")
+        return self.delete(f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}")
+
+    def patch_deployment(self, namespace: str, name: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Patch a Deployment"""
+        return self.patch(f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}", json=body)
+
+    def list_deployments(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
+        """List Deployments"""
+        params = {"label_selector": label_selector} if label_selector else {}
+        return self.get(f"/apis/apps/v1/namespaces/{namespace}/deployments", params=params)
+
+    # Secrets
+    def create_secret(self, namespace: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a Secret"""
+        return self.post(f"/api/v1/namespaces/{namespace}/secrets", json=body)
+
+    def get_secret(self, namespace: str, name: str) -> Dict[str, Any]:
+        """Get a Secret"""
+        return self.get(f"/api/v1/namespaces/{namespace}/secrets/{name}")
+
+    def patch_secret(self, namespace: str, name: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Patch a Secret"""
+        return self.patch(f"/api/v1/namespaces/{namespace}/secrets/{name}", json=body)
+
+    def list_secrets(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
+        """List Secrets"""
+        params = {"label_selector": label_selector} if label_selector else {}
+        return self.get(f"/api/v1/namespaces/{namespace}/secrets", params=params)
+
+    def delete_secret(self, namespace: str, name: str) -> Dict[str, Any]:
+        """Delete a Secret"""
+        return self.delete(f"/api/v1/namespaces/{namespace}/secrets/{name}")
+
+    def list_secrets_all_namespaces(self, label_selector: Optional[str] = None) -> Dict[str, Any]:
+        """List Secrets across all namespaces"""
+        params = {"label_selector": label_selector} if label_selector else {}
+        return self.get("/api/v1/secrets", params=params)
+
+    # Pods
+    def list_pods(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
+        """List Pods"""
+        params = {"label_selector": label_selector} if label_selector else {}
+        return self.get(f"/api/v1/namespaces/{namespace}/pods", params=params)
+
+    def get_pod(self, namespace: str, name: str) -> Dict[str, Any]:
+        """Get a Pod"""
+        return self.get(f"/api/v1/namespaces/{namespace}/pods/{name}")
+
+    def delete_pod(
+        self,
+        namespace: str,
+        name: str,
+        grace_period_seconds: Optional[int] = None,
+        propagation_policy: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Delete a Pod"""
+        params = {}
+        if grace_period_seconds is not None:
+            params["gracePeriodSeconds"] = str(grace_period_seconds)
+        if propagation_policy is not None:
+            params["propagationPolicy"] = propagation_policy
+        return self.delete(f"/api/v1/namespaces/{namespace}/pods/{name}", params=params)
+
+    def get_pod_logs(
+        self, namespace: str, name: str, container: Optional[str] = None, tail_lines: Optional[int] = None
+    ) -> str:
+        """Get Pod logs"""
+        params = {}
+        if container:
+            params["container"] = container
+        if tail_lines:
+            params["tailLines"] = str(tail_lines)
+
+        url = f"{self.base_url}/api/v1/namespaces/{namespace}/pods/{name}/log"
+        try:
+            response = self.session.request("GET", url, params=params)
+            response.raise_for_status()
+            return response.text
+        except Exception as e:
+            logger.error(f"Controller request failed: GET {url} - {e}")
+            raise
+
+    # Namespaces
+    def get_namespace(self, name: str) -> Dict[str, Any]:
+        """Get a Namespace"""
+        return self.get(f"/api/v1/namespaces/{name}")
+
+    def list_namespaces(self) -> Dict[str, Any]:
+        """List Namespaces"""
+        return self.get("/api/v1/namespaces")
+
+    # Nodes
+    def list_nodes(self, label_selector: Optional[str] = None) -> Dict[str, Any]:
+        """List Nodes"""
+        params = {"label_selector": label_selector} if label_selector else {}
+        return self.get("/api/v1/nodes", params=params)
+
+    def get_node(self, name: str) -> Dict[str, Any]:
+        """Get a Node"""
+        return self.get(f"/api/v1/nodes/{name}")
+
+    # StorageClasses
+    def list_storage_classes(self) -> Dict[str, Any]:
+        """List StorageClasses"""
+        return self.get("/apis/storage.k8s.io/v1/storageclasses")
+
+    def get_storage_class(self, name: str) -> Dict[str, Any]:
+        """Get a StorageClass"""
+        return self.get(f"/apis/storage.k8s.io/v1/storageclasses/{name}")
+
+    # Events
+    def list_events(self, namespace: str, field_selector: Optional[str] = None) -> Dict[str, Any]:
+        """List Kubernetes Events via controller."""
+        params = {"field_selector": field_selector} if field_selector else {}
+        return self.get(f"/api/v1/namespaces/{namespace}/events", params=params)
+
+    # ConfigMaps
+    def list_config_maps(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
+        """List ConfigMaps"""
+        params = {"label_selector": label_selector} if label_selector else {}
+        return self.get(f"/api/v1/namespaces/{namespace}/configmaps", params=params)
+
+    def get_config_map(self, namespace: str, name: str) -> Dict[str, Any]:
+        """Get a ConfigMap"""
+        return self.get(f"/api/v1/namespaces/{namespace}/configmaps/{name}")
+
+    def delete_config_map(
+        self,
+        namespace: str,
+        name: str,
+        grace_period_seconds: Optional[int] = None,
+        propagation_policy: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Delete a ConfigMap"""
+        params = {}
+        if grace_period_seconds is not None:
+            params["gracePeriodSeconds"] = str(grace_period_seconds)
+        if propagation_policy:
+            params["propagationPolicy"] = propagation_policy
+        return self.delete(f"/api/v1/namespaces/{namespace}/configmaps/{name}", params=params)
+
+    # Custom Resource Definitions (CRDs)
+    def create_namespaced_custom_object(
+        self, group: str, version: str, namespace: str, plural: str, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Create a custom resource"""
+        return self.post(f"/apis/{group}/{version}/namespaces/{namespace}/{plural}", json=body)
+
+    def get_namespaced_custom_object(
+        self, group: str, version: str, namespace: str, plural: str, name: str
+    ) -> Dict[str, Any]:
+        """Get a custom resource"""
+        return self.get(f"/apis/{group}/{version}/namespaces/{namespace}/{plural}/{name}")
+
+    def patch_namespaced_custom_object(
+        self, group: str, version: str, namespace: str, plural: str, name: str, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Patch a custom resource"""
+        return self.patch(f"/apis/{group}/{version}/namespaces/{namespace}/{plural}/{name}", json=body)
+
+    def delete_namespaced_custom_object(
+        self,
+        group: str,
+        version: str,
+        namespace: str,
+        plural: str,
+        name: str,
+        grace_period_seconds: Optional[int] = None,
+        propagation_policy: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Delete a custom resource"""
+        params = {}
+        if grace_period_seconds is not None:
+            params["gracePeriodSeconds"] = str(grace_period_seconds)
+        if propagation_policy:
+            params["propagationPolicy"] = propagation_policy
+        return self.delete(f"/apis/{group}/{version}/namespaces/{namespace}/{plural}/{name}", params=params)
+
+    def list_namespaced_custom_object(
+        self, group: str, version: str, namespace: str, plural: str, label_selector: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """List custom resources in a namespace"""
+        params = {"label_selector": label_selector} if label_selector else {}
+        return self.get(f"/apis/{group}/{version}/namespaces/{namespace}/{plural}", params=params)
+
+    def list_ingresses(self, namespace: str, label_selector: str = None):
+        params = {"label_selector": label_selector} if label_selector else {}
+        return self.get(f"/apis/networking.k8s.io/v1/namespaces/{namespace}/ingresses", params=params)
+
+    # ReplicaSets
+    def list_namespaced_replica_set(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
+        """List ReplicaSets in a namespace."""
+        params = {"label_selector": label_selector} if label_selector else {}
+        return self.get(f"/apis/apps/v1/namespaces/{namespace}/replicasets", params=params)
+
+    def get_namespaced_replica_set(self, namespace: str, name: str) -> Dict[str, Any]:
+        """Get a ReplicaSet"""
+        return self.get(f"/apis/apps/v1/namespaces/{namespace}/replicasets/{name}")
+
+    def delete_namespaced_replica_set(
+        self,
+        namespace: str,
+        name: str,
+        grace_period_seconds: Optional[int] = None,
+        propagation_policy: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Delete a ReplicaSet"""
+        params = {}
+        if grace_period_seconds is not None:
+            params["gracePeriodSeconds"] = str(grace_period_seconds)
+        if propagation_policy:
+            params["propagationPolicy"] = propagation_policy
+        return self.delete(f"/apis/apps/v1/namespaces/{namespace}/replicasets/{name}", params=params)
+
+    def list_cluster_custom_object(
+        self,
+        group: str,
+        version: str,
+        plural: str,
+        label_selector: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List cluster-scoped custom resources"""
+        params = {"label_selector": label_selector} if label_selector else {}
+        return self.get(f"/apis/{group}/{version}/{plural}", params=params)
+
+
+@cache
+def controller_client() -> ControllerClient:
+    """
+    Return the global ControllerClient instance.
+
+    The controller client automatically handles:
+    1. In-cluster: Uses cluster DNS to reach controller
+    2. Out-of-cluster: Auto-creates port-forward to controller
+    3. Explicit API URL: Uses config.api_url if set
+
+    Note: This function is cached (@cache decorator) to reuse the same HTTP session across all requests, using
+    the same instance on subsequent calls (thread-safe by default).
+    """
+    # Use service_url to get the base URL (handles in-cluster vs out-of-cluster)
+    base_url = service_url(
+        service_name=KUBETORCH_CONTROLLER,
+        namespace=config.install_namespace,
+        remote_port=DEFAULT_NGINX_PORT,
+        health_endpoint=DEFAULT_NGINX_HEALTH_ENDPOINT,
+    )
+    return ControllerClient(base_url=base_url)

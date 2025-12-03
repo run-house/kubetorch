@@ -9,7 +9,6 @@ import yaml
 from jinja2 import Template
 
 from kubernetes import client, utils
-from kubernetes.client import AppsV1Api, CoreV1Api, CustomObjectsApi
 
 import kubetorch.serving.constants as serving_constants
 from kubetorch import globals
@@ -24,22 +23,18 @@ class BaseServiceManager:
 
     def __init__(
         self,
-        objects_api: CustomObjectsApi,
-        core_api: CoreV1Api,
-        apps_v1_api: AppsV1Api,
         namespace: str,
     ):
-        self.objects_api = objects_api
-        self.core_api = core_api
-        self.apps_v1_api = apps_v1_api
+        self.namespace = namespace or globals.config.namespace
 
-        # Load config
-        self.global_config = globals.config
-        self.namespace = namespace or self.global_config.namespace
+    @property
+    def controller_client(self):
+        """Get the global controller client instance."""
+        return globals.controller_client()
 
     @property
     def username(self):
-        return self.global_config.username
+        return globals.config.username
 
     @staticmethod
     def _get_labels(
@@ -58,6 +53,16 @@ class BaseServiceManager:
             labels.update(custom_labels)
 
         return labels
+
+    @staticmethod
+    def _create_timestamp_patch_body(new_timestamp: str) -> dict:
+        """
+        Create a patch body updating only the deployment timestamp annotation.
+        Used when reloading code without recreating the Deployment.
+        """
+        return {
+            "spec": {"template": {"metadata": {"annotations": {"kubetorch.com/deployment_timestamp": new_timestamp}}}}
+        }
 
     @staticmethod
     def _get_annotations(custom_annotations: dict = None, inactivity_ttl: str = None) -> dict:
@@ -111,22 +116,16 @@ class BaseServiceManager:
         k8s_client = client.ApiClient()
 
         for obj in yaml_objects:
-            logger.info(f"Applying {obj.get('kind')}/{obj.get('metadata', {}).get('name')}")
             try:
                 if replace_existing:
-                    # Try to delete existing resource first
                     try:
                         utils.delete_from_dict(k8s_client, obj)
                     except client.exceptions.ApiException as e:
-                        if e.status != 404:  # Ignore if resource doesn't exist
+                        if e.status != 404:
                             raise
-
                 utils.create_from_dict(k8s_client, obj)
-                logger.info(f"Successfully applied {obj.get('kind')}/{obj.get('metadata', {}).get('name')}")
             except utils.FailToCreateError as e:
-                if "already exists" in str(e):
-                    logger.info(f"Resource already exists: {obj.get('kind')}/{obj.get('metadata', {}).get('name')}")
-                else:
+                if "already exists" not in str(e):
                     raise
 
     def get_deployment_timestamp_annotation(self, service_name: str) -> Optional[str]:
@@ -134,76 +133,43 @@ class BaseServiceManager:
         try:
             resource = self.get_resource(service_name)
             if resource:
-                # Handle both dict (Knative/RayCluster) and object (Deployment) formats
-                if isinstance(resource, dict):  # Knative/RayCluster
-                    return (
-                        resource.get("metadata", {})
-                        .get("annotations", {})
-                        .get("kubetorch.com/deployment_timestamp", None)
-                    )
-                else:  # V1Deployment object
-                    return resource.metadata.annotations.get("kubetorch.com/deployment_timestamp", None)
-        except client.exceptions.ApiException:
-            pass
-        return None
+                if isinstance(resource, dict):
+                    return resource.get("metadata", {}).get("annotations", {}).get("kubetorch.com/deployment_timestamp")
+                else:
+                    return None
+        except Exception:
+            return None
 
     @abstractmethod
     def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
         """Update deployment timestamp annotation for this service type."""
         pass
 
-    def _create_timestamp_patch_body(self, new_timestamp: str) -> dict:
-        """Create the standard patch body for timestamp annotation updates."""
-        return {"metadata": {"annotations": {"kubetorch.com/deployment_timestamp": new_timestamp}}}
-
     @abstractmethod
     def get_resource(self, service_name: str) -> dict:
-        """Get a resource by name. Must be implemented by subclasses."""
+        """Get a resource by name via controller or CRDs."""
         pass
 
     def fetch_kubetorch_config(self) -> dict:
-        """Fetch the kubetorch configmap from the namespace."""
+        """Fetch kubetorch-config ConfigMap via controller."""
         try:
-            kubetorch_config = self.core_api.read_namespaced_config_map(
-                name="kubetorch-config", namespace=globals.config.install_namespace
+            kubetorch_config = self.controller_client.get(
+                f"/api/v1/namespaces/{globals.config.install_namespace}/configmaps/kubetorch-config"
             )
-            return kubetorch_config.data
+            return kubetorch_config.get("data", {})
         except client.exceptions.ApiException as e:
             if e.status != 404:
                 logger.error(f"Error fetching kubetorch config: {e}")
             return {}
 
     @staticmethod
-    def discover_services_static(
-        namespace: str, objects_api=None, apps_v1_api=None, name_filter: str = None
-    ) -> List[Dict]:
-        """Static method to discover Kubetorch services without ServiceManager instance.
+    def discover_services_static(namespace: str, name_filter: str = None) -> List[Dict]:
+        """Discover Knative services, RayClusters, and Deployments via controller client."""
 
-        Uses parallel API calls for faster discovery across service types.
-
-        Args:
-            namespace: Kubernetes namespace
-            objects_api: Optional CustomObjectsApi instance (created if None)
-            apps_v1_api: Optional AppsV1Api instance (created if None)
-            name_filter: Optional name filter for services
-
-        Returns:
-            List of service dictionaries with structure:
-            {
-                'name': str,
-                'template_type': str,  # 'ksvc', 'deployment', 'raycluster'
-                'resource': dict,
-                'namespace': str,
-                'creation_timestamp': str  # ISO format
-            }
-        """
         import concurrent.futures
         import threading
 
-        if objects_api is None:
-            objects_api = client.CustomObjectsApi()
-        if apps_v1_api is None:
-            apps_v1_api = client.AppsV1Api()
+        controller_client = globals.controller_client()
 
         services = []
         services_lock = threading.Lock()
@@ -212,25 +178,25 @@ class BaseServiceManager:
             """Fetch Knative services in parallel."""
             try:
                 label_selector = f"{serving_constants.KT_TEMPLATE_LABEL}=ksvc"
-                knative_services = objects_api.list_namespaced_custom_object(
+                result = controller_client.list_namespaced_custom_object(
                     group="serving.knative.dev",
                     version="v1",
                     namespace=namespace,
                     plural="services",
                     label_selector=label_selector,
-                )["items"]
+                )
+                knative_services = result.get("items", [])
 
                 local_services = []
                 for svc in knative_services:
                     svc_name = svc["metadata"]["name"]
                     if name_filter and name_filter not in svc_name:
                         continue
-
                     local_services.append(
                         {
                             "name": svc_name,
                             "template_type": "ksvc",
-                            "resource": svc,  # Already a dict
+                            "resource": svc,
                             "namespace": namespace,
                             "creation_timestamp": svc["metadata"]["creationTimestamp"],
                         }
@@ -239,157 +205,121 @@ class BaseServiceManager:
                 with services_lock:
                     services.extend(local_services)
 
-            except client.exceptions.ApiException as e:
-                if e.status != 404:  # Ignore if Knative is not installed
+            except Exception as e:
+                if not ((hasattr(e, "status") and e.status == 404) or "404" in str(e)):
                     logger.warning(f"Failed to list Knative services: {e}")
 
         def fetch_deployments():
-            """Fetch Deployments in parallel."""
             try:
                 label_selector = f"{serving_constants.KT_TEMPLATE_LABEL}=deployment"
-                deployments = apps_v1_api.list_namespaced_deployment(
+                result = controller_client.list_deployments(
                     namespace=namespace,
                     label_selector=label_selector,
                 )
+                deployments = result.get("items", [])
 
                 local_services = []
-                for deployment in deployments.items:
-                    deploy_name = deployment.metadata.name
-                    if name_filter and name_filter not in deploy_name:
+                for dep in deployments:
+                    name = dep.get("metadata", {}).get("name")
+                    if name_filter and name_filter not in name:
                         continue
 
-                    # Convert V1Deployment object to dictionary for consistency
-                    deployment_dict = client.ApiClient().sanitize_for_serialization(deployment)
-
-                    # Add kind and apiVersion (not included in V1Deployment object)
-                    deployment_dict["kind"] = "Deployment"
-                    deployment_dict["apiVersion"] = "apps/v1"
+                    creation_timestamp = dep.get("metadata", {}).get("creationTimestamp", "")
 
                     local_services.append(
                         {
-                            "name": deploy_name,
+                            "name": name,
                             "template_type": "deployment",
-                            "resource": deployment_dict,  # Now consistently a dict
+                            "resource": dep,
                             "namespace": namespace,
-                            "creation_timestamp": deployment.metadata.creation_timestamp.isoformat() + "Z",
+                            "creation_timestamp": creation_timestamp,
                         }
                     )
 
                 with services_lock:
                     services.extend(local_services)
 
-            except client.exceptions.ApiException as e:
+            except Exception as e:
                 logger.warning(f"Failed to list Deployments: {e}")
 
         def fetch_rayclusters():
-            """Fetch RayClusters in parallel."""
             try:
                 label_selector = f"{serving_constants.KT_TEMPLATE_LABEL}=raycluster"
-                rayclusters = objects_api.list_namespaced_custom_object(
+                result = controller_client.list_namespaced_custom_object(
                     group="ray.io",
                     version="v1",
                     namespace=namespace,
                     plural="rayclusters",
                     label_selector=label_selector,
-                )["items"]
+                )
+                clusters = result.get("items", [])
 
                 local_services = []
-                for cluster in rayclusters:
-                    cluster_name = cluster["metadata"]["name"]
-                    if name_filter and name_filter not in cluster_name:
+                for rc in clusters:
+                    name = rc["metadata"]["name"]
+                    if name_filter and name_filter not in name:
                         continue
 
                     local_services.append(
                         {
-                            "name": cluster_name,
+                            "name": name,
                             "template_type": "raycluster",
-                            "resource": cluster,  # Already a dict
+                            "resource": rc,
                             "namespace": namespace,
-                            "creation_timestamp": cluster["metadata"]["creationTimestamp"],
+                            "creation_timestamp": rc["metadata"]["creationTimestamp"],
                         }
                     )
 
                 with services_lock:
                     services.extend(local_services)
 
-            except client.exceptions.ApiException as e:
-                if e.status != 404:
+            except Exception as e:
+                if not ((hasattr(e, "status") and e.status == 404) or "404" in str(e)):
                     logger.warning(f"Failed to list RayClusters: {e}")
 
-        # Execute all API calls in parallel
+        # Run all in parallel
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            futures = [
-                executor.submit(fetch_knative_services),
-                executor.submit(fetch_deployments),
-                executor.submit(fetch_rayclusters),
-            ]
-
-            # Wait for all to complete
-            concurrent.futures.wait(futures)
+            executor.submit(fetch_knative_services)
+            executor.submit(fetch_deployments)
+            executor.submit(fetch_rayclusters)
 
         return services
 
-    @staticmethod
-    def get_pods_for_service_static(
-        service_name: str,
-        namespace: str,
-        core_api=None,
-    ) -> List:
-        """Static method to get pods for a service across different service types.
-
-        Args:
-            service_name: Name of the service
-            namespace: Kubernetes namespace
-            core_api: Optional CoreV1Api instance (created if None)
-
-        Returns:
-            List of pod objects
-        """
-        if core_api is None:
-            core_api = client.CoreV1Api()
-
-        # Build label selector
-        label_selector = f"{serving_constants.KT_SERVICE_LABEL}={service_name}"
-        try:
-            pods = core_api.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
-            return pods.items
-        except client.exceptions.ApiException as e:
-            logger.warning(f"Failed to list pods for service {service_name}: {e}")
-            return []
-
     def discover_all_services(self, namespace: str = None) -> List[Dict]:
-        """Discover all Kubetorch services across different resource types.
-
-        Returns a list of service dictionaries with normalized structure:
-        {
-            'name': str,
-            'template_type': str,  # 'ksvc', 'deployment', 'raycluster'
-            'resource': object,    # The actual Kubernetes resource object
-            'namespace': str
-        }
-        """
         return self.discover_services_static(
             namespace=namespace or self.namespace,
-            objects_api=self.objects_api,
-            apps_v1_api=self.apps_v1_api,
         )
 
-    # Abstract methods to be implemented by subclasses
-    def create_or_update_service(self, *args, **kwargs):
-        raise NotImplementedError("Subclasses must implement create_or_update_service")
+    # ----------------------------------------------------------------------
+    # PODS (ControllerClient)
+    # ----------------------------------------------------------------------
+    def normalize_pod(self, pod):
+        """Convert pod to dict if needed."""
+        if isinstance(pod, dict):
+            return pod
+        else:
+            return client.ApiClient().sanitize_for_serialization(pod)
 
-    def get_endpoint(self, service_name: str) -> str:
-        raise NotImplementedError("Subclasses must implement get_endpoint")
-
-    def get_pods_for_service(self, service_name: str, **kwargs) -> List[client.V1Pod]:
+    def get_pods_for_service(self, service_name: str, **kwargs) -> List[dict]:
         """Get all pods associated with this service."""
         label_selector = f"{serving_constants.KT_SERVICE_LABEL}={service_name}"
+
         try:
-            pods = self.core_api.list_namespaced_pod(namespace=self.namespace, label_selector=label_selector)
-            return pods.items
-        except client.exceptions.ApiException as e:
-            logger.warning(f"Failed to list pods for service {service_name}: {e}")
+            raw = self.controller_client.list_pods(self.namespace, label_selector=label_selector)
+            items = raw.get("items", [])
+            normalized = [self.normalize_pod(pod) for pod in items]
+            return normalized
+
+        except Exception as e:
+            logger.warning(f"Failed to list pods: {e}")
             return []
+
+    # Abstract API (implemented in subclasses)
+    def create_or_update_service(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def get_endpoint(self, service_name: str) -> str:
+        raise NotImplementedError
 
     def check_service_ready(self, service_name: str, launch_timeout: int, **kwargs) -> bool:
         """Check if service is ready to serve requests.

@@ -13,8 +13,6 @@ import httpx
 import requests
 import websockets
 
-from kubernetes import client
-
 from kubetorch.globals import config, DebugConfig, LoggingConfig, MetricsConfig, service_url
 from kubetorch.logger import get_logger
 
@@ -223,9 +221,6 @@ class HTTPClient:
     instances. Each port forward instance is cleaned up when the last reference is closed."""
 
     def __init__(self, base_url, compute, service_name):
-        self._core_api = None
-        self._objects_api = None
-
         self.compute = compute
         self.service_name = service_name
         self.base_url = base_url.rstrip("/")
@@ -272,18 +267,6 @@ class HTTPClient:
                 logger.debug(f"Error closing session: {e}")
             finally:
                 self.session = None
-
-    @property
-    def core_api(self):
-        if self._core_api is None:
-            self._core_api = client.CoreV1Api()
-        return self._core_api
-
-    @property
-    def objects_api(self):
-        if self._objects_api is None:
-            self._objects_api = client.CustomObjectsApi()
-        return self._objects_api
 
     @property
     def local_port(self):
