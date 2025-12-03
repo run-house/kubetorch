@@ -1504,14 +1504,9 @@ def kt_volumes(
     action: VolumeAction = typer.Argument(VolumeAction.list, help="Action to perform"),
     name: str = typer.Argument(None, help="Volume name (for create action)"),
     storage_class: str = typer.Option(None, "--storage-class", "-c", help="Storage class"),
+    mount_path: str = typer.Option(None, "--mount-path", "-m", help="Mount path"),
     size: str = typer.Option("10Gi", "--size", "-s", help="Volume size (default: 10Gi)"),
     access_mode: str = typer.Option("ReadWriteMany", "--access-mode", "-a", help="Access mode"),
-    mount_path: str = typer.Option(
-        None,
-        "--mount-path",
-        "-m",
-        help=f"Mount path (default: /{KT_MOUNT_FOLDER}/{{name}})",
-    ),
     namespace: str = typer.Option(
         globals.config.namespace,
         "-n",
