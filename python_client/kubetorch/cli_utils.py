@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.parse
 import warnings
+import webbrowser
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from enum import Enum
@@ -991,3 +992,41 @@ def notebook_placeholder():
     import time
 
     time.sleep(3600)  # Keep alive for port forwarding
+
+
+def load_runhouse_dashboard(
+    namespace: str,
+    local_port=3000,
+    local_server=False,
+):
+    process = []
+
+    if not local_server:
+        # Check if the service is available
+        cmd = f"kubectl get svc/{serving_constants.KUBETORCH_UI_SERVICE_NAME} -n {namespace}"
+        result = subprocess.run(cmd.split(), capture_output=True, text=True)
+        if result.returncode != 0:
+            console.print("[red]Dashboard UI service is not available[/red]")
+            raise typer.Exit(1)
+
+        cmd = f"kubectl port-forward -n {namespace} svc/{serving_constants.KUBETORCH_UI_SERVICE_NAME} {local_port}:3000 -n {namespace}"
+        process.append(subprocess.Popen(cmd.split()))
+
+    # Check if the controller API service is available
+    cmd = f"kubectl get svc/kubetorch-mgmt-controller-api -n {namespace}"
+    result = subprocess.run(cmd.split(), capture_output=True, text=True)
+    if result.returncode != 0:
+        console.print("[red]Control plane API service is not available[/red]")
+        raise typer.Exit(1)
+
+    # Add kubectl port-forward -n kubetorch svc/kubetorch-mgmt-controller-api 8000:8000
+    cmd = f"kubectl port-forward -n {namespace} svc/kubetorch-mgmt-controller-api 8000:8000"
+    process.append(subprocess.Popen(cmd.split()))
+
+    dashboard_url = f"http://localhost:{local_port}"
+
+    time.sleep(1)
+
+    webbrowser.open(dashboard_url)
+
+    return process
