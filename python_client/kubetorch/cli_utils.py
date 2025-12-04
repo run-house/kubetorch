@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import httpx
+import requests
 import typer
 import yaml
 from kubernetes import client
@@ -871,7 +872,7 @@ def detect_deployment_mode(name: str, namespace: str, custom_api, apps_v1_api):
     try:
         controller_client.get_deployment(name=name, namespace=namespace)
         return "deployment"
-    except ApiException:
+    except (ApiException, requests.HTTPError):
         pass
 
     # Then try Knative
@@ -884,7 +885,7 @@ def detect_deployment_mode(name: str, namespace: str, custom_api, apps_v1_api):
             name=name,
         )
         return "knative"
-    except ApiException:
+    except (ApiException, requests.HTTPError):
         pass
 
     # Then try RayCluster
@@ -897,7 +898,7 @@ def detect_deployment_mode(name: str, namespace: str, custom_api, apps_v1_api):
             name=name,
         )
         return "raycluster"
-    except ApiException:
+    except (ApiException, requests.HTTPError):
         pass
 
     return None

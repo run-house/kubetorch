@@ -369,13 +369,6 @@ class ControllerClient:
             try:
                 response.raise_for_status()
             except requests.HTTPError as e:
-                status = response.status_code
-
-                if status == 404:
-                    # TODO [JL] is this too aggressive? (ex: Ray or Knative CRDs are missing)
-                    return response
-
-                # Log & re-raise other statuses
                 logger.error(f"Controller request failed: {method} {url} - {e}")
                 raise
 

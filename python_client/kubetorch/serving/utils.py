@@ -119,8 +119,13 @@ def wait_for_port_forward(
     raise TimeoutError("Timeout waiting for port forward to be ready")
 
 
-def pod_is_running(pod: V1Pod):
-    return pod.status.phase == "Running" and pod.metadata.deletion_timestamp is None
+def pod_is_running(pod: dict) -> bool:
+    """Check if pod is running. Pod must be a dict from ControllerClient."""
+    status = pod.get("status", {})
+    phase = status.get("phase")
+    metadata = pod.get("metadata", {})
+    deletion_timestamp = metadata.get("deletionTimestamp")
+    return phase == "Running" and deletion_timestamp is None
 
 
 def check_loki_enabled() -> bool:

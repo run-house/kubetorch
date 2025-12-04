@@ -1533,7 +1533,7 @@ async def test_logs_cli_non_existing_service():
 
     result = runner.invoke(app, ["logs", non_existing_service_name], color=False)
     assert result.exit_code == 1
-    logs_output = result.stdout
+    logs_output = strip_ansi_codes(result.stdout)
     assert f"Failed to load service {non_existing_service_name}" in logs_output
 
 

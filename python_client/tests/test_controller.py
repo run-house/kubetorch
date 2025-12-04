@@ -17,9 +17,7 @@ def setup_test_env():
 @pytest.mark.level("unit")
 def test_controller_health():
     """Test that the controller is accessible and healthy"""
-    from kubetorch.controller_client import get_controller_client
-
-    controller_client = get_controller_client()
+    controller_client = kt.globals.controller_client()
 
     # Test health endpoint through the controller base URL
     response = requests.get(f"{controller_client.base_url}/health")
@@ -77,7 +75,7 @@ def test_volume_from_name():
 @pytest.mark.level("unit")
 def test_volume_storage_class_detection():
     """Test storage class auto-detection through the controller"""
-    vol = kt.Volume(name="test-storage-class", size="1Gi", access_mode="ReadWriteOnce")
+    vol = kt.Volume(name="test-storage-class", size="1Gi", access_mode="ReadWriteOnce", mount_path="/test/path")
 
     # This should auto-detect the storage class via controller
     storage_class = vol.storage_class
@@ -212,10 +210,9 @@ def test_secret_list_and_delete_all():
 @pytest.mark.level("unit")
 def test_controller_client_initialization():
     """Test controller client initialization and base URL detection"""
-    from kubetorch.controller_client import get_controller_client
     from kubetorch.servers.http.utils import is_running_in_kubernetes
 
-    controller = get_controller_client()
+    controller = kt.globals.controller_client()
 
     assert controller is not None
     assert controller.base_url is not None

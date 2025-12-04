@@ -39,6 +39,11 @@ rules:
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
 
+  # Pod Logs
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+
   # Pod Exec
   - apiGroups: [""]
     resources: ["pods/exec"]

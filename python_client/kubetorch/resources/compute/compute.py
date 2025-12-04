@@ -1274,6 +1274,9 @@ class Compute:
             service_name = created_service.get("metadata", {}).get("name")
             kind = created_service.get("kind", "")
 
+            if not kind:
+                raise RuntimeError(f"Issue creating service: {created_service}. ")
+
             if kind == "RayCluster":
                 # RayCluster has headGroupSpec instead of template
                 service_template = {
@@ -1447,7 +1450,11 @@ class Compute:
     def pod_names(self):
         """Returns a list of pod names."""
         pods = self.pods()
-        return [pod.metadata.name for pod in pods if pod_is_running(pod)]
+        return [
+            pod.get("metadata", {}).get("name")
+            for pod in pods
+            if pod_is_running(pod) and pod.get("metadata", {}).get("name")
+        ]
 
     def pods(self):
         return self.service_manager.get_pods_for_service(self.service_name)
@@ -1560,8 +1567,10 @@ class Compute:
             if not pods:
                 return False
             for pod in pods:
-                if pod.status.phase != "Running":
-                    logger.info(f"Pod {pod.metadata.name} is not running. Status: {pod.status.phase}")
+                phase = pod.get("status", {}).get("phase")
+                pod_name = pod.get("metadata", {}).get("name", "unknown")
+                if phase != "Running":
+                    logger.info(f"Pod {pod_name} is not running. Status: {phase}")
                     return False
         except client.exceptions.ApiException:
             return False

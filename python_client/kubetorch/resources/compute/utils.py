@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Union
 
+import requests
 from kubernetes import client
 from kubernetes.client.rest import ApiException
 
@@ -103,7 +104,7 @@ def _run_bash(
 ):
     if isinstance(commands, str):
         commands = [commands]
-    commands = [["/bin/sh", "-c", f'{command}; echo "::EXIT_CODE::$?"'] for command in commands]
+    commands = [f'{command}; echo "::EXIT_CODE::$?"' for command in commands]
 
     if isinstance(pod_names, str):
         pod_names = [pod_names]
@@ -193,20 +194,24 @@ def _get_rsync_exclude_options() -> str:
     return exclude_args.strip()
 
 
-def is_pod_terminated(pod: client.V1Pod) -> bool:
+def is_pod_terminated(pod: dict) -> bool:
+    """Check if pod is terminated. Pod must be a dict from ControllerClient."""
     # Check if pod is marked for deletion
-    if pod.metadata.deletion_timestamp is not None:
+    deletion_timestamp = pod.get("metadata", {}).get("deletionTimestamp")
+    if deletion_timestamp is not None:
         return True
 
     # Check pod phase
-    if pod.status.phase in ["Succeeded", "Failed"]:
+    phase = pod.get("status", {}).get("phase")
+    if phase in ["Succeeded", "Failed"]:
         return True
 
     # Check container statuses
-    if pod.status.container_statuses:
-        for container in pod.status.container_statuses:
-            if container.state.terminated:
-                return True
+    container_statuses = pod.get("status", {}).get("containerStatuses", [])
+    for container in container_statuses:
+        state = container.get("state", {})
+        if state.get("terminated"):
+            return True
 
     return False
 
@@ -656,7 +661,7 @@ def fetch_resources_for_teardown(
                 if (username or item["metadata"]["name"].startswith(prefix))
             ]
             services.extend(deployment_services)
-        except client.exceptions.ApiException as e:
+        except (client.exceptions.ApiException, requests.HTTPError) as e:
             logger.warning(f"Failed to list Deployments: {e}")
 
         # Search RayClusters
@@ -816,10 +821,10 @@ def check_pod_status_for_errors(pod: client.V1Pod):
     conditions = _get(status, "conditions", []) or []
 
     for condition in conditions:
-        ctype = _get(condition, "type")
-        cstatus = _get(condition, "status")
-        creason = _get(condition, "reason")
-        cmessage = _get(condition, "message", "")
+        ctype = condition.get("type")
+        cstatus = condition.get("status")
+        creason = condition.get("reason")
+        cmessage = condition.get("message", "")
 
         if ctype == "PodScheduled" and cstatus == "False" and creason == "Unschedulable":
 
@@ -840,16 +845,16 @@ def check_pod_status_for_errors(pod: client.V1Pod):
                 raise ResourceNotAvailableError(f"Required compute resources are not configured: {cmessage}")
 
     # Check container status errors
-    container_statuses = _get(status, "container_statuses", []) or []
+    container_statuses = status.get("containerStatuses", []) or []
     for cs in container_statuses:
-        state = _get(cs, "state", {})
-        waiting = _get(state, "waiting")
+        state = cs.get("state", {})
+        waiting = state.get("waiting")
         if waiting:
-            reason = _get(waiting, "reason")
-            message = _get(waiting, "message", "")
+            reason = waiting.get("reason")
+            message = waiting.get("message", "")
             if reason in TERMINATE_EARLY_ERRORS:
-                metadata = _get(pod, "metadata", {})
-                raise TERMINATE_EARLY_ERRORS[reason](f"Pod {_get(metadata,'name')}: {message}")
+                metadata = pod.get("metadata", {})
+                raise TERMINATE_EARLY_ERRORS[reason](f"Pod {metadata.get('name')}: {message}")
 
 
 def check_pod_events_for_errors(pod, namespace: str):

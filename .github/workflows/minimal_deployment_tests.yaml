@@ -70,7 +70,7 @@ jobs:
 
       - name: Get GKE credentials
         run: |
-          gcloud container clusters get-credentials ${{ secrets.CI_CLUSTER_NAME }} \
+          gcloud container clusters get-credentials ${{ secrets.DEV_CLUSTER_NAME }} \
             --region ${{ secrets.CI_CLUSTER_REGION }} \
             --project ${{ secrets.GCP_PROJECT_ID }}
 
@@ -119,7 +119,7 @@ jobs:
 
       - name: Get GKE credentials
         run: |
-          gcloud container clusters get-credentials ${{ secrets.CI_CLUSTER_NAME }} \
+          gcloud container clusters get-credentials ${{ secrets.DEV_CLUSTER_NAME }} \
             --region ${{ secrets.CI_CLUSTER_REGION }} \
             --project ${{ secrets.GCP_PROJECT_ID }}
 

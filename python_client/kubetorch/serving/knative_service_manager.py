@@ -374,7 +374,7 @@ class KnativeServiceManager(BaseServiceManager):
                         check_pod_status_for_errors(pod)
 
                         # Check pod events separately from the core API
-                        check_pod_events_for_errors(pod, self.namespace, self.controller_client)
+                        check_pod_events_for_errors(pod, self.namespace)
 
                     if (
                         displayed_msgs["waiting_for_pods"] is None

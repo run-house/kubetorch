@@ -98,13 +98,17 @@ def test_working_dir_for_custom_image():
         )
     )
     namespace = remote_fn.compute.namespace
-    deploy_pods = get_pods_for_service_cli(remote_fn.service_name, namespace=namespace).items
+    deploy_pods = get_pods_for_service_cli(remote_fn.service_name, namespace=namespace).get("items", [])
     deploy_pod = next(
-        (p for p in deploy_pods if p.status.phase == "Running" and not p.metadata.deletion_timestamp),
+        (
+            p
+            for p in deploy_pods
+            if p.get("status", {}).get("phase") == "Running" and not p.get("metadata", {}).get("deletion_timestamp")
+        ),
         None,
     )
     assert deploy_pod
-    pod_name = deploy_pod.metadata.name
+    pod_name = deploy_pod.get("metadata", {}).get("name")
     working_dir = "."  # current working dir (set in the compute)
     check_cmd = [
         "kubectl",

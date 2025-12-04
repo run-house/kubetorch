@@ -246,22 +246,25 @@ def string_to_dict(value):
         return {}
 
 
-def load_head_node_pod(all_pods: list, deployment_mode: str):
+def load_head_node_pod(all_pods: list, deployment_mode: str) -> str:
+    """Load head node pod. Pods must be dicts from ControllerClient."""
     # Sort by creation timestamp for deterministic ordering (oldest first)
-    running_pods = sorted(all_pods, key=lambda pod: pod.metadata.creation_timestamp)
+    running_pods = sorted(all_pods, key=lambda pod: pod.get("metadata", {}).get("creationTimestamp", ""))
 
     # For Ray clusters, prioritize head node
     if deployment_mode == "raycluster":
         # use label to find head node
-        head_pods = [pod for pod in running_pods if pod.metadata.labels.get("ray.io/node-type") == "head"]
+        head_pods = [
+            pod for pod in running_pods if pod.get("metadata", {}).get("labels", {}).get("ray.io/node-type") == "head"
+        ]
         if head_pods:
-            pod_name = head_pods[0].metadata.name
+            pod_name = head_pods[0].get("metadata", {}).get("name")
         else:
             logger.debug("Ray cluster detected but no head node found, using first pod")
-            pod_name = running_pods[0].metadata.name
+            pod_name = running_pods[0].get("metadata", {}).get("name")
     else:
         # For non-Ray deployments, use oldest running pod
-        pod_name = running_pods[0].metadata.name
+        pod_name = running_pods[0].get("metadata", {}).get("name")
 
     return pod_name
 
