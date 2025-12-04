@@ -1,8 +1,9 @@
+import hashlib
 import importlib
 import re
 from abc import abstractmethod
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import yaml
 from jinja2 import Template
@@ -81,6 +82,26 @@ class BaseServiceManager:
 
     def _get_deployment_timestamp(self) -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def _generate_deployment_id(self, service_name: str, timestamp: str) -> str:
+        """Generate a unique deployment ID from service name + timestamp.
+
+        Returns a string like 'username-myapp-a1b2c3' where the suffix is a
+        6-character hash derived from the timestamp.
+        """
+        hash_input = f"{service_name}-{timestamp}"
+        short_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:6]
+        return f"{service_name}-{short_hash}"
+
+    def _get_deployment_timestamp_and_id(self, service_name: str) -> Tuple[str, str]:
+        """Get both deployment timestamp and deployment ID together.
+
+        Returns:
+            Tuple of (timestamp, deployment_id)
+        """
+        timestamp = self._get_deployment_timestamp()
+        deployment_id = self._generate_deployment_id(service_name, timestamp)
+        return timestamp, deployment_id
 
     def _clean_module_name(self, module_name: str) -> str:
         """Clean module name to remove invalid characters for Kubernetes labels."""

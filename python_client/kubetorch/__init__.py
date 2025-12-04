@@ -1,4 +1,4 @@
-from kubetorch.data_store import DataStoreError, get, ls, put, rm, vput  # noqa: F401
+from kubetorch.data_store import DataStoreError, get, get_async, ls, put, rm, vput  # noqa: F401
 from kubetorch.globals import config, MetricsConfig  # noqa: F401
 from kubetorch.resources.callables.cls.cls import Cls, cls  # noqa: F401
 from kubetorch.resources.callables.fn.fn import Fn, fn  # noqa: F401

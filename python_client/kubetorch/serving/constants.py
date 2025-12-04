@@ -39,6 +39,8 @@ KT_USERNAME_LABEL = "kubetorch.com/username"
 KT_POD_TYPE_LABEL = "kubetorch.com/pod-type"
 KT_TEMPLATE_LABEL = "kubetorch.com/template"
 KT_SECRET_NAME_LABEL = "kubetorch.com/secret-name"
+KT_APP_LABEL = "app"  # Stable app identifier for easy querying
+KT_DEPLOYMENT_ID_LABEL = "kubetorch.com/deployment-id"  # Unique per deployment run
 
 # Templates
 TTL_CONTROLLER_CONFIGMAP_NAME = "kubetorch-ttl-controller-config"
@@ -76,3 +78,7 @@ RSYNC_LOCAL_PORT = 3873
 REMOTE_RSYNC_PORT = 873
 DATA_STORE_SERVICE_NAME = "kubetorch-data-store"
 DATA_STORE_METADATA_PORT = 8081
+RSYNC_SERVICE_NAME = "kubetorch-rsync"
+
+# Runhouse
+KUBETORCH_UI_SERVICE_NAME = "kubetorch-ui-service"

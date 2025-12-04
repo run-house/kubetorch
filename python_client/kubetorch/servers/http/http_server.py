@@ -1501,7 +1501,7 @@ def run_callable_internal_sync(
 
 @app.get("/health", include_in_schema=False)
 @app.get("/", include_in_schema=False)
-def health():
+async def health():
     return {"status": "healthy"}
 
 

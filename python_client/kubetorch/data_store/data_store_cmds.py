@@ -5,6 +5,7 @@ This module provides the top-level API functions (put, get, ls, rm) that users
 call directly, as well as the sync_workdir_from_store function used internally.
 """
 
+import asyncio
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -106,6 +107,54 @@ def get(
         force=force,
         seed_data=seed_data,
         verbose=verbose,
+    )
+
+
+async def get_async(
+    key: str,
+    dest: Optional[Union[str, Path]] = None,
+    contents: bool = False,
+    filter_options: Optional[str] = None,
+    force: bool = False,
+    seed_data: bool = True,
+    verbose: bool = False,
+    namespace: Optional[str] = None,
+    kubeconfig_path: Optional[str] = None,
+) -> None:
+    """
+    Async version of get() - download files without blocking the event loop.
+
+    Use this from async methods to avoid blocking health checks during long transfers.
+
+    Args:
+        key: Storage key to retrieve (trailing slashes are stripped)
+        dest: Local destination path (defaults to current working directory)
+        contents: If True, copy directory contents
+        filter_options: Additional rsync filter options
+        force: Force overwrite of existing files
+        seed_data: If True, automatically call vput() after successful retrieval (default: True)
+        verbose: Show detailed progress
+        namespace: Kubernetes namespace
+        kubeconfig_path: Path to kubeconfig file (for compatibility)
+
+    Examples:
+        >>> import kubetorch as kt
+        >>> await kt.get_async(key="model-v1/weights", dest="./weights")
+    """
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: get(
+            key=key,
+            dest=dest,
+            contents=contents,
+            filter_options=filter_options,
+            force=force,
+            seed_data=seed_data,
+            verbose=verbose,
+            namespace=namespace,
+            kubeconfig_path=kubeconfig_path,
+        ),
     )
 
 

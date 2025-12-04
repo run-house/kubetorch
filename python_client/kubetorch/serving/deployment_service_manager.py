@@ -76,16 +76,20 @@ class DeploymentServiceManager(BaseServiceManager):
     def _update_launchtime_manifest(self, manifest: dict, service_name: str, module_name: str) -> dict:
         """Update manifest with service name and deployment timestamp."""
         clean_module_name = self._clean_module_name(module_name)
-        deployment_timestamp = self._get_deployment_timestamp()
+        deployment_timestamp, deployment_id = self._get_deployment_timestamp_and_id(service_name)
 
         deployment = manifest.copy()
         deployment["metadata"]["name"] = service_name
         deployment["metadata"]["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
         deployment["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
+        deployment["metadata"]["labels"][serving_constants.KT_APP_LABEL] = service_name
+        deployment["metadata"]["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
         deployment["spec"]["selector"]["matchLabels"][serving_constants.KT_SERVICE_LABEL] = service_name
         deployment["spec"]["selector"]["matchLabels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
         deployment["spec"]["template"]["metadata"]["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
         deployment["spec"]["template"]["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
+        deployment["spec"]["template"]["metadata"]["labels"][serving_constants.KT_APP_LABEL] = service_name
+        deployment["spec"]["template"]["metadata"]["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
 
         # Add deployment timestamp
         deployment["spec"]["template"]["metadata"]["annotations"][
