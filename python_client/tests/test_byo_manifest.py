@@ -6,6 +6,21 @@ import pytest
 from .assets.torch_ddp.torch_ddp import torch_ddp
 from .utils import summer
 
+TRAINING_JOB_CONFIG = {
+    "PyTorchJob": {
+        "replica_specs_key": "pytorchReplicaSpecs",
+        "primary_replica": "Master",
+        "container_name": "pytorch",
+    },
+    "TFJob": {"replica_specs_key": "tfReplicaSpecs", "primary_replica": "Chief", "container_name": "tensorflow"},
+    "MXJob": {"replica_specs_key": "mxReplicaSpecs", "primary_replica": "Scheduler", "container_name": "mxnet"},
+    "XGBoostJob": {
+        "replica_specs_key": "xgbReplicaSpecs",
+        "primary_replica": "Master",
+        "container_name": "xgboost",
+    },
+}
+
 
 def _get_basic_manifest(kind: str):
     """Generate a minimal manifest for the given kind with test values."""
@@ -71,25 +86,32 @@ def _get_basic_manifest(kind: str):
                 ],
             },
         }
-    elif kind == "PyTorchJob":
+    elif kind in TRAINING_JOB_CONFIG:
+        config = TRAINING_JOB_CONFIG[kind]
+        primary_replica_spec = {
+            "replicas": 1,
+            "restartPolicy": "OnFailure",
+            "template": {"spec": {"containers": []}},
+        }
+        worker_replica_spec = {
+            "replicas": 2,
+            "restartPolicy": "OnFailure",
+            "template": {"spec": {"containers": []}},
+        }
+        spec = {
+            config["replica_specs_key"]: {
+                config["primary_replica"]: primary_replica_spec,
+                "Worker": worker_replica_spec,
+            },
+        }
+        # MXJob requires jobMode field
+        if kind == "MXJob":
+            spec["jobMode"] = "Train"
         return {
             "apiVersion": "kubeflow.org/v1",
-            "kind": "PyTorchJob",
+            "kind": kind,
             "metadata": base_metadata,
-            "spec": {
-                "pytorchReplicaSpecs": {
-                    "Master": {
-                        "replicas": 1,
-                        "restartPolicy": "OnFailure",
-                        "template": {"spec": {"containers": []}},
-                    },
-                    "Worker": {
-                        "replicas": 1,
-                        "restartPolicy": "OnFailure",
-                        "template": {"spec": {"containers": []}},
-                    },
-                },
-            },
+            "spec": spec,
         }
     else:
         raise ValueError(f"Unknown manifest kind: {kind}")
@@ -103,7 +125,7 @@ def setup_test_env():
 
 @pytest.mark.level("minimal")
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["Deployment", "Service", "RayCluster", "PyTorchJob"])
+@pytest.mark.parametrize("kind", ["Deployment", "Service", "RayCluster", "PyTorchJob", "TFJob", "MXJob", "XGBoostJob"])
 async def test_byo_manifest_with_overrides(kind):
     """Test BYO manifest with comprehensive kwargs overrides and containers."""
     import kubetorch as kt
@@ -113,7 +135,7 @@ async def test_byo_manifest_with_overrides(kind):
 
     # Add a container with some initial values
     container = {
-        "name": "user-container",
+        "name": "kubetorch",
         "image": "user-image:latest",
         "resources": {
             "requests": {
@@ -128,32 +150,33 @@ async def test_byo_manifest_with_overrides(kind):
     }
 
     # Add container to the appropriate location based on manifest type
-    if test_manifest["kind"] == "Deployment":
+    manifest_kind = test_manifest["kind"]
+
+    if manifest_kind == "Deployment":
         test_manifest["spec"]["template"]["spec"]["containers"] = [container]
-    elif test_manifest["kind"] == "Service":  # Knative
+    elif manifest_kind == "Service":  # Knative
         test_manifest["spec"]["template"]["spec"]["containers"] = [container]
-    elif test_manifest["kind"] == "RayCluster":
+    elif manifest_kind == "RayCluster":
         test_manifest["spec"]["headGroupSpec"]["template"]["spec"]["containers"] = [container]
         test_manifest["spec"]["workerGroupSpecs"][0]["template"]["spec"]["containers"] = [container]
-    elif test_manifest["kind"] == "PyTorchJob":
-        test_manifest["spec"]["pytorchReplicaSpecs"]["Master"]["template"]["spec"]["containers"] = [container]
-        test_manifest["spec"]["pytorchReplicaSpecs"]["Worker"]["template"]["spec"]["containers"] = [container]
+    elif manifest_kind in TRAINING_JOB_CONFIG:
+        config = TRAINING_JOB_CONFIG[manifest_kind]
+        container["name"] = config["container_name"]
+        replica_specs = test_manifest["spec"][config["replica_specs_key"]]
+        replica_specs[config["primary_replica"]]["template"]["spec"]["containers"] = [container]
+        replica_specs["Worker"]["template"]["spec"]["containers"] = [container]
 
     image_type = "Ray" if kind == "RayCluster" else "Debian"
     image = getattr(kt.images, image_type)()
 
     # Create compute with comprehensive overrides
-    compute = kt.Compute(
-        manifest=test_manifest,
-        cpus="0.5",
-        memory="2Gi",
-        replicas=3,
-        labels={"custom-label": "custom-value"},
-        annotations={"test-annotation": "overridden-value"},
-        env_vars={"TEST_ENV": "test_value", "ORIGINAL_ENV": "overridden_value"},
-        image=image,
-        gpu_anti_affinity=True,
-    )
+    compute = kt.Compute.from_manifest(test_manifest)
+    compute.cpus = "0.5"
+    compute.memory = "2Gi"
+    compute.replicas = 3
+    compute.image = image
+    compute.gpu_anti_affinity = True
+
     service_name = f"{kt.config.username}-byo-{kind.lower()}"
     compute.service_name = service_name
 
@@ -161,20 +184,18 @@ async def test_byo_manifest_with_overrides(kind):
     assert compute.cpus == "0.5"
     assert compute.memory == "2Gi"
     assert compute.replicas == 3
-    assert compute.labels["custom-label"] == "custom-value"
-    assert compute.annotations["test-annotation"] == "overridden-value"
-    assert compute.env_vars["TEST_ENV"] == "test_value"
     assert compute.server_image == image.image_id
     assert compute.gpu_anti_affinity is True
-    assert compute.env_vars["ORIGINAL_ENV"] == "overridden_value"
     assert compute.env_vars["CONTAINER_ENV"] == "container_value"
+    assert compute.labels["test-label"] == "test-app"
+    assert compute.annotations["test-annotation"] == "original-value"
 
     # Deploy and test function
     fn = await kt.fn(summer).to_async(compute)
     assert fn.service_name == service_name
 
     result = fn(5, 10)
-    if kind == "PyTorchJob":
+    if kind in ["PyTorchJob", "TFJob", "MXJob", "XGBoostJob"]:
         assert isinstance(result, list)
         assert all(r == 15 for r in result)
         assert len(result) == 3
@@ -210,23 +231,17 @@ async def test_byo_manifest_pytorchjob_ddp():
 
     # Use longer launch_timeout for large PyTorch image pulls (can be 5-10GB+)
     # Distributed execution is automatically detected from worker replicas in the manifest
-    compute = kt.Compute(
-        manifest=pytorch_manifest,
-        cpus="0.5",
-        memory="2Gi",
-        labels={"custom-label": "pytorch-ddp-test"},
-        annotations={"test-annotation": "pytorch-ddp-value"},
-        image=image,
-        launch_timeout=600,  # 10 minutes for large image pulls
-        distributed_config={"quorum_workers": 3},
-    )
+    compute = kt.Compute.from_manifest(pytorch_manifest)
+    compute.cpus = "0.5"
+    compute.memory = "2Gi"
+    compute.image = image
+    compute.launch_timeout = 600  # 10 minutes for large image pulls
+    compute.distributed_config = {"quorum_workers": 3}
 
     # Verify configuration
     assert compute.cpus == "0.5"
     assert compute.memory == "2Gi"
     assert compute.replicas == 3
-    assert compute.labels["custom-label"] == "pytorch-ddp-test"
-    assert compute.annotations["test-annotation"] == "pytorch-ddp-value"
 
     # Verify service manager is TrainJobServiceManager
     assert compute.service_manager.__class__.__name__ == "TrainJobServiceManager"
@@ -264,19 +279,153 @@ async def test_byo_manifest_pytorchjob_ddp():
         raise
 
 
-@pytest.mark.level("minimal")
-def test_byo_manifest_extracts_values():
-    """Test that values are extracted from manifest when not provided as kwargs."""
+@pytest.mark.level("unit")
+def test_from_manifest_getters_setters():
+    """Test Compute object initialization with comprehensive kwargs and verify getters/setters."""
     import kubetorch as kt
 
-    # Create manifest with annotations
-    manifest = copy.deepcopy(_get_basic_manifest("Deployment"))
-    manifest["metadata"]["annotations"]["kubetorch.com/inactivity-ttl"] = "1h"
+    # Create a comprehensive config dict mapping key to (original_value, new_value)
+    original_image = kt.images.Debian()
+    new_image = kt.images.Ray()
+    config = {
+        "cpus": ("2.0", "3.0"),
+        "memory": ("4Gi", "8Gi"),
+        "disk_size": ("10Gi", "20Gi"),
+        "gpus": ("1", "2"),
+        "gpu_type": ("L4", "A100"),
+        "priority_class_name": ("high-priority", "low-priority"),
+        "gpu_memory": ("8Gi", "16Gi"),
+        "namespace": ("test-namespace", "new-namespace"),
+        "image": (original_image, new_image),
+        "labels": ({"app": "test", "env": "dev"}, {"app": "test", "env": "prod"}),
+        "annotations": ({"description": "test compute"}, {"description": "updated compute"}),
+        "node_selector": ({"node-type": "gpu"}, {"node-type": "cpu"}),
+        "tolerations": (
+            [{"key": "gpu", "operator": "Equal", "value": "true", "effect": "NoSchedule"}],
+            [{"key": "cpu", "operator": "Equal", "value": "true", "effect": "NoSchedule"}],
+        ),
+        "env_vars": (
+            {"TEST_ENV": "test_value", "ANOTHER_ENV": "another_value"},
+            {"TEST_ENV": "updated_value", "ANOTHER_ENV": "another_value"},
+        ),
+        "service_account_name": ("test-service-account", "new-service-account"),
+        "image_pull_policy": ("Always", "IfNotPresent"),
+        "inactivity_ttl": ("30m", "60m"),
+        "gpu_anti_affinity": (True, False),
+        "launch_timeout": (600, 900),
+        "working_dir": ("/kt", "/new-dir"),
+        "shared_memory_limit": ("1Gi", "2Gi"),
+        "allowed_serialization": (["json", "pickle"], ["json", "pickle", "cloudpickle"]),
+        "replicas": (2, 3),
+        "freeze": (False, True),
+        "kubeconfig_path": (None, "/custom/path/kubeconfig"),
+    }
 
-    compute = kt.Compute(
-        manifest=manifest,
-        cpus="0.3",
-    )
+    # Create initial compute using original values (first element)
+    init_config = {key: value[0] for key, value in config.items()}
+    base_compute = kt.Compute(**init_config)
+    compute = kt.Compute.from_manifest(base_compute.manifest)
 
-    # Verify extracted values are preserved in annotations
-    assert compute.inactivity_ttl == "1h"
+    # For each key in the config, test getter and setter
+    for key, (original_value, new_value) in config.items():
+        # Check that initial value matches original value
+        initial_value = getattr(compute, key)
+
+        # Handle type conversions and special cases for comparison
+        if key == "image":  # check server_image set properly
+            initial_value = compute.server_image
+            assert initial_value == original_value.image_id
+        elif key == "labels" or key == "annotations":
+            # Labels and annotations are dicts, check that original values are present
+            for k, v in original_value.items():
+                assert k in initial_value, f"Key {k} not found in {key}"
+                assert initial_value[k] == v, f"Value for {key}[{k}] mismatch: got {initial_value[k]}, expected {v}"
+        elif key == "env_vars":  # check that original values are present
+            for k, v in original_value.items():
+                assert k in initial_value, f"Env var {k} not found"
+                assert initial_value[k] == v, f"Env var {k} value mismatch: got {initial_value[k]}, expected {v}"
+        elif key == "tolerations":  # check that original toleration is present
+            assert len(initial_value) > 0, "Tolerations should be set"
+            assert any(tol.get("key") == "gpu" and tol.get("value") == "true" for tol in initial_value)
+        elif key == "node_selector":
+            assert initial_value["node-type"] == original_value["node-type"]
+        elif key == "kubeconfig_path":  # uses a default when None
+            continue
+        else:
+            assert (
+                initial_value == original_value
+            ), f"Initial value for {key} mismatch: got {initial_value}, expected {original_value}"
+
+        # These properties are set with add_xxxx methods
+        skip_properties = {"labels", "annotations", "env_vars", "tolerations"}
+        if key in skip_properties:
+            continue
+
+        # Set the property to the new value
+        setattr(compute, key, new_value)
+
+        # Check that the new value was set properly
+        updated_value = getattr(compute, key)
+        if key == "image":
+            updated_value = getattr(compute, "server_image")
+            assert updated_value == new_value.image_id
+        elif key == "node_selector":
+            assert updated_value["node-type"] == new_value["node-type"]
+        else:
+            assert (
+                updated_value == new_value
+            ), f"Updated value for {key} mismatch: got {updated_value}, expected {new_value}"
+
+    # Test add_xxxx methods for read-only properties
+    add_methods = ["add_labels", "add_annotations", "add_env_vars", "add_tolerations"]
+
+    for method_name in add_methods:
+        key = method_name[4:]  # "add_labels" -> "labels"
+        original_value, new_value = config[key]
+        add_method = getattr(compute, method_name)
+        add_method(new_value)
+
+        updated_value = getattr(compute, key)
+
+        # Verify new values are present
+
+        if key == "tolerations":  # tolerations (list)
+            # Check that new tolerations are present
+            for new_tol in new_value:
+                new_key = new_tol.get("key")
+                assert new_key, f"Toleration must have a 'key' field: {new_tol}"
+                found_tol = None
+                for tol in updated_value:
+                    if tol.get("key") == new_key:
+                        found_tol = tol
+                        break
+                assert found_tol is not None, f"New toleration with key '{new_key}' not found after {method_name}"
+                # Verify all fields match
+                for k, v in new_tol.items():
+                    assert (
+                        found_tol.get(k) == v
+                    ), f"Toleration {new_key}[{k}] mismatch: got {found_tol.get(k)}, expected {v}"
+
+            # Verify original tolerations are still present (if they have different keys)
+            for orig_tol in original_value:
+                orig_key = orig_tol.get("key")
+                if orig_key and not any(nt.get("key") == orig_key for nt in new_value):
+                    found_orig = any(tol.get("key") == orig_key for tol in updated_value)
+                    assert found_orig, f"Original toleration with key '{orig_key}' should still be present"
+        else:  # dict
+            for k, v in new_value.items():
+                assert k in updated_value, f"New {key} key {k} not found after {method_name}"
+                assert updated_value[k] == v, f"{key}[{k}] value mismatch: got {updated_value[k]}, expected {v}"
+            # Verify original values are still present (for keys that weren't updated)
+            for k, v in original_value.items():
+                if k not in new_value:
+                    assert k in updated_value, f"Original {key} key {k} should still be present"
+                    assert (
+                        updated_value[k] == v
+                    ), f"Original {key}[{k}] value should be preserved: got {updated_value[k]}, expected {v}"
+
+    # Test distributed_config
+    compute.distributed_config = {"distribution_type": "spmd", "quorum_workers": 2}
+    dist_config = compute.distributed_config
+    assert dist_config["distribution_type"] == "spmd"
+    assert dist_config["quorum_workers"] == 2
