@@ -412,7 +412,7 @@ async def test_debug_modes(remote_cls, remote_fn, capsys):
     task = asyncio.create_task(call_breakpoint_method())
 
     # Give it time to hit the breakpoint and print the kt debug command
-    await asyncio.sleep(3)
+    await asyncio.sleep(6)
 
     # Capture the output to get the kt debug command
     captured = capsys.readouterr()

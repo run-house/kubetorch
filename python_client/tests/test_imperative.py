@@ -494,7 +494,7 @@ def test_callable_launch_timeout():
         remote_cls = kt.cls(SlowNumpyArray, name=get_test_fn_name()).to(
             kt.Compute(
                 cpus=".1",
-                launch_timeout=10,
+                launch_timeout=5,
                 gpu_anti_affinity=True,
             ),
             init_args={"size": 10},
