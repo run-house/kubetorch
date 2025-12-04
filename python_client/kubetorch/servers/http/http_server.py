@@ -632,7 +632,7 @@ def load_distributed_supervisor(deployed_as_of: Optional[str] = None):
     # We don't create a supervisor if this is a distributed subprocess.
     config_hash = hash(str(distributed_config))
     if DISTRIBUTED_SUPERVISOR is None or config_hash != DISTRIBUTED_SUPERVISOR.config_hash:
-        from .distributed_utils import distributed_supervisor_factory
+        from kubetorch.distributed import distributed_supervisor_factory
 
         logger.info(f"Loading distributed supervisor with config: {distributed_config}")
         distributed_config = json.loads(distributed_config)
