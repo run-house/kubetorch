@@ -23,9 +23,8 @@ from .utils import get_test_fn_name
 @pytest.mark.level("minimal")
 def test_spmd_distributed_fn():
     """Test generic SPMD distributed with function."""
-    remote_fn = kt.fn(verify_distributed_env, name=get_test_fn_name()).to(
-        kt.Compute(cpus="0.5", memory="512Mi").distribute(workers=2, num_proc=2)
-    )
+    compute = kt.Compute(cpus="0.5", memory="512Mi").distribute(workers=2, num_proc=2)
+    remote_fn = kt.fn(verify_distributed_env, name=get_test_fn_name()).to(compute)
 
     results = remote_fn()
     assert len(results) == 4  # 2 workers * 2 processes

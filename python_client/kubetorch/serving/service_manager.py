@@ -3,6 +3,7 @@ from kubetorch.logger import get_logger
 
 # Import all service managers for backward compatibility and centralized access
 from kubetorch.serving.base_service_manager import BaseServiceManager
+from kubetorch.serving.custom_service_manager import CustomServiceManager
 from kubetorch.serving.deployment_service_manager import DeploymentServiceManager
 from kubetorch.serving.knative_service_manager import KnativeServiceManager
 from kubetorch.serving.raycluster_service_manager import RayClusterServiceManager
@@ -13,6 +14,7 @@ __all__ = [
     "DeploymentServiceManager",
     "KnativeServiceManager",
     "RayClusterServiceManager",
+    "CustomServiceManager",
 ]
 
 logger = get_logger(__name__)
