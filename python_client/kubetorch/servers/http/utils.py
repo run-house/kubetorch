@@ -468,7 +468,7 @@ def print_log_stream_client(message, last_timestamp, print_pod_name: bool = Fals
                 log_name = log_line.get("name")
                 if log_name == "print_redirect":
                     message = log_line.get("message")
-                    print(f"{pod_name}{formatter.start_color}{message}{formatter.reset_color}")
+                    print(f"{formatter.start_color}{pod_name}{message}{formatter.reset_color}")
                 elif log_name != "uvicorn.access":
                     formatted_log = (
                         f"{pod_name}{log_line.get('asctime')} | {log_line.get('levelname')} | {log_line.get('message')}"
