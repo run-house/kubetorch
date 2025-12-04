@@ -580,3 +580,43 @@ def test_pod_oom_error_after_startup():
 
         # Service should start fine; OOM happens only when calling consume_memory
         remote_cls.consume_memory()
+
+
+@pytest.mark.level("minimal")
+def test_default_allowed_serialization(remote_logs_fn):
+    msg = "Default serialization test"
+    n = 5
+    expected_result = f"{msg} was logged {n} times"
+    result_valid_serialization = remote_logs_fn(msg=msg, n=n, serialization="json")
+    assert result_valid_serialization == expected_result
+
+    result_invalid_serialization = remote_logs_fn(msg=msg, n=n, serialization="pickle")
+    assert isinstance(result_invalid_serialization, dict)
+    assert (
+        result_invalid_serialization.get("detail")
+        == "Serialization format 'pickle' not allowed. Allowed formats: ['json']"
+    )
+
+
+@pytest.mark.level("minimal")
+def test_allowed_serialization_as_env_env_var(monkeypatch):
+    monkeypatch.setenv("KT_ALLOWED_SERIALIZATION", "json,pickle")
+
+    import kubetorch as kt
+
+    from .utils import log_n_messages
+
+    compute = kt.Compute(cpus=".01", gpu_anti_affinity=True, launch_timeout=300)
+    remote_logs_fn = kt.fn(log_n_messages, name="multiple_serialization_fn").to(compute)
+
+    n = 5
+
+    msg_json = "JSON serialization test"
+    expected_result_json = f"{msg_json} was logged {n} times"
+    result_json_serialization = remote_logs_fn(msg=msg_json, n=n, serialization="json")
+    assert result_json_serialization == expected_result_json
+
+    msg_pickle = "Pickle serialization test"
+    expected_result_pickle = f"{msg_pickle} was logged {n} times"
+    result_pickle_serialization = remote_logs_fn(msg=msg_pickle, n=n, serialization="pickle")
+    assert result_pickle_serialization == expected_result_pickle

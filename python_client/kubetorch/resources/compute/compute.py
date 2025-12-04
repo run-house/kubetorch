@@ -213,6 +213,11 @@ class Compute:
             # If KT_LOG_LEVEL is set, add it to env vars so the log level is set on the server
             env_vars["KT_LOG_LEVEL"] = os.getenv("KT_LOG_LEVEL")
 
+        if not allowed_serialization:
+            allowed_serialization_env_var = os.getenv("KT_ALLOWED_SERIALIZATION", None)
+            if allowed_serialization_env_var:
+                allowed_serialization = allowed_serialization_env_var.split(",")
+
         template_vars = {
             "server_image": server_image,
             "server_port": server_port,
@@ -224,7 +229,7 @@ class Compute:
             "volume_mounts": volume_mounts,
             "volume_specs": volume_specs,
             "service_account_name": service_account_name,
-            "config_env_vars": self._get_config_env_vars(allowed_serialization or ["json"]),
+            "config_env_vars": self._get_config_env_vars(allowed_serialization),
             "image_pull_policy": image_pull_policy,
             "namespace": namespace,
             "freeze": freeze,
@@ -1216,7 +1221,6 @@ class Compute:
         config_env_vars = globals.config._get_config_env_vars()
         if allowed_serialization:
             config_env_vars["KT_ALLOWED_SERIALIZATION"] = ",".join(allowed_serialization)
-
         return config_env_vars
 
     def _server_should_enable_otel(self, otel_enabled, inactivity_ttl):
