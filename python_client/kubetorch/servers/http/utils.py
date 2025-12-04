@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from contextvars import ContextVar
-from typing import List
+from typing import List, Optional
 
 import httpx
 
@@ -583,67 +583,146 @@ async def stream_logs_websocket_helper(
 
 def clear_debugging_sessions():
     """Clear any existing debugging sessions when a module is redeployed or pod is terminated."""
+    # Clear web_pdb session
     try:
         import web_pdb
 
-        if web_pdb.WebPdb.active_instance is not None:
-            logger.info("Clearing existing debugging session")
+        pdb = web_pdb.WebPdb.active_instance
+        if pdb is not None:
+            logger.info("Clearing existing web_pdb debugging session")
             try:
-                web_pdb.WebPdb.active_instance.remove_trace()
+                # remove_trace() detaches the debugger from the stack
+                pdb.remove_trace()
             except Exception as e:
                 logger.warning(f"Error removing trace: {e}")
+            try:
+                # Close the web console server to stop the background thread
+                # This is what do_quit() does internally
+                if hasattr(pdb, "console") and pdb.console is not None:
+                    pdb.console.close()
+            except Exception as e:
+                logger.warning(f"Error closing web_pdb console: {e}")
             web_pdb.WebPdb.active_instance = None
 
     except ImportError:
         # web_pdb not installed, nothing to clean up
         pass
     except Exception as e:
-        logger.warning(f"Error clearing debugging session: {e}")
+        logger.warning(f"Error clearing web_pdb debugging session: {e}")
+
+    # Clear PDB WebSocket server
+    try:
+        from kubetorch.servers.http import pdb_websocket
+
+        pdb_websocket.cleanup()
+    except Exception as e:
+        logger.warning(f"Error clearing PDB WebSocket server: {e}")
 
 
 # Register cleanup function to run at exit
 atexit.register(clear_debugging_sessions)
 
 
-def deep_breakpoint(debug_port: int = DEFAULT_DEBUG_PORT):
+def deep_breakpoint(debug_port: int = DEFAULT_DEBUG_PORT, debug_mode: Optional[str] = None):
     """
     Similar to Python's built-in `breakpoint()`, but can be used deep inside distributed code. For SPMD-style
     distributed code like PyTorch, be sure to only call this from one process (e.g. the rank 0 process) to avoid
     blocking all processes in the distributed group.
+
+    Args:
+        debug_port: Port number for the debug server (default: 5678)
+        debug_mode: Debug mode - "pdb" (WebSocket PTY) or "pdb-ui" (web UI).
+                    If None, uses KT_DEBUG_MODE environment variable (default: "pdb")
+
+    The debug mode can be controlled via:
+    1. The debug_mode parameter (takes precedence)
+    2. The KT_DEBUG_MODE environment variable
+    3. Default: "pdb"
+
+    Modes:
+    - "pdb" (default): Standard PDB over WebSocket PTY (works over SSH)
+    - "pdb-ui": Web-based PDB UI
+    - "vscode": VSCode debugger (future)
     """
-    # Check if madbg is installed, if not, install it
-    try:
-        import web_pdb
-    except ImportError:
-        install_cmd = "uv pip install --system web-pdb"
-        import subprocess
+    # debug_mode parameter overrides environment variable
+    if debug_mode is None:
+        debug_mode = os.getenv("KT_DEBUG_MODE", "pdb")
+    debug_mode = debug_mode.lower()
 
-        print("Pdb debugger not found, installing it...")
-        # Run the install command and propagate logs
-        subprocess.run(install_cmd, shell=True, check=True, text=True)
-        print("Pdb installed successfully.")
-
-    print("Distributed breakpoint activated. To attach a debugger, run the following command:")
-    print(f"kt debug {os.environ['POD_NAME']} --port {debug_port} --namespace {os.environ['POD_NAMESPACE']}")
-
-    import web_pdb
-
-    pdb = web_pdb.WebPdb.active_instance
-    try:
-        if pdb is None:
-            pdb = web_pdb.WebPdb(host="", port=debug_port, patch_stdstreams=False)
+    # Helper function to print the debug command
+    def print_debug_command():
+        print("Distributed breakpoint activated. To attach a debugger, run the following command:")
+        # For pdb mode, include pod IP for in-cluster usage
+        if debug_mode == "pdb":
+            pod_ip = os.environ.get("POD_IP", "")
+            if pod_ip:
+                print(
+                    f"kt debug {os.environ['POD_NAME']} --port {debug_port} --namespace {os.environ['POD_NAMESPACE']} --mode {debug_mode} --pod-ip {pod_ip}"
+                )
+            else:
+                print(
+                    f"kt debug {os.environ['POD_NAME']} --port {debug_port} --namespace {os.environ['POD_NAMESPACE']} --mode {debug_mode}"
+                )
         else:
-            # If the debugger is still attached reset trace to a new location
-            pdb.remove_trace()
+            print(
+                f"kt debug {os.environ['POD_NAME']} --port {debug_port} --namespace {os.environ['POD_NAMESPACE']} --mode {debug_mode}"
+            )
 
-        # Set the frame to the caller's frame
-        pdb.set_trace(sys._getframe(1))  # pylint: disable=protected-access
-    except Exception as e:
-        # Only clean up if there was an error setting up the debugger
-        if pdb:
-            pdb.remove_trace()
-            web_pdb.WebPdb.active_instance = None
-        raise e
+    if debug_mode == "pdb-ui":
+        # Use web-based PDB UI
+        try:
+            import web_pdb
+        except ImportError:
+            import subprocess
+
+            # Get install command from environment, fallback to regular pip
+            kt_pip_install_cmd = os.getenv("KT_PIP_INSTALL_CMD")
+            if not kt_pip_install_cmd:
+                kt_pip_install_cmd = f"{sys.executable} -m pip install"
+
+            print("Web PDB not found, installing it...")
+            install_cmd = f"{kt_pip_install_cmd} web-pdb"
+            subprocess.run(install_cmd, shell=True, check=True, text=True)
+            print("Web PDB installed successfully.")
+            import web_pdb
+
+        pdb = web_pdb.WebPdb.active_instance
+        try:
+            if pdb is None:
+                pdb = web_pdb.WebPdb(host="", port=debug_port, patch_stdstreams=False)
+            else:
+                # If the debugger is still attached reset trace to a new location
+                pdb.remove_trace()
+
+            # Print the debug command after installation but before blocking set_trace
+            print_debug_command()
+
+            # Set the frame to the caller's frame
+            pdb.set_trace(sys._getframe(1))  # pylint: disable=protected-access
+        except Exception as e:
+            # Only clean up if there was an error setting up the debugger
+            if pdb:
+                pdb.remove_trace()
+                web_pdb.WebPdb.active_instance = None
+            raise e
+
+    elif debug_mode == "pdb":
+        # Use standard PDB over WebSocket (default, works over SSH)
+        # Note: websockets is already a required server dependency, no need to install
+        from bdb import BdbQuit
+
+        from kubetorch.servers.http.pdb_websocket import start_debugger
+
+        # start_debugger will print its own connection instructions and wait for client
+        # It needs to be called directly so the frame calculation is correct
+        try:
+            start_debugger(debug_port)
+        except BdbQuit:
+            # Normal exit when debugger is quit
+            logger.info("PDB session ended normally")
+
+    else:
+        raise ValueError(f"Unknown debug mode: {debug_mode}. Valid options are 'pdb', 'pdb-ui'")
 
 
 def wait_for_app_start(port, health_check: str, process: subprocess.Popen, timeout: int = 60):

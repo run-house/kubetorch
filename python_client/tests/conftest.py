@@ -105,7 +105,7 @@ def get_compute(compute_type: str):
             gpu_anti_affinity=True,
             launch_timeout=450,
             image=kt.images.Ray()
-            .pip_install(["pytest", "pytest-asyncio"])
+            .pip_install(["pytest", "pytest-asyncio", "typer", "rich"])
             .run_bash("uv pip install --system --break-system-packages numpy"),
             allowed_serialization=["json", "pickle"],
         ).distribute("ray", workers=2)
@@ -117,7 +117,7 @@ def get_compute(compute_type: str):
         launch_timeout=450,
         shared_memory_limit="512Mi",
         allowed_serialization=["json", "pickle"],
-        image=kt.images.Debian(),
+        image=kt.images.Debian().pip_install(["pytest", "pytest-asyncio", "typer", "rich"]),
     )
 
     if compute_type == "knative":
@@ -196,7 +196,7 @@ async def remote_cls():
     compute = kt.Compute(
         cpus=".01",
         image=kt.images.Debian()
-        .pip_install(["pytest"])
+        .pip_install(["pytest", "pytest-asyncio", "typer", "rich"])
         .run_bash("uv pip install --system --break-system-packages numpy"),
         env_vars={"OMP_NUM_THREADS": 1},
         annotations={"test-annotation": "test_value"},
@@ -224,7 +224,7 @@ async def remote_cls():
             gpu_anti_affinity=True,
             launch_timeout=300,
             image=kt.images.Ray()
-            .pip_install(["pytest", "pytest-asyncio"])
+            .pip_install(["pytest", "pytest-asyncio", "typer", "rich"])
             .run_bash("uv pip install --system --break-system-packages numpy"),
             allowed_serialization=["json", "pickle"],
         ).distribute("ray", workers=2)

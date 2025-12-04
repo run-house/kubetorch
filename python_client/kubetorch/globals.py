@@ -30,6 +30,19 @@ class MetricsConfig:
     scope: Literal["pod", "resource"] = "resource"  # aggregation level (default to "resource")
 
 
+@dataclass
+class DebugConfig:
+    """Configuration for debugging mode.
+
+    Attributes:
+        mode: Debug mode - "pdb" (default, WebSocket PTY) or "pdb-ui" (web-based UI)
+        port: Debug port (default: 5678)
+    """
+
+    mode: Literal["pdb", "pdb-ui"] = "pdb"
+    port: int = 5678  # DEFAULT_DEBUG_PORT
+
+
 @dataclass(frozen=True)
 class PFHandle:
     process: subprocess.Popen
