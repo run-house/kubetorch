@@ -413,7 +413,14 @@ def test_global_kt_cache():
         },
         launch_timeout=launch_timeout,
         gpu_anti_affinity=True,
-        volumes=[kt.Volume("kt-global-cache", size="10Gi", access_mode="ReadWriteOnce")],
+        volumes=[
+            kt.Volume(
+                "kt-global-cache",
+                size="10Gi",
+                access_mode="ReadWriteOnce",
+                mount_path=f"/{KT_MOUNT_FOLDER}/kt-global-cache",
+            )
+        ],
     )
 
     remote_fn = kt.fn(get_env_var, name=get_test_fn_name()).to(compute)

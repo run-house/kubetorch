@@ -8,7 +8,7 @@ from typing import Dict
 from kubernetes import client
 from kubernetes.client import ApiException, V1PersistentVolumeClaim
 
-from kubetorch.constants import DEFAULT_VOLUME_ACCESS_MODE, KT_MOUNT_FOLDER
+from kubetorch.constants import DEFAULT_VOLUME_ACCESS_MODE
 from kubetorch.globals import config
 from kubetorch.logger import get_logger
 from kubetorch.utils import load_kubeconfig
@@ -25,8 +25,8 @@ class Volume:
         self,
         name: str,
         size: str,
+        mount_path: str,
         storage_class: str = None,
-        mount_path: str = None,
         access_mode: str = None,
         namespace: str = None,
         core_v1: client.CoreV1Api = None,
@@ -37,8 +37,8 @@ class Volume:
         Args:
             name (str): Name of the volume.
             size (str): Size of the volume.
+            mount_path (str): Mount path for the volume.
             storage_class (str, optional): Storage class to use for the volume.
-            mount_path (str, optional): Mount path for the volume.
             access_mode (str, optional): Access mode for the volume.
             namespace (str, optional): Namespace for the volume.
 
@@ -48,19 +48,26 @@ class Volume:
 
             import kubetorch as kt
 
-            kt.Volume(name="my-data", size="5Gi"),  # Standard volume (ReadWriteOnce)
+            # Standard volume (ReadWriteOnce)
+            kt.Volume(name="my-data", size="5Gi", mount_path="/data")
 
             # Shared volume (ReadWriteMany, requires JuiceFS or similar)
-            kt.Volume(name="shared-data", size="10Gi", storage_class="juicefs-sc-shared", access_mode="ReadWriteMany")
+            kt.Volume(
+                name="shared-data",
+                size="10Gi",
+                mount_path="/shared",
+                storage_class="juicefs-sc-shared",
+                access_mode="ReadWriteMany"
+            )
 
             # uv cache
             compute = kt.Compute(
                 cpus=".01",
                 env_vars={
-                    "UV_CACHE_DIR": "/ktfs/kt-global-cache/uv_cache",
-                    "HF_HOME": "/ktfs/kt-global-cache/hf_cache",
+                    "UV_CACHE_DIR": "/cache/uv_cache",
+                    "HF_HOME": "/cache/hf_cache",
                 },
-                volumes=[kt.Volume("kt-global-cache", size="10Gi")],
+                volumes=[kt.Volume(name="kt-global-cache", size="10Gi", mount_path="/cache")],
             )
 
         """
@@ -70,7 +77,7 @@ class Volume:
 
         self.size = size
         self.access_mode = access_mode or DEFAULT_VOLUME_ACCESS_MODE
-        self.mount_path = mount_path or f"/{KT_MOUNT_FOLDER}/{name}"
+        self.mount_path = mount_path
 
         self.name = name
         self.namespace = namespace
@@ -79,6 +86,20 @@ class Volume:
     @property
     def pvc_name(self) -> str:
         return self.name
+
+    @property
+    def mount_path(self) -> str:
+        """Get the mount path for this volume"""
+        return self._mount_path
+
+    @mount_path.setter
+    def mount_path(self, value: str):
+        """Set the mount path with validation"""
+        if not value:
+            raise ValueError("mount_path cannot be empty")
+        if not value.startswith("/"):
+            raise ValueError(f"mount_path must be an absolute path starting with '/', got: {value}")
+        self._mount_path = value
 
     @cached_property
     def storage_class(self) -> str:
@@ -129,11 +150,21 @@ class Volume:
     def from_name(
         cls,
         name: str,
-        create_if_missing: bool = False,
         namespace: str = None,
         core_v1: client.CoreV1Api = None,
+        mount_path: str = None,
     ) -> "Volume":
-        """Get existing volume or optionally create it"""
+        """Get existing volume by name
+
+        Args:
+            name (str): Name of the volume/PVC
+            namespace (str, optional): Kubernetes namespace
+            core_v1 (client.CoreV1Api, optional): Kubernetes API client
+            mount_path (str, optional): Override the mount path. If not provided, uses the annotation from the PVC
+
+        Returns:
+            Volume: Volume instance loaded from existing PVC
+        """
         if core_v1 is None:
             load_kubeconfig()
             core_v1 = client.CoreV1Api()
@@ -148,14 +179,18 @@ class Volume:
             size = pvc.spec.resources.requests.get("storage")
             access_mode = pvc.spec.access_modes[0] if pvc.spec.access_modes else DEFAULT_VOLUME_ACCESS_MODE
 
+            # Load mount_path from annotation
             annotations = pvc.metadata.annotations or {}
-            mount_path = annotations.get("kubetorch.com/mount-path", f"/{KT_MOUNT_FOLDER}/{name}")
+            annotation_mount_path = annotations.get("kubetorch.com/mount-path")
+
+            # Use provided mount_path or fall back to annotation
+            final_mount_path = mount_path if mount_path is not None else annotation_mount_path
 
             # Create Volume with actual attributes from PVC
             vol = cls(
                 name=name,
                 storage_class=storage_class,
-                mount_path=mount_path,
+                mount_path=final_mount_path,
                 size=size,
                 access_mode=access_mode,
                 namespace=namespace,
@@ -167,13 +202,7 @@ class Volume:
 
         except ApiException as e:
             if e.status == 404:
-                # PVC doesn't exist
-                if create_if_missing:
-                    vol = cls(name, namespace=namespace, core_v1=core_v1)
-                    vol.create()
-                    return vol
-                else:
-                    raise ValueError(f"Volume '{name}' (PVC: {pvc_name}) does not exist in namespace '{namespace}'")
+                raise ValueError(f"Volume '{name}' (PVC: {pvc_name}) does not exist in namespace '{namespace}'")
             else:
                 # Some other API error
                 raise
