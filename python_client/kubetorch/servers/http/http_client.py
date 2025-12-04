@@ -358,8 +358,8 @@ class HTTPClient:
             query = f'{{k8s_container_name="kubetorch"}} | json | request_id="{request_id}"'
             encoded_query = urllib.parse.quote_plus(query)
             uri = f"ws://{host}:{port}/loki/api/v1/tail?query={encoded_query}"
-            # Track the last timestamp we've seen to avoid duplicates
-            last_timestamp = None
+            # Track seen logs using (timestamp, content) tuples to avoid duplicates
+            seen_logs = set()
             # Track when we should stop
             stop_time = None
 
@@ -397,15 +397,25 @@ class HTTPClient:
                                 # Determine if this is a Knative service by checking for Knative-specific labels
                                 is_knative = labels.get("serving_knative_dev_configuration") is not None
 
+                                # Collect all logs from this stream first
+                                all_logs = []
                                 for value in stream["values"]:
-                                    # Skip if we've already seen this timestamp
-                                    log_line = json.loads(value[1])
+                                    timestamp, log_content = value[0], value[1]
+                                    # Deduplicate using (timestamp, content) tuple
+                                    log_id = (timestamp, log_content)
+                                    if log_id in seen_logs:
+                                        continue
+                                    seen_logs.add(log_id)
+                                    all_logs.append((timestamp, log_content))
+
+                                # Sort by timestamp to ensure correct ordering
+                                all_logs.sort(key=lambda x: x[0])
+
+                                # Print logs in sorted order
+                                for timestamp, log_content in all_logs:
+                                    log_line = json.loads(log_content)
                                     log_name = log_line.get("name")
                                     log_message = log_line.get("message")
-                                    current_timestamp = value[0]
-                                    if last_timestamp is not None and current_timestamp <= last_timestamp:
-                                        continue
-                                    last_timestamp = value[0]
 
                                     # Choose the appropriate identifier for the log prefix
                                     if is_knative:

@@ -453,58 +453,78 @@ def generate_unique_request_id(endpoint: str, timestamp: str) -> str:
     return unique_id
 
 
-def print_log_stream_client(message, last_timestamp, print_pod_name: bool = False):
+def print_log_stream_client(message, seen_logs: set, print_pod_name: bool = False):
     formatter = ServerLogsFormatter()
     if message.get("streams"):
+        # Collect all logs from all streams first
+        all_logs = []
         for stream in message["streams"]:
             pod_name = f'({stream.get("stream").get("pod")}) ' if print_pod_name else ""
             for value in stream["values"]:
-                # Skip if we've already seen this timestamp
-                if last_timestamp is not None and value[0] <= last_timestamp:
+                timestamp, log_content = value[0], value[1]
+                # Deduplicate using (timestamp, content) tuple
+                log_id = (timestamp, log_content)
+                if log_id in seen_logs:
                     continue
-                last_timestamp = value[0]
+                seen_logs.add(log_id)
+                all_logs.append((timestamp, pod_name, log_content))
 
-                log_line = json.loads(value[1])
-                log_name = log_line.get("name")
-                if log_name == "print_redirect":
-                    message = log_line.get("message")
-                    print(f"{pod_name}{formatter.start_color}{message}{formatter.reset_color}")
-                elif log_name != "uvicorn.access":
-                    formatted_log = (
-                        f"{pod_name}{log_line.get('asctime')} | {log_line.get('levelname')} | {log_line.get('message')}"
-                    )
-                    print(f"{formatter.start_color}{formatted_log}{formatter.reset_color}")
-    return last_timestamp
+        # Sort by timestamp to ensure correct ordering
+        all_logs.sort(key=lambda x: x[0])
+
+        # Print logs in sorted order
+        for timestamp, pod_name, log_content in all_logs:
+            log_line = json.loads(log_content)
+            log_name = log_line.get("name")
+            if log_name == "print_redirect":
+                log_message = log_line.get("message")
+                print(f"{pod_name}{formatter.start_color}{log_message}{formatter.reset_color}")
+            elif log_name != "uvicorn.access":
+                formatted_log = (
+                    f"{pod_name}{log_line.get('asctime')} | {log_line.get('levelname')} | {log_line.get('message')}"
+                )
+                print(f"{formatter.start_color}{formatted_log}{formatter.reset_color}")
+    return seen_logs
 
 
-def print_log_stream_cli(message, last_timestamp, print_pod_name: bool = False):
+def print_log_stream_cli(message, seen_logs: set, print_pod_name: bool = False):
     if message.get("streams"):
+        # Collect all logs from all streams first
+        all_logs = []
         for stream in message["streams"]:
             stream_labels = stream.get("stream", {})
             pod_name_value = stream_labels.get("pod") or stream_labels.get("k8s_pod_name")
-            pod_name = f"({pod_name_value}) " if print_pod_name and pod_name_value else ""
             for value in stream["values"]:
-                # Skip if we've already seen this timestamp
-                if last_timestamp is not None and value[0] <= last_timestamp:
+                timestamp, log_content = value[0], value[1]
+                # Deduplicate using (timestamp, content) tuple
+                log_id = (timestamp, log_content)
+                if log_id in seen_logs:
                     continue
-                last_timestamp = value[0]
-                log_line = value[1]
-                try:
-                    log_line = json.loads(log_line)
-                    log_name = log_line.get("name")
-                    if log_name == "print_redirect":
-                        continue
-                        # the print output will be printed in line 250. We need the "print_redirect"
-                        # log type only for log streaming in the http client, so we could filter out
-                        # the print outputs for a specific request ID. For the CLI --follow option, we
-                        # print all logs, so at the moment we don't need to filter by request_id.
-                    elif log_name != "uvicorn.access":
-                        formatted_log = f"{pod_name}{log_line.get('asctime')} | {log_line.get('levelname')} | {log_line.get('message')}".strip()
-                        print(formatted_log)
-                except json.JSONDecodeError:
-                    print(f"{pod_name}{log_line}".strip())
+                seen_logs.add(log_id)
+                all_logs.append((timestamp, pod_name_value, log_content))
 
-    return last_timestamp
+        # Sort by timestamp to ensure correct ordering
+        all_logs.sort(key=lambda x: x[0])
+
+        # Print logs in sorted order
+        for timestamp, pod_name_value, log_content in all_logs:
+            pod_name = f"({pod_name_value}) " if print_pod_name and pod_name_value else ""
+            try:
+                log_line = json.loads(log_content)
+                log_name = log_line.get("name")
+                if log_name == "print_redirect":
+                    continue
+                    # the print output will be printed in line 250. We need the "print_redirect"
+                    # log type only for log streaming in the http client, so we could filter out
+                    # the print outputs for a specific request ID. For the CLI --follow option, we
+                    # print all logs, so at the moment we don't need to filter by request_id.
+                elif log_name != "uvicorn.access":
+                    formatted_log = f"{pod_name}{log_line.get('asctime')} | {log_line.get('levelname')} | {log_line.get('message')}".strip()
+                    print(formatted_log)
+            except json.JSONDecodeError:
+                print(f"{pod_name}{log_content}".strip())
+
+    return seen_logs
 
 
 async def stream_logs_websocket_helper(
@@ -516,8 +536,8 @@ async def stream_logs_websocket_helper(
     """Stream logs using Loki's websocket tail endpoint"""
     websocket = None
     try:
-        # Track the last timestamp we've seen to avoid duplicates
-        last_timestamp = None
+        # Track seen logs using (timestamp, content) tuples to avoid duplicates
+        seen_logs = set()
         # Track when we should stop
         stop_time = None
 
@@ -548,9 +568,9 @@ async def stream_logs_websocket_helper(
                         message = message
 
                     if stream_type == StreamType.HTTP_CLIENT:
-                        last_timestamp = print_log_stream_client(message, last_timestamp, print_pod_name)
+                        seen_logs = print_log_stream_client(message, seen_logs, print_pod_name)
                     elif stream_type == StreamType.CLI:
-                        last_timestamp = print_log_stream_cli(message, last_timestamp, print_pod_name)
+                        seen_logs = print_log_stream_cli(message, seen_logs, print_pod_name)
                 except asyncio.TimeoutError:
                     # Timeout is expected, just continue the loop
                     continue
