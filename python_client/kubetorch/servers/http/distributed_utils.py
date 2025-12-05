@@ -615,6 +615,7 @@ class DistributedProcessPool:
         request_id,
         distributed_env_vars,
         debug_port,
+        debug_mode,
         serialization,
     ):
         """Call a specific process by index."""
@@ -639,6 +640,7 @@ class DistributedProcessPool:
                     "request_id": request_id,
                     "distributed_env_vars": distributed_env_vars,
                     "debug_port": debug_port,
+                    "debug_mode": debug_mode,
                     "serialization": serialization,
                     "process_idx": idx,  # Include process index for debugging
                 }
@@ -667,6 +669,7 @@ class DistributedProcessPool:
         request_id,
         distributed_env_vars_list,
         debug_ports,
+        debug_mode,
         serialization,
     ):
         """Call all processes in parallel and return results."""
@@ -685,6 +688,7 @@ class DistributedProcessPool:
                     request_id=request_id,
                     distributed_env_vars=distributed_env_vars_list[idx],
                     debug_port=debug_ports[idx] if debug_ports else None,
+                    debug_mode=debug_mode if debug_mode else None,
                     serialization=serialization,
                 )
                 futures.append(future)
@@ -1042,6 +1046,7 @@ class DistributedSupervisor:
         params: Optional[Dict] = None,
         distributed_subcall: bool = False,
         debug_port: int = False,
+        debug_mode: str = None,
         deployed_as_of: Optional[str] = None,
     ):
         # if intercept_call is True, this method should be overridden by subclasses to handle distributing and/or
@@ -1113,6 +1118,7 @@ class DistributedProcess(multiprocessing.Process):
             request_id = request["request_id"]
             distributed_env_vars = request["distributed_env_vars"]
             debug_port = request["debug_port"]
+            debug_mode = request["debug_mode"]
             serialization = request["serialization"]
 
             # Set the request ID in the context for this thread
@@ -1138,6 +1144,7 @@ class DistributedProcess(multiprocessing.Process):
                     params=params,
                     serialization=serialization,
                     debug_port=debug_port,
+                    debug_mode=debug_mode,
                 )
 
                 # Reset the request ID after the call is complete
@@ -1409,6 +1416,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         params: Optional[Dict] = None,
         distributed_subcall: bool = False,
         debug_port: int = False,
+        debug_mode: str = None,
         deployed_as_of: Optional[str] = None,
     ):
         # Get the request ID from the headers
@@ -1778,6 +1786,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                 request_id=request_id,
                 distributed_env_vars_list=distributed_env_vars_list,
                 debug_ports=debug_ports,
+                debug_mode=debug_mode,
                 serialization=serialization,
             )
 
@@ -2506,6 +2515,7 @@ class MonarchDistributed(DistributedSupervisor):
         params: Optional[Dict] = None,
         distributed_subcall: bool = False,
         debug_port: int = False,
+        debug_mode: str = None,
         deployed_as_of: Optional[str] = None,
     ):
         """Monarch distributed call - executes on controller node (rank 0)."""
@@ -2575,6 +2585,7 @@ class MonarchDistributed(DistributedSupervisor):
             request_id=request_id,
             distributed_env_vars=self.distributed_env_vars,
             debug_port=debug_port,
+            debug_mode=debug_mode,
             serialization=serialization,
         )
 
@@ -2760,6 +2771,7 @@ class RayDistributed(DistributedSupervisor):
         params: Optional[Dict] = None,
         distributed_subcall: bool = False,
         debug_port: int = False,
+        debug_mode: str = None,
         deployed_as_of: Optional[str] = None,
     ):
         """Ray distributed call - only executes on head node."""
@@ -2814,6 +2826,7 @@ class RayDistributed(DistributedSupervisor):
             request_id=request_id,
             distributed_env_vars=self.distributed_env_vars,
             debug_port=debug_port,
+            debug_mode=debug_mode,
             serialization=serialization,
         )
 

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import importlib
 import importlib.util
@@ -1530,6 +1531,7 @@ def run_callable_internal_sync(
     params: Optional[Union[Dict, str]] = None,
     serialization: str = "json",
     debug_port: Optional[int] = None,
+    debug_mode: Optional[str] = None,
 ):
     """Synchronous wrapper for run_callable_internal, used by distributed subprocesses."""
     import asyncio
