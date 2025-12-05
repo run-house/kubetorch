@@ -134,6 +134,7 @@ async def remote_fn(request):
 
     compute_type = os.getenv("TEST_COMPUTE_TYPE", "deployment")
     compute = get_compute(compute_type)
+    compute.image = compute.image.pip_install(["tqdm"])
 
     name = f"{compute_type}-summer"
     fn = await kt.fn(summer, name=name).to_async(compute)

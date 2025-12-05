@@ -1107,6 +1107,8 @@ class StreamToLogger:
     def flush(self):
         if self.original_stream:
             self.original_stream.flush()
+        if self.logger.name == "print_redirect" and self._is_from_logging():
+            return
         if self.linebuf != "":
             self.logger.log(self.log_level, self.linebuf)
             self.linebuf = ""
