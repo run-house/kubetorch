@@ -143,17 +143,13 @@ async def test_byo_manifest_with_overrides(kind):
     image = getattr(kt.images, image_type)()
 
     # Create compute with comprehensive overrides
-    compute = kt.Compute(
-        manifest=test_manifest,
-        cpus="0.5",
-        memory="2Gi",
-        replicas=3,
-        labels={"custom-label": "custom-value"},
-        annotations={"test-annotation": "overridden-value"},
-        env_vars={"TEST_ENV": "test_value", "ORIGINAL_ENV": "overridden_value"},
-        image=image,
-        gpu_anti_affinity=True,
-    )
+    compute = kt.Compute.from_manifest(test_manifest)
+    compute.cpus = "0.5"
+    compute.memory = "2Gi"
+    compute.replicas = 3
+    compute.image = image
+    compute.gpu_anti_affinity = True
+
     service_name = f"{kt.config.username}-byo-{kind.lower()}"
     compute.service_name = service_name
 
@@ -161,13 +157,11 @@ async def test_byo_manifest_with_overrides(kind):
     assert compute.cpus == "500m"
     assert compute.memory == "2Gi"
     assert compute.replicas == 3
-    assert compute.labels["custom-label"] == "custom-value"
-    assert compute.annotations["test-annotation"] == "overridden-value"
-    assert compute.env_vars["TEST_ENV"] == "test_value"
     assert compute.server_image == image.image_id
     assert compute.gpu_anti_affinity is True
-    assert compute.env_vars["ORIGINAL_ENV"] == "overridden_value"
     assert compute.env_vars["CONTAINER_ENV"] == "container_value"
+    assert compute.labels["test-label"] == "test-app"
+    assert compute.annotations["test-annotation"] == "original-value"
 
     # Deploy and test function
     fn = await kt.fn(summer).to_async(compute)
@@ -210,23 +204,17 @@ async def test_byo_manifest_pytorchjob_ddp():
 
     # Use longer launch_timeout for large PyTorch image pulls (can be 5-10GB+)
     # Distributed execution is automatically detected from worker replicas in the manifest
-    compute = kt.Compute(
-        manifest=pytorch_manifest,
-        cpus="0.5",
-        memory="2Gi",
-        labels={"custom-label": "pytorch-ddp-test"},
-        annotations={"test-annotation": "pytorch-ddp-value"},
-        image=image,
-        launch_timeout=600,  # 10 minutes for large image pulls
-        distributed_config={"quorum_workers": 3},
-    )
+    compute = kt.Compute.from_manifest(pytorch_manifest)
+    compute.cpus = "0.5"
+    compute.memory = "2Gi"
+    compute.image = image
+    compute.launch_timeout = 600  # 10 minutes for large image pulls
+    compute.distributed_config = {"quorum_workers": 3}
 
     # Verify configuration
     assert compute.cpus == "500m"
     assert compute.memory == "2Gi"
     assert compute.replicas == 3
-    assert compute.labels["custom-label"] == "pytorch-ddp-test"
-    assert compute.annotations["test-annotation"] == "pytorch-ddp-value"
 
     # Verify service manager is CustomServiceManager
     assert compute.service_manager.__class__.__name__ == "CustomServiceManager"

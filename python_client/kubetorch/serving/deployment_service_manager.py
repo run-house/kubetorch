@@ -86,11 +86,11 @@ class DeploymentServiceManager(BaseServiceManager):
         return ["spec", "template"]
 
     def _update_launchtime_manifest(
-        self, manifest: dict, service_name: str, clean_module_name: str, deployment_timestamp: str
+        self, manifest: dict, service_name: str, clean_module_name: str, deployment_timestamp: str, deployment_id: str
     ) -> dict:
         """Update manifest with service name and deployment timestamp."""
         deployment = super()._update_launchtime_manifest(
-            manifest, service_name, clean_module_name, deployment_timestamp
+            manifest, service_name, clean_module_name, deployment_timestamp, deployment_id
         )
 
         deployment["spec"].setdefault("selector", {}).setdefault("matchLabels", {})

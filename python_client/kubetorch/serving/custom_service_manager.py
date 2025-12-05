@@ -145,7 +145,7 @@ class CustomServiceManager(BaseServiceManager):
         replica_specs = spec.get(self.replica_specs_key, {})
         return sum(replica_spec.get("replicas", 0) for replica_spec in replica_specs.values())
 
-    def set_replicas(self, manifest: dict, value: int) -> None:
+    def set_replicas(self, manifest: dict, value: int, distributed_config: dict = None) -> None:
         """Set replicas in manifest."""
         spec = manifest.setdefault("spec", {})
         worker_replicas = max(0, value - 1)  # Primary counts as 1
@@ -160,6 +160,33 @@ class CustomServiceManager(BaseServiceManager):
         if "template" not in worker_spec:
             primary_template = primary_spec.get("template", {})
             worker_spec["template"] = copy.deepcopy(primary_template)
+
+        # Update distributed config if provided
+        if distributed_config is not None:
+            import json
+
+            env_vars_to_set = {"KT_DISTRIBUTED_CONFIG": json.dumps(distributed_config)}
+
+            # Set in both primary and worker replica containers
+            for replica_name in [self.primary_replica, self.worker_replica]:
+                replica_spec = replica_specs.get(replica_name, {})
+                pod_spec = replica_spec.get("template", {}).get("spec", {})
+                containers = pod_spec.get("containers", [])
+
+                for container in containers:
+                    if "env" not in container:
+                        container["env"] = []
+                    env_updated = False
+                    for env_var in container["env"]:
+                        if env_var.get("name") == "KT_DISTRIBUTED_CONFIG":
+                            env_var["value"] = env_vars_to_set["KT_DISTRIBUTED_CONFIG"]
+                            env_updated = True
+                            break
+
+                    if not env_updated:
+                        container["env"].append(
+                            {"name": "KT_DISTRIBUTED_CONFIG", "value": env_vars_to_set["KT_DISTRIBUTED_CONFIG"]}
+                        )
 
     def _apply_template_metadata_updates(
         self,

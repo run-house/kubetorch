@@ -72,8 +72,6 @@ class Compute:
         shared_memory_limit: str = None,
         allowed_serialization: Optional[List[str]] = None,
         replicas: int = None,
-        manifest: Dict = None,
-        distributed_config: Dict = None,
         _skip_template_init: bool = False,
     ):
         """Initialize the compute requirements for a Kubetorch service.
@@ -123,16 +121,12 @@ class Compute:
                 Note: you can also control this timeout globally by setting the `KT_LAUNCH_TIMEOUT` environment variable.
             replicas (int, optional): Number of replicas to create for deployment-based services. Can also be set via
                 the `.distribute(workers=N)` method for distributed training. If not specified, defaults to 1 for new
-                manifests, or respects the replica configuration in BYO manifests. (Default: None)
+                manifests. (Default: None)
             working_dir (str, optional): Working directory to use inside the remote images. Must be an absolute path (e.g. `/kt`)
             shared_memory_limit (str, optional):  Maximum size of the shared memory filesystem (/dev/shm) available to
                 each pod created by the service. Value should be a Kubernetes quantity string, for example: "512Mi",
                 "2Gi", "1G", "1024Mi", "100M". If not provided, /dev/shm will default to the pod's memory limit (if set)
                 or up to half the node's RAM.
-            manifest (Dict, optional): Bring-your-own Kubernetes manifest. If provided, this manifest will be used as the base,
-                and all other kwargs will act as overrides.
-            distributed_config (Dict, optional): Distributed configuration dictionary, containing a subset of keys:
-                `distribution_type`, `quorum_timeout`, `quorum_workers`, `monitor_members`. (Default: None)
 
         Note:
             **Resource Specification Formats:**
@@ -196,87 +190,178 @@ class Compute:
         if _skip_template_init:
             return
 
+        template_vars = {
+            "cpus": cpus,
+            "memory": memory,
+            "disk_size": disk_size,
+            "gpus": gpus,
+            "queue": queue,
+            "priority_class_name": priority_class_name,
+            "gpu_type": gpu_type,
+            "gpu_memory": gpu_memory,
+            "namespace": namespace,
+            "image": image,
+            "volumes": volumes,
+            "node_selector": node_selector,
+            "tolerations": tolerations,
+            "env_vars": env_vars,
+            "secrets": secrets,
+            "freeze": freeze,
+            "service_account_name": service_account_name,
+            "image_pull_policy": image_pull_policy,
+            "inactivity_ttl": inactivity_ttl,
+            "gpu_anti_affinity": gpu_anti_affinity,
+            "launch_timeout": launch_timeout,
+            "working_dir": working_dir,
+            "shared_memory_limit": shared_memory_limit,
+            "allowed_serialization": allowed_serialization,
+        }
+
+        # Build pod spec with defaults
+        pod_spec, template_vars = self._build_kubetorch_pod_spec(config=template_vars)
+
+        # Prepare manifest annotations
+        manifest_annotations = annotations.copy() if annotations else {}
+        if self._kubeconfig_path is not None:
+            manifest_annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
+
+        # Build initial manifest based on deployment type
+        from kubetorch.serving.service_manager import DeploymentServiceManager
+
+        self._manifest = DeploymentServiceManager._build_base_manifest(
+            pod_spec=pod_spec,
+            namespace=template_vars["namespace"],
+            replicas=replicas if replicas else 1,
+            inactivity_ttl=template_vars["inactivity_ttl"],
+            custom_labels=labels or {},
+            custom_annotations=manifest_annotations,
+            custom_template=service_template or {},
+            scheduler_name=template_vars["scheduler_name"],
+            queue_name=template_vars["queue_name"],
+        )
+
+    @classmethod
+    def from_manifest(cls, manifest: Union[Dict, str]):
+        """Create a Compute instance from a user-provided Kubernetes manifest.
+
+        The user manifest is used as the baseline, and kubetorch-specific
+        configurations (env vars, labels, annotations, setup script) are merged in.
+        Missing values in the user manifest are filled with kubetorch defaults.
+
+        Args:
+            manifest: Kubernetes manifest dict or path to YAML file
+
+        Returns:
+            Compute instance ready for use
+
+        Examples:
+
+        .. code-block:: python
+
+            import kubetorch as kt
+
+            compute = kt.Compute.from_manifest(user_manifest)
+            compute.cpus = "2"  # Override after construction
+            compute.distribute(workers=3)
+        """
         # Load manifest from file if provided as a string
         if isinstance(manifest, str):
             with open(manifest, "r") as f:
                 manifest = yaml.safe_load(f)
-        user_manifest = manifest if manifest else None
-        if user_manifest:
-            if "kind" not in user_manifest or "apiVersion" not in user_manifest:
-                raise ValueError("Manifest must have a 'kind' and 'apiVersion' field")
 
-            user_manifest = copy.deepcopy(user_manifest)
-            user_manifest["metadata"] = user_manifest.get("metadata") or {}
-            user_manifest["spec"] = user_manifest.get("spec") or {}
+        # Validate manifest
+        if "kind" not in manifest or "apiVersion" not in manifest:
+            raise ValueError("Manifest must have a 'kind' and 'apiVersion' field")
 
-            self._manifest = user_manifest
+        # Create instance with minimal init
+        compute = cls(_skip_template_init=True)
+        compute._manifest = copy.deepcopy(manifest)
+        compute._manifest.setdefault("metadata", {})
+        compute._manifest.setdefault("spec", {})
 
-            # extract values from user manifest if not provided as kwargs
-            user_manifest_annotations = user_manifest["metadata"].get("annotations", {})
-            namespace = namespace or user_manifest["metadata"].get("namespace")
-            if not kubeconfig_path:
-                self._kubeconfig_path = user_manifest_annotations.get(serving_constants.KUBECONFIG_PATH_ANNOTATION)
-            if not inactivity_ttl:
-                inactivity_ttl = user_manifest_annotations.get(serving_constants.INACTIVITY_TTL_ANNOTATION)
+        # Extract kubeconfig_path from manifest annotations if present
+        user_annotations = compute._manifest["metadata"].get("annotations", {})
+        compute._kubeconfig_path = user_annotations.get(serving_constants.KUBECONFIG_PATH_ANNOTATION)
 
-        # extract values from user pod spec if it exists
-        extracted_values = self._extract_user_values() if user_manifest else {}
+        # Merge kubetorch defaults into user manifest
+        compute._build_and_merge_kubetorch_defaults()
 
-        # determine pod spec vars with priority: kwarg > user manifest > default
-        namespace = namespace or extracted_values.get("namespace") or globals.config.namespace
-        server_port = extracted_values.get("server_port") or serving_constants.DEFAULT_KT_SERVER_PORT
-        service_account_name = (
-            service_account_name
-            or extracted_values.get("service_account_name")
-            or serving_constants.DEFAULT_SERVICE_ACCOUNT_NAME
+        return compute
+
+    def _build_and_merge_kubetorch_defaults(self):
+        """Build minimal kubetorch manifest with defaults, then merge user manifest."""
+        # Build kubetorch pod spec with empty defaults
+        pod_spec, template_vars = self._build_kubetorch_pod_spec(config={})
+
+        # Merge kubetorch pod spec into user pod spec
+        # This keeps user values where they exist, adds kubetorch defaults where missing
+        self._merge_pod_specs(pod_spec)
+
+        manifest_annotations = {}
+        if self._kubeconfig_path is not None:
+            manifest_annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
+
+        # Apply kubetorch-specific metadata to user manifest
+        self.service_manager._apply_kubetorch_updates(
+            manifest=self._manifest,
+            custom_labels={},
+            custom_annotations=manifest_annotations,
+            scheduler_name=template_vars["scheduler_name"],
+            queue_name=template_vars["queue_name"],
+            inactivity_ttl=template_vars["inactivity_ttl"],
         )
-        otel_enabled = extracted_values.get("otel_enabled")
-        if otel_enabled is None:
-            otel_enabled = (
-                globals.config.cluster_config.get("otel_enabled", False) if globals.config.cluster_config else False
-            )
 
-        server_image = self._get_server_image(image or extracted_values.get("image"), otel_enabled, inactivity_ttl)
+    def _build_kubetorch_pod_spec(self, config: dict):
+        """
+        Build the kubetorch pod spec with defaults from config.
 
-        if gpus is not None:
-            gpus = None if gpus == 0 else gpus
-        else:
-            user_gpus = extracted_values.get("gpus")
-            gpus = None if user_gpus in (0, None) else user_gpus
-        gpu_config = self._load_gpu_config(gpus, gpu_memory, gpu_type)
+        For __init__: config contains all kwargs
+        For from_manifest: config contains only kwargs overrides (None for missing values)
+
+        Args:
+            config: Configuration dict with kwargs (None values mean use defaults)
+
+        Returns:
+            tuple: (pod_spec dict, template_vars dict)
+        """
+        # Use config values or defaults (no extracted_values needed - merge handles user values)
+        namespace = config.get("namespace") or globals.config.namespace
+        server_port = serving_constants.DEFAULT_KT_SERVER_PORT
+        service_account_name = config.get("service_account_name") or serving_constants.DEFAULT_SERVICE_ACCOUNT_NAME
+        otel_enabled = (
+            globals.config.cluster_config.get("otel_enabled", False) if globals.config.cluster_config else False
+        )
+
+        server_image = self._get_server_image(
+            config.get("image") or self._image, otel_enabled, config.get("inactivity_ttl")
+        )
+
+        gpus = None if config.get("gpus") == 0 else config.get("gpus")
+        gpu_config = self._load_gpu_config(gpus, config.get("gpu_memory"), config.get("gpu_type"))
         self._gpu_annotations = self._get_gpu_annotations(gpu_config)
 
-        user_resources = extracted_values.get("resources", {})
         requested_resources = self._get_requested_resources(
-            cpus or user_resources.get("cpus"),
-            memory or user_resources.get("memory"),
-            disk_size or user_resources.get("disk_size"),
+            config.get("cpus"),
+            config.get("memory"),
+            config.get("disk_size"),
             gpu_config,
         )
 
-        secret_env_vars, secret_volumes = self._extract_secrets(secrets, namespace)
-        volume_mounts, volume_specs = self._volumes_for_pod_template(volumes)
+        secret_env_vars, secret_volumes = self._extract_secrets(config.get("secrets") or self._secrets, namespace)
+        volume_mounts, volume_specs = self._volumes_for_pod_template(config.get("volumes") or self._volumes)
 
-        if queue:
-            scheduler_name = self._get_scheduler_name(queue)
+        if config.get("queue"):
+            scheduler_name = self._get_scheduler_name(config["queue"])
         else:
-            queue = extracted_values.get("queue")
-            scheduler_name = extracted_values.get("scheduler_name") or self._get_scheduler_name(queue)
-        queue_name = queue if queue else globals.config.queue
+            scheduler_name = None
+        queue_name = config.get("queue") if config.get("queue") else globals.config.queue
 
-        user_node_selector = extracted_values.get("node_selector", {})
-        node_selector = self._get_node_selector(
-            (node_selector or user_node_selector).copy() if (node_selector or user_node_selector) else {}, gpu_type
-        )
+        node_selector = self._get_node_selector(config.get("node_selector") or {}, config.get("gpu_type"))
 
-        user_tolerations = extracted_values.get("tolerations", [])
-        all_tolerations = self._get_tolerations(gpus, tolerations or user_tolerations)
+        all_tolerations = self._get_tolerations(gpus, config.get("tolerations") or [])
 
-        user_env_vars = extracted_values.get("env_vars", {})
-        env_vars = env_vars or {}
-        env_vars = {**user_env_vars, **env_vars}
+        env_vars = config.get("env_vars") or {}
         if os.getenv("KT_LOG_LEVEL") and not env_vars.get("KT_LOG_LEVEL"):
-            # If KT_LOG_LEVEL is set, add it to env vars so the log level is set on the server
             env_vars["KT_LOG_LEVEL"] = os.getenv("KT_LOG_LEVEL")
 
         template_vars = {
@@ -290,23 +375,20 @@ class Compute:
             "volume_mounts": volume_mounts,
             "volume_specs": volume_specs,
             "service_account_name": service_account_name,
-            "config_env_vars": self._get_config_env_vars(allowed_serialization or ["json"]),
-            "image_pull_policy": image_pull_policy or extracted_values.get("image_pull_policy"),
+            "config_env_vars": self._get_config_env_vars(config.get("allowed_serialization") or ["json"]),
+            "image_pull_policy": config.get("image_pull_policy"),
             "namespace": namespace,
-            "freeze": freeze if freeze is not None else extracted_values.get("freeze", False),
-            "gpu_anti_affinity": gpu_anti_affinity
-            if gpu_anti_affinity is not None
-            else extracted_values.get("gpu_anti_affinity"),
-            "working_dir": working_dir or extracted_values.get("working_dir"),
+            "freeze": config.get("freeze", False),
+            "gpu_anti_affinity": config.get("gpu_anti_affinity"),
+            "working_dir": config.get("working_dir"),
             "tolerations": all_tolerations,
-            "shm_size_limit": shared_memory_limit or extracted_values.get("shared_memory_limit"),
-            "priority_class_name": priority_class_name or extracted_values.get("priority_class_name"),
-            "launch_timeout": self._get_launch_timeout(launch_timeout or extracted_values.get("launch_timeout")),
+            "shm_size_limit": config.get("shared_memory_limit"),
+            "priority_class_name": config.get("priority_class_name"),
+            "launch_timeout": self._get_launch_timeout(config.get("launch_timeout")),
             "queue_name": queue_name,
             "scheduler_name": scheduler_name,
-            "inactivity_ttl": inactivity_ttl,
+            "inactivity_ttl": config.get("inactivity_ttl"),
             "otel_enabled": otel_enabled,
-            # launch time arguments
             "setup_script": "",
         }
 
@@ -320,91 +402,7 @@ class Compute:
             **template_vars,
         )
 
-        manifest_annotations = annotations.copy() if annotations else {}
-        if self._kubeconfig_path is not None:
-            manifest_annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
-
-        if user_manifest:
-            from kubetorch.serving.custom_service_manager import CustomServiceManager
-
-            # Merge KT-specific pod spec into user pod spec
-            self._merge_pod_specs(pod_spec)
-
-            # Apply KT-specific metadata to user manifest
-            self.service_manager._apply_kubetorch_updates(
-                manifest=self._manifest,
-                custom_labels=labels or {},
-                custom_annotations=manifest_annotations,
-                scheduler_name=scheduler_name,
-                queue_name=queue_name,
-                inactivity_ttl=inactivity_ttl,
-            )
-            # Override user manifest with specified kwargs
-            if namespace and namespace != self.namespace:
-                self.namespace = namespace
-            if replicas and replicas != self.replicas:
-                self.replicas = replicas
-            if self.replicas > 1 and not distributed_config and self.kind in CustomServiceManager.SUPPORTED_KINDS:
-                distributed_config = {
-                    "distribution_type": "spmd",
-                    "quorum_timeout": self.launch_timeout,
-                    "quorum_workers": self.replicas,
-                }
-        else:
-            from kubetorch.serving.service_manager import DeploymentServiceManager
-
-            # Build initial manifest based on deployment type
-            self._manifest = DeploymentServiceManager._build_base_manifest(
-                pod_spec=pod_spec,
-                namespace=namespace,
-                replicas=replicas if replicas else 1,
-                inactivity_ttl=inactivity_ttl,
-                custom_labels=labels or {},
-                custom_annotations=manifest_annotations,
-                custom_template=service_template or {},
-                scheduler_name=scheduler_name,
-                queue_name=queue_name,
-            )
-
-        if distributed_config:
-            distribution_type = distributed_config.setdefault("distribution_type", "spmd")
-            workers = distributed_config.get("workers")
-            quorum_workers = distributed_config.get("quorum_workers")
-            if not quorum_workers:
-                if workers:
-                    distributed_config["quorum_workers"] = workers
-                elif self.replicas:
-                    distributed_config["quorum_workers"] = self.replicas
-            elif workers or quorum_workers:
-                self.replicas = workers or quorum_workers
-
-            # Edge case: if distribution_type is "ray" but manifest is "Deployment", convert to RayCluster
-            if distribution_type == "ray" and self.kind == "Deployment":
-                distribute_kwargs = {
-                    k: v
-                    for k, v in distributed_config.items()
-                    if k not in ["distribution_type", "quorum_timeout", "quorum_workers", "monitor_members"]
-                }
-                self.distribute(
-                    distribution_type="ray",
-                    workers=self.replicas or (distributed_config.get("quorum_workers", 0) + 1) or 1,
-                    quorum_timeout=distributed_config.get("quorum_timeout") or self.launch_timeout,
-                    quorum_workers=distributed_config.get("quorum_workers"),
-                    monitor_members=distributed_config.get("monitor_members"),
-                    **distribute_kwargs,
-                )
-            else:
-                self.distributed_config = distributed_config  # Set env var
-
-    @classmethod
-    def from_template(cls, service_info: dict):
-        """Create a Compute object from a deployed Kubernetes resource."""
-        if "resource" not in service_info:
-            raise ValueError("service_info missing required key: resource")
-
-        compute = cls(_skip_template_init=True)
-        compute._manifest = service_info["resource"]
-        return compute
+        return pod_spec, template_vars
 
     # ----------------- Helper Methods ----------------- #
 
@@ -754,16 +752,10 @@ class Compute:
             container["resources"] = {}
 
         # Ensure requests dict exists
-        if "requests" not in container["resources"]:
+        if not container["resources"].get("requests"):
             container["resources"]["requests"] = {}
 
-        # Ensure limits dict exists
-        if "limits" not in container["resources"]:
-            container["resources"]["limits"] = {}
-
-        # Set both requests and limits to the same value
         container["resources"]["requests"][resource_name] = value
-        container["resources"]["limits"][resource_name] = value
 
     def _get_container_resource(self, resource_name: str) -> Optional[str]:
         resources = self._container().get("resources", {})
@@ -850,6 +842,7 @@ class Compute:
         Args:
             value: CPU value (e.g., "2", "1000m", "0.5")
         """
+        value = RequestedPodResources.cpu_for_resource_request(value)
         self._set_container_resource("cpu", value)
 
     @property
@@ -862,6 +855,7 @@ class Compute:
         Args:
             value: Memory value (e.g., "4Gi", "2048Mi")
         """
+        value = RequestedPodResources.memory_for_resource_request(value)
         self._set_container_resource("memory", value)
 
     @property
@@ -943,7 +937,7 @@ class Compute:
 
         for volume in self.pod_spec["volumes"]:
             if volume.get("name") == "dshm" and "emptyDir" in volume:
-                empty_dir = volume["emptyDir"]
+                empty_dir = volume["emptyDir"] or {}
                 return empty_dir.get("sizeLimit")
 
         return None
@@ -1162,6 +1156,18 @@ class Compute:
                                     return True
         return False
 
+    @gpu_anti_affinity.setter
+    def gpu_anti_affinity(self, value: bool):
+        if "affinity" not in self.pod_spec:
+            self.pod_spec["affinity"] = {}
+        if "nodeAffinity" not in self.pod_spec["affinity"]:
+            self.pod_spec["affinity"]["nodeAffinity"] = {}
+        if "requiredDuringSchedulingIgnoredDuringExecution" not in self.pod_spec["affinity"]["nodeAffinity"]:
+            self.pod_spec["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"] = {}
+        self.pod_spec["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"][
+            "nodeSelectorTerms"
+        ] = [{"matchExpressions": [{"key": "nvidia.com/gpu", "operator": "DoesNotExist"}]}]
+
     @property
     def concurrency(self):
         return self.pod_spec.get("containerConcurrency")
@@ -1346,6 +1352,13 @@ class Compute:
 
         from kubetorch.serving.custom_service_manager import CustomServiceManager
 
+        # Populate defaults if config is missing values
+        workers = config.get("workers")
+        config["distribution_type"] = config.get("distribution_type", "spmd")
+        config["quorum_timeout"] = config.get("quorum_timeout", self.launch_timeout)
+        config["quorum_workers"] = config.get("quorum_workers", workers or self.replicas)
+        self.replicas = workers or config["quorum_workers"]
+
         # Serialize the config to JSON, ensuring it's always a string
         # Check for non-serializable values and raise an error with details
         non_serializable_keys = []
@@ -1447,7 +1460,22 @@ class Compute:
 
     @replicas.setter
     def replicas(self, value: int):
-        self.service_manager.set_replicas(self._manifest, value)
+        # Set replicas in manifest and applies to relevant containers
+        from kubetorch.serving.custom_service_manager import CustomServiceManager
+
+        if isinstance(self.service_manager, CustomServiceManager):
+            # For kubeflow training service managers, also update distributed config
+            distributed_config = self.distributed_config
+
+            if not distributed_config:
+                distributed_config = {
+                    "distribution_type": "spmd",
+                    "quorum_timeout": self.launch_timeout,
+                }
+            distributed_config["quorum_workers"] = value
+            self.service_manager.set_replicas(self._manifest, value, distributed_config=distributed_config)
+        else:
+            self.service_manager.set_replicas(self._manifest, value)
 
     @property
     def annotations(self):
@@ -1475,22 +1503,18 @@ class Compute:
     def _get_requested_resources(self, cpus, memory, disk_size, gpu_config):
         """Return requested resources."""
         requests = {}
-        limits = {}
 
         # Add CPU if specified
         if cpus:
             requests["cpu"] = RequestedPodResources.cpu_for_resource_request(cpus)
-            limits["cpu"] = requests["cpu"]
 
         # Add Memory if specified
         if memory:
             requests["memory"] = RequestedPodResources.memory_for_resource_request(memory)
-            limits["memory"] = requests["memory"]
 
         # Add Storage if specified
         if disk_size:
             requests["ephemeral-storage"] = disk_size
-            limits["ephemeral-storage"] = disk_size
 
         # Add GPU if specified
         gpu_config: dict = gpu_config
@@ -1504,18 +1528,14 @@ class Compute:
             elif gpu_config.get("sharing_type") == "fraction":
                 # For fractional GPUs, we still need to request the base GPU resource
                 requests["nvidia.com/gpu"] = "1"
-                limits["nvidia.com/gpu"] = "1"
             elif not gpu_config.get("sharing_type"):
                 # Whole GPUs
                 requests["nvidia.com/gpu"] = str(gpu_count)
-                limits["nvidia.com/gpu"] = str(gpu_count)
 
         # Only include non-empty dicts
         resources = {}
         if requests:
             resources["requests"] = requests
-        if limits:
-            resources["limits"] = limits
 
         return V1ResourceRequirements(**resources).to_dict()
 
