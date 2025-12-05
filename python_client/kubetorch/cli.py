@@ -257,7 +257,7 @@ def kt_check(
 
         # 5. GPU + autoscaler test (if GPU requested)
         gpu_requested = any(
-            c.resources.limits and "nvidia.com/gpu" in c.resources.limits for c in deploy_pod.spec.containers
+            c.resources.requests and "nvidia.com/gpu" in c.resources.requests for c in deploy_pod.spec.containers
         )
         if gpu_requested:
             gpus_configured = False
@@ -393,6 +393,124 @@ def kt_config(
         raise typer.Exit(1)
 
 
+def _connect_pdb_websocket(namespace: str, pod: str, port: int, pod_ip: str = None):
+    """Connect to a PDB WebSocket PTY server running in a pod."""
+    import asyncio
+
+    import websockets
+
+    # Check if we're running inside the cluster
+    in_cluster = is_running_in_kubernetes()
+
+    async def run_websocket_pty():
+        """Run the WebSocket PTY client."""
+        # Check if running in the same pod we're debugging
+        current_pod = os.environ.get("POD_NAME")
+        same_pod = in_cluster and current_pod == pod
+
+        # Determine WebSocket URL based on whether we're in-cluster or not
+        if same_pod:
+            # Running in the same pod - connect to localhost
+            ws_url = f"ws://localhost:{port}"
+            console.print(f"[blue]Connecting to local debug server on port {port}...[/blue]")
+        elif in_cluster and pod_ip:
+            # Direct connection to pod IP (no port forward needed)
+            ws_url = f"ws://{pod_ip}:{port}"
+            console.print(f"[blue]Connecting directly to pod {pod} ({pod_ip}) in cluster...[/blue]")
+        elif not in_cluster:
+            # Use port forwarding for external connections
+            ws_url = f"ws://localhost:{port}"
+            console.print(f"[blue]Setting up port forward to {pod}:{port}...[/blue]")
+        else:
+            # In cluster but no pod IP provided
+            console.print("[red]Error: Running in cluster but no --pod-ip provided.[/red]")
+            console.print("[yellow]Please copy the full kt debug command from the breakpoint output.[/yellow]")
+            raise typer.Exit(1)
+
+        async def connect_and_run():
+            """Connect to WebSocket and run the PDB session."""
+            console.print(f"[green]Connecting to PDB session at {ws_url}...[/green]")
+
+            try:
+                async with websockets.connect(ws_url) as websocket:
+                    console.print("[green]Connected! PDB session active. Press Ctrl+D or type 'q' to exit.[/green]")
+
+                    async def send_input():
+                        """Read lines from stdin and send to WebSocket."""
+                        loop = asyncio.get_event_loop()
+                        try:
+                            while True:
+                                # Read a line from stdin in a thread to not block the event loop
+                                line = await loop.run_in_executor(None, sys.stdin.readline)
+                                if not line:
+                                    # EOF (Ctrl+D)
+                                    break
+                                await websocket.send(line)
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception:
+                            pass
+
+                    async def receive_output():
+                        """Receive output from the WebSocket and write to stdout."""
+                        try:
+                            async for message in websocket:
+                                if message:
+                                    sys.stdout.write(message)
+                                    sys.stdout.flush()
+                        except websockets.exceptions.ConnectionClosed:
+                            pass
+                        except asyncio.CancelledError:
+                            pass
+
+                    # Run both tasks concurrently
+                    send_task = asyncio.create_task(send_input())
+                    receive_task = asyncio.create_task(receive_output())
+
+                    try:
+                        # Wait for either task to complete
+                        done, pending = await asyncio.wait(
+                            [send_task, receive_task],
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        # Cancel the other task
+                        for task in pending:
+                            task.cancel()
+                            try:
+                                await task
+                            except asyncio.CancelledError:
+                                pass
+                    except asyncio.CancelledError:
+                        send_task.cancel()
+                        receive_task.cancel()
+
+            except websockets.exceptions.WebSocketException as e:
+                console.print(f"[red]WebSocket error: {e}[/red]")
+                console.print("[yellow]Make sure the debug server is running in the pod.[/yellow]")
+                return
+            except KeyboardInterrupt:
+                pass
+
+            console.print("\n[yellow]PDB session ended.[/yellow]")
+
+        # If not in cluster and not same pod, wrap with port forward context manager
+        if not in_cluster and not same_pod:
+            with port_forward_to_pod(
+                namespace=namespace,
+                pod_name=pod,
+                local_port=port,
+                remote_port=port,
+                health_endpoint=None,  # No health check needed
+            ):
+                await connect_and_run()
+        else:
+            # Direct connection (either in-cluster or same pod), no port forward needed
+            await connect_and_run()
+
+    # Run the async function
+    asyncio.run(run_websocket_pty())
+
+
 @app.command("debug")
 def kt_debug(
     pod: str = typer.Argument(..., help="Pod name"),
@@ -402,39 +520,54 @@ def kt_debug(
         "--namespace",
     ),
     port: int = typer.Option(DEFAULT_DEBUG_PORT, help="Debug port used for remote debug server"),
+    mode: str = typer.Option("pdb", "--mode", help="Debug mode: 'pdb' (default) or 'pdb-ui'"),
+    pod_ip: str = typer.Option(None, "--pod-ip", help="Pod IP address for in-cluster connections"),
 ):
     """Start an interactive debugging session on the pod, which will connect to the debug server inside the service.
-    Before running this command, you must call a method on the service with pdb=True or add a
-    kt.deep_breakpoint() call into your code to enable debugging.
+    Before running this command, you must call a method on the service with debug=True or add a
+    breakpoint() call into your code to enable debugging.
+
+    Debug modes:
+    - "pdb" (default): Standard PDB over WebSocket PTY (works over SSH and inside cluster)
+    - "pdb-ui": Web-based PDB UI (requires running locally)
     """
     import webbrowser
 
-    if is_running_in_kubernetes():
+    debug_mode = mode.lower()
+
+    # Check if running in Kubernetes - only block for pdb-ui mode
+    if is_running_in_kubernetes() and debug_mode == "pdb-ui":
+        console.print("[red]The pdb-ui debug mode requires running locally (cannot open browser in cluster).[/red]")
         console.print(
-            "[red]Debugging is not supported when running inside Kubernetes. Please run this command locally.[/red]"
+            "[yellow]Try using pdb mode instead (which must be changed via KT_DEBUG_MODE or DebugConfig), which works inside the cluster.[/yellow]"
         )
         raise typer.Exit(1)
 
-    # Use the base path of web-pdb server as health endpoint because we're port-forwarding straight into the pod
-    with port_forward_to_pod(
-        namespace=namespace,
-        pod_name=pod,
-        local_port=port,
-        remote_port=port,
-        health_endpoint="/",
-    ):
-        debug_ui_url = f"http://localhost:{port}"
-        console.print(f"Opening debug UI at [blue]{debug_ui_url}[/blue]")
-        webbrowser.open(debug_ui_url)
-        # Wait for the user to finish debugging
-        console.print("[yellow]Press Ctrl+C to stop the debugging session and close the UI.[/yellow]")
-        # Wait for a Ctrl+C to exit the debug session
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Debugging session ended.[/yellow]")
-            raise typer.Exit(0)
+    if debug_mode == "pdb-ui":
+        # Use web-based PDB UI
+        with port_forward_to_pod(
+            namespace=namespace,
+            pod_name=pod,
+            local_port=port,
+            remote_port=port,
+            health_endpoint="/",
+        ):
+            debug_ui_url = f"http://localhost:{port}"
+            console.print(f"Opening debug UI at [blue]{debug_ui_url}[/blue]")
+            webbrowser.open(debug_ui_url)
+            console.print("[yellow]Press Ctrl+C to stop the debugging session and close the UI.[/yellow]")
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Debugging session ended.[/yellow]")
+                raise typer.Exit(0)
+    elif debug_mode == "pdb":
+        # Use standard PDB over WebSocket PTY
+        _connect_pdb_websocket(namespace, pod, port, pod_ip)
+    else:
+        console.print(f"[red]Unknown debug mode: {debug_mode}. Use 'pdb' or 'pdb-ui'.[/red]")
+        raise typer.Exit(1)
 
 
 @app.command("deploy")

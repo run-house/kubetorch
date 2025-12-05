@@ -127,6 +127,15 @@ class SlowNumpyArray:
     def factory_constructor(cls, size=5):
         return cls(size=size)
 
+    def method_with_breakpoint(self):
+        """Method that includes a breakpoint for testing debug functionality."""
+
+        x = 42
+        breakpoint()  # This will trigger the debug server
+        print(x)
+        print("Stop point")
+        return f"Breakpoint method executed, x={x}"
+
 
 class TorchArray:
     def __init__(self, size=5):

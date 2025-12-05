@@ -378,3 +378,330 @@ async def test_async_to():
     assert asyncio.iscoroutine(coroutine)
     result = await coroutine
     assert result == 3
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_debug_modes(remote_cls, remote_fn, capsys):
+    """Test various debug modes and verify debug server cleanup.
+
+    This test verifies that:
+    1. The PDB WebSocket server starts and accepts connections via kt debug locally
+    2. PDB prompt is sent to the client and stepping works
+    3. Client can send commands ('c' to continue) and the method completes
+    4. Server cleanup works correctly after debugging
+    5. In-cluster WebSocket connection works via kubectl exec
+    """
+    import asyncio
+    import re
+    import subprocess
+
+    import kubetorch as kt
+
+    # Get test pod info for running WebSocket tests from inside the cluster
+    test_pod = remote_fn.compute.pod_names()[0]
+    test_namespace = remote_fn.compute.namespace
+
+    # Test 1: Call method with breakpoint() inside, connect with kt debug locally
+    print("\n=== Test 1: Method with breakpoint() - local kt debug ===")
+
+    # Start the call in a background task (it will block at breakpoint)
+    async def call_breakpoint_method():
+        return await remote_cls.method_with_breakpoint(async_=True, stream_logs=True)
+
+    task = asyncio.create_task(call_breakpoint_method())
+
+    # Give it time to hit the breakpoint and print the kt debug command
+    await asyncio.sleep(3)
+
+    # Capture the output to get the kt debug command
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    print(f"Captured output:\n{output}")
+
+    # Verify the kt debug command is printed
+    assert "kt debug" in output, "kt debug command should be printed"
+    assert "--mode pdb" in output, "Should use pdb mode by default"
+    assert "--pod-ip" in output, "Should include pod IP for in-cluster usage"
+
+    # Extract the full kt debug command
+    kt_debug_match = re.search(
+        r"kt debug ([\w-]+) --port (\d+) --namespace ([\w-]+) --mode pdb(?:\s+--pod-ip ([\d.]+))?", output
+    )
+    assert kt_debug_match, f"Should find complete kt debug command in output: {output}"
+    debug_pod = kt_debug_match.group(1)
+    debug_port = int(kt_debug_match.group(2))
+    debug_namespace = kt_debug_match.group(3)
+    pod_ip = kt_debug_match.group(4)
+    print(f"Found: pod={debug_pod}, port={debug_port}, namespace={debug_namespace}, pod_ip={pod_ip}")
+
+    # Run kt debug locally as a subprocess - send 'c\n' to continue after getting prompt
+    kt_debug_cmd = [
+        "kt",
+        "debug",
+        debug_pod,
+        "--port",
+        str(debug_port),
+        "--namespace",
+        debug_namespace,
+        "--mode",
+        "pdb",
+    ]
+    print(f"Running: {' '.join(kt_debug_cmd)}")
+
+    import fcntl
+    import os
+
+    proc = subprocess.Popen(
+        kt_debug_cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        # Use binary mode for non-blocking I/O compatibility
+    )
+
+    # Set stdout to non-blocking mode
+    fd = proc.stdout.fileno()
+    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+    # Read output until we see PDB prompt, then send 'c' to continue
+    import time
+
+    output_buffer = b""
+    start_time = time.time()
+    timeout = 30
+    got_prompt = False
+
+    while time.time() - start_time < timeout:
+        try:
+            chunk = proc.stdout.read()
+            if chunk:
+                output_buffer += chunk
+                print(f"kt debug output: {repr(chunk)}")
+                if b"(Pdb)" in output_buffer and not got_prompt:
+                    got_prompt = True
+                    print("Got PDB prompt, sending 'c' to continue...")
+                    proc.stdin.write(b"c\n")
+                    proc.stdin.flush()
+                    # Give it a moment to process and exit
+                    await asyncio.sleep(1)
+                    break
+        except BlockingIOError:
+            # No data available yet
+            pass
+
+        if proc.poll() is not None:
+            # Process exited, read any remaining output
+            try:
+                chunk = proc.stdout.read()
+                if chunk:
+                    output_buffer += chunk
+                    print(f"kt debug final output: {repr(chunk)}")
+            except BlockingIOError:
+                pass
+            break
+
+        await asyncio.sleep(0.1)
+
+    # Clean up subprocess
+    if proc.poll() is None:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+    stderr_output = b""
+    try:
+        stderr_output = proc.stderr.read() or b""
+    except BlockingIOError:
+        pass
+    print(f"stderr: {stderr_output.decode('utf-8', errors='replace')}")
+
+    output_str = output_buffer.decode("utf-8", errors="replace")
+    assert got_prompt, f"Should have received PDB prompt. Output: {output_str}"
+
+    # Wait for the task to complete (it should have continued after we sent 'c')
+    try:
+        result = await asyncio.wait_for(task, timeout=10.0)
+        print(f"Method returned: {result}")
+        assert "Breakpoint method executed" in result, f"Unexpected result: {result}"
+    except asyncio.TimeoutError:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        raise AssertionError("Method did not complete after sending 'c' command")
+
+    print("Test 1 PASSED: PDB works correctly with local kt debug!")
+
+    # Verify server cleanup: make a normal call to ensure service isn't locked up
+    print("\n=== Verifying server cleanup after Test 1 ===")
+    await remote_cls.to_async(remote_cls.compute)
+    result = remote_cls.print_and_log(0)
+    assert "Hello from the cluster!" in result
+    print("Server cleanup verified - service is responsive!")
+
+    # Test 1b: Call method with breakpoint() again, connect from inside cluster via kubectl exec
+    print("\n=== Test 1b: Method with breakpoint() - in-cluster kt debug ===")
+
+    task1b = asyncio.create_task(call_breakpoint_method())
+
+    # Give it time to hit the breakpoint
+    await asyncio.sleep(3)
+
+    # Capture the output to get the full kt debug command
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    print(f"Captured output:\n{output}")
+
+    # Extract the full kt debug command including --pod-ip
+    kt_debug_match = re.search(
+        r"kt debug ([\w-]+) --port (\d+) --namespace ([\w-]+) --mode pdb --pod-ip ([\d.]+)", output
+    )
+    assert kt_debug_match, f"Should find complete kt debug command with pod-ip in output: {output}"
+    debug_pod = kt_debug_match.group(1)
+    debug_port = kt_debug_match.group(2)
+    debug_namespace = kt_debug_match.group(3)
+    pod_ip = kt_debug_match.group(4)
+    print(f"Found: pod={debug_pod}, port={debug_port}, namespace={debug_namespace}, pod_ip={pod_ip}")
+
+    # Run kt debug from inside the test pod, piping 'c' to continue
+    # Use --pod-ip since we're connecting from inside the cluster
+    kt_debug_cmd = f"echo 'c' | kt debug {debug_pod} --port {debug_port} --namespace {debug_namespace} --mode pdb --pod-ip {pod_ip}"
+    exec_cmd = ["kubectl", "exec", "-n", test_namespace, test_pod, "--", "bash", "-c", kt_debug_cmd]
+    print(f"Running from pod {test_pod}: {kt_debug_cmd}")
+
+    proc = subprocess.run(exec_cmd, capture_output=True, text=True, timeout=30)
+    print(f"kt debug stdout: {proc.stdout}")
+    print(f"kt debug stderr: {proc.stderr}")
+
+    # Verify we got the PDB prompt (indicates successful connection)
+    assert (
+        "(Pdb)" in proc.stdout or "Connected" in proc.stdout
+    ), f"Should see PDB prompt or connection message: {proc.stdout}"
+
+    # Wait for the task to complete
+    try:
+        result = await asyncio.wait_for(task1b, timeout=10.0)
+        print(f"Method returned: {result}")
+        assert "Breakpoint method executed" in result, f"Unexpected result: {result}"
+    except asyncio.TimeoutError:
+        task1b.cancel()
+        try:
+            await task1b
+        except asyncio.CancelledError:
+            pass
+        raise AssertionError("Method did not complete after sending 'c' command")
+
+    print("Test 1b PASSED: PDB works correctly with in-cluster kt debug!")
+
+    # Verify server cleanup again
+    print("\n=== Verifying server cleanup after Test 1b ===")
+    await remote_cls.to_async(remote_cls.compute)
+    result = remote_cls.print_and_log(1)
+    assert "Hello from the cluster!" in result
+    print("Server cleanup verified - service is responsive!")
+
+    # Test 2: Call existing method with debug=True
+    print("\n=== Test 2: Method call with debug=True ===")
+
+    async def call_with_debug_true():
+        return await remote_cls.print_and_log(2, debug=True, async_=True, stream_logs=True)
+
+    task2 = asyncio.create_task(call_with_debug_true())
+
+    # Give it time to hit the breakpoint
+    await asyncio.sleep(3)
+
+    # Capture the output
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    print(f"Captured output:\n{output}")
+
+    # Verify the kt debug command is printed
+    assert "kt debug" in output, "kt debug command should be printed for debug=True"
+    assert "--mode pdb" in output, "Should use pdb mode by default"
+
+    # Extract the full kt debug command
+    kt_debug_match = re.search(
+        r"kt debug ([\w-]+) --port (\d+) --namespace ([\w-]+) --mode pdb --pod-ip ([\d.]+)", output
+    )
+    assert kt_debug_match, f"Should find complete kt debug command with pod-ip: {output}"
+    debug_pod = kt_debug_match.group(1)
+    debug_port = kt_debug_match.group(2)
+    debug_namespace = kt_debug_match.group(3)
+    pod_ip = kt_debug_match.group(4)
+
+    # Run kt debug from inside the test pod, piping 'c' to continue
+    kt_debug_cmd = f"echo 'c' | kt debug {debug_pod} --port {debug_port} --namespace {debug_namespace} --mode pdb --pod-ip {pod_ip}"
+    exec_cmd = ["kubectl", "exec", "-n", test_namespace, test_pod, "--", "bash", "-c", kt_debug_cmd]
+    print(f"Running from pod {test_pod}: {kt_debug_cmd}")
+
+    proc = subprocess.run(exec_cmd, capture_output=True, text=True, timeout=30)
+    print(f"kt debug stdout: {proc.stdout}")
+    print(f"kt debug stderr: {proc.stderr}")
+
+    # Verify we got the PDB prompt (indicates successful connection)
+    assert (
+        "(Pdb)" in proc.stdout or "Connected" in proc.stdout
+    ), f"Should see PDB prompt or connection message: {proc.stdout}"
+
+    # Wait for the task to complete
+    try:
+        result = await asyncio.wait_for(task2, timeout=10.0)
+        print(f"Method returned: {result}")
+        assert "Hello from the cluster!" in result
+    except asyncio.TimeoutError:
+        task2.cancel()
+        try:
+            await task2
+        except asyncio.CancelledError:
+            pass
+        raise AssertionError("Method did not complete after sending 'c' command")
+
+    print("Test 2 PASSED: PDB WebSocket works correctly with debug=True!")
+
+    # Test server cleanup
+    print("\n=== Testing server cleanup after debug=True ===")
+    await remote_cls.to_async(remote_cls.compute)
+    result = remote_cls.print_and_log(3)
+    assert "Hello from the cluster!" in result
+
+    # Test 3: Call with debug=kt.DebugConfig(mode="pdb-ui")
+    print("\n=== Test 3: Method call with debug=kt.DebugConfig(mode='pdb-ui') ===")
+
+    async def call_with_debug_config():
+        return await remote_cls.print_and_log(4, debug=kt.DebugConfig(mode="pdb-ui"), async_=True, stream_logs=True)
+
+    task3 = asyncio.create_task(call_with_debug_config())
+
+    # Give it time to set up the debug server
+    await asyncio.sleep(5)
+
+    # pdb-ui mode uses web-pdb which has a different interface (HTTP, not WebSocket for stdin/stdout)
+    # We just verify it doesn't crash and can be cleaned up
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    print(f"Captured output:\n{output}")
+
+    # Should see pdb-ui mode in the kt debug command
+    assert "kt debug" in output, "kt debug command should be printed"
+    assert "--mode pdb-ui" in output, "Should use pdb-ui mode when specified"
+
+    # Cancel the task (pdb-ui requires a browser, which we can't test here)
+    task3.cancel()
+    try:
+        await task3
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        # Expected: server might return 502 if web-pdb blocks
+        print(f"Task 3 ended with: {type(e).__name__}: {e}")
+
+    # Final server cleanup test
+    print("\n=== Testing server cleanup after debug=DebugConfig(mode='pdb-ui') ===")
+    await remote_cls.to_async(remote_cls.compute)
+    result = remote_cls.print_and_log(4)
+    assert "Hello from the cluster!" in result
+
+    print("\n=== All debug tests passed! ===")

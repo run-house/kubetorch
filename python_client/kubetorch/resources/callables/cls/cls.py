@@ -64,8 +64,14 @@ class Cls(Module):
         client = self._client(method_name=method_name)
         stream_logs = kwargs.pop("stream_logs", None)
         stream_metrics = kwargs.pop("stream_metrics", None)
-        pdb = kwargs.pop("pdb", None)
-        if pdb:
+        debug = kwargs.pop("debug", None)
+        pdb = kwargs.pop("pdb", None)  # Keep for backward compatibility
+
+        # debug takes precedence over pdb
+        if debug is None and pdb is not None:
+            debug = pdb
+
+        if debug:
             logger.info(f"Debugging remote cls {self.name}.{method_name}")
         elif stream_logs:
             logger.info(f"Calling remote cls {self.name}.{method_name}")
@@ -76,7 +82,8 @@ class Cls(Module):
             stream_metrics=stream_metrics,
             headers=self.request_headers,
             body={"args": list(args), "kwargs": kwargs},
-            pdb=pdb,
+            debug=debug,
+            pdb=pdb,  # Keep for backward compatibility
             serialization=kwargs.pop("serialization", self.serialization),
         )
         return response
@@ -86,8 +93,14 @@ class Cls(Module):
         client = self._client(method_name=method_name)
         stream_logs = kwargs.pop("stream_logs", None)
         stream_metrics = kwargs.pop("stream_metrics", None)
-        pdb = kwargs.pop("pdb", None)
-        if pdb:
+        debug = kwargs.pop("debug", None)
+        pdb = kwargs.pop("pdb", None)  # Keep for backward compatibility
+
+        # debug takes precedence over pdb
+        if debug is None and pdb is not None:
+            debug = pdb
+
+        if debug:
             logger.info(f"Debugging remote cls {self.name}.{method_name} (async)")
         elif stream_logs:
             logger.info(f"Calling remote cls {self.name}.{method_name} (async)")
@@ -98,7 +111,8 @@ class Cls(Module):
             stream_metrics=stream_metrics,
             headers=self.request_headers,
             body={"args": list(args), "kwargs": kwargs},
-            pdb=pdb,
+            debug=debug,
+            pdb=pdb,  # Keep for backward compatibility
             serialization=kwargs.pop("serialization", self.serialization),
         )
         return response

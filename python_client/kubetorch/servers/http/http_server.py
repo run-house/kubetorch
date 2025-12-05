@@ -1368,6 +1368,7 @@ async def run_callable(
     method_name: Optional[str] = None,
     distributed_subcall: bool = Query(False),
     debug_port: Optional[int] = Query(None),
+    debug_mode: Optional[str] = Query(None),
     params: Optional[Union[Dict, str]] = Body(default=None),
     deployed_as_of: Optional[str] = Header(None, alias="X-Deployed-As-Of"),
     serialization: str = Header("json", alias="X-Serialization"),
@@ -1397,6 +1398,7 @@ async def run_callable(
             params,
             distributed_subcall,
             debug_port,
+            debug_mode,
             deployed_as_of,
         )
         clear_debugging_sessions()
@@ -1411,6 +1413,7 @@ async def run_callable(
         params=params,
         serialization=serialization,
         debug_port=debug_port,
+        debug_mode=debug_mode,
     )
     return result
 
@@ -1422,6 +1425,7 @@ async def run_callable_internal(
     params: Optional[Union[Dict, str]] = Body(default=None),
     serialization: str = "json",
     debug_port: Optional[int] = None,
+    debug_mode: Optional[str] = None,
 ):
     # Check if serialization is allowed
     allowed_serialization = os.getenv("KT_ALLOWED_SERIALIZATION", DEFAULT_ALLOWED_SERIALIZATION).split(",")
@@ -1470,14 +1474,19 @@ async def run_callable_internal(
     callable_name = f"{cls_or_fn_name}.{method_name}" if method_name else cls_or_fn_name
     if debug_port:
         logger.info(f"Debugging remote callable {callable_name} on port {debug_port}")
-        deep_breakpoint(debug_port)
-        # If using the debugger, step in here ("s") to enter your function/class method.
-        if is_async_method:
-            result = await user_method(*args, **kwargs)
-        else:
-            # Run sync method in thread pool to avoid blocking
-            # Use lambda to properly pass both args and kwargs
-            result = await run_in_executor_with_context(None, lambda: user_method(*args, **kwargs))
+
+        # Run debugger + user code in thread pool to avoid blocking the event loop.
+        # This keeps health checks and other requests responsive while debugging.
+        def debug_and_run():
+            deep_breakpoint(debug_port, debug_mode)
+            # If using the debugger, step in here ("s") to enter your function/class method.
+            if is_async_method:
+                # Create new event loop for async method in this thread
+                return asyncio.run(user_method(*args, **kwargs))
+            else:
+                return user_method(*args, **kwargs)
+
+        result = await run_in_executor_with_context(None, debug_and_run)
     else:
         logger.debug(f"Calling remote callable {callable_name}")
         if is_async_method:
@@ -1571,7 +1580,7 @@ def run_callable_internal_sync(
     callable_name = f"{cls_or_fn_name}.{method_name}" if method_name else cls_or_fn_name
     if debug_port:
         logger.info(f"Debugging remote callable {callable_name} on port {debug_port}")
-        deep_breakpoint(debug_port)
+        deep_breakpoint(debug_port, debug_mode)
         # If using the debugger, step in here ("s") to enter your function/class method.
         if is_async_method:
             # For async methods in sync context, we need to run them in a new event loop
@@ -1614,7 +1623,7 @@ def run_callable_internal_sync(
 
 @app.get("/health", include_in_schema=False)
 @app.get("/", include_in_schema=False)
-def health():
+async def health():
     return {"status": "healthy"}
 
 

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import threading
 import time
 import urllib.parse
@@ -13,7 +14,7 @@ import websockets
 
 from kubernetes import client
 
-from kubetorch.globals import config, MetricsConfig, service_url
+from kubetorch.globals import config, DebugConfig, MetricsConfig, service_url
 from kubetorch.logger import get_logger
 
 from kubetorch.servers.http.utils import (
@@ -174,6 +175,7 @@ class HTTPClient:
         self.base_url = base_url.rstrip("/")
         self.session = CustomSession()
         self._async_client = None
+        self._async_client_loop = None  # Track which event loop the client was created on
 
     def __del__(self):
         self.close()
@@ -237,8 +239,31 @@ class HTTPClient:
 
     @property
     def async_session(self):
-        """Get or create async HTTP client."""
+        """Get or create async HTTP client.
+
+        Creates a new client if none exists or if the existing client's event loop is closed.
+        This handles cases like Jupyter notebooks or applications that restart their event loop.
+        """
+        if self._async_client is not None:
+            # Check if the client can still be used with the current event loop
+            try:
+                current_loop = asyncio.get_running_loop()
+                # httpx.AsyncClient is bound to the event loop it was created on.
+                # If the current loop is different, or the old loop is closed, we need a new client.
+                if self._async_client.is_closed:
+                    self._async_client = None
+                elif self._async_client_loop is not None:
+                    if self._async_client_loop is not current_loop or self._async_client_loop.is_closed():
+                        self._async_client = None
+            except RuntimeError:
+                # No running loop - the cached client can't be used
+                self._async_client = None
+
         if self._async_client is None:
+            try:
+                self._async_client_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._async_client_loop = None
             self._async_client = CustomAsyncClient()
         return self._async_client
 
@@ -250,6 +275,7 @@ class HTTPClient:
         headers: dict,
         pdb: Union[bool, int],
         serialization: str,
+        debug: Union[bool, DebugConfig, None] = None,
     ):
         if stream_logs is None:
             stream_logs = config.stream_logs or False
@@ -261,9 +287,48 @@ class HTTPClient:
         elif stream_metrics is None:
             stream_metrics = config.stream_metrics or False
 
+        # Handle debug parameter (new) or pdb parameter (backward compatibility)
+        # Add deprecation warning for pdb parameter
         if pdb:
+            import warnings
+
+            warnings.warn(
+                "The 'pdb' parameter is deprecated and will be removed in a future version. "
+                "Please use 'debug' parameter instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+        # debug parameter takes precedence over pdb
+        if debug is not None:
+            if isinstance(debug, DebugConfig):
+                debug_port = debug.port
+                debug_mode = debug.mode
+            elif isinstance(debug, bool):
+                if debug:
+                    debug_port = DEFAULT_DEBUG_PORT
+                    # Get debug mode from environment, default to "pdb"
+                    debug_mode = os.getenv("KT_DEBUG_MODE", "pdb").lower()
+                else:
+                    debug_port = None
+                    debug_mode = None
+            else:
+                raise ValueError(
+                    f"debug parameter must be a bool or DebugConfig instance, got {type(debug).__name__}. "
+                    "Use debug=True or debug=kt.DebugConfig(port=..., mode=...) instead."
+                )
+        elif pdb:
+            # Backward compatibility with pdb parameter
             debug_port = DEFAULT_DEBUG_PORT if isinstance(pdb, bool) else pdb
+            debug_mode = os.getenv("KT_DEBUG_MODE", "pdb").lower()
+        else:
+            debug_port = None
+            debug_mode = None
+
+        if debug_port:
             endpoint += f"?debug_port={debug_port}"
+            if debug_mode:
+                endpoint += f"&debug_mode={debug_mode}"
 
         request_id = request_id_ctx_var.get("-")
         if request_id == "-":
@@ -297,6 +362,7 @@ class HTTPClient:
         headers: dict,
         pdb: Union[bool, int],
         serialization: str,
+        debug: Union[bool, DebugConfig, None] = None,
     ):
         """Async version of _prepare_request that uses asyncio.Event and tasks instead of threads"""
         if stream_logs is None:
@@ -309,9 +375,47 @@ class HTTPClient:
         elif stream_metrics is None:
             stream_metrics = config.stream_metrics or False
 
+        # Handle debug parameter (new) or pdb parameter (backward compatibility)
+        # Add deprecation warning for pdb parameter
         if pdb:
+            import warnings
+
+            warnings.warn(
+                "The 'pdb' parameter is deprecated and will be removed in a future version. "
+                "Please use 'debug' parameter instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+        # debug parameter takes precedence over pdb
+        if debug is not None:
+            if isinstance(debug, DebugConfig):
+                debug_port = debug.port
+                debug_mode = debug.mode
+            elif isinstance(debug, bool):
+                if debug:
+                    debug_port = DEFAULT_DEBUG_PORT
+                    debug_mode = os.getenv("KT_DEBUG_MODE", "pdb").lower()
+                else:
+                    debug_port = None
+                    debug_mode = None
+            else:
+                raise ValueError(
+                    f"debug parameter must be a bool or DebugConfig instance, got {type(debug).__name__}. "
+                    "Use debug=True or debug=kt.DebugConfig(port=..., mode=...) instead."
+                )
+        elif pdb:
+            # Backward compatibility with pdb parameter
             debug_port = DEFAULT_DEBUG_PORT if isinstance(pdb, bool) else pdb
+            debug_mode = os.getenv("KT_DEBUG_MODE", "pdb").lower()
+        else:
+            debug_port = None
+            debug_mode = None
+
+        if debug_port:
             endpoint += f"?debug_port={debug_port}"
+            if debug_mode:
+                endpoint += f"&debug_mode={debug_mode}"
 
         request_id = request_id_ctx_var.get("-")
         if request_id == "-":
@@ -717,6 +821,7 @@ class HTTPClient:
         headers: dict = None,
         pdb: Union[bool, int] = None,
         serialization: str = "json",
+        debug: Union[bool, DebugConfig, None] = None,
     ):
         (
             endpoint,
@@ -725,7 +830,7 @@ class HTTPClient:
             log_thread,
             metrics_thread,
             _,
-        ) = self._prepare_request(endpoint, stream_logs, stream_metrics, headers, pdb, serialization)
+        ) = self._prepare_request(endpoint, stream_logs, stream_metrics, headers, pdb, serialization, debug)
         try:
             json_data = _serialize_body(body, serialization)
             response = self.post(endpoint=endpoint, json=json_data, headers=headers)
@@ -743,6 +848,7 @@ class HTTPClient:
         headers: dict = None,
         pdb: Union[bool, int] = None,
         serialization: str = "json",
+        debug: Union[bool, DebugConfig, None] = None,
     ):
         """Async version of call_method."""
         (
@@ -752,7 +858,7 @@ class HTTPClient:
             log_task,
             monitoring_task,
             _,
-        ) = self._prepare_request_async(endpoint, stream_logs, stream_metrics, headers, pdb, serialization)
+        ) = self._prepare_request_async(endpoint, stream_logs, stream_metrics, headers, pdb, serialization, debug)
         try:
             json_data = _serialize_body(body, serialization)
             response = await self.post_async(endpoint=endpoint, json=json_data, headers=headers)
