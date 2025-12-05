@@ -1,4 +1,3 @@
-import enum
 import json
 import os
 import re
@@ -126,12 +125,6 @@ def get_kt_install_url(freeze: bool = False):
 
         version = kt.__version__
         return version, False
-
-
-class LogVerbosity(str, enum.Enum):
-    DEBUG = "debug"
-    INFO = "info"
-    CRITICAL = "critical"
 
 
 ####################################################################################################

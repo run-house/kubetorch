@@ -71,6 +71,9 @@ class Cls(Module):
         if debug is None and pdb is not None:
             debug = pdb
 
+        # Resolve stream_logs using module's property if not explicitly set
+        stream_logs = stream_logs if stream_logs is not None else self.stream_logs
+
         if debug:
             logger.info(f"Debugging remote cls {self.name}.{method_name}")
         elif stream_logs:
@@ -78,7 +81,8 @@ class Cls(Module):
 
         response = client.call_method(
             self.endpoint(method_name),
-            stream_logs=stream_logs,
+            stream_logs,
+            self.logging_config,
             stream_metrics=stream_metrics,
             headers=self.request_headers,
             body={"args": list(args), "kwargs": kwargs},
@@ -100,6 +104,9 @@ class Cls(Module):
         if debug is None and pdb is not None:
             debug = pdb
 
+        # Resolve stream_logs using module's property if not explicitly set
+        stream_logs = stream_logs if stream_logs is not None else self.stream_logs
+
         if debug:
             logger.info(f"Debugging remote cls {self.name}.{method_name} (async)")
         elif stream_logs:
@@ -107,7 +114,8 @@ class Cls(Module):
 
         response = await client.call_method_async(
             self.endpoint(method_name),
-            stream_logs=stream_logs,
+            stream_logs,
+            self.logging_config,
             stream_metrics=stream_metrics,
             headers=self.request_headers,
             body={"args": list(args), "kwargs": kwargs},

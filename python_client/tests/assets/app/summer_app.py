@@ -1,5 +1,6 @@
 import argparse
 import logging
+import time
 
 import kubetorch as kt
 
@@ -49,3 +50,6 @@ if __name__ == "__main__":
         print(f"result: {result}")
     else:
         summer(args.arg1, args.arg2)
+
+    # Give logs time to propagate
+    time.sleep(3)

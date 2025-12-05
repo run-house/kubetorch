@@ -276,12 +276,9 @@ def test_cli_kt_config_get():
 
 @pytest.mark.level("unit")
 def test_cli_kt_config_set():
-    from kubetorch.utils import LogVerbosity
-
     # making hard copy, so this value won't change during `kt config set`.
     original_username = kt.config.username  # str type value
     original_stream_logs = kt.config.stream_logs  # bool type value
-    original_log_verbosity = kt.config.log_verbosity  # LogVerbosity (enum) value
     original_file_values = kt.config._load_from_file()
 
     try:
@@ -289,7 +286,6 @@ def test_cli_kt_config_set():
         new_values = {
             "username": "sashab1",
             "stream_logs": "False",
-            "log_verbosity": LogVerbosity.CRITICAL.value,
         }
         for key, value in new_values.items():
             result = runner.invoke(app, ["config", "set", key, value], color=False)
@@ -339,24 +335,10 @@ def test_cli_kt_config_set():
         assert result.exit_code == 1
         assert "Error setting stream_logs: stream_logs must be a boolean value" in result.stdout
 
-        # D.4: provide stream_logs that is not a boolean
-        result = runner.invoke(
-            app,
-            ["config", "set", "log_verbosity", "BadLogVerbosityVal"],
-            env={"COLUMNS": "200"},
-            color=False,
-        )  # added {"COLUMNS": "200"} to make sure the error will be printed in one line
-        assert result.exit_code == 1
-        assert (
-            "Error setting log_verbosity: Invalid log verbosity value. Must be one of: 'debug', 'info', 'critical'."
-            in result.stdout
-        )
-
     finally:
         # set the config keys to their original values, even if the test fails
         kt.config.username = original_username
         kt.config.stream_logs = original_stream_logs
-        kt.config.log_verbosity = original_log_verbosity
         kt.config.write(original_file_values)
 
 
@@ -365,15 +347,13 @@ def test_cli_kt_config_unset():
     # making hard copy, so this value won't change during `kt config unset`.
     original_username = kt.config.username  # str type value
     original_stream_logs = kt.config.stream_logs  # bool type value
-    original_log_verbosity = kt.config.log_verbosity  # LogVerbosity (enum) value
     original_file_values = kt.config._load_from_file()
     try:
         # Part A: supported keys
-        config_keys = ["username", "stream_logs", "log_verbosity"]
+        config_keys = ["username", "stream_logs"]
         get_msg_after_unset = {
             "username": "Username not set",
             "stream_logs": "True",
-            "log_verbosity": "info",
         }
         for key in config_keys:
             unset_result = runner.invoke(app, ["config", "unset", key], color=False)
@@ -392,7 +372,6 @@ def test_cli_kt_config_unset():
         # set the config keys (also locally) to their original values, even if the test fails
         kt.config.username = original_username
         kt.config.stream_logs = original_stream_logs
-        kt.config.log_verbosity = original_log_verbosity
         kt.config.write(original_file_values)
 
 

@@ -10,7 +10,7 @@ from typing import Dict, List, Union
 
 import websockets
 
-from kubetorch.globals import config, service_url, service_url_async
+from kubetorch.globals import config, LoggingConfig, service_url, service_url_async
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.utils import get_names_for_reload_fallbacks, locate_working_dir
 
@@ -27,13 +27,7 @@ from kubetorch.servers.http.utils import (
     is_running_in_kubernetes,
 )
 from kubetorch.serving.utils import has_k8s_credentials, KubernetesCredentialsError
-from kubetorch.utils import (
-    extract_host_port,
-    get_kt_install_url,
-    iso_timestamp_to_nanoseconds,
-    LogVerbosity,
-    ServerLogsFormatter,
-)
+from kubetorch.utils import extract_host_port, get_kt_install_url, iso_timestamp_to_nanoseconds, ServerLogsFormatter
 
 logger = get_logger(__name__)
 
@@ -197,6 +191,26 @@ class Module:
             raise ValueError("`async_` must be a boolean")
         self._async = value
 
+    @property
+    def logging_config(self) -> LoggingConfig:
+        """Get the logging configuration for this module from its compute."""
+        if self.compute:
+            return self.compute.logging_config
+        return LoggingConfig()
+
+    @property
+    def stream_logs(self) -> bool:
+        """Determine if log streaming should be enabled.
+
+        Fallback chain:
+        1. logging_config.stream_logs if explicitly set (not None)
+        2. Global config.stream_logs if explicitly set (not None)
+        3. Default to True
+        """
+        if self.logging_config.stream_logs is not None:
+            return self.logging_config.stream_logs
+        return config.stream_logs  # Defaults to True if not set
+
     @classmethod
     def from_name(
         cls,
@@ -352,7 +366,6 @@ class Module:
         compute: "Compute",
         init_args: Dict = None,
         stream_logs: Union[bool, None] = None,
-        verbosity: Union[LogVerbosity, str] = None,
         get_if_exists: bool = False,
         reload_prefixes: Union[str, List[str]] = [],
         dryrun: bool = False,
@@ -363,11 +376,8 @@ class Module:
         Args:
             compute (Compute): The compute to send the function or class to.
             init_args (Dict, optional): Initialization arguments, which may be relevant for a class.
-            stream_logs (bool, optional): Whether to stream logs during service launch. If None, uses the global
-                config value.
-            verbosity (Union[verbosity, str], optional): Verbosity of the logs streamed back to the client.
-                If not specified, will stream select service logs. Can also be controlled globally via the config
-                value `log_verbosity`. Supported values: "debug", "info", "critical".
+            stream_logs (bool, optional): Whether to stream logs during service launch. If None, uses
+                the compute's logging_config.stream_logs setting, or falls back to global config.stream_logs.
             get_if_exists (Union[bool, List[str]], optional): Controls how service lookup is performed to determine
                 whether to send the service to the compute.
 
@@ -433,7 +443,6 @@ class Module:
             init_args,
             deployment_timestamp,
             stream_logs,
-            verbosity,
             dryrun,
         )
 
@@ -444,7 +453,6 @@ class Module:
         compute: "Compute",
         init_args: Dict = None,
         stream_logs: Union[bool, None] = None,
-        verbosity: Union[LogVerbosity, str] = None,
         get_if_exists: bool = False,
         reload_prefixes: Union[str, List[str]] = [],
         dryrun: bool = False,
@@ -455,11 +463,8 @@ class Module:
         Args:
             compute (Compute): The compute to send the function or class to.
             init_args (Dict, optional): Initialization arguments, which may be relevant for a class.
-            stream_logs (bool, optional): Whether to stream logs during service launch. If None, uses the global
-                config value.
-            verbosity (Union[verbosity, str], optional): Verbosity of the logs streamed back to the client.
-                If not specified, will stream select service logs. Can also be controlled globally via the config
-                value `log_verbosity`. Supported values: "debug", "info", "critical".
+            stream_logs (bool, optional): Whether to stream logs during service launch. If None, uses
+                the compute's logging_config.stream_logs setting, or falls back to global config.stream_logs.
             get_if_exists (Union[bool, List[str]], optional): Controls how service lookup is performed to determine
                 whether to send the service to the compute.
 
@@ -517,7 +522,6 @@ class Module:
             init_args,
             deployment_timestamp,
             stream_logs,
-            verbosity,
             dryrun,
         )
 
@@ -605,20 +609,17 @@ class Module:
         init_args,
         deployment_timestamp,
         stream_logs,
-        verbosity,
         dryrun,
     ):
         # Start log streaming if enabled
         stop_event = threading.Event()
         log_thread = None
-        if stream_logs is None:
-            stream_logs = config.stream_logs or False
+
+        # Resolve stream_logs using module's property if not explicitly set
+        stream_logs = stream_logs if stream_logs is not None else self.stream_logs
 
         launch_request_id = "-"
         if stream_logs and not dryrun:
-            if verbosity is None:
-                verbosity = config.log_verbosity
-
             # Create a unique request ID for this launch sequence
             launch_request_id = f"launch_{generate_unique_request_id('launch', deployment_timestamp)}"
 
@@ -628,7 +629,6 @@ class Module:
                 args=(
                     launch_request_id,
                     stop_event,
-                    verbosity,
                     deployment_timestamp,
                 ),
             )
@@ -671,20 +671,17 @@ class Module:
         init_args,
         deployment_timestamp,
         stream_logs,
-        verbosity,
         dryrun,
     ):
         # Start log streaming if enabled
         stop_event = asyncio.Event()
         log_task = None
-        if stream_logs is None:
-            stream_logs = config.stream_logs or False
+
+        # Resolve stream_logs using module's property if not explicitly set
+        stream_logs = stream_logs if stream_logs is not None else self.stream_logs
 
         launch_request_id = "-"
         if stream_logs and not dryrun:
-            if verbosity is None:
-                verbosity = config.log_verbosity
-
             # Create a unique request ID for this launch sequence
             launch_request_id = f"launch_{generate_unique_request_id('launch', deployment_timestamp)}"
 
@@ -693,7 +690,6 @@ class Module:
                 self._stream_launch_logs_async(
                     launch_request_id,
                     stop_event,
-                    verbosity,
                     deployment_timestamp,
                 )
             )
@@ -849,10 +845,15 @@ class Module:
         self,
         request_id: str,
         stop_event: threading.Event,
-        verbosity: LogVerbosity,
         deployment_timestamp: str,
     ):
-        """Stream logs and events during service launch sequence."""
+        """Stream logs and events during service launch sequence.
+
+        Args:
+            request_id: Unique ID for this launch sequence
+            stop_event: Event to signal when to stop streaming
+            deployment_timestamp: Timestamp to filter logs after
+        """
         try:
             # Only use "kubetorch" container to exclude queue-proxy (e.g. Knative sidecars) container logs which
             # are spammy with tons of healthcheck calls
@@ -871,7 +872,6 @@ class Module:
                         host,
                         port,
                         encoded_pod_query,
-                        verbosity,
                         deployment_timestamp,
                         dedup=True,
                     )
@@ -883,19 +883,21 @@ class Module:
                         host,
                         port,
                         encoded_event_query,
-                        verbosity,
                         deployment_timestamp,
                     )
 
                 pod_thread = threading.Thread(target=run_pod_logs, daemon=True)
-                event_thread = threading.Thread(target=run_event_logs, daemon=True)
 
                 pod_thread.start()
-                event_thread.start()
+
+                # Only start event log thread if include_events is enabled
+                if self.logging_config.include_events:
+                    event_thread = threading.Thread(target=run_event_logs, daemon=True)
+                    event_thread.start()
+                    event_thread.join(timeout=1.0)
 
                 # Don't block indefinitely on joins - use short timeouts
                 pod_thread.join(timeout=1.0)
-                event_thread.join(timeout=1.0)
 
             base_url = service_url()
             host, port = extract_host_port(base_url)
@@ -910,10 +912,15 @@ class Module:
         self,
         request_id: str,
         stop_event: asyncio.Event,
-        verbosity: LogVerbosity,
         deployment_timestamp: str,
     ):
-        """Async version of _stream_launch_logs. Stream logs and events during service launch sequence."""
+        """Async version of _stream_launch_logs. Stream logs and events during service launch sequence.
+
+        Args:
+            request_id: Unique ID for this launch sequence
+            stop_event: Event to signal when to stop streaming
+            deployment_timestamp: Timestamp to filter logs after
+        """
         try:
             # Only use "kubetorch" container to exclude queue-proxy (e.g. Knative sidecars) container logs which
             # are spammy with tons of healthcheck calls
@@ -928,7 +935,9 @@ class Module:
             host, port = extract_host_port(base_url)
             logger.debug(f"Streaming launch logs with url={base_url} host={host} and local port {port}")
 
-            # Create async tasks for both log streams
+            # Create async tasks for log streams
+            tasks = []
+
             pod_task = asyncio.create_task(
                 self._stream_logs_websocket(
                     request_id,
@@ -936,27 +945,29 @@ class Module:
                     host=host,
                     port=port,
                     query=encoded_pod_query,
-                    log_verbosity=verbosity,
                     deployment_timestamp=deployment_timestamp,
                     dedup=True,
                 )
             )
+            tasks.append(pod_task)
 
-            event_task = asyncio.create_task(
-                self._stream_logs_websocket(
-                    request_id,
-                    stop_event,
-                    host=host,
-                    port=port,
-                    query=encoded_event_query,
-                    log_verbosity=verbosity,
-                    deployment_timestamp=deployment_timestamp,
+            # Only create event task if include_events is enabled
+            if self.logging_config.include_events:
+                event_task = asyncio.create_task(
+                    self._stream_logs_websocket(
+                        request_id,
+                        stop_event,
+                        host=host,
+                        port=port,
+                        query=encoded_event_query,
+                        deployment_timestamp=deployment_timestamp,
+                    )
                 )
-            )
+                tasks.append(event_task)
 
-            # Wait for both tasks to complete or be cancelled
+            # Wait for tasks to complete or be cancelled
             try:
-                await asyncio.gather(pod_task, event_task, return_exceptions=True)
+                await asyncio.gather(*tasks, return_exceptions=True)
             except Exception as e:
                 logger.error(f"Error in async log streaming: {e}")
 
@@ -971,7 +982,6 @@ class Module:
         host: str,
         port: int,
         query: str,
-        log_verbosity: LogVerbosity,
         deployment_timestamp: str,
         dedup: bool = False,
     ):
@@ -986,7 +996,6 @@ class Module:
                     host=host,
                     port=port,
                     query=query,
-                    log_verbosity=log_verbosity,
                     deployment_timestamp=deployment_timestamp,
                     dedup=dedup,
                 )
@@ -1001,7 +1010,6 @@ class Module:
         host: str,
         port: int,
         query: str,
-        log_verbosity: LogVerbosity,
         deployment_timestamp: str,
         dedup: bool = False,
     ):
@@ -1012,7 +1020,6 @@ class Module:
             host=host,
             port=port,
             query=query,
-            log_verbosity=log_verbosity,
             deployment_timestamp=deployment_timestamp,
             dedup=dedup,
         )
@@ -1024,11 +1031,24 @@ class Module:
         host: str,
         port: int,
         query: str,
-        log_verbosity: LogVerbosity,
         deployment_timestamp: str,
         dedup: bool = False,
     ):
-        """Stream logs and events using Loki's websocket tail endpoint"""
+        """Stream logs and events using Loki's websocket tail endpoint.
+
+        Args:
+            request_id: Unique ID for this launch sequence
+            stop_event: Event to signal when to stop streaming
+            host: WebSocket host
+            port: WebSocket port
+            query: Loki query string
+            deployment_timestamp: Timestamp to filter logs after
+            dedup: Whether to deduplicate log messages
+        """
+        # Map logging_config.level to filtering behavior
+        # "debug" -> show all, "info" -> hide debug, "warning"/"error" -> only errors
+        log_level = self.logging_config.level.lower() if self.logging_config.level else "info"
+
         try:
             uri = f"ws://{host}:{port}/loki/api/v1/tail?query={query}"
 
@@ -1063,7 +1083,7 @@ class Module:
                     # Handle both threading.Event and asyncio.Event
                     is_stop_set = stop_event.is_set() if hasattr(stop_event, "is_set") else stop_event.is_set()
                     if is_stop_set and stop_time is None:
-                        stop_time = time.time() + 2  # 2 second grace period
+                        stop_time = time.time() + self.logging_config.grace_period
 
                     # If we're past the grace period, exit
                     if stop_time is not None and time.time() > stop_time:
@@ -1071,7 +1091,11 @@ class Module:
 
                     try:
                         # Use shorter timeout during grace period
-                        timeout = 0.1 if stop_time is not None else 1.0
+                        timeout = (
+                            self.logging_config.grace_poll_timeout
+                            if stop_time is not None
+                            else self.logging_config.poll_timeout
+                        )
                         message = await asyncio.wait_for(websocket.recv(), timeout=timeout)
                         data = json.loads(message)
 
@@ -1086,8 +1110,8 @@ class Module:
                                     log_line = value[1]
                                     if is_event:
                                         event_type = labels.get("detected_level", "")
-                                        if log_verbosity == LogVerbosity.CRITICAL and event_type == "Normal":
-                                            # skip Normal events in MINIMAL
+                                        # Skip Normal events when log level is warning or error
+                                        if log_level in ["warning", "error"] and event_type == "Normal":
                                             continue
 
                                         try:
@@ -1132,10 +1156,8 @@ class Module:
                                         add_pod_info = is_multi_pod and k8_object_type == "Pod"
                                         pod_info = f" | {k8_object_name} |" if add_pod_info else ""
                                         if event_type == "Normal":
-                                            if log_verbosity in [
-                                                LogVerbosity.INFO,
-                                                LogVerbosity.DEBUG,
-                                            ]:
+                                            # Show Normal events for debug/info levels
+                                            if log_level in ["debug", "info"]:
                                                 print(f'[EVENT]{pod_info} reason={reason} "{msg}"')
                                         else:
                                             print(f'[EVENT]{pod_info} type={event_type} reason={reason} "{msg}"')
@@ -1145,10 +1167,8 @@ class Module:
                                     if last_timestamp is not None and value[0] <= last_timestamp:
                                         continue
                                     last_timestamp = value[0]
-                                    if log_verbosity in [
-                                        LogVerbosity.DEBUG,
-                                        LogVerbosity.INFO,
-                                    ]:
+                                    # Show logs for debug/info levels
+                                    if log_level in ["debug", "info"]:
                                         try:
                                             log_dict = json.loads(log_line)
                                         except json.JSONDecodeError:
@@ -1162,10 +1182,16 @@ class Module:
                                             ts = log_dict.get("asctime")
                                             message = log_dict.get("message", "")
 
-                                            if (
-                                                log_verbosity == LogVerbosity.CRITICAL
-                                                and levelname not in ["ERROR", "CRITICAL"]
-                                            ) or (log_verbosity == LogVerbosity.INFO and levelname == "DEBUG"):
+                                            # Filter by log level
+                                            # warning/error level: only show ERROR and CRITICAL
+                                            # info level: skip DEBUG
+                                            # debug level: show all
+                                            if log_level in ["warning", "error"] and levelname not in [
+                                                "ERROR",
+                                                "CRITICAL",
+                                            ]:
+                                                continue
+                                            if log_level == "info" and levelname == "DEBUG":
                                                 continue
 
                                             log_line = f"{levelname} | {ts} | {message}"
@@ -1177,7 +1203,12 @@ class Module:
                                             formatter = base_formatter
 
                                         newline = "" if log_dict is None else None
-                                        formatted_line = f"{formatter.start_color}{f'({self.service_name}) '}{log_line}{formatter.reset_color}"
+
+                                        # Add service name prefix if configured
+                                        prefix = f"({self.service_name}) " if self.logging_config.include_name else ""
+                                        formatted_line = (
+                                            f"{formatter.start_color}{prefix}{log_line}{formatter.reset_color}"
+                                        )
 
                                         # Check for duplicates if dedup is enabled
                                         if seen_log_messages is not None:

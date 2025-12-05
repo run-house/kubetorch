@@ -403,7 +403,7 @@ async def test_debug_modes(remote_cls, remote_fn, capsys):
     test_namespace = remote_fn.compute.namespace
 
     # Test 1: Call method with breakpoint() inside, connect with kt debug locally
-    print("\n=== Test 1: Method with breakpoint() - local kt debug ===")
+    print("\n=== Test 1: Method with breakpoint() - local `kt debug` ===")
 
     # Start the call in a background task (it will block at breakpoint)
     async def call_breakpoint_method():
@@ -420,7 +420,7 @@ async def test_debug_modes(remote_cls, remote_fn, capsys):
     print(f"Captured output:\n{output}")
 
     # Verify the kt debug command is printed
-    assert "kt debug" in output, "kt debug command should be printed"
+    assert "kt debug " in output, "kt debug command should be printed"
     assert "--mode pdb" in output, "Should use pdb mode by default"
     assert "--pod-ip" in output, "Should include pod IP for in-cluster usage"
 

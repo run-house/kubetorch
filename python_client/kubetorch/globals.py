@@ -31,6 +31,55 @@ class MetricsConfig:
 
 
 @dataclass
+class LoggingConfig:
+    """Configuration for logging behavior on a Kubetorch service.
+
+    This config is set at the Compute level and applies to all calls made to that service.
+    It controls both runtime log streaming (during method calls) and startup log streaming
+    (during `.to()` deployment).
+
+    Attributes:
+        stream_logs: Whether log streaming is enabled for this service. When True, logs
+            from the remote compute are streamed back to the client during calls and
+            service startup. Individual calls can override this with stream_logs=False.
+            If None, falls back to global config.stream_logs setting. Default: True
+        level: Log level for the remote service. Controls which logs are emitted by
+            the service and available for streaming. Also controls client-side filtering.
+            Options: "debug", "info", "warning", "error". Default: "info"
+        include_system_logs: Whether to include framework logs (e.g., uvicorn.access).
+            Default: False (only show application logs)
+        include_events: Whether to include Kubernetes events during service startup.
+            Events include pod scheduling, image pulling, container starting, etc.
+            Default: True
+        grace_period: Seconds to continue streaming after request completes, to catch
+            any final logs that arrive late. Default: 2.0
+        include_name: Whether to prepend pod/service name to each log line.
+            Default: True
+        poll_timeout: Timeout in seconds for WebSocket receive during normal streaming.
+            Default: 1.0
+        grace_poll_timeout: Timeout in seconds for WebSocket receive during grace period.
+            Shorter timeout allows faster shutdown while still catching late logs.
+            Default: 0.5
+        shutdown_grace_period: Seconds to block the main thread after the HTTP call
+            completes, waiting for the log streaming thread to finish. This prevents
+            the Python interpreter from exiting before final logs are printed.
+            Set to 0 for no blocking (default), or a few seconds (e.g., 3.0) if you
+            need to ensure wrap-up logs from the remote compute are captured.
+            Default: 0
+    """
+
+    stream_logs: bool = None
+    level: Literal["debug", "info", "warning", "error"] = "info"
+    include_system_logs: bool = False
+    include_events: bool = True
+    grace_period: float = 2.0
+    include_name: bool = True
+    poll_timeout: float = 1.0
+    grace_poll_timeout: float = 0.5
+    shutdown_grace_period: float = 0
+
+
+@dataclass
 class DebugConfig:
     """Configuration for debugging mode.
 
