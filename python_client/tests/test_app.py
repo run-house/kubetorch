@@ -6,6 +6,8 @@ import pytest
 from tests.assets.app import summer_app
 from tests.conftest import get_test_hash
 
+os.environ["KT_STREAM_LOGS"] = "FALSE"
+
 
 @pytest.mark.level("minimal")
 def test_run_app_base():
