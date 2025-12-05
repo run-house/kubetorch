@@ -233,7 +233,7 @@ def get_os_info():
     return os.uname()
 
 
-def summer(a, b, sleep_time=None, return_pod_name=False):
+def summer(a, b, sleep_time=None, return_pod_name=False, use_tqdm=False):
     print(f"Hello from the cluster stdout! {a} {b}")
     logger.info(f"Hello from the cluster logs! {a} {b}")
 
@@ -242,6 +242,15 @@ def summer(a, b, sleep_time=None, return_pod_name=False):
     pydantic_type = type(a) if hasattr(a, "model_dump") else None
     a = a.value if hasattr(a, "model_dump") else a
     b = b.value if hasattr(b, "model_dump") else b
+
+    if use_tqdm:
+        import time
+
+        from tqdm import tqdm
+
+        for i in tqdm(range(a + b)):
+            logger.info(f"Tqdm iteration {i}")
+            time.sleep(0.1)
 
     if sleep_time is not None:
         import time

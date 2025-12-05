@@ -75,7 +75,7 @@ async def test_send_fn_to_compute_with_reload(remote_fn):
         remote_fn.compute,
         get_if_exists=True,
     )
-    assert another_reloaded_fn(1, 2) == 3
+    assert another_reloaded_fn(1, 2, use_tqdm=True) == 3
 
 
 @pytest.mark.level("minimal")
