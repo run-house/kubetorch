@@ -68,10 +68,6 @@ spec:
               cpu: {{ $.Values.rsync.cpu.request }}
               memory: {{ $.Values.rsync.memory.request }}
               ephemeral-storage: {{ $.Values.rsync.ephemeralStorage.request }}
-            limits:
-              cpu: {{ $.Values.rsync.cpu.limit }}
-              memory: {{ $.Values.rsync.memory.limit }}
-              ephemeral-storage: {{ $.Values.rsync.ephemeralStorage.limit }}
 
       volumes:
         - name: rsync-data

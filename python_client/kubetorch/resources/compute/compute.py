@@ -212,6 +212,9 @@ class Compute:
         if os.getenv("KT_LOG_LEVEL") and not env_vars.get("KT_LOG_LEVEL"):
             # If KT_LOG_LEVEL is set, add it to env vars so the log level is set on the server
             env_vars["KT_LOG_LEVEL"] = os.getenv("KT_LOG_LEVEL")
+        if os.getenv("KT_DEBUG_MODE") and not env_vars.get("KT_DEBUG_MODE"):
+            # If KT_DEBUG_MODE is set, add it to env vars so the debug mode is set on the server
+            env_vars["KT_DEBUG_MODE"] = os.getenv("KT_DEBUG_MODE")
 
         if not allowed_serialization:
             allowed_serialization_env_var = os.getenv("KT_ALLOWED_SERIALIZATION", None)
@@ -436,13 +439,7 @@ class Compute:
         if "requests" not in container["resources"]:
             container["resources"]["requests"] = {}
 
-        # Ensure limits dict exists
-        if "limits" not in container["resources"]:
-            container["resources"]["limits"] = {}
-
-        # Set both requests and limits to the same value
         container["resources"]["requests"][resource_name] = value
-        container["resources"]["limits"][resource_name] = value
 
     def _get_container_resource(self, resource_name: str) -> Optional[str]:
         resources = self._container().get("resources", {})
@@ -1160,22 +1157,18 @@ class Compute:
     def _get_requested_resources(self, cpus, memory, disk_size, gpu_config):
         """Return requested resources."""
         requests = {}
-        limits = {}
 
         # Add CPU if specified
         if cpus:
             requests["cpu"] = RequestedPodResources.cpu_for_resource_request(cpus)
-            limits["cpu"] = requests["cpu"]
 
         # Add Memory if specified
         if memory:
             requests["memory"] = RequestedPodResources.memory_for_resource_request(memory)
-            limits["memory"] = requests["memory"]
 
         # Add Storage if specified
         if disk_size:
             requests["ephemeral-storage"] = disk_size
-            limits["ephemeral-storage"] = disk_size
 
         # Add GPU if specified
         gpu_config: dict = gpu_config
@@ -1189,18 +1182,14 @@ class Compute:
             elif gpu_config.get("sharing_type") == "fraction":
                 # For fractional GPUs, we still need to request the base GPU resource
                 requests["nvidia.com/gpu"] = "1"
-                limits["nvidia.com/gpu"] = "1"
             elif not gpu_config.get("sharing_type"):
                 # Whole GPUs
                 requests["nvidia.com/gpu"] = str(gpu_count)
-                limits["nvidia.com/gpu"] = str(gpu_count)
 
         # Only include non-empty dicts
         resources = {}
         if requests:
             resources["requests"] = requests
-        if limits:
-            resources["limits"] = limits
 
         return V1ResourceRequirements(**resources).to_dict()
 
