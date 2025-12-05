@@ -77,3 +77,6 @@ DEFAULT_NGINX_HEALTH_ENDPOINT = "/health"
 RSYNC_LOCAL_PORT = 3873
 REMOTE_RSYNC_PORT = 873
 RSYNC_SERVICE_NAME = "kubetorch-rsync"
+
+# Runhouse
+KUBETORCH_UI_SERVICE_NAME = "kubetorch-ui-service"
