@@ -771,14 +771,13 @@ class HTTPClient:
 
         async def async_http_get(url, params):
             try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    resp = await client.get(url, params=params)
-                    resp.raise_for_status()
-                    try:
-                        return resp.json()
-                    except json.JSONDecodeError:
-                        logger.debug(f"Non-JSON response from {url}: {resp.text[:100]}")
-                        return {}
+                resp = await self.async_session.get(url, params=params, timeout=5.0)
+                resp.raise_for_status()
+                try:
+                    return resp.json()
+                except json.JSONDecodeError:
+                    logger.debug(f"Non-JSON response from {url}: {resp.text[:100]}")
+                    return {}
             except Exception as e:
                 logger.debug(f"Async metrics request failed for {url} ({params}): {e}")
                 return {}
