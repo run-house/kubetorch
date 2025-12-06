@@ -69,8 +69,8 @@ KAI_SCHEDULER_LABEL = "kai.scheduler/queue"
 # HTTP Client
 KT_TERMINATION_REASONS = ["OOMKilled", "Evicted", "Not Found"]
 
-# NGINX
-NGINX_GATEWAY_PROXY = "kubetorch-proxy"
+# Controller
+KUBETORCH_CONTROLLER = "kubetorch-controller"
 DEFAULT_NGINX_HEALTH_ENDPOINT = "/health"
 
 # Rsync

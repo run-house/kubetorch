@@ -1,0 +1,144 @@
+###############################################################################
+# Kubetorch Controller RBAC
+# - Namespace-scoped permissions ONLY for deployment namespaces
+# - Cluster-wide permissions ONLY for Ray + Knative CRDs
+###############################################################################
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubetorch-controller
+  namespace: {{ .Release.Namespace }}
+
+###############################################################################
+# 1. Namespace Roles per Deployment Namespace
+###############################################################################
+{{- $deployNamespaces := .Values.kubetorchConfig.deployment_namespaces | default (list) }}
+
+{{- range $ns := $deployNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubetorch-controller-role-{{ $ns }}
+  namespace: {{ $ns }}
+rules:
+  # PVCs
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Services
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Pods
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+
+  # Pod Exec
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+
+  # Events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+
+  # ConfigMaps
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Secrets
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Ingress
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+
+  # Deployments & ReplicaSets
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - deployments/status
+      - replicasets
+      - replicasets/status
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Queues CRD
+  - apiGroups: ["scheduling.run.ai"]
+    resources: ["queues"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # StorageClasses (read-only)
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list"]
+{{- end }}
+
+
+###############################################################################
+# 2. RoleBindings per Deployment Namespace
+###############################################################################
+{{- range $ns := $deployNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubetorch-controller-rolebinding-{{ $ns }}
+  namespace: {{ $ns }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubetorch-controller-role-{{ $ns }}
+subjects:
+  - kind: ServiceAccount
+    name: kubetorch-controller
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+
+
+###############################################################################
+# 3. ClusterRole for Ray + Knative CRDs
+###############################################################################
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubetorch-controller-crds
+rules:
+  # RayCluster CRDs
+  - apiGroups: ["ray.io"]
+    resources: ["rayclusters"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Knative Services & Revisions
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["services", "revisions"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+
+###############################################################################
+# 4. ClusterRoleBinding for CRDs
+###############################################################################
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubetorch-controller-crds-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubetorch-controller-crds
+subjects:
+  - kind: ServiceAccount
+    name: kubetorch-controller
+    namespace: {{ .Release.Namespace }}
