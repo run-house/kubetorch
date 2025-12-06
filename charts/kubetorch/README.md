@@ -46,6 +46,7 @@ A Helm chart for kubetorch
 | logStreaming.resources.memory | string | `"256Mi"` |  |
 | logStreaming.retentionPeriod | string | `"24h"` |  |
 | metrics.enabled | bool | `true` |  |
+| metrics.metricsServiceName | string | `"kubetorch-metrics"` |  |
 | metrics.prometheus.additionalScrapeConfigs[0].honor_labels | bool | `true` |  |
 | metrics.prometheus.additionalScrapeConfigs[0].job_name | string | `"gke-managed-dcgm"` |  |
 | metrics.prometheus.additionalScrapeConfigs[0].kubernetes_sd_configs[0].namespaces.names[0] | string | `"gke-managed-system"` |  |
