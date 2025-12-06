@@ -1,6 +1,13 @@
-"""low-privilege runtime SA for user pods - not as privileged as the controller SA"""
+# low-privilege runtime SA for user pods - not as privileged as the controller SA
+{{- $allNamespaces := .Values.kubetorchConfig.deployment_namespaces | default list }}
+{{- if not (has .Release.Namespace $allNamespaces) }}
+  {{- $allNamespaces = append $allNamespaces .Release.Namespace }}
+{{- end }}
+{{- range $allNamespaces }}
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: kubetorch-service-account
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ . }}
+{{- end }}

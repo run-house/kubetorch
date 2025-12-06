@@ -169,7 +169,7 @@ class Volume:
             access_modes = pvc["spec"].get("accessModes", [])
             access_mode = access_modes[0] if access_modes else DEFAULT_VOLUME_ACCESS_MODE
             annotations = pvc.get("metadata", {}).get("annotations") or {}
-            mount_path = annotations.get("kubetorch.com/mount-path", f"/{KT_MOUNT_FOLDER}/{name}")
+            final_mount_path = mount_path or annotations.get("kubetorch.com/mount-path", f"/{KT_MOUNT_FOLDER}/{name}")
 
             # Create Volume with actual attributes from PVC
             vol = cls(
