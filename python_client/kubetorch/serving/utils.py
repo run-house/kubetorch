@@ -6,7 +6,6 @@ import warnings
 from pathlib import Path
 
 import httpx
-from kubernetes.client import ApiException, CoreV1Api, V1Pod
 
 from kubetorch import globals
 from kubetorch.logger import get_logger

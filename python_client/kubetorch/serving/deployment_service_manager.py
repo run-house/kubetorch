@@ -2,8 +2,6 @@ import os
 import time
 from typing import Tuple
 
-from kubernetes import client
-
 import kubetorch.serving.constants as serving_constants
 from kubetorch.logger import get_logger
 from kubetorch.resources.compute.utils import (
@@ -15,6 +13,7 @@ from kubetorch.resources.compute.utils import (
 from kubetorch.servers.http.utils import load_template
 from kubetorch.serving.base_service_manager import BaseServiceManager
 from kubetorch.serving.utils import nested_override
+from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)
 
@@ -69,10 +68,24 @@ class DeploymentServiceManager(BaseServiceManager):
 
         return deployment
 
-    def _update_launchtime_manifest(self, manifest: dict, service_name: str, module_name: str) -> dict:
-        """Update manifest with service name and deployment timestamp."""
+    def _update_launchtime_manifest(
+        self, manifest: dict, service_name: str, module_name: str, deployment_timestamp: str = None
+    ) -> dict:
+        """Update manifest with service name and deployment timestamp.
+
+        Args:
+            manifest: The deployment manifest to update
+            service_name: Name of the service
+            module_name: Name of the module
+            deployment_timestamp: Optional timestamp to use. If not provided, a new one will be generated.
+        """
         clean_module_name = self._clean_module_name(module_name)
-        deployment_timestamp, deployment_id = self._get_deployment_timestamp_and_id(service_name)
+
+        # Use provided timestamp or generate new one
+        if deployment_timestamp is None:
+            deployment_timestamp, deployment_id = self._get_deployment_timestamp_and_id(service_name)
+        else:
+            deployment_id = self._generate_deployment_id(service_name, deployment_timestamp)
 
         deployment = manifest.copy()
         deployment["metadata"]["name"] = service_name
@@ -150,8 +163,9 @@ class DeploymentServiceManager(BaseServiceManager):
                 self.controller_client.create_service(namespace=self.namespace, body=service, params=kwargs)
                 if not dryrun:
                     logger.info(f"Created service {service_name} in namespace {self.namespace}")
-            except client.exceptions.ApiException as e:
-                if e.status == 409:
+            except Exception as e:
+                # Handle both ApiException and ControllerRequestError
+                if http_conflict(e):
                     logger.info(f"Service {service_name} already exists")
                 else:
                     raise
@@ -179,9 +193,7 @@ class DeploymentServiceManager(BaseServiceManager):
                     if not dryrun:
                         logger.info(f"Created headless service {service_name}-headless in namespace {self.namespace}")
                 except Exception as e:
-                    if hasattr(e, "status") and e.status == 409:
-                        logger.info(f"Headless service {service_name}-headless already exists")
-                    elif "409" in str(e) or "already exists" in str(e).lower():
+                    if http_conflict(e):
                         logger.info(f"Headless service {service_name}-headless already exists")
                     else:
                         raise
@@ -200,14 +212,7 @@ class DeploymentServiceManager(BaseServiceManager):
             return created_deployment, True
 
         except Exception as e:
-            if hasattr(e, "status") and e.status == 409:
-                is_409 = True
-            elif "409" in str(e) or "already exists" in str(e).lower():
-                is_409 = True
-            else:
-                is_409 = False
-
-            if is_409:
+            if http_conflict(e):
                 logger.info(f"Deployment {deployment['metadata']['name']} already exists, updating")
                 existing_deployment = self.get_resource(deployment["metadata"]["name"])
 
@@ -243,7 +248,9 @@ class DeploymentServiceManager(BaseServiceManager):
             )
             return deployment
         except Exception as e:
-            logger.error(f"Failed to load Deployment '{service_name}': {str(e)}")
+            if http_not_found(e):
+                return {}
+            logger.error(f"Failed to load Deployment '{service_name}': {e}")
             raise
 
     def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
@@ -265,6 +272,7 @@ class DeploymentServiceManager(BaseServiceManager):
         service_name: str,
         module_name: str,
         manifest: dict = None,
+        deployment_timestamp: str = None,
         dryrun: bool = False,
         **kwargs,
     ):
@@ -275,12 +283,13 @@ class DeploymentServiceManager(BaseServiceManager):
             service_name (str): Name for the pod/service.
             module_name (str): Name of the module.
             manifest (dict): Pre-built manifest dictionary containing all configuration (replicas, labels, annotations, etc.).
+            deployment_timestamp (str): Optional timestamp to use for deployment annotation. If not provided, will be generated.
             dryrun (bool): Whether to run in dryrun mode (Default: `False`).
             **kwargs: Additional arguments (ignored).
         """
         logger.info(f"Deploying Kubetorch service with name: {service_name}")
 
-        updated_manifest = self._update_launchtime_manifest(manifest, service_name, module_name)
+        updated_manifest = self._update_launchtime_manifest(manifest, service_name, module_name, deployment_timestamp)
         created_service, _ = self._create_or_update_resource_from_manifest(updated_manifest, dryrun)
         return created_service, updated_manifest
 

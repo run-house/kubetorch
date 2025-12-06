@@ -7,6 +7,7 @@ import kubetorch.serving.constants as serving_constants
 from kubetorch.logger import get_logger
 from kubetorch.servers.http.utils import load_template
 from kubetorch.serving.base_service_manager import BaseServiceManager
+from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)
 
@@ -28,7 +29,10 @@ class RayClusterServiceManager(BaseServiceManager):
             )
             return raycluster
         except Exception as e:
-            logger.error(f"Failed to load RayCluster '{service_name}': {str(e)}")
+            if http_not_found(e):
+                return {}
+
+            logger.error(f"Failed to load RayCluster '{service_name}': {e}")
             raise
 
     def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
@@ -229,9 +233,7 @@ class RayClusterServiceManager(BaseServiceManager):
                 if not dryrun:
                     logger.info(f"Created service {service_name} in namespace {self.namespace}")
             except Exception as e:
-                if hasattr(e, "status") and e.status == 409:
-                    logger.info(f"Service {service_name} already exists")
-                elif "409" in str(e) or "already exists" in str(e).lower():
+                if http_conflict(e):
                     logger.info(f"Service {service_name} already exists")
                 else:
                     raise
@@ -261,15 +263,12 @@ class RayClusterServiceManager(BaseServiceManager):
                 if not dryrun:
                     logger.info(f"Created headless service {service_name}-headless in namespace {self.namespace}")
             except Exception as e:
-                if hasattr(e, "status") and e.status == 409:
-                    logger.info(f"Headless service {service_name}-headless already exists")
-                elif "409" in str(e) or "already exists" in str(e).lower():
+                if http_conflict(e):
                     logger.info(f"Headless service {service_name}-headless already exists")
                 else:
                     raise
 
             # Create RayCluster
-            created_raycluster = None
             try:
                 created_raycluster = self.controller_client.create_namespaced_custom_object(
                     group="ray.io",
@@ -279,15 +278,11 @@ class RayClusterServiceManager(BaseServiceManager):
                     body=raycluster,
                 )
             except Exception as e:
-                if hasattr(e, "status") and e.status == 404:
+                if http_not_found(e):
                     logger.error(
                         "RayCluster Custom Resource Definition (CRD) not found, please install the KubeRay operator"
                     )
-                elif "404" in str(e):
-                    logger.error(
-                        "RayCluster Custom Resource Definition (CRD) not found, please install the KubeRay operator"
-                    )
-                raise e
+                raise
 
             if dryrun:
                 return created_raycluster, False
@@ -296,7 +291,7 @@ class RayClusterServiceManager(BaseServiceManager):
             return created_raycluster, True
 
         except Exception as e:
-            if (hasattr(e, "status") and e.status == 409) or "409" in str(e) or "already exists" in str(e).lower():
+            if http_conflict(e):
                 logger.info(f"RayCluster {service_name} already exists, updating")
                 try:
                     # For RayCluster, we can patch the spec
@@ -452,7 +447,7 @@ class RayClusterServiceManager(BaseServiceManager):
                 logger.info(f"Deleted RayCluster {service_name}")
 
         except Exception as e:
-            if (hasattr(e, "status") and e.status == 404) or "404" in str(e) or "not found" in str(e).lower():
+            if http_not_found(e):
                 if console:
                     console.print(f"[yellow]Note:[/yellow] RayCluster {service_name} not found or already deleted")
                 else:
@@ -474,14 +469,7 @@ class RayClusterServiceManager(BaseServiceManager):
                     logger.info(f"Deleted service {service_name_to_delete}")
 
             except Exception as e:
-                if hasattr(e, "status") and e.status == 404:
-                    if console:
-                        console.print(
-                            f"[yellow]Note:[/yellow] Service {service_name_to_delete} not found or already deleted"
-                        )
-                    else:
-                        logger.info(f"Service {service_name_to_delete} not found or already deleted")
-                elif "404" in str(e) or "not found" in str(e).lower():
+                if http_not_found(e):
                     if console:
                         console.print(
                             f"[yellow]Note:[/yellow] Service {service_name_to_delete} not found or already deleted"
@@ -528,7 +516,7 @@ class RayClusterServiceManager(BaseServiceManager):
 
         except Exception as e:
             # Pod might not be ready yet - 404 is expected
-            if not (hasattr(e, "status") and e.status == 404) and "404" not in str(e):
+            if not http_not_found(e):
                 logger.warning(f"Could not check head pod logs: {e}")
 
         return None

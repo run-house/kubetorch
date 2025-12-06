@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from kubernetes import client, config
+from kubernetes import config
 from kubernetes.client import V1ResourceRequirements
 
 import kubetorch.constants as constants
@@ -1241,8 +1241,9 @@ class Compute:
         install_url: str,
         pointer_env_vars: Dict,
         metadata_env_vars: Dict,
-        startup_rsync_command: Optional[str],
-        launch_id: Optional[str],
+        startup_rsync_command: str = None,
+        launch_id: str = None,
+        deployment_timestamp: str = None,
         dryrun: bool = False,
     ):
         """Creates a new service on the compute for the provided service. If the service already exists,
@@ -1264,6 +1265,7 @@ class Compute:
             service_name=service_name,
             module_name=pointer_env_vars["KT_MODULE_NAME"],
             manifest=self._manifest,
+            deployment_timestamp=deployment_timestamp,
             dryrun=dryrun,
         )
         self._manifest = updated_manifest
@@ -1311,8 +1313,9 @@ class Compute:
         install_url: str,
         pointer_env_vars: Dict,
         metadata_env_vars: Dict,
-        startup_rsync_command: Optional[str],
-        launch_id: Optional[str],
+        startup_rsync_command: str = None,
+        launch_id: str = None,
+        deployment_timestamp: str = None,
         dryrun: bool = False,
     ):
         """Async version of _launch. Creates a new service on the compute for the provided service.
@@ -1331,6 +1334,7 @@ class Compute:
             metadata_env_vars,
             startup_rsync_command,
             launch_id,
+            deployment_timestamp,
             dryrun,
         )
 
@@ -1542,8 +1546,7 @@ class Compute:
         Delegates to the appropriate service manager's check_service_ready method.
         """
         return self.service_manager.check_service_ready(
-            service_name=self.service_name,
-            launch_timeout=self.launch_timeout
+            service_name=self.service_name, launch_timeout=self.launch_timeout
         )
 
     async def _check_service_ready_async(self):
@@ -1572,7 +1575,7 @@ class Compute:
                 if phase != "Running":
                     logger.info(f"Pod {pod_name} is not running. Status: {phase}")
                     return False
-        except client.exceptions.ApiException:
+        except Exception:
             return False
         return True
 

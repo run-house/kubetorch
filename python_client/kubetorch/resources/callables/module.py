@@ -646,15 +646,14 @@ class Module:
                 metadata_env_vars=self._get_metadata_env_vars(init_args),
                 startup_rsync_command=startup_rsync_command,
                 launch_id=launch_request_id,
+                deployment_timestamp=deployment_timestamp,
                 dryrun=dryrun,
             )
             self.service_config = service_config
 
             if not self.compute.freeze and not dryrun:
-                self.deployment_timestamp = self.compute.service_manager.update_deployment_timestamp_annotation(
-                    service_name=self.service_name,
-                    new_timestamp=deployment_timestamp,
-                )
+                # Timestamp is now included in the initial manifest, no need to patch
+                self.deployment_timestamp = deployment_timestamp
             if not dryrun:
                 self.compute._check_service_ready()
                 # Additional health check to ensure HTTP server is ready
@@ -706,15 +705,14 @@ class Module:
                 metadata_env_vars=self._get_metadata_env_vars(init_args),
                 startup_rsync_command=startup_rsync_command,
                 launch_id=launch_request_id,
+                deployment_timestamp=deployment_timestamp,
                 dryrun=dryrun,
             )
             self.service_config = service_config
 
+            # Timestamp is now included in the initial manifest, no need to patch
             if not self.compute.freeze and not dryrun:
-                self.deployment_timestamp = self.compute.service_manager.update_deployment_timestamp_annotation(
-                    service_name=self.service_name,
-                    new_timestamp=deployment_timestamp,
-                )
+                self.deployment_timestamp = deployment_timestamp
             if not dryrun:
                 await self.compute._check_service_ready_async()
                 await self._wait_for_http_health_async()
@@ -1257,6 +1255,7 @@ class Module:
                 response = client.get(
                     endpoint=f"{self.base_endpoint}/health",
                     headers=self.request_headers,
+                    timeout=5,  # timeout per health check attempt
                 )
                 if response.status_code == 200:
                     logger.info(f"HTTP server is ready for service {self.service_name}")
@@ -1268,7 +1267,9 @@ class Module:
                 raise e
 
             except Exception as e:
-                logger.debug(f"Health check failed: {e}, retrying...")
+                # Don't log 502 errors - they're expected during startup as nginx DNS updates
+                if "502" not in str(e):
+                    logger.debug(f"Health check failed: {e}, retrying...")
 
             time.sleep(retry_interval)
             retry_interval *= backoff  # Exponential backoff
@@ -1296,6 +1297,7 @@ class Module:
                 response = client.get(
                     endpoint=f"{self.base_endpoint}/health",
                     headers=self.request_headers,
+                    timeout=5,  # add timeout per health check attempt to allow retries
                 )
                 if response.status_code == 200:
                     logger.info(f"HTTP server is ready for service {self.service_name}")
@@ -1303,7 +1305,9 @@ class Module:
                 else:
                     logger.debug(f"Health check returned status {response.status_code}, retrying...")
             except Exception as e:
-                logger.debug(f"Health check failed: {e}, retrying...")
+                # Don't log 502 errors - they're expected during startup as nginx DNS updates
+                if "502" not in str(e):
+                    logger.debug(f"Health check failed: {e}, retrying...")
 
             await asyncio.sleep(retry_interval)
             retry_interval *= backoff  # Exponential backoff

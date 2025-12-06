@@ -7,8 +7,9 @@ from typing import Dict
 
 from kubetorch import globals
 
-from kubetorch.constants import DEFAULT_VOLUME_ACCESS_MODE, KT_MOUNT_FOLDER
+from kubetorch.constants import DEFAULT_VOLUME_ACCESS_MODE
 from kubetorch.logger import get_logger
+from kubetorch.utils import http_not_found
 
 logger = get_logger(__name__)
 
@@ -168,8 +169,14 @@ class Volume:
             size = pvc["spec"]["resources"]["requests"]["storage"]
             access_modes = pvc["spec"].get("accessModes", [])
             access_mode = access_modes[0] if access_modes else DEFAULT_VOLUME_ACCESS_MODE
+
+            # Load mount_path from annotation
+
             annotations = pvc.get("metadata", {}).get("annotations") or {}
-            final_mount_path = mount_path or annotations.get("kubetorch.com/mount-path", f"/{KT_MOUNT_FOLDER}/{name}")
+            annotation_mount_path = annotations.get("kubetorch.com/mount-path")
+
+            # Use provided mount_path or fall back to annotation
+            final_mount_path = mount_path if mount_path is not None else annotation_mount_path
 
             # Create Volume with actual attributes from PVC
             vol = cls(
@@ -185,10 +192,9 @@ class Volume:
             return vol
 
         except Exception as e:
-            if hasattr(e, "response") and getattr(e.response, "status_code", None) == 404:
+            if http_not_found(e):
                 raise ValueError(f"Volume '{name}' (PVC: {pvc_name}) does not exist in namespace '{namespace}'")
-            else:
-                raise
+            raise
 
     def config(self) -> Dict[str, str]:
         """Get configuration for this volume"""
@@ -211,19 +217,14 @@ class Volume:
     def create(self) -> Dict:
         """Create PVC if it doesn't exist"""
         try:
-            try:
-                # Check if PVC already exists
-                existing_pvc = self.controller_client.get_pvc(self.namespace, self.pvc_name)
+            # Check if PVC already exists
+            existing_pvc = self.controller_client.get_pvc(self.namespace, self.pvc_name, ignore_not_found=True)
+            logger.debug(f"PVC {self.pvc_name} already exists in namespace {self.namespace}")
+            if existing_pvc:
                 logger.debug(f"PVC {self.pvc_name} already exists in namespace {self.namespace}")
                 return existing_pvc
-            except Exception as e:
-                # Check if 404 (not found)
-                if not (hasattr(e, "response") and getattr(e.response, "status_code", None) == 404):
-                    # Some other error occurred
-                    raise
 
             logger.info(f"Creating new PVC with name: {self.pvc_name}")
-
             storage_class_name = self.storage_class
 
             pvc_body = {
@@ -256,17 +257,37 @@ class Volume:
             logger.error(f"Failed to create PVC {self.pvc_name}: {e}")
             raise
 
-    def delete(self) -> None:
-        """Delete the PVC"""
+    def delete(self, wait: bool = True, timeout: int = 60) -> None:
+        """Delete the PVC and optionally wait for deletion to complete.
+
+        Args:
+            wait: Whether to wait for the PVC to be fully deleted (default: True)
+            timeout: Maximum time to wait for deletion in seconds (default: 60)
+        """
+        import time
+
         try:
             self.controller_client.delete_pvc(self.namespace, self.pvc_name)
-            logger.debug(f"Successfully deleted PVC {self.pvc_name}")
+            logger.debug(f"Initiated deletion of PVC {self.pvc_name}")
+
+            if wait:
+                # Wait for PVC to be fully deleted
+                start_time = time.time()
+                while time.time() - start_time < timeout:
+                    if not self.exists():
+                        logger.debug(f"Successfully deleted PVC {self.pvc_name}")
+                        return
+                    time.sleep(0.5)
+
+                # Timeout - PVC still exists
+                logger.warning(f"PVC {self.pvc_name} deletion timed out after {timeout}s (may still be terminating)")
+
         except Exception as e:
-            if hasattr(e, "response") and getattr(e.response, "status_code", None) == 404:
+            if http_not_found(e):
                 logger.warning(f"PVC {self.pvc_name} not found")
-            else:
-                logger.error(f"Failed to delete PVC {self.pvc_name}: {e}")
-                raise
+                return
+            logger.error(f"Failed to delete PVC {self.pvc_name}: {e}")
+            raise
 
     def exists(self) -> bool:
         """Check if the PVC exists"""
@@ -274,11 +295,9 @@ class Volume:
             self.controller_client.get_pvc(self.namespace, self.pvc_name)
             return True
         except Exception as e:
-            if hasattr(e, "response") and getattr(e.response, "status_code", None) == 404:
+            if http_not_found(e):
                 return False
-            else:
-                # Some other API error, re-raise
-                raise
+            raise
 
     def ssh(self, image: str = "alpine:latest"):
         """

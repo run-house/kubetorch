@@ -12,6 +12,7 @@ from kubetorch.resources.secrets import Secret
 from kubetorch.resources.secrets.utils import get_k8s_identity_name
 from kubetorch.servers.http.utils import is_running_in_kubernetes
 from kubetorch.serving.constants import KT_USER_IDENTIFIER_LABEL, KT_USERNAME_LABEL
+from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)
 
@@ -127,32 +128,45 @@ class KubernetesSecretsClient:
         return f"kt.secret.{user}.{name}"
 
     def _read_secret(self, name: str) -> Optional[dict]:
+        from kubetorch import ControllerRequestError
+
         secret_name = name
+
         try:
-            secret = self.controller_client.get_secret(self.namespace, name)
-        except Exception as e:
-            if (
-                hasattr(e, "response") and getattr(e.response, "status_code", None) == 404
-            ):  # secret does not exist, try to load with formatted k8 name
+            # 1) Try the user-provided name directly
+            secret = self.controller_client.get_secret(
+                self.namespace,
+                name,
+                ignore_not_found=True,
+            )
+
+            # 2) If not found, try the formatted k8s-style name
+            if secret is None:
                 secret_name = self._format_secret_name(name)
-                try:
-                    secret = self.controller_client.get_secret(self.namespace, secret_name)
-                except Exception as e:
-                    if hasattr(e, "response") and getattr(e.response, "status_code", None) == 404:
-                        logger.info(
-                            f"Secret {secret_name} not found in namespace {self.namespace}",
-                        )
-                        return None
-                    else:
-                        logger.error(
-                            f"Failed to read secret {name} from Kubernetes: {str(e)}",
-                        )
-                        return None
-            else:
-                logger.error(
-                    f"Failed to read secret {name} from Kubernetes: {str(e)}",
+                secret = self.controller_client.get_secret(
+                    self.namespace,
+                    secret_name,
+                    ignore_not_found=True,
                 )
-                return None
+
+                if secret is None:
+                    logger.info(
+                        f"Secret {secret_name} not found in namespace {self.namespace}",
+                    )
+                    return None
+
+        except ControllerRequestError as e:
+            # Any non-404 failure ends up here – network / auth / 5xx / etc
+            logger.error(
+                f"Failed to read secret {name} from Kubernetes: {e}",
+            )
+            return None
+        except Exception as e:
+            # Extra safety net if something weird happens
+            logger.error(
+                f"Unexpected error reading secret {name} from Kubernetes: {e}",
+            )
+            return None
 
         annotations = secret.get("metadata", {}).get("annotations") or {}
         override = annotations.get("kubetorch.com/override", "False")
@@ -166,11 +180,13 @@ class KubernetesSecretsClient:
             "override": override,
         }
 
+        # File-based secret (provider/path mode)
         if path:
             secret_config["path"] = path
             secret_config["filenames"] = filenames
             return secret_config
 
+        # Key/value secret
         decoded_values = {k: base64.b64decode(v).decode("utf-8") for k, v in secret.get("data", {}).items()}
         secret_config["values"] = decoded_values
 
@@ -231,11 +247,15 @@ class KubernetesSecretsClient:
             return True
 
         except Exception as e:
-            if console:
-                if hasattr(e, "response") and getattr(e.response, "status_code", None) == 409:
+            if http_conflict(e):
+                if console:
                     msg = f"[yellow]Secret '{secret.name}' already exists in namespace {self.namespace}, skipping creation[/yellow]"
-                else:
-                    msg = f"[red]Failed to create Kubernetes secret {secret_name}: {str(e)}[/red]"
+                    console.print(msg)
+                return True
+
+            # For other errors, print message if console provided, otherwise raise
+            if console:
+                msg = f"[red]Failed to create Kubernetes secret {secret_name}: {str(e)}[/red]"
                 console.print(msg)
                 return False
             else:
@@ -245,9 +265,7 @@ class KubernetesSecretsClient:
         try:
             return self.controller_client.get_secret(self.namespace, secret.name)
         except Exception as e:
-            if (
-                hasattr(e, "response") and getattr(e.response, "status_code", None) == 404
-            ):  # try to load secret with kubernetes formatted name
+            if http_not_found(e):
                 formatted_name = self._format_secret_name(secret.name)
                 try:
                     return self.controller_client.get_secret(self.namespace, formatted_name)
@@ -317,6 +335,10 @@ class KubernetesSecretsClient:
             return True
 
         except Exception as e:
+            if http_not_found(e):
+                # already gone, treat as success
+                return True
+
             msg = f"Failed to delete Kubernetes secret: {name}: {str(e)}"
             console.print(msg) if console else logger.error(msg)
             return False
@@ -338,9 +360,10 @@ class KubernetesSecretsClient:
                     )
 
                 except Exception as e:
-                    logger.warning(
-                        f"Failed to delete specific Kubernetes secret {secret_name} for user {username}: {str(e)}",
-                    )
+                    if not http_not_found(e):
+                        logger.warning(
+                            f"Failed to delete specific Kubernetes secret {secret_name} for user {username}: {str(e)}",
+                        )
                     deleted_all = False
 
             return deleted_all
