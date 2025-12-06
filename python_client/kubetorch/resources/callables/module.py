@@ -161,8 +161,14 @@ class Module:
             if not self._compute.endpoint:
                 return self._compute._wait_for_endpoint()
             return self._compute.endpoint
+
         # URL format when using the NGINX proxy
-        return f"http://localhost:{self._compute.client_port()}/{self.namespace}/{self.service_name}"
+        base_url = f"http://localhost:{self._compute.client_port()}"
+
+        if config.cluster_config.get("management_plane_url"):
+            return f"{base_url}/platform/{self.namespace}/{self.service_name}"
+        else:
+            return f"{base_url}/{self.namespace}/{self.service_name}"
 
     @property
     def request_headers(self):
