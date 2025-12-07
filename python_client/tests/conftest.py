@@ -163,10 +163,7 @@ async def remote_logs_fn():
     from .utils import log_n_messages
 
     remote_fn = await kt.fn(log_n_messages).to_async(
-        kt.Compute(
-            cpus=".01",
-            gpu_anti_affinity=True,
-        )
+        kt.Compute(cpus="100m", gpu_anti_affinity=True, image_pull_policy="IfNotPresent")
     )
     return remote_fn
 
@@ -195,7 +192,7 @@ async def remote_cls():
     compute_type = os.getenv("TEST_COMPUTE_TYPE", "deployment")
 
     compute = kt.Compute(
-        cpus=".01",
+        cpus=".1",
         image=kt.images.Debian()
         .pip_install(["pytest", "pytest-asyncio", "typer", "rich"])
         .run_bash("uv pip install --system --break-system-packages numpy"),
@@ -242,10 +239,7 @@ async def remote_monitoring_fn():
     from .utils import slow_iteration
 
     remote_fn = await kt.fn(slow_iteration).to_async(
-        kt.Compute(
-            cpus=".01",
-            gpu_anti_affinity=True,
-        )
+        kt.Compute(cpus=".01", gpu_anti_affinity=True, image_pull_policy="Always")
     )
     return remote_fn
 
