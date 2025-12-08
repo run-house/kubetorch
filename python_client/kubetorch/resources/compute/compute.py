@@ -1157,6 +1157,7 @@ class Compute:
     def _get_requested_resources(self, cpus, memory, disk_size, gpu_config):
         """Return requested resources."""
         requests = {}
+        limits = {}
 
         # Add CPU if specified
         if cpus:
@@ -1182,14 +1183,18 @@ class Compute:
             elif gpu_config.get("sharing_type") == "fraction":
                 # For fractional GPUs, we still need to request the base GPU resource
                 requests["nvidia.com/gpu"] = "1"
+                limits["nvidia.com/gpu"] = "1"
             elif not gpu_config.get("sharing_type"):
                 # Whole GPUs
                 requests["nvidia.com/gpu"] = str(gpu_count)
+                limits["nvidia.com/gpu"] = str(gpu_count)
 
         # Only include non-empty dicts
         resources = {}
         if requests:
             resources["requests"] = requests
+        if limits:
+            resources["limits"] = limits
 
         return V1ResourceRequirements(**resources).to_dict()
 
