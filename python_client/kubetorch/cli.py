@@ -610,7 +610,7 @@ def kt_deploy(
     asyncio.run(deploy_all_async())
 
     if not target_fn_or_class:
-        console.print(f"Successfully deployed functions and modules from {target}.")
+        console.print(f"Successfully deployed all decorated functions and modules from {target}.")
 
 
 @app.command("describe")
