@@ -33,7 +33,7 @@ from kubetorch.resources.volumes.volume import Volume
 from kubetorch.servers.http.utils import is_running_in_kubernetes, load_template
 from kubetorch.serving.autoscaling import AutoscalingConfig
 from kubetorch.serving.service_manager import DeploymentServiceManager, KnativeServiceManager, RayClusterServiceManager
-from kubetorch.serving.utils import GPUConfig, pod_is_running, RequestedPodResources
+from kubetorch.serving.utils import GPUConfig, pod_is_running
 
 from kubetorch.utils import extract_host_port, http_to_ws, load_head_node_pod, load_kubeconfig
 
@@ -265,6 +265,7 @@ class Compute:
         from kubetorch.serving.service_manager import DeploymentServiceManager
 
         manifest_annotations = annotations.copy() if annotations else {}
+        manifest_annotations.update(self.gpu_annotations.copy())
         if self._kubeconfig_path is not None:
             manifest_annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
 
@@ -569,7 +570,10 @@ class Compute:
 
     @property
     def gpu_memory(self):
-        annotations = self.pod_spec.get("annotations", {})
+        annotations = {}
+        manifest_metadata = self._manifest.get("metadata", {})
+        if manifest_metadata:
+            annotations = manifest_metadata.get("annotations", {})
         return annotations.get("gpu-memory")
 
     @gpu_memory.setter
@@ -1161,11 +1165,11 @@ class Compute:
 
         # Add CPU if specified
         if cpus:
-            requests["cpu"] = RequestedPodResources.cpu_for_resource_request(cpus)
+            requests["cpu"] = str(cpus)
 
         # Add Memory if specified
         if memory:
-            requests["memory"] = RequestedPodResources.memory_for_resource_request(memory)
+            requests["memory"] = memory
 
         # Add Storage if specified
         if disk_size:
@@ -1175,17 +1179,11 @@ class Compute:
         gpu_config: dict = gpu_config
         gpu_count = gpu_config.get("count", 1)
         if gpu_config:
-            if gpu_config.get("sharing_type") == "memory":
-                # TODO: not currently supported
-                # For memory-sharing GPUs, we don't need to request any additional resources - the KAI scheduler
-                # will handle it thru annotations
-                return V1ResourceRequirements()
-            elif gpu_config.get("sharing_type") == "fraction":
+            if gpu_config.get("sharing_type") == "fraction":
                 # For fractional GPUs, we still need to request the base GPU resource
                 requests["nvidia.com/gpu"] = "1"
                 limits["nvidia.com/gpu"] = "1"
-            elif not gpu_config.get("sharing_type"):
-                # Whole GPUs
+            else:
                 requests["nvidia.com/gpu"] = str(gpu_count)
                 limits["nvidia.com/gpu"] = str(gpu_count)
 

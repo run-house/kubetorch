@@ -5,11 +5,10 @@ import warnings
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional, Union
+from typing import Literal, Optional
 
 import httpx
 from kubernetes.client import ApiException, CoreV1Api, V1Pod
-from kubernetes.utils import parse_quantity
 
 from kubetorch import globals
 from kubetorch.logger import get_logger
@@ -70,90 +69,6 @@ class GPUConfig:
             base_dict["gpu_type"] = self.gpu_type
 
         return base_dict
-
-
-class RequestedPodResources:
-    """Resources requested in a Kubetorch cluster/compute object. Note these are the values we receive
-    from launcher the cluster via a Sky dryrun."""
-
-    # Default overhead percentages to account for filesystem overhead, OS files, logs, container runtime, etc.
-    MEMORY_OVERHEAD = 0.20
-    CPU_OVERHEAD = 0.10
-    DISK_OVERHEAD = 0.15
-    GPU_OVERHEAD = 0.0
-
-    MIN_MEMORY_GB = 0.1  # 100Mi minimum
-    MIN_CPU_CORES = 0.1  # 100m minimum
-
-    CPU_STEPS = [1, 2, 4, 8, 16, 32, 48, 64, 96, 128, 192]
-    MEMORY_STEPS = [0.5, 1, 2, 4, 8, 16, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768]
-
-    def __init__(
-        self,
-        memory: Optional[Union[str, float]] = None,
-        cpus: Optional[Union[int, float]] = None,
-        disk_size: Optional[int] = None,
-        num_gpus: Optional[Union[int, dict]] = None,
-    ):
-
-        self.memory = max(float(memory), self.MIN_MEMORY_GB) if memory is not None else None
-        self.cpus = max(self.normalize_cpu_value(cpus), self.MIN_CPU_CORES) if cpus is not None else None
-        self.disk_size = disk_size
-        self.num_gpus = num_gpus
-
-    def __str__(self):
-        # Example: RequestedPodResources(memory=16.0, cpus=4.0, disk=NoneGB, gpus={'A10G': 1})"
-        disk_str = f"{self.disk_size}GB" if self.disk_size is not None else "None"
-        memory = f"{self.memory}GB" if self.memory is not None else "None"
-
-        return (
-            f"RequestedPodResources(memory={memory}, cpus={self.cpus}, disk_size={disk_str}, "
-            f"num_gpus={self.num_gpus})"
-        )
-
-    def __repr__(self):
-        return (
-            f"RequestedPodResources(memory={self.memory}, cpus={self.cpus}, "
-            f"disk_size={self.disk_size}, num_gpus={self.num_gpus})"
-        )
-
-    @classmethod
-    def cpu_for_resource_request(cls, cpu_val: int = None):
-        if cpu_val is None:
-            return None
-
-        # Ensure minimum CPU value
-        cpu_val = max(float(cpu_val), cls.MIN_CPU_CORES)
-
-        # Convert to millicores (ex: '4.0' -> 4000m)
-        return f"{int(float(cpu_val) * 1000)}m"
-
-    @classmethod
-    def memory_for_resource_request(cls, memory_val: Union[str, float, int] = None):
-        if memory_val is None:
-            return None
-
-        # If it's a number, treat as GB
-        if isinstance(memory_val, (int, float)):
-            gb_val = max(float(memory_val), cls.MIN_MEMORY_GB)
-            memory_val = f"{gb_val}Gi"
-
-        # Validate the string - if invalid will throw a ValueError
-        parse_quantity(str(memory_val))
-
-        return str(memory_val)
-
-    @classmethod
-    def normalize_cpu_value(cls, cpu_value: Optional[Union[int, str, float]]) -> Optional[float]:
-        """Convert CPU value to float, handling string values with '+' allowed by Sky and Kubetorch."""
-        if cpu_value is None:
-            return None
-
-        if isinstance(cpu_value, str):
-            # Strip the '+' if present and convert to float
-            return float(cpu_value.rstrip("+"))
-
-        return float(cpu_value)
 
 
 class KubernetesCredentialsError(Exception):

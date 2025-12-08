@@ -15,6 +15,7 @@ from .utils import (
     get_env_var,
     get_sys_module,
     get_test_fn_name,
+    get_tests_namespace,
     OP_MUL,
     OP_SUM,
     ResourceHungryService,
@@ -627,3 +628,204 @@ def test_allowed_serialization_as_env_env_var(monkeypatch):
     expected_result_pickle = f"{msg_pickle} was logged {n} times"
     result_pickle_serialization = remote_logs_fn(msg=msg_pickle, n=n, serialization="pickle")
     assert result_pickle_serialization == expected_result_pickle
+
+
+@pytest.mark.level("unit")
+def test_compute_factory_cpus():
+    import kubetorch as kt
+
+    compute_str_as_int_cpus_core = kt.Compute(cpus="1", launch_timeout=300)
+    assert compute_str_as_int_cpus_core
+    assert compute_str_as_int_cpus_core.cpus == "1"
+    compute_str_as_float_cpus_core = kt.Compute(cpus="0.5", launch_timeout=300)
+    assert compute_str_as_float_cpus_core
+    assert compute_str_as_float_cpus_core.cpus == "0.5"
+    compute_str_cpus_millicores = kt.Compute(cpus="2000m", launch_timeout=300)
+    assert compute_str_cpus_millicores
+    assert compute_str_cpus_millicores.cpus == "2000m"
+    compute_int_cpus = kt.Compute(cpus=3, launch_timeout=300)
+    assert compute_int_cpus
+    assert compute_int_cpus.cpus == "3"
+
+
+@pytest.mark.level("unit")
+def test_compute_factory_memory():
+    import kubetorch as kt
+
+    compute_str_as_int_mem = kt.Compute(memory="1000000")
+    assert compute_str_as_int_mem
+    assert compute_str_as_int_mem.memory == "1000000"
+
+    binary_units = ["Ki", "Mi", "Gi", "Ti"]
+    for unit in binary_units:
+        compute_binary_units = kt.Compute(memory=f"2{unit}")
+        assert compute_binary_units
+        assert compute_binary_units.memory == f"2{unit}"
+
+    decimal_units = ["K", "M", "G", "T"]
+    for unit in decimal_units:
+        compute_binary_units = kt.Compute(memory=f"3{unit}")
+        assert compute_binary_units
+        assert compute_binary_units.memory == f"3{unit}"
+
+
+@pytest.mark.level("unit")
+def test_compute_factory_disk_size():
+    import kubetorch as kt
+
+    compute_str_as_int_disk_size = kt.Compute(disk_size="1000000")
+    assert compute_str_as_int_disk_size
+    assert compute_str_as_int_disk_size.disk_size == "1000000"
+
+    binary_units = ["Ki", "Mi", "Gi", "Ti"]
+    for unit in binary_units:
+        compute_binary_units = kt.Compute(disk_size=f"2{unit}")
+        assert compute_binary_units
+        assert compute_binary_units.disk_size == f"2{unit}"
+
+    decimal_units = ["K", "M", "G", "T"]
+    for unit in decimal_units:
+        compute_binary_units = kt.Compute(disk_size=f"3{unit}")
+        assert compute_binary_units
+        assert compute_binary_units.disk_size == f"3{unit}"
+
+
+@pytest.mark.level("unit")
+def test_compute_factory_gpus():
+    import kubetorch as kt
+
+    compute_str_as_int_gpus_core = kt.Compute(gpus="1")
+    assert compute_str_as_int_gpus_core
+    assert compute_str_as_int_gpus_core.gpus == "1"
+    compute_int_gpus = kt.Compute(gpus=3)
+    assert compute_int_gpus
+    assert compute_int_gpus.gpus == "3"
+    with pytest.raises(ValueError) as val_error:
+        kt.Compute(gpus="0.5")
+    assert val_error.value.args[0] == "Unexpected format for GPUs, expecting a numeric count"
+
+
+@pytest.mark.level("unit")
+def test_compute_factory_gpu_type():
+    import kubetorch as kt
+
+    compute_gpus_full = kt.Compute(gpu_type="nvidia.com/gpu.product: L4")
+    assert compute_gpus_full
+    assert compute_gpus_full.gpu_type == "L4"
+
+    compute_gpus_short = kt.Compute(gpu_type="NVIDIA-L4")
+    assert compute_gpus_short
+    assert compute_gpus_short.gpu_type == "NVIDIA-L4"
+
+
+@pytest.mark.level("unit")
+def test_compute_factory_gpu_memory():
+    import kubetorch as kt
+
+    unsupported_mem_values = [1000000, "1000000"]
+    for val in unsupported_mem_values:
+        with pytest.raises(ValueError) as error:
+            kt.Compute(gpu_memory=val)
+        error_msg = (
+            "GPU memory must end with Mi, Gi, or Ti"
+            if isinstance(val, str)
+            else "GPU memory must be a string with suffix Mi, Gi, or Ti"
+        )
+        assert error.value.args[0] == error_msg
+
+    binary_units = {"Gi": 2 * 1024, "Mi": 2, "Ti": 2 * 1024 * 1024}
+
+    for unit, value in binary_units.items():
+        compute_binary_units = kt.Compute(gpus=1, gpu_memory=f"2{unit}")
+        assert compute_binary_units.gpu_memory == f"{value}"
+        assert compute_binary_units.gpu_annotations.get("gpu-memory") == f"{value}"
+
+    decimal_units = ["K", "M", "G", "T"]
+    for unit in decimal_units:
+        with pytest.raises(ValueError) as error:
+            kt.Compute(gpu_memory=f"2{unit}")
+        error_msg = "GPU memory must end with Mi, Gi, or Ti"
+        assert error.value.args[0] == error_msg
+
+
+@pytest.mark.level("unit")
+def test_compute_factory_namespace():
+    import kubetorch as kt
+
+    default_ns_compute = kt.Compute(cpus="1")
+    assert default_ns_compute
+    assert default_ns_compute.namespace == "default"
+
+    tests_ns = get_tests_namespace()
+    create_test_ns_cmd = f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
+    subprocess.run(create_test_ns_cmd, shell=True, check=True)
+
+    provided_ns_compute = kt.Compute(cpus="1", namespace=tests_ns)
+    assert provided_ns_compute
+    assert provided_ns_compute.namespace == tests_ns
+
+
+@pytest.mark.level("unit")
+def test_compute_factory_image():
+    import kubetorch as kt
+
+    image = kt.images.Debian()
+    compute_valid_image = kt.Compute(image=image)
+    assert compute_valid_image.image.image_id == image.image_id
+    assert compute_valid_image.image.name == image.name
+    with pytest.raises(AttributeError) as error:
+        kt.Compute(image="ghcr.io/run-house/server:v3")
+    assert error.value.args[0] == "'str' object has no attribute 'image_id'"
+
+
+@pytest.mark.level("unit")
+def test_compute_factory_kubeconfig_path():
+    from pathlib import Path
+
+    import kubetorch as kt
+    import yaml
+
+    compute_default_path = kt.Compute(cpus="1")
+    assert compute_default_path
+    assert compute_default_path.kubeconfig_path == str(Path("~/.kube/config").expanduser())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        temp_file = Path(tmpdir) / ".kt" / "config"
+        temp_file.parent.mkdir(parents=True, exist_ok=True)
+        with temp_file.expanduser().open("w") as stream:
+            config_vals = {k: str(v) if isinstance(v, dict) else v for k, v in dict(kt.config).items() if v is not None}
+            yaml.safe_dump(config_vals, stream)
+        compute_kubeconfig_path = kt.Compute(cpus="1", kubeconfig_path=str(temp_file.expanduser()))
+        assert compute_kubeconfig_path
+        assert compute_kubeconfig_path.kubeconfig_path == str(temp_file.expanduser())
+
+
+@pytest.mark.level("unit")
+def test_compute_factory_service_account():
+    import kubetorch as kt
+
+    compute_sa = kt.Compute(cpus="1", service_account_name="test_service_account")
+    assert compute_sa
+    assert compute_sa.service_account_name == "test_service_account"
+
+
+@pytest.mark.level("unit")
+def test_compute_factory_image_pull_policy():
+    import kubetorch as kt
+
+    image_pull_policies = ["IfNotPresent", "Always", "Never"]
+
+    for policy in image_pull_policies:
+        compute = kt.Compute(cpus="0.1", image_pull_policy=policy)
+        assert compute.image_pull_policy == policy
+
+
+@pytest.mark.level("unit")
+def test_compute_factory_shared_memory_limit():
+    import kubetorch as kt
+
+    binary_units = ["Gi", "Mi", "Ti"]
+    for unit in binary_units:
+        compute_binary_units = kt.Compute(gpus="1", shared_memory_limit=f"2{unit}")
+        assert compute_binary_units
+        assert compute_binary_units.shared_memory_limit == f"2{unit}"
