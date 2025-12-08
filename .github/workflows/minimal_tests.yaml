@@ -577,3 +577,10 @@ jobs:
           done
           kt config set username ${TEST_HASH}-secret
           kt secrets delete -A -y
+
+
+      - name: Delete test ns
+        run: |
+          kubectl get ns --no-headers -o custom-columns=":metadata.name" \
+            | grep "^kt-test-${TEST_HASH}" \
+            | xargs -r kubectl delete ns
