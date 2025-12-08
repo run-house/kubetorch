@@ -1354,24 +1354,27 @@ async def test_logs_cli_single_pod_name(remote_logs_fn):
 @pytest.mark.asyncio
 async def test_logs_cli_single_pod_tail(remote_logs_fn):
     log_msg = "Tests logs msg"
-    log_amount = 1
+    log_amount = 20
 
-    remote_logs_fn(log_msg, log_amount)
+    remote_logs_fn(log_msg, log_amount, stream_logs=False)
 
     assert len(remote_logs_fn.compute.pod_names()) == 1
 
     service_name = remote_logs_fn.service_name
-    result = runner.invoke(app, ["logs", service_name, "-t", "10"], color=False)
+    result = runner.invoke(app, ["logs", service_name, "-t", "20"], color=False)
     assert result.exit_code == 0
     logs_output = result.stdout
 
     assert service_name in logs_output
-    for i in range(log_amount):
-        assert f"{log_msg} {i}" in logs_output
+    for i in range(int(log_amount / 2) + 1, log_amount):
+        assert f"{log_msg} {i}\n" in logs_output
     assert remote_logs_fn.service_name in logs_output
 
+    for i in range(5):
+        assert f"{log_msg} {i}\n" not in logs_output
+
     parsed_logs = logs_output.strip().replace("\n\n", "\n").split("\n")[5:-1]
-    assert len(parsed_logs) <= 15
+    assert len(parsed_logs) <= 50
 
 
 @pytest.mark.level("minimal")
