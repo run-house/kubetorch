@@ -7,7 +7,6 @@ import time
 from datetime import datetime, timezone
 from typing import Dict
 
-from kubetorch.globals import config
 from kubetorch.logger import get_logger
 
 from kubetorch.resources.callables.module import Module
@@ -120,7 +119,6 @@ class App(Module):
                     {},
                     deployment_timestamp,
                     stream_logs,
-                    config.log_verbosity,
                     False,
                 ),
             )
@@ -144,7 +142,6 @@ class App(Module):
                 init_args={},
                 deployment_timestamp=deployment_timestamp,
                 stream_logs=stream_logs,
-                verbosity=config.log_verbosity,
                 dryrun=False,
             )
 

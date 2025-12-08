@@ -18,7 +18,6 @@ ENV_MAPPINGS = {
     "install_url": "KT_INSTALL_URL",
     "stream_logs": "KT_STREAM_LOGS",
     "stream_metrics": "KT_STREAM_METRICS",
-    "log_verbosity": "KT_LOG_VERBOSITY",
     "queue": "KT_QUEUE",
     "volumes": "KT_VOLUMES",
     "api_url": "KT_API_URL",
@@ -37,7 +36,6 @@ class KubetorchConfig:
         self._install_namespace = None
         self._install_url = None
         self._license_key = None
-        self._log_verbosity = None
         self._namespace = None
         self._queue = None
         self._stream_logs = None
@@ -232,50 +230,11 @@ class KubetorchConfig:
         self._install_url = value
 
     @property
-    def log_verbosity(self):
-        """Verbosity of logs streamed from a remote deployment.
-        Log levels include ``debug``, ``info``, and ``critical``. Default is ``info``.
-
-        Note:
-            Only relevant when ``stream_logs`` is set to ``true``.
-        """
-        from kubetorch.utils import LogVerbosity
-
-        default_verbosity = LogVerbosity.INFO.value
-
-        if self._log_verbosity is None:
-            verbosity_env_var = self._get_env_var("log_verbosity")
-            if verbosity_env_var:
-                try:
-                    verbosity_env_var = LogVerbosity(verbosity_env_var).value
-                except ValueError:
-                    verbosity_env_var = default_verbosity
-
-                self._log_verbosity = verbosity_env_var
-            else:
-                self._log_verbosity = self.file_cache.get("log_verbosity", default_verbosity)
-
-        return self._log_verbosity
-
-    @log_verbosity.setter
-    def log_verbosity(self, value):
-        """Set log verbosity."""
-        from kubetorch.utils import LogVerbosity
-
-        try:
-            # In case we are unsetting log_verbosity, None is a valid value
-            verbosity = LogVerbosity(value).value if value else None
-        except ValueError:
-            raise ValueError("Invalid log verbosity value. Must be one of: 'debug', 'info', 'critical'.")
-
-        self._log_verbosity = verbosity
-
-    @property
     def stream_logs(self):
         """Whether to stream logs for Kubetorch services.
 
         When enabled, logs from remote services are streamed back to your local environment
-        in real-time. Verbosity of the streamed logs can be controlled with ``log_verbosity``.
+        in real-time. Log level filtering can be controlled via LoggingConfig.level on the Compute.
         Default is ``True``
 
         When disabled, logs remain accessible in-cluster but are not streamed to the client.

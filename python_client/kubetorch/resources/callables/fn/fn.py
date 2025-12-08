@@ -47,6 +47,9 @@ class Fn(Module):
         if debug is None and pdb is not None:
             debug = pdb
 
+        # Resolve stream_logs using module's property if not explicitly set
+        stream_logs = stream_logs if stream_logs is not None else self.stream_logs
+
         if debug:
             logger.info(f"Debugging remote function {self.name}")
         elif stream_logs:
@@ -54,7 +57,8 @@ class Fn(Module):
 
         response = client.call_method(
             self.endpoint(),
-            stream_logs=stream_logs,
+            stream_logs,
+            self.logging_config,
             stream_metrics=stream_metrics,
             headers=self.request_headers,
             body={"args": list(args), "kwargs": kwargs},
@@ -76,6 +80,9 @@ class Fn(Module):
         if debug is None and pdb is not None:
             debug = pdb
 
+        # Resolve stream_logs using module's property if not explicitly set
+        stream_logs = stream_logs if stream_logs is not None else self.stream_logs
+
         if debug:
             logger.info(f"Debugging remote function {self.name}")
         elif stream_logs:
@@ -83,7 +90,8 @@ class Fn(Module):
 
         response = await client.call_method_async(
             self.endpoint(),
-            stream_logs=stream_logs,
+            stream_logs,
+            self.logging_config,
             stream_metrics=stream_metrics,
             headers=self.request_headers,
             body={"args": list(args), "kwargs": kwargs},

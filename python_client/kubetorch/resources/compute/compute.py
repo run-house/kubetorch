@@ -16,6 +16,7 @@ import kubetorch.constants as constants
 import kubetorch.serving.constants as serving_constants
 
 from kubetorch import globals
+from kubetorch.globals import LoggingConfig
 
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.utils import find_locally_installed_version
@@ -72,6 +73,7 @@ class Compute:
         shared_memory_limit: str = None,
         allowed_serialization: Optional[List[str]] = None,
         replicas: int = 1,
+        logging_config: LoggingConfig = None,
         _skip_template_init: bool = False,
     ):
         """Initialize the compute requirements for a Kubetorch service.
@@ -126,6 +128,8 @@ class Compute:
                 each pod created by the service. Value should be a Kubernetes quantity string, for example: "512Mi",
                 "2Gi", "1G", "1024Mi", "100M". If not provided, /dev/shm will default to the pod's memory limit (if set)
                 or up to half the node's RAM.
+            logging_config (LoggingConfig, optional): Configuration for logging behavior on this service. Controls
+                log level, streaming options, and grace periods. See :class:`LoggingConfig` for details.
 
         Note:
             **Resource Specification Formats:**
@@ -181,6 +185,7 @@ class Compute:
         self._secrets = secrets
         self._secrets_client = None
         self._volumes = volumes
+        self._logging_config = logging_config or LoggingConfig()
 
         self._gpu_annotations = {}  # Will be populated during init or from_template
 
@@ -209,9 +214,12 @@ class Compute:
         queue_name = queue if queue else globals.config.queue
 
         env_vars = env_vars.copy() if env_vars else {}
-        if os.getenv("KT_LOG_LEVEL") and not env_vars.get("KT_LOG_LEVEL"):
-            # If KT_LOG_LEVEL is set, add it to env vars so the log level is set on the server
-            env_vars["KT_LOG_LEVEL"] = os.getenv("KT_LOG_LEVEL")
+        # Set KT_LOG_LEVEL from logging_config, falling back to env var
+        if not env_vars.get("KT_LOG_LEVEL"):
+            if self._logging_config.level:
+                env_vars["KT_LOG_LEVEL"] = self._logging_config.level.upper()
+            elif os.getenv("KT_LOG_LEVEL"):
+                env_vars["KT_LOG_LEVEL"] = os.getenv("KT_LOG_LEVEL")
         if os.getenv("KT_DEBUG_MODE") and not env_vars.get("KT_DEBUG_MODE"):
             # If KT_DEBUG_MODE is set, add it to env vars so the debug mode is set on the server
             env_vars["KT_DEBUG_MODE"] = os.getenv("KT_DEBUG_MODE")
@@ -343,6 +351,11 @@ class Compute:
     def manifest(self):
         """Get the current resource manifest."""
         return self._manifest
+
+    @property
+    def logging_config(self) -> LoggingConfig:
+        """Get the logging configuration for this compute."""
+        return self._logging_config
 
     @property
     def pod_spec(self):

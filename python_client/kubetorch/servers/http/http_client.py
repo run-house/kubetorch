@@ -1,10 +1,11 @@
 import asyncio
+import hashlib
 import json
 import os
 import threading
 import time
 import urllib.parse
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime
 from typing import Literal, Union
 
@@ -14,7 +15,7 @@ import websockets
 
 from kubernetes import client
 
-from kubetorch.globals import config, DebugConfig, MetricsConfig, service_url
+from kubetorch.globals import config, DebugConfig, LoggingConfig, MetricsConfig, service_url
 from kubetorch.logger import get_logger
 
 from kubetorch.servers.http.utils import (
@@ -28,6 +29,61 @@ from kubetorch.serving.constants import DEFAULT_DEBUG_PORT, DEFAULT_NGINX_PORT
 from kubetorch.utils import extract_host_port, ServerLogsFormatter
 
 logger = get_logger(__name__)
+
+# Log level priority for filtering
+LOG_LEVEL_PRIORITY = {
+    "debug": 0,
+    "info": 1,
+    "warning": 2,
+    "error": 3,
+    "critical": 4,
+}
+
+
+class LogDeduplicator:
+    """Sliding window deduplication using hash sets.
+
+    Prevents duplicate logs from being printed when Loki returns the same log
+    multiple times (e.g., logs with identical nanosecond timestamps).
+
+    Uses a sliding window of hash sets to efficiently track recently seen logs
+    while automatically evicting old entries to prevent memory growth.
+    """
+
+    def __init__(self, window_intervals: int = 5):
+        """Initialize the deduplicator.
+
+        Args:
+            window_intervals: Number of intervals to keep in the sliding window.
+                With 0.5s grace_poll_timeout, 5 intervals = 2.5s window.
+        """
+        self.windows: deque[set] = deque(maxlen=window_intervals)
+        self.windows.append(set())
+
+    def rotate(self):
+        """Rotate to a new interval window. Call this on each timeout."""
+        self.windows.appendleft(set())  # Newest at front, oldest auto-evicted by maxlen
+
+    def is_duplicate(self, raw_log: str) -> bool:
+        """Check if log was seen recently; if not, record it.
+
+        Args:
+            raw_log: The raw log string (before JSON deserialization)
+
+        Returns:
+            True if this log was already seen, False if it's new
+        """
+        # MD5 is fast and sufficient for deduplication (not security)
+        h = hashlib.md5(raw_log.encode(), usedforsecurity=False).digest()
+
+        # Check newest windows first (most duplicates hit immediately)
+        for window in self.windows:
+            if h in window:
+                return True
+
+        # Not seen - add to current (newest) window
+        self.windows[0].add(h)
+        return False
 
 
 class CustomResponse(httpx.Response):
@@ -270,22 +326,20 @@ class HTTPClient:
     def _prepare_request(
         self,
         endpoint: str,
-        stream_logs: Union[bool, None],
+        stream_logs: bool,
         stream_metrics: Union[bool, MetricsConfig, None],
         headers: dict,
         pdb: Union[bool, int],
         serialization: str,
+        logging_config: LoggingConfig,
         debug: Union[bool, DebugConfig, None] = None,
     ):
-        if stream_logs is None:
-            stream_logs = config.stream_logs or False
-
         metrics_config = MetricsConfig()
         if isinstance(stream_metrics, MetricsConfig):
             metrics_config = stream_metrics
             stream_metrics = True
         elif stream_metrics is None:
-            stream_metrics = config.stream_metrics or False
+            stream_metrics = config.stream_metrics if config.stream_metrics is not None else True
 
         # Handle debug parameter (new) or pdb parameter (backward compatibility)
         # Add deprecation warning for pdb parameter
@@ -341,7 +395,7 @@ class HTTPClient:
         stop_event = threading.Event()
         log_thread = None
         if stream_logs:
-            log_thread = threading.Thread(target=self.stream_logs, args=(request_id, stop_event))
+            log_thread = threading.Thread(target=self.stream_logs, args=(request_id, stop_event, logging_config))
             log_thread.daemon = True
             log_thread.start()
 
@@ -357,23 +411,21 @@ class HTTPClient:
     def _prepare_request_async(
         self,
         endpoint: str,
-        stream_logs: Union[bool, None],
+        stream_logs: bool,
         stream_metrics: Union[bool, MetricsConfig, None],
         headers: dict,
         pdb: Union[bool, int],
         serialization: str,
+        logging_config: LoggingConfig,
         debug: Union[bool, DebugConfig, None] = None,
     ):
         """Async version of _prepare_request that uses asyncio.Event and tasks instead of threads"""
-        if stream_logs is None:
-            stream_logs = config.stream_logs or False
-
         metrics_config = MetricsConfig()
         if isinstance(stream_metrics, MetricsConfig):
             metrics_config = stream_metrics
             stream_metrics = True
         elif stream_metrics is None:
-            stream_metrics = config.stream_metrics or False
+            stream_metrics = config.stream_metrics if config.stream_metrics is not None else True
 
         # Handle debug parameter (new) or pdb parameter (backward compatibility)
         # Add deprecation warning for pdb parameter
@@ -428,7 +480,7 @@ class HTTPClient:
         stop_event = asyncio.Event()
         log_task = None
         if stream_logs:
-            log_task = asyncio.create_task(self.stream_logs_async(request_id, stop_event))
+            log_task = asyncio.create_task(self.stream_logs_async(request_id, stop_event, logging_config))
 
         metrics_task = None
         if stream_metrics:
@@ -448,22 +500,59 @@ class HTTPClient:
         return response
 
     # ----------------- Stream Helpers ----------------- #
+    def _should_display_log(self, log_name: str, log_level: str, log_config: LoggingConfig) -> bool:
+        """Determine if a log should be displayed based on config filters.
+
+        Args:
+            log_name: The logger name (e.g., "print_redirect", "uvicorn.access")
+            log_level: The log level string (e.g., "INFO", "ERROR")
+            log_config: The LoggingConfig with filter settings
+
+        Returns:
+            True if the log should be displayed, False if it should be filtered out
+        """
+        # print_redirect logs are always shown (user print statements)
+        if log_name == "print_redirect":
+            return True
+
+        # Filter system logs (uvicorn, etc.) unless explicitly included
+        if not log_config.include_system_logs and log_name in ("uvicorn.access", "uvicorn.error", "uvicorn"):
+            return False
+
+        # Filter by log level
+        if log_level:
+            log_level_lower = log_level.lower()
+            min_level = log_config.level.lower()
+            if LOG_LEVEL_PRIORITY.get(log_level_lower, 1) < LOG_LEVEL_PRIORITY.get(min_level, 1):
+                return False
+
+        return True
+
     async def _stream_logs_websocket(
         self,
         request_id,
         stop_event: Union[threading.Event, asyncio.Event],
         port: int,
+        log_config: LoggingConfig,
         host: str = "localhost",
     ):
-        """Stream logs using Loki's websocket tail endpoint"""
+        """Stream logs using Loki's websocket tail endpoint.
+
+        Args:
+            request_id: The request ID to filter logs for
+            stop_event: Event to signal when to start grace period shutdown
+            port: The port to connect to
+            host: The host to connect to
+            log_config: Configuration for log streaming behavior
+        """
         formatter = ServerLogsFormatter()
+        deduplicator = LogDeduplicator(window_intervals=5)  # ~2.5s dedup window
         websocket = None
+
         try:
             query = f'{{k8s_container_name="kubetorch"}} | json | request_id="{request_id}"'
             encoded_query = urllib.parse.quote_plus(query)
             uri = f"ws://{host}:{port}/loki/api/v1/tail?query={encoded_query}"
-            # Track the last timestamp we've seen to avoid duplicates
-            last_timestamp = None
             # Track when we should stop
             stop_time = None
 
@@ -481,7 +570,7 @@ class HTTPClient:
                     # Handle both threading.Event and asyncio.Event
                     is_stop_set = stop_event.is_set() if hasattr(stop_event, "is_set") else stop_event.is_set()
                     if is_stop_set and stop_time is None:
-                        stop_time = time.time() + 2  # 2 seconds grace period
+                        stop_time = time.time() + log_config.grace_period
 
                     # If we're past the grace period, exit
                     if stop_time is not None and time.time() > stop_time:
@@ -489,7 +578,7 @@ class HTTPClient:
 
                     try:
                         # Use shorter timeout during grace period
-                        timeout = 0.1 if stop_time is not None else 1.0
+                        timeout = log_config.grace_poll_timeout if stop_time is not None else log_config.poll_timeout
                         message = await asyncio.wait_for(websocket.recv(), timeout=timeout)
                         data = json.loads(message)
 
@@ -502,14 +591,21 @@ class HTTPClient:
                                 is_knative = labels.get("serving_knative_dev_configuration") is not None
 
                                 for value in stream["values"]:
-                                    # Skip if we've already seen this timestamp
-                                    log_line = json.loads(value[1])
+                                    raw_log = value[1]
+
+                                    # Deduplicate using hash-based sliding window
+                                    if deduplicator.is_duplicate(raw_log):
+                                        continue
+
+                                    # Now safe to deserialize
+                                    log_line = json.loads(raw_log)
                                     log_name = log_line.get("name")
                                     log_message = log_line.get("message")
-                                    current_timestamp = value[0]
-                                    if last_timestamp is not None and current_timestamp <= last_timestamp:
+                                    log_level = log_line.get("levelname", "INFO")
+
+                                    # Apply log level and system log filters
+                                    if not self._should_display_log(log_name, log_level, log_config):
                                         continue
-                                    last_timestamp = value[0]
 
                                     # Choose the appropriate identifier for the log prefix
                                     if is_knative:
@@ -518,15 +614,23 @@ class HTTPClient:
                                         # For deployments, use the pod name from the structured log
                                         log_prefix = log_line.get("pod", service_name)
 
+                                    # Format and print the log
+                                    if log_config.include_name and log_prefix:
+                                        prefix = f"({log_prefix}) "
+                                    else:
+                                        prefix = ""
+
                                     if log_name == "print_redirect":
-                                        print(
-                                            f"{formatter.start_color}({log_prefix}) {log_message}{formatter.reset_color}"
+                                        print(f"{formatter.start_color}{prefix}{log_message}{formatter.reset_color}")
+                                    else:
+                                        formatted_log = (
+                                            f"{prefix}{log_line.get('asctime')} | {log_level} | {log_message}"
                                         )
-                                    elif log_name != "uvicorn.access":
-                                        formatted_log = f"({log_prefix}) {log_line.get('asctime')} | {log_line.get('levelname')} | {log_message}"
                                         print(f"{formatter.start_color}{formatted_log}{formatter.reset_color}")
+
                     except asyncio.TimeoutError:
-                        # Timeout is expected, just continue the loop
+                        # Timeout is expected - rotate deduplication window and continue
+                        deduplicator.rotate()
                         continue
                     except websockets.exceptions.ConnectionClosed as e:
                         logger.debug(f"WebSocket connection closed: {str(e)}")
@@ -549,12 +653,14 @@ class HTTPClient:
                 except (asyncio.TimeoutError, Exception):
                     pass
 
-    def _run_log_stream(self, request_id, stop_event, host, port):
+    def _run_log_stream(self, request_id, stop_event, host, port, log_config: LoggingConfig = None):
         """Helper to run log streaming in an event loop"""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(self._stream_logs_websocket(request_id, stop_event, host=host, port=port))
+            loop.run_until_complete(
+                self._stream_logs_websocket(request_id, stop_event, host=host, port=port, log_config=log_config)
+            )
         finally:
             loop.close()
 
@@ -749,21 +855,33 @@ class HTTPClient:
         )
 
     # ----------------- Core APIs ----------------- #
-    def stream_logs(self, request_id, stop_event):
-        """Start websocket log streaming in a separate thread"""
+    def stream_logs(self, request_id, stop_event, log_config: LoggingConfig):
+        """Start websocket log streaming in a separate thread.
+
+        Args:
+            request_id: The request ID to filter logs for
+            stop_event: Event to signal when to start grace period shutdown
+            log_config: Configuration for log streaming behavior
+        """
         logger.debug(f"Streaming logs for service {self.service_name} (request_id: {request_id})")
 
         base_url = service_url()
         base_host, base_port = extract_host_port(base_url)
-        self._run_log_stream(request_id, stop_event, base_host, base_port)
+        self._run_log_stream(request_id, stop_event, base_host, base_port, log_config)
 
-    async def stream_logs_async(self, request_id, stop_event):
-        """Async version of stream_logs. Start websocket log streaming as an async task"""
+    async def stream_logs_async(self, request_id, stop_event, log_config: LoggingConfig):
+        """Async version of stream_logs. Start websocket log streaming as an async task.
+
+        Args:
+            request_id: The request ID to filter logs for
+            stop_event: Event to signal when to start grace period shutdown
+            log_config: Configuration for log streaming behavior
+        """
         logger.debug(f"Streaming logs for service {self.service_name} (request_id: {request_id})")
 
         base_url = service_url()
         base_host, base_port = extract_host_port(base_url)
-        await self._stream_logs_websocket(request_id, stop_event, host=base_host, port=base_port)
+        await self._stream_logs_websocket(request_id, stop_event, host=base_host, port=base_port, log_config=log_config)
 
     async def stream_metrics_async(self, request_id, stop_event, metrics_config):
         """Async GPU/CPU metrics streaming (uses httpx.AsyncClient)."""
@@ -814,7 +932,8 @@ class HTTPClient:
     def call_method(
         self,
         endpoint: str,
-        stream_logs: Union[bool, None] = None,
+        stream_logs: bool,
+        logging_config: LoggingConfig,
         stream_metrics: Union[bool, MetricsConfig, None] = None,
         body: dict = None,
         headers: dict = None,
@@ -822,14 +941,9 @@ class HTTPClient:
         serialization: str = "json",
         debug: Union[bool, DebugConfig, None] = None,
     ):
-        (
-            endpoint,
-            headers,
-            stop_event,
-            log_thread,
-            metrics_thread,
-            _,
-        ) = self._prepare_request(endpoint, stream_logs, stream_metrics, headers, pdb, serialization, debug)
+        (endpoint, headers, stop_event, log_thread, metrics_thread, _,) = self._prepare_request(
+            endpoint, stream_logs, stream_metrics, headers, pdb, serialization, logging_config, debug
+        )
         try:
             json_data = _serialize_body(body, serialization)
             response = self.post(endpoint=endpoint, json=json_data, headers=headers)
@@ -837,11 +951,15 @@ class HTTPClient:
             return _deserialize_response(response, serialization)
         finally:
             stop_event.set()
+            # Block main thread to allow log streaming to complete if shutdown_grace_period > 0
+            if log_thread and logging_config.shutdown_grace_period > 0:
+                log_thread.join(timeout=logging_config.shutdown_grace_period)
 
     async def call_method_async(
         self,
         endpoint: str,
-        stream_logs: Union[bool, None] = None,
+        stream_logs: bool,
+        logging_config: LoggingConfig,
         stream_metrics: Union[bool, MetricsConfig, None] = None,
         body: dict = None,
         headers: dict = None,
@@ -850,14 +968,9 @@ class HTTPClient:
         debug: Union[bool, DebugConfig, None] = None,
     ):
         """Async version of call_method."""
-        (
-            endpoint,
-            headers,
-            stop_event,
-            log_task,
-            monitoring_task,
-            _,
-        ) = self._prepare_request_async(endpoint, stream_logs, stream_metrics, headers, pdb, serialization, debug)
+        (endpoint, headers, stop_event, log_task, monitoring_task, _,) = self._prepare_request_async(
+            endpoint, stream_logs, stream_metrics, headers, pdb, serialization, logging_config, debug
+        )
         try:
             json_data = _serialize_body(body, serialization)
             response = await self.post_async(endpoint=endpoint, json=json_data, headers=headers)
@@ -871,14 +984,18 @@ class HTTPClient:
         finally:
             stop_event.set()
             if log_task:
+                # Use shutdown_grace_period if set, otherwise use a short default timeout
+                timeout = logging_config.shutdown_grace_period if logging_config.shutdown_grace_period > 0 else 0.5
                 try:
-                    await asyncio.wait_for(log_task, timeout=0.5)
+                    await asyncio.wait_for(log_task, timeout=timeout)
                 except asyncio.TimeoutError:
-                    log_task.cancel()
-                    try:
-                        await log_task
-                    except asyncio.CancelledError:
-                        pass
+                    if logging_config.shutdown_grace_period == 0:
+                        # Only cancel if we're not explicitly waiting for shutdown
+                        log_task.cancel()
+                        try:
+                            await log_task
+                        except asyncio.CancelledError:
+                            pass
 
     def post(self, endpoint, json=None, headers=None):
         return self._make_request("post", endpoint, json=json, headers=headers)
