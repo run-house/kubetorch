@@ -34,7 +34,10 @@ data:
           - {{ . }}
         {{- end }}
     processors:
-      batch: {}
+      batch:
+        timeout: 200ms
+        send_batch_size: 1
+        send_batch_max_size: 1
       k8sattributes:
         extract:
           metadata:
