@@ -6,10 +6,6 @@ serviceAccountName: {{ service_account_name }}
 priorityClassName: {{ priority_class_name }}
 {% endif %}
 
-{% if queue_name is not none %}
-schedulerName: {{ scheduler_name }}
-{% endif %}
-
 {% if gpu_anti_affinity is sameas true %}
 affinity:
   nodeAffinity:

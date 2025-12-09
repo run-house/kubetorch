@@ -823,7 +823,6 @@ def kt_list(
             ("LAST STATUS CHANGE", "yellow"),
             ("TTL", "yellow"),
             ("CREATOR", "yellow"),
-            ("QUEUE", "yellow"),
             ("CPUs", "yellow"),
             ("MEMORY", "yellow"),
             ("GPUs", "yellow"),
@@ -919,7 +918,6 @@ def kt_list(
 
             # Common pod processing
             pod_lines = []
-            queue = "—"
             for pod in pods:
                 pod_status = pod.status.phase
                 ready = all(c.ready for c in (pod.status.container_statuses or []))
@@ -930,7 +928,6 @@ def kt_list(
                 else:
                     color = "red"
                 pod_lines.append(f"[{color}]{pod.metadata.name}[/{color}]")
-                queue = pod.metadata.labels.get(serving_constants.KAI_SCHEDULER_LABEL, queue)
 
                 # Update service status if pod is pending
                 if pod_status == "Pending":
@@ -946,7 +943,6 @@ def kt_list(
                 timestamp,
                 ttl,
                 creator,
-                queue,
                 cpu or "—",
                 memory or "—",
                 gpu or "—",

@@ -55,7 +55,6 @@ def validate_logs_fn_service_info(list_output: str, service_name: str, compute_t
         "LAST STATUS CHANGE",
         "TTL",
         "CREATOR",
-        "QUEUE",
         "CPUs",
         "MEMORY",
         "GPUs",

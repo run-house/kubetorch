@@ -62,10 +62,6 @@ PROMETHEUS_SERVICE_NAME = "kubetorch-metrics"
 GRAFANA_HEALTH_ENDPOINT = "/api/health"
 PROMETHEUS_HEALTH_ENDPOINT = "/metrics"
 
-# KAI
-KAI_SCHEDULER_NAME = "kai-scheduler"
-KAI_SCHEDULER_LABEL = "kai.scheduler/queue"
-
 # HTTP Client
 KT_TERMINATION_REASONS = ["OOMKilled", "Evicted", "Not Found"]
 

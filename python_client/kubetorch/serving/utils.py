@@ -3,9 +3,7 @@ import socket
 import time
 import warnings
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional
 
 import httpx
 from kubernetes.client import ApiException, CoreV1Api, V1Pod
@@ -17,58 +15,6 @@ from kubetorch.serving.constants import LOKI_GATEWAY_SERVICE_NAME, PROMETHEUS_SE
 from kubetorch.utils import load_kubeconfig
 
 logger = get_logger(__name__)
-
-
-@dataclass
-class GPUConfig:
-    count: Optional[int] = None
-    memory: Optional[str] = None
-    sharing_type: Optional[Literal["memory", "fraction"]] = None
-    gpu_memory: Optional[str] = None
-    gpu_fraction: Optional[str] = None
-    gpu_type: Optional[str] = None
-
-    def __post_init__(self):
-        self.validate()
-
-    def validate(self) -> bool:
-        if self.count and not isinstance(self.count, int):
-            raise ValueError("GPU count must an int")
-
-        if self.sharing_type == "memory":
-            if not self.gpu_memory:
-                raise ValueError("GPU memory must be specified when using memory sharing")
-        elif self.sharing_type == "fraction":
-            if not self.gpu_fraction:
-                raise ValueError("GPU fraction must be specified when using fraction sharing")
-            try:
-                fraction = float(self.gpu_fraction)
-                if not 0 < fraction <= 1:
-                    raise ValueError("GPU fraction must be between 0 and 1")
-            except ValueError:
-                raise ValueError("GPU fraction must be a valid float between 0 and 1")
-
-        return True
-
-    def to_dict(self) -> dict:
-        base_dict = {
-            "sharing_type": self.sharing_type,
-            "count": self.count,
-        }
-
-        if self.memory is not None:
-            base_dict["memory"] = self.memory
-
-        if self.sharing_type == "memory" and self.gpu_memory:
-            base_dict["gpu_memory"] = self.gpu_memory
-        if self.sharing_type == "fraction" and self.gpu_fraction:
-            # Convert to millicores format
-            fraction = float(self.gpu_fraction)
-            base_dict["gpu_fraction"] = f"{int(fraction * 1000)}m"
-        if self.gpu_type is not None:
-            base_dict["gpu_type"] = self.gpu_type
-
-        return base_dict
 
 
 class KubernetesCredentialsError(Exception):

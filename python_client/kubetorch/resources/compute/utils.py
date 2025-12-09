@@ -52,12 +52,6 @@ class ServiceTimeoutError(KnativeServiceError):
     pass
 
 
-class QueueUnschedulableError(KnativeServiceError):
-    """Raised when the service pod is unschedulable in the requested queue."""
-
-    pass
-
-
 class KnativeServiceConflictError(Exception):
     """Raised when a conflicting non-Knative Kubernetes Service prevents Knative service creation."""
 
@@ -805,21 +799,12 @@ def _get_sync_package_paths(
 
 
 # ----------------- Error Handling Utils ----------------- #
-def check_pod_status_for_errors(pod: client.V1Pod, queue_name: str = None, scheduler_name: str = None):
+def check_pod_status_for_errors(pod: client.V1Pod):
     """Check pod status for errors"""
     # Check for scheduling issues
     for condition in pod.status.conditions or []:
         if condition.type == "PodScheduled" and condition.status == "False" and condition.reason == "Unschedulable":
             msg = condition.message.lower()
-
-            # Check if the pod is scheduled in the correct queue and scheduler
-            if queue_name and scheduler_name:
-                scheduler = pod.metadata.annotations.get("schedulerName", "")
-                queue_label = pod.metadata.labels.get("kai.scheduler/queue")
-                if queue_label == queue_name and scheduler == scheduler_name:
-                    raise QueueUnschedulableError(
-                        f"Pod {pod.metadata.name} could not be scheduled: {condition.message}"
-                    )
 
             # Skip instant-fail if autoscaler taints are present (wait for autoscaler to provision)
             has_autoscaler_taints = any(

@@ -33,8 +33,6 @@ class DeploymentServiceManager(BaseServiceManager):
         custom_labels: dict = None,
         custom_annotations: dict = None,
         custom_template: dict = None,
-        scheduler_name: str = None,
-        queue_name: str = None,
     ) -> dict:
         """Build a base deployment manifest from pod spec and configuration.
 
@@ -44,8 +42,6 @@ class DeploymentServiceManager(BaseServiceManager):
         labels = BaseServiceManager._get_labels(
             template_label="deployment",
             custom_labels=custom_labels,
-            scheduler_name=scheduler_name,
-            queue_name=queue_name,
         )
 
         # Template labels (exclude kt template label)

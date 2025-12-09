@@ -34,7 +34,7 @@ from kubetorch.resources.volumes.volume import Volume
 from kubetorch.servers.http.utils import is_running_in_kubernetes, load_template
 from kubetorch.serving.autoscaling import AutoscalingConfig
 from kubetorch.serving.service_manager import DeploymentServiceManager, KnativeServiceManager, RayClusterServiceManager
-from kubetorch.serving.utils import GPUConfig, pod_is_running
+from kubetorch.serving.utils import pod_is_running
 
 from kubetorch.utils import extract_host_port, http_to_ws, load_head_node_pod, load_kubeconfig
 
@@ -48,9 +48,8 @@ class Compute:
         memory: str = None,
         disk_size: str = None,
         gpus: Union[str, int] = None,
-        queue: str = None,
-        priority_class_name: str = None,
         gpu_type: str = None,
+        priority_class_name: str = None,
         gpu_memory: str = None,
         namespace: str = None,
         image: "Image" = None,
@@ -88,9 +87,6 @@ class Compute:
                 passed, which will be used to set a `nodeSelector` on the service. More info below.
             gpu_memory (str, optional): GPU memory request (e.g., "4Gi"). Will still request whole GPU but limit
                 memory usage.
-            queue (str, optional): Name of the Kubernetes queue that will be responsible for placing the service's
-                pods onto nodes. Controls how cluster resources are allocated and prioritized for this service.
-                Pods will be scheduled according to the quota, priority, and limits configured for the queue.
             priority_class_name (str, optional): Name of the Kubernetes priority class to use for the service. If
                 not specified, the default priority class will be used.
             namespace (str, optional): Kubernetes namespace. Defaults to global config default, or "default".
@@ -187,8 +183,6 @@ class Compute:
         self._volumes = volumes
         self._logging_config = logging_config or LoggingConfig()
 
-        self._gpu_annotations = {}  # Will be populated during init or from_template
-
         # Skip template initialization if loading from existing service
         if _skip_template_init:
             self._manifest = None
@@ -203,15 +197,12 @@ class Compute:
         )
         server_image = self._get_server_image(image, otel_enabled, inactivity_ttl)
         gpus = None if gpus in (0, None) else gpus
-        gpu_config = self._load_gpu_config(gpus, gpu_memory, gpu_type)
-        self._gpu_annotations = self._get_gpu_annotations(gpu_config)
-        requested_resources = self._get_requested_resources(cpus, memory, disk_size, gpu_config)
+        self.gpu_annotations = {"gpu-memory": gpu_memory} if gpu_memory else {}
+        requested_resources = self._get_requested_resources(cpus, memory, disk_size, gpus)
         secret_env_vars, secret_volumes = self._extract_secrets(secrets, namespace)
         volume_mounts, volume_specs = self._volumes_for_pod_template(volumes)
-        scheduler_name = self._get_scheduler_name(queue)
         node_selector = self._get_node_selector(node_selector.copy() if node_selector else {}, gpu_type)
         all_tolerations = self._get_tolerations(gpus, tolerations)
-        queue_name = queue if queue else globals.config.queue
 
         env_vars = env_vars.copy() if env_vars else {}
         # Set KT_LOG_LEVEL from logging_config, falling back to env var
@@ -250,8 +241,6 @@ class Compute:
             "shm_size_limit": shared_memory_limit,
             "priority_class_name": priority_class_name,
             "launch_timeout": self._get_launch_timeout(launch_timeout),
-            "queue_name": queue_name,
-            "scheduler_name": scheduler_name,
             "inactivity_ttl": inactivity_ttl,
             "otel_enabled": otel_enabled,
             # launch time arguments
@@ -285,8 +274,6 @@ class Compute:
             custom_labels=labels or {},
             custom_annotations=manifest_annotations,
             custom_template=service_template or {},
-            scheduler_name=scheduler_name,
-            queue_name=queue_name,
         )
 
     @classmethod
@@ -890,38 +877,6 @@ class Compute:
         container["startupProbe"]["failureThreshold"] = value // 5
 
     @property
-    def queue(self):
-        """Get queue name from manifest or stored fallback value."""
-        # Try to extract from pod spec schedulerName
-        if "schedulerName" in self.pod_spec:
-            # If schedulerName is set, we have a queue
-            # Extract queue from labels
-            metadata = self._get_manifest_metadata()
-            labels = metadata.get("labels", {})
-            queue_label = labels.get("kai.scheduler/queue")
-            if queue_label:
-                return queue_label
-
-        default_queue = globals.config.queue
-        if default_queue:
-            return default_queue
-
-    @queue.setter
-    def queue(self, value: str):
-        pod_spec = self.pod_spec
-        pod_spec["schedulerName"] = self._get_scheduler_name(value)
-
-        metadata = self._get_manifest_metadata()
-        if "labels" not in metadata:
-            metadata["labels"] = {}
-
-        metadata["labels"]["kai.scheduler/queue"] = value
-
-    @property
-    def scheduler_name(self):
-        return self._get_scheduler_name(self.queue)
-
-    @property
     def inactivity_ttl(self):
         container = self._container()
         if "env" in container:
@@ -1113,11 +1068,6 @@ class Compute:
         return self.pod_template.get("tolerations", [])
 
     @property
-    def gpu_annotations(self):
-        # GPU annotations for KAI scheduler
-        return self._gpu_annotations
-
-    @property
     def replicas(self):
         kind = self._manifest.get("kind")
         if kind == "Deployment":
@@ -1171,7 +1121,7 @@ class Compute:
 
         return image
 
-    def _get_requested_resources(self, cpus, memory, disk_size, gpu_config):
+    def _get_requested_resources(self, cpus, memory, disk_size, gpus):
         """Return requested resources."""
         requests = {}
         limits = {}
@@ -1189,16 +1139,9 @@ class Compute:
             requests["ephemeral-storage"] = disk_size
 
         # Add GPU if specified
-        gpu_config: dict = gpu_config
-        gpu_count = gpu_config.get("count", 1)
-        if gpu_config:
-            if gpu_config.get("sharing_type") == "fraction":
-                # For fractional GPUs, we still need to request the base GPU resource
-                requests["nvidia.com/gpu"] = "1"
-                limits["nvidia.com/gpu"] = "1"
-            else:
-                requests["nvidia.com/gpu"] = str(gpu_count)
-                limits["nvidia.com/gpu"] = str(gpu_count)
+        if gpus:
+            requests["nvidia.com/gpu"] = str(gpus)
+            limits["nvidia.com/gpu"] = str(gpus)
 
         # Only include non-empty dicts
         resources = {}
@@ -1218,9 +1161,6 @@ class Compute:
             else serving_constants.KT_LAUNCH_TIMEOUT
         )
         return int(os.getenv("KT_LAUNCH_TIMEOUT", default_launch_timeout))
-
-    def _get_scheduler_name(self, queue_name):
-        return serving_constants.KAI_SCHEDULER_NAME if queue_name else None
 
     def _get_config_env_vars(self, allowed_serialization):
         config_env_vars = globals.config._get_config_env_vars()
@@ -1280,69 +1220,6 @@ class Compute:
             return all_tolerations
 
         return user_tolerations if user_tolerations else None
-
-    def _get_gpu_annotations(self, gpu_config):
-        # https://blog.devops.dev/struggling-with-gpu-waste-on-kubernetes-how-kai-schedulers-sharing-unlocks-efficiency-1029e9bd334b
-        if gpu_config is None:
-            return {}
-
-        if gpu_config.get("sharing_type") == "memory":
-            return {
-                "gpu-memory": str(gpu_config["gpu_memory"]),
-            }
-        elif gpu_config.get("sharing_type") == "fraction":
-            return {
-                "gpu-fraction": str(gpu_config["gpu_fraction"]),
-            }
-        else:
-            return {}
-
-    def _load_gpu_config(self, gpus, gpu_memory, gpu_type) -> dict:
-        if all(x is None for x in [gpus, gpu_memory, gpu_type]):
-            return {}
-
-        if gpus is not None:
-            if isinstance(gpus, (int, float)):
-                if gpus <= 0:
-                    raise ValueError("GPU count must be greater than 0")
-                if gpus < 1:
-                    raise ValueError("Fractional GPUs are not currently supported. Please use whole GPUs.")
-            if not str(gpus).isdigit():
-                raise ValueError("Unexpected format for GPUs, expecting a numeric count")
-
-        gpu_config = {
-            "count": int(gpus) if gpus else 1,
-            "sharing_type": None,
-            "gpu_memory": None,
-            "gpu_type": None,
-        }
-
-        # Handle memory specification
-        if gpu_memory is not None:
-            if not isinstance(gpu_memory, str):
-                raise ValueError("GPU memory must be a string with suffix Mi, Gi, or Ti")
-
-            units = {"mi": 1, "gi": 1024, "ti": 1024 * 1024}
-            val = gpu_memory.lower()
-
-            for suffix, factor in units.items():
-                if val.endswith(suffix):
-                    try:
-                        num = float(val[: -len(suffix)])
-                        mi_value = int(num * factor)
-                        gpu_config["sharing_type"] = "memory"
-                        gpu_config["gpu_memory"] = str(mi_value)
-                        break  # Successfully parsed, exit the loop
-                    except ValueError:
-                        raise ValueError("Invalid numeric value in GPU memory spec")
-            else:
-                # Only raise error if no suffix matched
-                raise ValueError("GPU memory must end with Mi, Gi, or Ti")
-
-        if gpu_type is not None:
-            gpu_config["gpu_type"] = gpu_type
-
-        return GPUConfig(**gpu_config).to_dict()
 
     # ----------------- Generic Helpers ----------------- #
     def _load_kube_config(self):
@@ -1706,8 +1583,6 @@ class Compute:
             launch_timeout=self.launch_timeout,
             objects_api=self.objects_api,
             core_api=self.core_api,
-            queue_name=self.queue,
-            scheduler_name=self.scheduler_name,
         )
 
     async def _check_service_ready_async(self):

@@ -257,8 +257,6 @@ class KnativeServiceManager(BaseServiceManager):
         launch_timeout: int,
         objects_api: client.CustomObjectsApi = None,
         core_api: client.CoreV1Api = None,
-        queue_name: str = None,
-        scheduler_name: str = None,
         **kwargs,
     ) -> bool:
         """Checks if the Knative service is ready to start serving requests.
@@ -291,8 +289,6 @@ class KnativeServiceManager(BaseServiceManager):
             launch_timeout: Timeout in seconds to wait for readiness
             objects_api: Objects API instance (uses self.objects_api if None)
             core_api: Core API instance (uses self.core_api if None)
-            queue_name: Queue name for scheduling checks
-            scheduler_name: Scheduler name for scheduling checks
             **kwargs: Additional arguments
 
         Returns:
@@ -300,7 +296,6 @@ class KnativeServiceManager(BaseServiceManager):
 
         Raises:
             ServiceTimeoutError: If service doesn't become ready within timeout
-            QueueUnschedulableError: If pods can't be scheduled due to queue issues
             ResourceNotAvailableError: If required resources aren't available
         """
         if objects_api is None:
@@ -376,7 +371,7 @@ class KnativeServiceManager(BaseServiceManager):
                 if running_pods_count < min_scale:
                     for pod in pods:
                         # Check for image pull errors in container status
-                        check_pod_status_for_errors(pod, queue_name, scheduler_name)
+                        check_pod_status_for_errors(pod)
 
                         # Check pod events separately from the core API
                         check_pod_events_for_errors(pod, self.namespace, core_api)

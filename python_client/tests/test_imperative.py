@@ -700,9 +700,6 @@ def test_compute_factory_gpus():
     compute_int_gpus = kt.Compute(gpus=3)
     assert compute_int_gpus
     assert compute_int_gpus.gpus == "3"
-    with pytest.raises(ValueError) as val_error:
-        kt.Compute(gpus="0.5")
-    assert val_error.value.args[0] == "Unexpected format for GPUs, expecting a numeric count"
 
 
 @pytest.mark.level("unit")
@@ -722,30 +719,12 @@ def test_compute_factory_gpu_type():
 def test_compute_factory_gpu_memory():
     import kubetorch as kt
 
-    unsupported_mem_values = [1000000, "1000000"]
-    for val in unsupported_mem_values:
-        with pytest.raises(ValueError) as error:
-            kt.Compute(gpu_memory=val)
-        error_msg = (
-            "GPU memory must end with Mi, Gi, or Ti"
-            if isinstance(val, str)
-            else "GPU memory must be a string with suffix Mi, Gi, or Ti"
-        )
-        assert error.value.args[0] == error_msg
+    binary_units = ["Gi", "Mi", "Ti"]
 
-    binary_units = {"Gi": 2 * 1024, "Mi": 2, "Ti": 2 * 1024 * 1024}
-
-    for unit, value in binary_units.items():
+    for unit, value in binary_units:
         compute_binary_units = kt.Compute(gpus=1, gpu_memory=f"2{unit}")
-        assert compute_binary_units.gpu_memory == f"{value}"
-        assert compute_binary_units.gpu_annotations.get("gpu-memory") == f"{value}"
-
-    decimal_units = ["K", "M", "G", "T"]
-    for unit in decimal_units:
-        with pytest.raises(ValueError) as error:
-            kt.Compute(gpu_memory=f"2{unit}")
-        error_msg = "GPU memory must end with Mi, Gi, or Ti"
-        assert error.value.args[0] == error_msg
+        assert compute_binary_units.gpu_memory == f"2{unit}"
+        assert compute_binary_units.gpu_annotations.get("gpu-memory") == f"2{unit}"
 
 
 @pytest.mark.level("unit")
@@ -829,3 +808,22 @@ def test_compute_factory_shared_memory_limit():
         compute_binary_units = kt.Compute(gpus="1", shared_memory_limit=f"2{unit}")
         assert compute_binary_units
         assert compute_binary_units.shared_memory_limit == f"2{unit}"
+
+
+@pytest.mark.level("minimal")
+def test_compute_nonexisting_priority_class():
+    import kubetorch as kt
+
+    from .utils import summer
+
+    priority_class_name = "random-priority-class"
+    with pytest.raises(kt.ResourceNotAvailableError) as priority_class_error:
+        my_compute = kt.Compute(cpus="0.1", priority_class_name=priority_class_name)
+        remote_fn = kt.fn(summer, name="random-priority-class-summer").to(my_compute)
+
+        assert remote_fn(4, 5) == 9
+    error_msg = priority_class_error.value.args[0]
+    assert (
+        f"no PriorityClass with name {priority_class_name} was found. Please ensure the required PriorityClass exists in the cluster"
+        in error_msg
+    )
