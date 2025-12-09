@@ -60,4 +60,4 @@ EXCEPTION_REGISTRY = {
 for exception in EXCEPTION_REGISTRY.values():
     exception.__module__ = "kubetorch"
 
-__version__ = "0.2.8"
+__version__ = "0.2.9"
