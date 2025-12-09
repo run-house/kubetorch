@@ -84,6 +84,7 @@ jobs:
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
+          KT_STREAM_METRICS: false
 
   cli-tests:
     concurrency:
@@ -133,6 +134,7 @@ jobs:
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
+          KT_STREAM_METRICS: false
 
   monitoring-tests:
     concurrency:
@@ -185,6 +187,7 @@ jobs:
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: true
+          KT_STREAM_METRICS: true
 
   pod-from-pod-tests:
     concurrency:
@@ -233,6 +236,7 @@ jobs:
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
+          KT_STREAM_METRICS: false
 
   distributed-tests:
     concurrency:
@@ -288,6 +292,7 @@ jobs:
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: true
+          KT_STREAM_METRICS: false
 
   python-path-tests:
     concurrency:
@@ -336,6 +341,7 @@ jobs:
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
+          KT_STREAM_METRICS: false
 
   queue-tests:
     concurrency:
@@ -384,6 +390,7 @@ jobs:
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
+          KT_STREAM_METRICS: false
 
   secret-tests:
     concurrency:
@@ -432,6 +439,7 @@ jobs:
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
+          KT_STREAM_METRICS: false
           client_id: "my-client-id"
           client_secret: "my-client-secret"
 
@@ -482,6 +490,7 @@ jobs:
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
+          KT_STREAM_METRICS: false
 
   app-tests:
     concurrency:
@@ -530,6 +539,7 @@ jobs:
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
+          KT_STREAM_METRICS: false
   cleanup:
     if: ${{ always() }}
     needs: [base-minimal-tests, cli-tests, distributed-tests, monitoring-tests, pod-from-pod-tests, python-path-tests, queue-tests, secret-tests, declarative-tests, app-tests]
