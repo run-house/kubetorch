@@ -45,8 +45,6 @@ class BaseServiceManager:
     def _get_labels(
         template_label: str,
         custom_labels: dict = None,
-        scheduler_name: str = None,
-        queue_name: str = None,
     ) -> dict:
         from kubetorch import __version__
 
@@ -58,9 +56,6 @@ class BaseServiceManager:
 
         if custom_labels:
             labels.update(custom_labels)
-
-        if scheduler_name and queue_name:
-            labels["kai.scheduler/queue"] = queue_name
 
         return labels
 

@@ -579,12 +579,9 @@ def get_current_cluster_name():
     return None
 
 
-def print_pod_info(pod_name, pod_idx, is_gpu, metrics=None, queue_name=None):
+def print_pod_info(pod_name, pod_idx, is_gpu, metrics=None):
     """Print pod info with metrics if available"""
-    queue_msg = f" | [bold]Queue Name[/bold]: {queue_name}"
     base_msg = f"{BULLET_UNICODE} [reset][bold cyan]{pod_name}[/bold cyan] (idx: {pod_idx})"
-    if queue_name:
-        base_msg += queue_msg
     console.print(base_msg)
     if metrics:
         console.print(
@@ -854,77 +851,6 @@ def get_ingress_host(ingress):
         return ingress.spec.rules[0].host
     except Exception:
         return None
-
-
-def list_all_queues():
-    try:
-        custom_api = client.CustomObjectsApi()
-        queues = custom_api.list_cluster_custom_object(
-            group="scheduling.run.ai",
-            version="v2",
-            plural="queues",
-        )["items"]
-
-        if not queues:
-            console.print("[yellow]No queues found in the cluster[/yellow]")
-            return
-
-        # Insert "default" queue if missing
-        if not any(q["metadata"]["name"] == "default" for q in queues):
-            default_children = [
-                q["metadata"]["name"] for q in queues if q.get("spec", {}).get("parentQueue") == "default"
-            ]
-            queues.insert(
-                0,
-                {
-                    "metadata": {"name": "default"},
-                    "spec": {
-                        "parentQueue": "-",
-                        "children": default_children,
-                        "resources": {
-                            "cpu": {"quota": "-", "overQuotaWeight": "-"},
-                            "gpu": {"quota": "-", "overQuotaWeight": "-"},
-                            "memory": {"quota": "-", "overQuotaWeight": "-"},
-                        },
-                        "priority": "-",
-                    },
-                },
-            )
-
-        queue_table = Table(title="Available Queues", header_style=Style(bold=True))
-        queue_table.add_column("QUEUE NAME", style="cyan")
-        queue_table.add_column("PRIORITY", style="magenta")
-        queue_table.add_column("PARENT", style="green")
-        queue_table.add_column("CHILDREN", style="yellow")
-        queue_table.add_column("CPU QUOTA", style="white")
-        queue_table.add_column("GPU QUOTA", style="white")
-        queue_table.add_column("MEMORY QUOTA", style="white")
-        queue_table.add_column("OVERQUOTA WEIGHT", style="blue")
-
-        for q in queues:
-            spec = q.get("spec", {})
-            resources = spec.get("resources", {})
-            cpu = resources.get("cpu", {})
-            gpu = resources.get("gpu", {})
-            memory = resources.get("memory", {})
-
-            queue_table.add_row(
-                q["metadata"]["name"],
-                str(spec.get("priority", "-")),
-                spec.get("parentQueue", "-"),
-                ", ".join(spec.get("children", [])) or "-",
-                str(cpu.get("quota", "-")),
-                str(gpu.get("quota", "-")),
-                str(memory.get("quota", "-")),
-                str(cpu.get("overQuotaWeight", "-")),  # use CPU's overQuotaWeight as example
-            )
-
-        console.print(queue_table)
-        return
-
-    except client.exceptions.ApiException as e:
-        console.print(f"[red]Failed to list queues: {e}[/red]")
-        raise typer.Exit(1)
 
 
 def detect_deployment_mode(name: str, namespace: str, custom_api, apps_v1_api):

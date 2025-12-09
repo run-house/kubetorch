@@ -18,7 +18,6 @@ ENV_MAPPINGS = {
     "install_url": "KT_INSTALL_URL",
     "stream_logs": "KT_STREAM_LOGS",
     "stream_metrics": "KT_STREAM_METRICS",
-    "queue": "KT_QUEUE",
     "volumes": "KT_VOLUMES",
     "api_url": "KT_API_URL",
     "cluster_config": "KT_CLUSTER_CONFIG",
@@ -37,7 +36,6 @@ class KubetorchConfig:
         self._install_url = None
         self._license_key = None
         self._namespace = None
-        self._queue = None
         self._stream_logs = None
         self._stream_metrics = None
         self._username = None
@@ -112,24 +110,6 @@ class KubetorchConfig:
     def license_key(self, value: str):
         """Set kubetorch license key for current process."""
         self._license_key = value
-
-    @property
-    def queue(self):
-        """Default queue name for scheduling services.
-
-        Controls how cluster resources are allocated and prioritized for services.
-        See `scheduling and queues <https://www.run.house/kubetorch/advanced-installation#scheduling-and-queues>`_ for more info.
-        """
-        if not self._queue:
-            if self._get_env_var("queue"):
-                self._queue = self._get_env_var("queue")
-            else:
-                self._queue = self.file_cache.get("queue")
-        return self._queue
-
-    @queue.setter
-    def queue(self, value: str):
-        self._queue = value
 
     @property
     def volumes(self):
