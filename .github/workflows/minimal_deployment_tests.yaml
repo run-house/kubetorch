@@ -90,6 +90,7 @@ jobs:
         env:
           TEST_COMPUTE_TYPE: ${{ matrix.compute_type }}
           KT_STREAM_LOGS: false
+          KT_STREAM_METRICS: false
 
   cleanup:
     if: ${{ always() }}
