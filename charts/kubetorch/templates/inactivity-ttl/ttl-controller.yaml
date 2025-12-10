@@ -1,0 +1,131 @@
+# TTL controller for Kubetorch
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubetorch-ttl-controller
+  namespace: {{ .Release.Namespace }}
+---
+{{- $allNamespaces := .Values.ttlController.namespaces | default list }}
+{{- if eq (len $allNamespaces) 0 }}
+  {{- $allNamespaces = .Values.kubetorchConfig.deployment_namespaces | default list }}
+{{- end }}
+{{- if not (has .Release.Namespace $allNamespaces) }}
+  {{- $allNamespaces = append $allNamespaces .Release.Namespace }}
+{{- end }}
+{{- range $allNamespaces }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubetorch-ttl-controller-role
+  namespace: {{ . }}
+  labels:
+    "kubetorch.com/namespace": {{ . }}
+rules:
+- apiGroups: ["serving.knative.dev"]
+  resources: ["services"]
+  verbs: ["get", "list", "watch", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["configmaps", "pods"]
+  verbs: ["get", "list", "delete"]
+- apiGroups: [""] # Enables cleaning up cached data
+  resources: ["pods/exec"]
+  verbs: ["create", "get"]
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["ray.io"]
+  resources: ["rayclusters"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubetorch-ttl-controller-role-binding
+  namespace: {{ . }}
+  labels:
+    "kubetorch.com/namespace": {{ . }}
+subjects:
+- kind: ServiceAccount
+  name: kubetorch-ttl-controller
+  namespace: {{ $.Release.Namespace }}
+roleRef:
+  kind: Role
+  name: kubetorch-ttl-controller-role
+  apiGroup: rbac.authorization.k8s.io
+---
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubetorch-ttl-controller-config
+  namespace: {{ .Release.Namespace }}
+data:
+  INACTIVITY_ANNOTATION: "kubetorch.com/inactivity-ttl"
+  KT_MODULE_LABEL: "kubetorch.com/module"
+  KT_POD_TYPE_LABEL: "kubetorch.com/pod-type"
+  KT_SERVICE_LABEL: "kubetorch.com/service"
+  KT_TEMPLATE_LABEL: "kubetorch.com/template"
+  LAST_ACTIVE_ANNOTATION: "kubetorch.com/last-active-timestamp"
+  PROMETHEUS_URL: "{{ .Values.ttlController.prometheusUrl }}"
+  WATCH_NAMESPACES: "{{ $allNamespaces | join "," }}"  # Comma-separated list
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: kubetorch-ttl-controller
+  namespace: {{ .Release.Namespace }}
+spec:
+  schedule: "*/5 * * * *"  # Run every 5 minutes
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  concurrencyPolicy: Forbid  # Don't allow concurrent jobs
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: kubetorch-ttl-controller
+          containers:
+          - name: controller
+            image: "ghcr.io/run-house/kubetorch-ttl-controller:v3"
+            envFrom:
+            - configMapRef:
+                name: "kubetorch-ttl-controller-config"
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "100m"
+              limits:
+                memory: "256Mi"
+                cpu: "200m"
+          restartPolicy: OnFailure
+{{- if .Values.ttlController.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kubetorch-ttl-controller-egress
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      job-name: kubetorch-ttl-controller
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.ttlController.prometheusNamespace }}
+    ports:
+    {{- range .Values.ttlController.networkPolicy.ports }}
+    - protocol: {{ .protocol }}
+      port: {{ .port }}
+    {{- end }}
+{{- end }}
