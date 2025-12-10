@@ -359,28 +359,105 @@ class ControllerClient:
         self.session = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})
 
-    def _request(self, method: str, path: str, **kwargs) -> requests.Response:
-        """Make HTTP request to controller."""
+    def _request(self, method: str, path: str, ignore_not_found=False, **kwargs) -> requests.Response:
+        """Make HTTP request to controller.
+
+        Retries connection errors and controller unavailability (502/503).
+        The controller already retries K8s API errors (429, 500, 504).
+        """
+        from kubetorch import ControllerRequestError
+
         url = f"{self.base_url}{path}"
 
-        try:
-            response = self.session.request(method, url, **kwargs)
+        # Retry connection errors and controller unavailability
+        max_attempts = 5
+        base_delay = 0.5  # seconds
 
+        for attempt in range(1, max_attempts + 1):
             try:
-                response.raise_for_status()
-            except requests.HTTPError as e:
-                logger.error(f"Controller request failed: {method} {url} - {e}")
+                response = self.session.request(method, url, **kwargs)
+
+                try:
+                    response.raise_for_status()
+                except requests.HTTPError as e:
+                    status = response.status_code
+                    if status == 404 and ignore_not_found:
+                        return None
+                    if status == 204:
+                        return None
+
+                    # Try to extract detailed error message from response body
+                    error_message = None
+                    try:
+                        import json
+
+                        error_body = response.json()
+
+                        # Handle nested JSON in 'detail' field (controller may wrap K8s errors)
+                        if isinstance(error_body, dict) and "detail" in error_body:
+                            detail = error_body["detail"]
+                            # Try to parse detail if it's a JSON string
+                            if isinstance(detail, str):
+                                try:
+                                    error_body = json.loads(detail)
+                                except (json.JSONDecodeError, ValueError):
+                                    error_message = detail
+
+                        if not error_message and isinstance(error_body, dict) and "message" in error_body:
+                            error_message = error_body["message"]
+
+                    except Exception:
+                        pass
+
+                    # Fallback to response text or generic message
+                    if not error_message:
+                        error_message = (
+                            response.text[:200]
+                            if response.text
+                            else f"Request failed with status {response.status_code}"
+                        )
+
+                    # Retry 502/503 errors (controller unavailable/overloaded, not K8s API errors)
+                    if status in {502, 503} and attempt < max_attempts:
+                        # Exponential backoff for overload scenarios
+                        retry_delay = base_delay * attempt
+                        time.sleep(retry_delay)
+                        continue
+
+                    logger.error(f"{method} {url} failed with status {response.status_code}: {error_message}")
+
+                    # Don't retry other HTTP errors - controller already retried K8s API
+                    raise ControllerRequestError(
+                        method=method, url=url, status_code=response.status_code, message=error_message
+                    ) from e
+
+                return response
+
+            except ControllerRequestError:
+                # Don't retry HTTP errors (except 502/503 handled above)
                 raise
 
-            return response
+            except (requests.ConnectionError, requests.Timeout) as e:
+                # Retry connection errors (controller pod down/restarting)
+                if attempt < max_attempts:
+                    retry_delay = base_delay * attempt
+                    logger.warning(
+                        f"Controller connection error on attempt {attempt}/{max_attempts}, "
+                        f"retrying in {retry_delay:.1f}s: {e}"
+                    )
+                    time.sleep(retry_delay)
+                    continue
+                logger.error(f"{method} {url} - connection failed after {max_attempts} attempts: {e}")
+                raise
+            except Exception as e:
+                logger.error(f"{method} {url} - {e}")
+                raise
 
-        except Exception as e:
-            logger.error(f"Controller request error: {method} {url} - {e}")
-            raise
-
-    def get(self, path: str, **kwargs) -> Dict[str, Any]:
+    def get(self, path: str, ignore_not_found=False, **kwargs) -> Dict[str, Any]:
         """GET request to controller"""
-        response = self._request("GET", path, **kwargs)
+        response = self._request("GET", path, ignore_not_found=ignore_not_found, **kwargs)
+        if response is None:
+            return None
         return response.json()
 
     def post(self, path: str, json: Dict[str, Any], **kwargs) -> Dict[str, Any]:
@@ -388,9 +465,11 @@ class ControllerClient:
         response = self._request("POST", path, json=json, **kwargs)
         return response.json()
 
-    def delete(self, path: str, **kwargs) -> Dict[str, Any]:
+    def delete(self, path: str, ignore_not_found=False, **kwargs) -> Dict[str, Any]:
         """DELETE request to controller"""
-        response = self._request("DELETE", path, **kwargs)
+        response = self._request("DELETE", path, ignore_not_found=ignore_not_found, **kwargs)
+        if response is None:
+            return None
         return response.json()
 
     def patch(self, path: str, json: Dict[str, Any], **kwargs) -> Dict[str, Any]:
@@ -403,13 +482,15 @@ class ControllerClient:
         """Create a PersistentVolumeClaim"""
         return self.post(f"/api/v1/namespaces/{namespace}/persistentvolumeclaims", json=body)
 
-    def get_pvc(self, namespace: str, name: str) -> Dict[str, Any]:
+    def get_pvc(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
         """Get a PersistentVolumeClaim"""
-        return self.get(f"/api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}")
+        return self.get(
+            f"/api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}", ignore_not_found=ignore_not_found
+        )
 
     def delete_pvc(self, namespace: str, name: str) -> Dict[str, Any]:
         """Delete a PersistentVolumeClaim"""
-        return self.delete(f"/api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}")
+        return self.delete(f"/api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}", ignore_not_found=True)
 
     def list_pvcs(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
         """List PersistentVolumeClaims"""
@@ -421,13 +502,13 @@ class ControllerClient:
         """Create a Service"""
         return self.post(f"/api/v1/namespaces/{namespace}/services", json=body, params=params)
 
-    def get_service(self, namespace: str, name: str) -> Dict[str, Any]:
+    def get_service(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
         """Get a Service"""
-        return self.get(f"/api/v1/namespaces/{namespace}/services/{name}")
+        return self.get(f"/api/v1/namespaces/{namespace}/services/{name}", ignore_not_found=ignore_not_found)
 
-    def delete_service(self, namespace: str, name: str) -> Dict[str, Any]:
+    def delete_service(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
         """Delete a Service"""
-        return self.delete(f"/api/v1/namespaces/{namespace}/services/{name}")
+        return self.delete(f"/api/v1/namespaces/{namespace}/services/{name}", ignore_not_found=ignore_not_found)
 
     def list_services(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
         """List Services"""
@@ -439,14 +520,14 @@ class ControllerClient:
         """Create a Deployment"""
         return self.post(f"/apis/apps/v1/namespaces/{namespace}/deployments", json=body)
 
-    def get_deployment(self, namespace: str, name: str) -> Dict[str, Any]:
+    def get_deployment(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
         """Get a Deployment"""
-        return self.get(f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}")
+        return self.get(f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}", ignore_not_found=ignore_not_found)
 
     def delete_deployment(self, namespace: str, name: str) -> Dict[str, Any]:
         """Delete a Deployment"""
         print(f"calling server with deletion of namespace {namespace} and name {name}")
-        return self.delete(f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}")
+        return self.delete(f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}", ignore_not_found=True)
 
     def patch_deployment(self, namespace: str, name: str, body: Dict[str, Any]) -> Dict[str, Any]:
         """Patch a Deployment"""
@@ -457,14 +538,19 @@ class ControllerClient:
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get(f"/apis/apps/v1/namespaces/{namespace}/deployments", params=params)
 
+    # Endpoints
+    def get_endpoints(self, namespace: str, name: str) -> Dict[str, Any]:
+        """Get Endpoints for a Service"""
+        return self.get(f"/api/v1/namespaces/{namespace}/endpoints/{name}")
+
     # Secrets
     def create_secret(self, namespace: str, body: Dict[str, Any]) -> Dict[str, Any]:
         """Create a Secret"""
         return self.post(f"/api/v1/namespaces/{namespace}/secrets", json=body)
 
-    def get_secret(self, namespace: str, name: str) -> Dict[str, Any]:
+    def get_secret(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
         """Get a Secret"""
-        return self.get(f"/api/v1/namespaces/{namespace}/secrets/{name}")
+        return self.get(f"/api/v1/namespaces/{namespace}/secrets/{name}", ignore_not_found=ignore_not_found)
 
     def patch_secret(self, namespace: str, name: str, body: Dict[str, Any]) -> Dict[str, Any]:
         """Patch a Secret"""
@@ -477,7 +563,7 @@ class ControllerClient:
 
     def delete_secret(self, namespace: str, name: str) -> Dict[str, Any]:
         """Delete a Secret"""
-        return self.delete(f"/api/v1/namespaces/{namespace}/secrets/{name}")
+        return self.delete(f"/api/v1/namespaces/{namespace}/secrets/{name}", ignore_not_found=True)
 
     def list_secrets_all_namespaces(self, label_selector: Optional[str] = None) -> Dict[str, Any]:
         """List Secrets across all namespaces"""
@@ -507,7 +593,7 @@ class ControllerClient:
             params["gracePeriodSeconds"] = str(grace_period_seconds)
         if propagation_policy is not None:
             params["propagationPolicy"] = propagation_policy
-        return self.delete(f"/api/v1/namespaces/{namespace}/pods/{name}", params=params)
+        return self.delete(f"/api/v1/namespaces/{namespace}/pods/{name}", params=params, ignore_not_found=True)
 
     def get_pod_logs(
         self, namespace: str, name: str, container: Optional[str] = None, tail_lines: Optional[int] = None
@@ -525,7 +611,7 @@ class ControllerClient:
             response.raise_for_status()
             return response.text
         except Exception as e:
-            logger.error(f"Controller request failed: GET {url} - {e}")
+            logger.error(f"GET {url} - {e}")
             raise
 
     # Namespaces
@@ -595,10 +681,12 @@ class ControllerClient:
         return self.post(f"/apis/{group}/{version}/namespaces/{namespace}/{plural}", json=body)
 
     def get_namespaced_custom_object(
-        self, group: str, version: str, namespace: str, plural: str, name: str
+        self, group: str, version: str, namespace: str, plural: str, name: str, ignore_not_found=False
     ) -> Dict[str, Any]:
         """Get a custom resource"""
-        return self.get(f"/apis/{group}/{version}/namespaces/{namespace}/{plural}/{name}")
+        return self.get(
+            f"/apis/{group}/{version}/namespaces/{namespace}/{plural}/{name}", ignore_not_found=ignore_not_found
+        )
 
     def patch_namespaced_custom_object(
         self, group: str, version: str, namespace: str, plural: str, name: str, body: Dict[str, Any]
@@ -625,11 +713,19 @@ class ControllerClient:
         return self.delete(f"/apis/{group}/{version}/namespaces/{namespace}/{plural}/{name}", params=params)
 
     def list_namespaced_custom_object(
-        self, group: str, version: str, namespace: str, plural: str, label_selector: Optional[str] = None
+        self,
+        group: str,
+        version: str,
+        namespace: str,
+        plural: str,
+        label_selector: Optional[str] = None,
+        ignore_not_found=False,
     ) -> Dict[str, Any]:
         """List custom resources in a namespace"""
         params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/apis/{group}/{version}/namespaces/{namespace}/{plural}", params=params)
+        return self.get(
+            f"/apis/{group}/{version}/namespaces/{namespace}/{plural}", params=params, ignore_not_found=ignore_not_found
+        )
 
     def list_ingresses(self, namespace: str, label_selector: str = None):
         params = {"label_selector": label_selector} if label_selector else {}

@@ -14,6 +14,7 @@ from kubetorch.servers.http.utils import load_template
 from kubetorch.serving.autoscaling import AutoscalingConfig
 from kubetorch.serving.base_service_manager import BaseServiceManager
 from kubetorch.serving.utils import pod_is_running
+from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)
 
@@ -135,15 +136,13 @@ class KnativeServiceManager(BaseServiceManager):
             return created_service
 
         except Exception as e:
-            if (hasattr(e, "status") and e.status == 409) or "409" in str(e) or "already exists" in str(e).lower():
+            if http_conflict(e):
                 logger.info(f"Service {manifest['metadata']['name']} already exists, updating")
                 existing_service = self.get_resource(manifest["metadata"]["name"])
                 return existing_service
-            else:
-                logger.error(
-                    f"Failed to create Knative service: {str(e)}",
-                )
-                raise e
+
+            logger.error(f"Failed to create Knative service: {e}")
+            raise
 
     def get_resource(self, service_name: str) -> dict:
         """Retrieve a Knative service by name."""
@@ -158,7 +157,10 @@ class KnativeServiceManager(BaseServiceManager):
             return service
 
         except Exception as e:
-            logger.error(f"Failed to load Knative service '{service_name}': {str(e)}")
+            if http_not_found(e):
+                return {}
+
+            logger.error(f"Failed to load Knative service '{service_name}': {e}")
             raise
 
     def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:

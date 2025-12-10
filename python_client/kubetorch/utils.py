@@ -6,6 +6,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlparse
 
 from kubernetes import config
@@ -274,3 +275,15 @@ def hours_to_ns(hours: int = 24) -> int:
     start_time = datetime.now() - timedelta(hours=hours)
     start_ns = int(start_time.timestamp() * 1e9)
     return start_ns
+
+
+def get_http_status(e: Exception) -> Optional[int]:
+    return getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
+
+
+def http_not_found(e: Exception) -> bool:
+    return get_http_status(e) == 404
+
+
+def http_conflict(e: Exception) -> bool:
+    return get_http_status(e) == 409

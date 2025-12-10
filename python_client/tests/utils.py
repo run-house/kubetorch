@@ -2,6 +2,7 @@ import importlib
 import inspect
 import logging
 import os
+import re
 import subprocess
 import sys
 import uuid
@@ -13,6 +14,8 @@ from kubetorch.globals import config
 from kubetorch.utils import current_git_branch, validate_username
 
 from pydantic import BaseModel
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def get_test_logger(name=None):
@@ -35,7 +38,9 @@ def get_test_fn_name():
     # This is a workaround to get the test function name in a way that works with pytest
     # and doesn't require pytest to be imported in this module.
     frame = sys._getframe(1)  # Get the caller's frame
-    return frame.f_code.co_name if frame else "unknown_test_function"
+    name = frame.f_code.co_name if frame else "unknown-test-function"
+    # K8s resource names must be RFC 1123 compliant (lowercase alphanumeric + hyphens)
+    return name.replace("_", "-")
 
 
 logger = get_test_logger()
@@ -392,10 +397,18 @@ def get_tests_namespace():
 
 
 def teardown_test_resources(test_hash):
-    namespace = get_tests_namespace()
+    test_namespace = get_tests_namespace()
     default_namespace = config.namespace
-    for namespace in [default_namespace, namespace]:
-        subprocess.run(f"kt teardown -p {test_hash} -n {namespace} -y", shell=True)
+    # Try to teardown from both namespaces
+    for ns in [default_namespace, test_namespace]:
+        result = subprocess.run(f"kt teardown -p {test_hash} -n {ns} -y", shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            if "403" in result.stderr or "Forbidden" in result.stderr:
+                # Namespace not configured in controller RBAC (may happen in local dev)
+                logger.info(f"Skipping teardown for namespace {ns} (no RBAC permissions)")
+            else:
+                # Unexpected error - log but continue with other namespace
+                logger.warning(f"Teardown failed for namespace {ns}: {result.stderr}")
 
 
 def load_callable_from_test_dir(test_dir):
@@ -493,3 +506,7 @@ def service_deployer_with_logs(service_name: str):
     deployed = kt.fn(simple_summer_with_logs, service_name).to(kt.Compute(cpus=".1", image=kt.images.Debian()))
 
     return deployed(2, 3)
+
+
+def strip_ansi(s: str) -> str:
+    return ANSI_RE.sub("", s)

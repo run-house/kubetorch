@@ -81,6 +81,48 @@ jobs:
           TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)"
           echo "TEST_HASH=$TEST_HASH" >> $GITHUB_ENV
 
+      - name: Configure test namespace RBAC
+        run: |
+          TEST_NS="kt-test-$TEST_HASH"
+          echo "Creating test namespace $TEST_NS and configuring RBAC..."
+          kubectl create namespace $TEST_NS --dry-run=client -o yaml | kubectl apply -f -
+
+          # Create Role for the test namespace
+          kubectl apply -f - <<EOF
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: kubetorch-controller-role-$TEST_NS
+            namespace: $TEST_NS
+          rules:
+            - apiGroups: [""]
+              resources: ["persistentvolumeclaims", "pods", "services", "configmaps", "secrets", "events"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            - apiGroups: [""]
+              resources: ["pods/exec", "pods/log"]
+              verbs: ["create", "get"]
+            - apiGroups: ["apps"]
+              resources: ["deployments", "deployments/status", "replicasets", "replicasets/status"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            - apiGroups: ["networking.k8s.io"]
+              resources: ["ingresses"]
+              verbs: ["get", "list", "watch"]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: kubetorch-controller-rolebinding-$TEST_NS
+            namespace: $TEST_NS
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: kubetorch-controller-role-$TEST_NS
+          subjects:
+            - kind: ServiceAccount
+              name: kubetorch-controller
+              namespace: kubetorch
+          EOF
+
       - name: Run tests with level unit
         run: |
           cd python_client

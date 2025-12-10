@@ -17,14 +17,30 @@ A Helm chart for kubetorch
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | controller.affinity | object | `{}` |  |
+| controller.autoscaling.behavior.scaleDown.periodSeconds | int | `60` |  |
+| controller.autoscaling.behavior.scaleDown.podsValue | int | `1` |  |
+| controller.autoscaling.behavior.scaleDown.stabilizationWindowSeconds | int | `300` |  |
+| controller.autoscaling.behavior.scaleUp.percentValue | int | `100` |  |
+| controller.autoscaling.behavior.scaleUp.periodSeconds | int | `15` |  |
+| controller.autoscaling.behavior.scaleUp.podsValue | int | `2` |  |
+| controller.autoscaling.behavior.scaleUp.stabilizationWindowSeconds | int | `30` |  |
+| controller.autoscaling.enabled | bool | `false` |  |
+| controller.autoscaling.maxReplicas | int | `10` |  |
+| controller.autoscaling.minReplicas | int | `2` |  |
+| controller.autoscaling.targetCPUUtilizationPercentage | int | `70` |  |
+| controller.autoscaling.targetMemoryUtilizationPercentage | int | `80` |  |
+| controller.connectionPoolSize | int | `20` |  |
 | controller.image | string | `"ghcr.io/run-house/kubetorch-controller"` |  |
 | controller.imagePullPolicy | string | `"Always"` |  |
-| controller.resources.cpu.limit | string | `"500m"` |  |
-| controller.resources.cpu.request | string | `"100m"` |  |
-| controller.resources.memory.limit | string | `"512Mi"` |  |
-| controller.resources.memory.request | string | `"256Mi"` |  |
+| controller.port | int | `8081` |  |
+| controller.replicas | int | `2` |  |
+| controller.resources.cpu.limit | string | `"2000m"` |  |
+| controller.resources.cpu.request | string | `"200m"` |  |
+| controller.resources.memory.limit | string | `"2Gi"` |  |
+| controller.resources.memory.request | string | `"1Gi"` |  |
 | controller.tag | string | `"v0.1.0"` |  |
 | controller.tolerations | list | `[]` |  |
+| controller.workers | int | `8` |  |
 | dcgm-exporter.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key | string | `"karpenter.k8s.aws/instance-gpu-manufacturer"` |  |
 | dcgm-exporter.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator | string | `"In"` |  |
 | dcgm-exporter.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].values[0] | string | `"nvidia"` |  |
@@ -88,6 +104,10 @@ A Helm chart for kubetorch
 | nginxProxy.image.tag | string | `"1.29.0-alpine"` |  |
 | nginxProxy.maxBodySize.api | string | `"250M"` |  |
 | nginxProxy.maxBodySize.rsync | string | `"10G"` |  |
+| nginxProxy.resources.cpu.limit | string | `"1"` |  |
+| nginxProxy.resources.cpu.request | string | `"200m"` |  |
+| nginxProxy.resources.memory.limit | string | `"512Mi"` |  |
+| nginxProxy.resources.memory.request | string | `"256Mi"` |  |
 | nginxProxy.tolerations | list | `[]` |  |
 | nvidia-device-plugin.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key | string | `"nvidia.com/gpu.product"` |  |
 | nvidia-device-plugin.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator | string | `"Exists"` |  |

@@ -6,10 +6,6 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Union
 
-import requests
-from kubernetes import client
-from kubernetes.client.rest import ApiException
-
 import kubetorch.globals
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.utils import get_local_install_path, locate_working_dir
@@ -17,6 +13,7 @@ from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecr
 from kubetorch.servers.http.utils import StartupError
 from kubetorch.serving import constants as serving_constants
 from kubetorch.serving.constants import KT_SERVICE_LABEL, KT_USERNAME_LABEL
+from kubetorch.utils import http_not_found
 
 logger = get_logger(__name__)
 
@@ -74,6 +71,17 @@ class SecretNotFound(Exception):
 
     def __init__(self, secret_name: str, namespace: str):
         super().__init__(f"kubetorch secret {secret_name} was not found in {namespace} namespace")
+
+
+class ControllerRequestError(Exception):
+    """Raised when a request to the Kubetorch controller fails."""
+
+    def __init__(self, method: str, url: str, status_code: int, message: str):
+        self.method = method
+        self.url = url
+        self.status_code = status_code
+        self.status = status_code
+        super().__init__(f"{method} {url} failed with status {status_code}: {message}")
 
 
 class RsyncError(Exception):
@@ -325,8 +333,8 @@ def delete_deployment(
         )
         if console:
             console.print(f"✓ Deleted deployment [blue]{name}[/blue]")
-    except ApiException as e:
-        if e.status == 404:
+    except Exception as e:
+        if http_not_found(e):
             if console:
                 console.print(f"[yellow]Note:[/yellow] Deployment {name} not found or already deleted")
         else:
@@ -351,10 +359,7 @@ def delete_deployment(
                 console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
 
     try:
-        headless = controller_client.get_service(
-            namespace=namespace,
-            name=f"{name}-headless",
-        )
+        headless = controller_client.get_service(namespace=namespace, name=f"{name}-headless", ignore_not_found=True)
     except Exception:
         headless = None
 
@@ -523,7 +528,7 @@ def delete_cached_service_data(
             f"else echo 'Path {service_path} not found'; fi"
         )
 
-        # 4. Execute via centralized controller (always)
+        # 4. Execute via centralized controller
         resp = controller_client.post(
             f"/api/v1/namespaces/{namespace}/pods/{pod_name}/exec",
             json={
@@ -628,6 +633,7 @@ def fetch_resources_for_teardown(
                     namespace=namespace,
                     plural="services",
                     label_selector=knative_label_selector,
+                    ignore_not_found=True,
                 )
                 items = response.get("items", [])
                 knative_services = [
@@ -661,7 +667,8 @@ def fetch_resources_for_teardown(
                 if (username or item["metadata"]["name"].startswith(prefix))
             ]
             services.extend(deployment_services)
-        except (client.exceptions.ApiException, requests.HTTPError) as e:
+        except Exception as e:
+            # Catch all errors from controller client (ControllerRequestError) or legacy K8s client (ApiException)
             logger.warning(f"Failed to list Deployments: {e}")
 
         # Search RayClusters
@@ -678,6 +685,7 @@ def fetch_resources_for_teardown(
                     namespace=namespace,
                     plural="rayclusters",
                     label_selector=raycluster_label_selector,
+                    ignore_not_found=True,
                 )
                 items = response.get("items", [])
                 raycluster_services = [
@@ -721,6 +729,7 @@ def fetch_resources_for_teardown(
                 namespace=namespace,
                 plural="services",
                 name=service_name,
+                ignore_not_found=True,
             )
             if (
                 isinstance(service, dict)
@@ -736,7 +745,9 @@ def fetch_resources_for_teardown(
         # Check if it's a Deployment (if not found as Knative service)
         if not service_found:
             try:
-                deployment = controller_client.get_deployment(namespace=namespace, name=service_name)
+                deployment = controller_client.get_deployment(
+                    namespace=namespace, name=service_name, ignore_not_found=True
+                )
                 if isinstance(deployment, dict) and deployment.get("kind") == "Deployment":
                     service_type = "deployment"
                     service_found = True
@@ -752,6 +763,7 @@ def fetch_resources_for_teardown(
                     namespace=namespace,
                     plural="rayclusters",
                     name=service_name,
+                    ignore_not_found=True,
                 )
                 if (
                     isinstance(raycluster, dict)
@@ -809,7 +821,7 @@ def _get_sync_package_paths(
 
 
 # ----------------- Error Handling Utils ----------------- #
-def check_pod_status_for_errors(pod: client.V1Pod):
+def check_pod_status_for_errors(pod):
     """Check pod status for errors"""
 
     def _get(obj, attr, default=None):
@@ -852,6 +864,23 @@ def check_pod_status_for_errors(pod: client.V1Pod):
         if waiting:
             reason = waiting.get("reason")
             message = waiting.get("message", "")
+
+            # For BackOff/CrashLoopBackOff, get the actual crash reason from lastState
+            if reason in ("BackOff", "CrashLoopBackOff"):
+                last_state = cs.get("lastState", {})
+                terminated = last_state.get("terminated", {})
+                if terminated:
+                    exit_code = terminated.get("exitCode", "unknown")
+                    term_reason = terminated.get("reason", "")
+                    term_message = terminated.get("message", "")
+                    # Build more informative error message
+                    message = f"{message} (exit code: {exit_code}"
+                    if term_reason:
+                        message += f", reason: {term_reason}"
+                    if term_message:
+                        message += f", error: {term_message}"
+                    message += ")"
+
             if reason in TERMINATE_EARLY_ERRORS:
                 metadata = pod.get("metadata", {})
                 raise TERMINATE_EARLY_ERRORS[reason](f"Pod {metadata.get('name')}: {message}")
@@ -940,10 +969,10 @@ def check_replicaset_events_for_errors(
                             f"{message}. Please check cluster configuration and permissions."
                         )
 
-    except client.exceptions.ApiException as e:
-        logger.warning(f"Error checking ReplicaSet events for {service_name}: {e}")
     except ResourceNotAvailableError:
         raise
+    except Exception as e:
+        logger.warning(f"Error checking ReplicaSet events for {service_name}: {e}")
 
 
 def check_revision_for_errors(revision_name: str, namespace: str):
@@ -1023,7 +1052,19 @@ def list_secrets(
     controller_client = kubetorch.globals.controller_client()
     try:
         if all_namespaces:
-            secrets_result = controller_client.list_secrets_all_namespaces()
+            try:
+                secrets_result = controller_client.list_secrets_all_namespaces()
+            except ControllerRequestError as e:
+                if e.status_code == 403:
+                    msg = (
+                        "Cross-namespace secret listing requires additional RBAC permissions. "
+                        f"Falling back to namespace-scoped listing for namespace: '{namespace}'"
+                    )
+                    if console:
+                        console.print(f"[yellow]{msg}[/yellow]\n")
+                    secrets_result = controller_client.list_secrets(namespace=namespace)
+                else:
+                    raise
         else:
             secrets_result = controller_client.list_secrets(namespace=namespace)
 
@@ -1059,7 +1100,7 @@ def list_secrets(
                     filtered_secrets.append(parsed_secret)
         return filtered_secrets
 
-    except client.rest.ApiException as e:
+    except Exception as e:
         console.print(f"[red]Failed to load secrets: {e}[/red]")
         return None
 

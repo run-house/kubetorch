@@ -14,6 +14,7 @@ import kubetorch.serving.constants as serving_constants
 from kubetorch import globals
 
 from kubetorch.logger import get_logger
+from kubetorch.utils import http_not_found
 
 logger = get_logger(__name__)
 
@@ -121,7 +122,7 @@ class BaseServiceManager:
                     try:
                         utils.delete_from_dict(k8s_client, obj)
                     except client.exceptions.ApiException as e:
-                        if e.status != 404:
+                        if not http_not_found(e):
                             raise
                 utils.create_from_dict(k8s_client, obj)
             except utils.FailToCreateError as e:
@@ -157,9 +158,9 @@ class BaseServiceManager:
                 f"/api/v1/namespaces/{globals.config.install_namespace}/configmaps/kubetorch-config"
             )
             return kubetorch_config.get("data", {})
-        except client.exceptions.ApiException as e:
-            if e.status != 404:
-                logger.error(f"Error fetching kubetorch config: {e}")
+        except Exception as e:
+            if not http_not_found(e):
+                logger.error(f"Kubeconfig not found: {e}")
             return {}
 
     @staticmethod
@@ -206,7 +207,7 @@ class BaseServiceManager:
                     services.extend(local_services)
 
             except Exception as e:
-                if not ((hasattr(e, "status") and e.status == 404) or "404" in str(e)):
+                if not http_not_found(e):
                     logger.warning(f"Failed to list Knative services: {e}")
 
         def fetch_deployments():
@@ -274,7 +275,7 @@ class BaseServiceManager:
                     services.extend(local_services)
 
             except Exception as e:
-                if not ((hasattr(e, "status") and e.status == 404) or "404" in str(e)):
+                if not http_not_found(e):
                     logger.warning(f"Failed to list RayClusters: {e}")
 
         # Run all in parallel
