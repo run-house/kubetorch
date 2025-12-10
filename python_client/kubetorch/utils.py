@@ -6,9 +6,10 @@ import sys
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlparse
 
-from kubernetes import client, config
+from kubernetes import config
 
 from kubetorch.constants import DEFAULT_KUBECONFIG_PATH, MAX_USERNAME_LENGTH
 from kubetorch.globals import config as kt_config
@@ -238,16 +239,6 @@ class ServerLogsFormatter:
         self.reset_color = ColoredFormatter.get_color("reset")
 
 
-def initialize_k8s_clients():
-    """Initialize Kubernetes API clients."""
-    load_kubeconfig()
-    return (
-        client.CoreV1Api(),
-        client.CustomObjectsApi(),
-        client.AppsV1Api(),
-    )
-
-
 def string_to_dict(value):
     try:
         result = json.loads(value or "{}")
@@ -256,22 +247,25 @@ def string_to_dict(value):
         return {}
 
 
-def load_head_node_pod(all_pods: list, deployment_mode: str):
+def load_head_node_pod(all_pods: list, deployment_mode: str) -> str:
+    """Load head node pod. Pods must be dicts from ControllerClient."""
     # Sort by creation timestamp for deterministic ordering (oldest first)
-    running_pods = sorted(all_pods, key=lambda pod: pod.metadata.creation_timestamp)
+    running_pods = sorted(all_pods, key=lambda pod: pod.get("metadata", {}).get("creationTimestamp", ""))
 
     # For Ray clusters, prioritize head node
     if deployment_mode == "raycluster":
         # use label to find head node
-        head_pods = [pod for pod in running_pods if pod.metadata.labels.get("ray.io/node-type") == "head"]
+        head_pods = [
+            pod for pod in running_pods if pod.get("metadata", {}).get("labels", {}).get("ray.io/node-type") == "head"
+        ]
         if head_pods:
-            pod_name = head_pods[0].metadata.name
+            pod_name = head_pods[0].get("metadata", {}).get("name")
         else:
             logger.debug("Ray cluster detected but no head node found, using first pod")
-            pod_name = running_pods[0].metadata.name
+            pod_name = running_pods[0].get("metadata", {}).get("name")
     else:
         # For non-Ray deployments, use oldest running pod
-        pod_name = running_pods[0].metadata.name
+        pod_name = running_pods[0].get("metadata", {}).get("name")
 
     return pod_name
 
@@ -281,3 +275,40 @@ def hours_to_ns(hours: int = 24) -> int:
     start_time = datetime.now() - timedelta(hours=hours)
     start_ns = int(start_time.timestamp() * 1e9)
     return start_ns
+
+
+def get_http_status(e: Exception) -> Optional[int]:
+    """Get HTTP status code from various exception types."""
+    # Check status_code (ControllerRequestError, requests exceptions)
+    status = getattr(e, "status_code", None)
+    if status:
+        return status
+    # Check status (kubernetes ApiException)
+    status = getattr(e, "status", None)
+    if status:
+        return status
+    # Check response.status_code
+    response = getattr(e, "response", None)
+    if response:
+        return getattr(response, "status_code", None)
+    return None
+
+
+def http_not_found(e: Exception) -> bool:
+    """Check if exception represents a 404 Not Found error."""
+    status = get_http_status(e)
+    if status == 404:
+        return True
+    # Fallback to string matching for edge cases
+    err_str = str(e).lower()
+    return "404" in err_str or "not found" in err_str
+
+
+def http_conflict(e: Exception) -> bool:
+    """Check if exception represents a 409 Conflict error."""
+    status = get_http_status(e)
+    if status == 409:
+        return True
+    # Fallback to string matching for edge cases
+    err_str = str(e).lower()
+    return "409" in err_str or "already exists" in err_str

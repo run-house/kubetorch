@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from kubernetes import client, config
+from kubernetes import config
 from kubernetes.client import V1ResourceRequirements
 
 import kubetorch.constants as constants
@@ -36,7 +36,7 @@ from kubetorch.servers.http.utils import is_running_in_kubernetes, load_template
 from kubetorch.serving.autoscaling import AutoscalingConfig
 from kubetorch.serving.utils import pod_is_running
 
-from kubetorch.utils import extract_host_port, http_to_ws, load_head_node_pod, load_kubeconfig
+from kubetorch.utils import extract_host_port, http_to_ws, load_head_node_pod
 
 logger = get_logger(__name__)
 
@@ -171,11 +171,6 @@ class Compute:
         self._service_manager = None
         self._autoscaling_config = None
         self._kubeconfig_path = kubeconfig_path
-
-        self._objects_api = None
-        self._core_api = None
-        self._apps_v1_api = None
-        self._node_v1_api = None
 
         self._image = image
         self._secrets = secrets
@@ -501,31 +496,6 @@ class Compute:
 
     # ----------------- Properties ----------------- #
     @property
-    def objects_api(self):
-        if self._objects_api is None:
-            self._objects_api = client.CustomObjectsApi()
-        return self._objects_api
-
-    @property
-    def core_api(self):
-        if self._core_api is None:
-            load_kubeconfig()
-            self._core_api = client.CoreV1Api()
-        return self._core_api
-
-    @property
-    def apps_v1_api(self):
-        if self._apps_v1_api is None:
-            self._apps_v1_api = client.AppsV1Api()
-        return self._apps_v1_api
-
-    @property
-    def node_v1_api(self):
-        if self._node_v1_api is None:
-            self._node_v1_api = client.NodeV1Api()
-        return self._node_v1_api
-
-    @property
     def kubeconfig_path(self):
         if self._kubeconfig_path is None:
             self._kubeconfig_path = os.getenv("KUBECONFIG") or constants.DEFAULT_KUBECONFIG_PATH
@@ -607,10 +577,7 @@ class Compute:
                 "knative": KnativeServiceManager,
                 "raycluster": RayClusterServiceManager,
             }
-            resource_api = self.apps_v1_api if self.deployment_mode == "deployment" else self.objects_api
             kwargs = {
-                "resource_api": resource_api,
-                "core_api": self.core_api,
                 "namespace": self.namespace,
             }
             if self.deployment_mode not in service_manager_mapping:
@@ -1809,11 +1776,6 @@ class Compute:
                 raise FileNotFoundError(f"Kubeconfig file not found: {self.kubeconfig_path}")
             config.load_kube_config(config_file=self.kubeconfig_path)
 
-        # Reset the cached API clients so they'll be reinitialized with the loaded config
-        self._objects_api = None
-        self._core_api = None
-        self._apps_v1_api = None
-
     def _load_kubetorch_global_config(self):
         global_config = {}
         kubetorch_config = self.service_manager.fetch_kubetorch_config()
@@ -1863,8 +1825,9 @@ class Compute:
         install_url: str,
         pointer_env_vars: Dict,
         metadata_env_vars: Dict,
-        startup_rsync_command: Optional[str],
-        launch_id: Optional[str],
+        startup_rsync_command: str = None,
+        launch_id: str = None,
+        deployment_timestamp: str = None,
         dryrun: bool = False,
     ):
         """Creates a new service on the compute for the provided service. If the service already exists,
@@ -1886,6 +1849,7 @@ class Compute:
             service_name=service_name,
             module_name=pointer_env_vars["KT_MODULE_NAME"],
             manifest=self._manifest,
+            deployment_timestamp=deployment_timestamp,
             dryrun=dryrun,
         )
         self._manifest = updated_manifest
@@ -1910,8 +1874,9 @@ class Compute:
         install_url: str,
         pointer_env_vars: Dict,
         metadata_env_vars: Dict,
-        startup_rsync_command: Optional[str],
-        launch_id: Optional[str],
+        startup_rsync_command: str = None,
+        launch_id: str = None,
+        deployment_timestamp: str = None,
         dryrun: bool = False,
     ):
         """Async version of _launch. Creates a new service on the compute for the provided service.
@@ -1930,6 +1895,7 @@ class Compute:
             metadata_env_vars,
             startup_rsync_command,
             launch_id,
+            deployment_timestamp,
             dryrun,
         )
 
@@ -2049,7 +2015,11 @@ class Compute:
     def pod_names(self):
         """Returns a list of pod names."""
         pods = self.pods()
-        return [pod.metadata.name for pod in pods if pod_is_running(pod)]
+        return [
+            pod.get("metadata", {}).get("name")
+            for pod in pods
+            if pod_is_running(pod) and pod.get("metadata", {}).get("name")
+        ]
 
     def pods(self):
         return self.service_manager.get_pods_for_service(self.service_name)
@@ -2068,7 +2038,7 @@ class Compute:
             for vol in volumes:
                 if isinstance(vol, str):
                     # list of volume names (assume they exist)
-                    volume = Volume.from_name(vol, create_if_missing=False, core_v1=self.core_api)
+                    volume = Volume.from_name(vol)
                     processed_volumes.append(volume)
 
                 elif isinstance(vol, Volume):
@@ -2137,10 +2107,7 @@ class Compute:
         Delegates to the appropriate service manager's check_service_ready method.
         """
         return self.service_manager.check_service_ready(
-            service_name=self.service_name,
-            launch_timeout=self.launch_timeout,
-            objects_api=self.objects_api,
-            core_api=self.core_api,
+            service_name=self.service_name, launch_timeout=self.launch_timeout
         )
 
     async def _check_service_ready_async(self):
@@ -2164,10 +2131,12 @@ class Compute:
             if not pods:
                 return False
             for pod in pods:
-                if pod.status.phase != "Running":
-                    logger.info(f"Pod {pod.metadata.name} is not running. Status: {pod.status.phase}")
+                phase = pod.get("status", {}).get("phase")
+                pod_name = pod.get("metadata", {}).get("name", "unknown")
+                if phase != "Running":
+                    logger.info(f"Pod {pod_name} is not running. Status: {phase}")
                     return False
-        except client.exceptions.ApiException:
+        except Exception:
             return False
         return True
 
@@ -2265,7 +2234,6 @@ class Compute:
 
         return _run_bash(
             commands=commands,
-            core_api=self.core_api,
             pod_names=pod_names,
             namespace=self.namespace,
             container=container,
@@ -2276,11 +2244,9 @@ class Compute:
         subdir = f"/data/{self.namespace}/{self.service_name}"
 
         label_selector = f"app={serving_constants.RSYNC_SERVICE_NAME}"
-        pod_name = (
-            self.core_api.list_namespaced_pod(namespace=self.namespace, label_selector=label_selector)
-            .items[0]
-            .metadata.name
-        )
+        result = globals.controller_client().list_pods(namespace=self.namespace, label_selector=label_selector)
+        pod_name = result["items"][0]["metadata"]["name"]
+
         subdir_cmd = f"kubectl exec {pod_name} -n {self.namespace} -- mkdir -p {subdir}"
         logger.info(f"Creating directory on rsync pod with cmd: {subdir_cmd}")
         subprocess.run(subdir_cmd, shell=True, check=True)
@@ -2747,10 +2713,6 @@ class Compute:
         # Remove local stateful values that shouldn't be serialized
         state["_endpoint"] = None
         state["_service_manager"] = None
-        state["_objects_api"] = None
-        state["_core_api"] = None
-        state["_apps_v1_api"] = None
-        state["_node_v1_api"] = None
         state["_secrets_client"] = None
         return state
 
@@ -2760,10 +2722,6 @@ class Compute:
         # Reset local stateful values to None to ensure clean initialization
         self._endpoint = None
         self._service_manager = None
-        self._objects_api = None
-        self._core_api = None
-        self._apps_v1_api = None
-        self._node_v1_api = None
         self._secrets_client = None
 
     # ------------ Distributed / Autoscaling Helpers -------- #

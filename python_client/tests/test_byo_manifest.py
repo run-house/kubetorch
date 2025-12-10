@@ -3,6 +3,8 @@ import os
 
 import pytest
 
+from kubetorch.utils import http_not_found
+
 from .assets.torch_ddp.torch_ddp import torch_ddp
 from .utils import summer
 
@@ -268,13 +270,7 @@ async def test_byo_manifest_pytorchjob_ddp():
         assert len(result) == 3
     except Exception as e:
         # If Kubeflow Training Operator is not available, skip the deployment test
-        from kubernetes.client.rest import ApiException
-
-        if isinstance(e, ApiException) and e.status == 404:
-            pytest.skip("PyTorchJob CRD not found - Kubeflow Training Operator not installed")
-        # Also check error message for 404
-        error_str = str(e).lower()
-        if "404" in error_str or ("not found" in error_str and "page" in error_str):
+        if http_not_found(e):
             pytest.skip("PyTorchJob CRD not found - Kubeflow Training Operator not installed")
         raise
 

@@ -187,7 +187,7 @@ class KubetorchConfig:
 
     @install_namespace.setter
     def install_namespace(self, value):
-        """Set installnamespace for current process."""
+        """Set install namespace for current process."""
         self._install_namespace = value
 
     @property
