@@ -3,6 +3,7 @@ import os
 
 import pytest
 
+from .assets.torch_ddp.torch_ddp import torch_ddp
 from .utils import summer
 
 
@@ -70,6 +71,26 @@ def _get_basic_manifest(kind: str):
                 ],
             },
         }
+    elif kind == "PyTorchJob":
+        return {
+            "apiVersion": "kubeflow.org/v1",
+            "kind": "PyTorchJob",
+            "metadata": base_metadata,
+            "spec": {
+                "pytorchReplicaSpecs": {
+                    "Master": {
+                        "replicas": 1,
+                        "restartPolicy": "OnFailure",
+                        "template": {"spec": {"containers": []}},
+                    },
+                    "Worker": {
+                        "replicas": 1,
+                        "restartPolicy": "OnFailure",
+                        "template": {"spec": {"containers": []}},
+                    },
+                },
+            },
+        }
     else:
         raise ValueError(f"Unknown manifest kind: {kind}")
 
@@ -82,7 +103,7 @@ def setup_test_env():
 
 @pytest.mark.level("minimal")
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["Deployment", "Service", "RayCluster"])
+@pytest.mark.parametrize("kind", ["Deployment", "Service", "RayCluster", "PyTorchJob"])
 async def test_byo_manifest_with_overrides(kind):
     """Test BYO manifest with comprehensive kwargs overrides and containers."""
     import kubetorch as kt
@@ -114,6 +135,9 @@ async def test_byo_manifest_with_overrides(kind):
     elif test_manifest["kind"] == "RayCluster":
         test_manifest["spec"]["headGroupSpec"]["template"]["spec"]["containers"] = [container]
         test_manifest["spec"]["workerGroupSpecs"][0]["template"]["spec"]["containers"] = [container]
+    elif test_manifest["kind"] == "PyTorchJob":
+        test_manifest["spec"]["pytorchReplicaSpecs"]["Master"]["template"]["spec"]["containers"] = [container]
+        test_manifest["spec"]["pytorchReplicaSpecs"]["Worker"]["template"]["spec"]["containers"] = [container]
 
     image_type = "Ray" if kind == "RayCluster" else "Debian"
     image = getattr(kt.images, image_type)()
@@ -150,7 +174,94 @@ async def test_byo_manifest_with_overrides(kind):
     assert fn.service_name == service_name
 
     result = fn(5, 10)
-    assert result == 15
+    if kind == "PyTorchJob":
+        assert isinstance(result, list)
+        assert all(r == 15 for r in result)
+        assert len(result) == 3
+    else:
+        assert result == 15
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_byo_manifest_pytorchjob_ddp():
+    """Test BYO manifest PyTorchJob running a PyTorch DDP job."""
+    import kubetorch as kt
+
+    # Create PyTorchJob manifest for distributed training
+    pytorch_manifest = copy.deepcopy(_get_basic_manifest("PyTorchJob"))
+
+    # Add container with PyTorch image
+    container = {
+        "name": "pytorch-container",
+        "image": "pytorch/pytorch:latest",
+        "resources": {
+            "requests": {
+                "cpu": "0.5",
+                "memory": "1Gi",
+            },
+        },
+    }
+
+    pytorch_manifest["spec"]["pytorchReplicaSpecs"]["Master"]["template"]["spec"]["containers"] = [container]
+    pytorch_manifest["spec"]["pytorchReplicaSpecs"]["Worker"]["template"]["spec"]["containers"] = [container]
+
+    image = kt.images.Pytorch2312()
+
+    # Use longer launch_timeout for large PyTorch image pulls (can be 5-10GB+)
+    # Distributed execution is automatically detected from worker replicas in the manifest
+    compute = kt.Compute(
+        manifest=pytorch_manifest,
+        cpus="0.5",
+        memory="2Gi",
+        labels={"custom-label": "pytorch-ddp-test"},
+        annotations={"test-annotation": "pytorch-ddp-value"},
+        image=image,
+        launch_timeout=600,  # 10 minutes for large image pulls
+        distributed_config={"quorum_workers": 3},
+    )
+
+    # Verify configuration
+    assert compute.cpus == "0.5"
+    assert compute.memory == "2Gi"
+    assert compute.replicas == 3
+    assert compute.labels["custom-label"] == "pytorch-ddp-test"
+    assert compute.annotations["test-annotation"] == "pytorch-ddp-value"
+
+    # Verify service manager is TrainJobServiceManager
+    assert compute.service_manager.__class__.__name__ == "TrainJobServiceManager"
+    assert compute.service_manager.template_label == "pytorchjob"
+    assert compute.service_manager.primary_replica == "Master"
+    assert compute.service_manager.worker_replica == "Worker"
+
+    # Verify distributed config is automatically set
+    assert compute.service_manager.is_distributed(compute._manifest)
+    assert compute.distributed_config["distribution_type"] == "spmd"
+    assert compute.distributed_config["quorum_workers"] == 3
+
+    # Deploy and test DDP function (if Kubeflow Training Operator is available)
+    try:
+        name = "byo-pytorchjob-ddp"
+        fn = await kt.fn(torch_ddp, name=name).to_async(compute)
+
+        # Run DDP training with 3 epochs: the function will run on all 3 replicas (1 Master + 2 Workers)
+        result = fn(3)
+
+        # Verify the DDP job completed successfully
+        assert isinstance(result, list), f"Expected list, got {type(result)}: {result}"
+        assert all(r == "Success" for r in result)
+        assert len(result) == 3
+    except Exception as e:
+        # If Kubeflow Training Operator is not available, skip the deployment test
+        from kubernetes.client.rest import ApiException
+
+        if isinstance(e, ApiException) and e.status == 404:
+            pytest.skip("PyTorchJob CRD not found - Kubeflow Training Operator not installed")
+        # Also check error message for 404
+        error_str = str(e).lower()
+        if "404" in error_str or ("not found" in error_str and "page" in error_str):
+            pytest.skip("PyTorchJob CRD not found - Kubeflow Training Operator not installed")
+        raise
 
 
 @pytest.mark.level("minimal")

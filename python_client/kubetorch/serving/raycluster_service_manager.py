@@ -21,27 +21,41 @@ class RayClusterServiceManager(BaseServiceManager):
         resource_api: client.CustomObjectsApi,
         core_api: client.CoreV1Api,
         namespace: str,
+        template_label: str = "raycluster",
+        api_group: str = "ray.io",
+        api_plural: str = "rayclusters",
+        api_version: str = "v1",
         service_annotations: dict = None,
     ):
-        # Merge Ray-specific annotations with user-provided ones
-        ray_annotations = {"ray.io/overwrite-container-cmd": "true"}
+        # Set Ray-specific default annotations
+        default_service_annotations = {
+            "ray.io/overwrite-container-cmd": "true",
+        }
         if service_annotations:
-            ray_annotations.update(service_annotations)
+            default_service_annotations.update(service_annotations)
 
         super().__init__(
             resource_api=resource_api,
             core_api=core_api,
             namespace=namespace,
-            template_label="raycluster",
-            api_group="ray.io",
-            api_plural="rayclusters",
-            api_version="v1",
-            service_annotations=ray_annotations,
+            template_label=template_label,
+            api_group=api_group,
+            api_plural=api_plural,
+            api_version=api_version,
+            service_annotations=default_service_annotations,
         )
 
     def _get_pod_template_path(self) -> List[str]:
         """Get the path to the pod template (head node)."""
         return ["spec", "headGroupSpec", "template"]
+
+    def normalize_created_service(self, created_service) -> dict:
+        """Extract service info from RayCluster resource."""
+        return {
+            "name": created_service.get("metadata", {}).get("name"),
+            "namespace": created_service.get("metadata", {}).get("namespace"),
+            "template": created_service["spec"]["headGroupSpec"]["template"],
+        }
 
     def get_replicas(self, manifest: dict) -> int:
         """Get the number of replicas from a RayCluster manifest.
@@ -111,6 +125,10 @@ class RayClusterServiceManager(BaseServiceManager):
 
         # Get base annotations (Ray-specific ones already in deployment_annotations)
         annotations = deployment_annotations.copy()
+        default_ray_annotations = {
+            "ray.io/overwrite-container-cmd": "true",
+        }
+        annotations.update(default_ray_annotations)
 
         # Calculate worker replicas (head node counts as 1 replica)
         worker_replicas = max(0, replicas - 1)
@@ -189,7 +207,7 @@ class RayClusterServiceManager(BaseServiceManager):
         """Preprocess RayCluster manifest: sync worker pod specs with head pod spec."""
         # Ensure worker pod specs match head pod spec or sync over any changes
         if "spec" in manifest and "headGroupSpec" in manifest["spec"]:
-            head_pod_spec = manifest["spec"]["headGroupSpec"].get("template", {}).get("spec")
+            head_pod_spec = self.pod_spec(manifest)
             if head_pod_spec and "workerGroupSpecs" in manifest["spec"]:
                 # Copy head pod spec to all worker groups
                 for worker_group in manifest["spec"]["workerGroupSpecs"]:
@@ -201,7 +219,7 @@ class RayClusterServiceManager(BaseServiceManager):
     def _create_or_update_resource(self, manifest: dict, service_name: str, clean_module_name: str, **kwargs) -> dict:
         raycluster = manifest
 
-        pod_spec = raycluster.get("spec", {}).get("headGroupSpec", {}).get("template", {}).get("spec", {})
+        pod_spec = self.pod_spec(raycluster)
         server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
 
         labels = raycluster.get("metadata", {}).get("labels", {})

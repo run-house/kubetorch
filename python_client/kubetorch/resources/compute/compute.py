@@ -71,9 +71,10 @@ class Compute:
         working_dir: str = None,
         shared_memory_limit: str = None,
         allowed_serialization: Optional[List[str]] = None,
-        replicas: int = 1,
+        replicas: int = None,
         logging_config: LoggingConfig = None,
         manifest: Dict = None,
+        distributed_config: Dict = None,
         _skip_template_init: bool = False,
     ):
         """Initialize the compute requirements for a Kubetorch service.
@@ -119,7 +120,8 @@ class Compute:
                 If not specified, will wait {serving_constants.KT_LAUNCH_TIMEOUT} seconds.
                 Note: you can also control this timeout globally by setting the `KT_LAUNCH_TIMEOUT` environment variable.
             replicas (int, optional): Number of replicas to create for deployment-based services. Can also be set via
-                the `.distribute(workers=N)` method for distributed training. (Default: 1)
+                the `.distribute(workers=N)` method for distributed training. If not specified, defaults to 1 for new
+                manifests, or respects the replica configuration in BYO manifests. (Default: None)
             working_dir (str, optional): Working directory to use inside the remote images. Must be an absolute path (e.g. `/kt`)
             shared_memory_limit (str, optional):  Maximum size of the shared memory filesystem (/dev/shm) available to
                 each pod created by the service. Value should be a Kubernetes quantity string, for example: "512Mi",
@@ -129,6 +131,8 @@ class Compute:
                 log level, streaming options, and grace periods. See :class:`LoggingConfig` for details.
             manifest (Dict, optional): Bring-your-own Kubernetes manifest. If provided, this manifest will be used as the base,
                 and all other kwargs will act as overrides.
+            distributed_config (Dict, optional): Distributed configuration dictionary, containing a subset of keys:
+                `distribution_type`, `quorum_timeout`, `quorum_workers`, `monitor_members`. (Default: None)
 
         Note:
 
@@ -190,6 +194,10 @@ class Compute:
         if _skip_template_init:
             return
 
+        # Load manifest from file if provided as a string
+        if isinstance(manifest, str):
+            with open(manifest, "r") as f:
+                manifest = yaml.safe_load(f)
         user_manifest = manifest if manifest else None
         if user_manifest:
             if "kind" not in user_manifest or "apiVersion" not in user_manifest:
@@ -317,6 +325,8 @@ class Compute:
             manifest_annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
 
         if user_manifest:
+            from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+
             # Merge KT-specific pod spec into user pod spec
             self._merge_pod_specs(pod_spec)
 
@@ -333,6 +343,12 @@ class Compute:
                 self.namespace = namespace
             if replicas and replicas != self.replicas:
                 self.replicas = replicas
+            if self.replicas > 1 and not distributed_config and self.kind in TrainJobServiceManager.SUPPORTED_KINDS:
+                distributed_config = {
+                    "distribution_type": "spmd",
+                    "quorum_timeout": self.launch_timeout,
+                    "quorum_workers": self.replicas,
+                }
         else:
             from kubetorch.serving.service_manager import DeploymentServiceManager
 
@@ -340,12 +356,42 @@ class Compute:
             self._manifest = DeploymentServiceManager._build_base_manifest(
                 pod_spec=pod_spec,
                 namespace=namespace,
-                replicas=replicas,
+                replicas=replicas if replicas else 1,
                 inactivity_ttl=inactivity_ttl,
                 custom_labels=labels or {},
                 custom_annotations=manifest_annotations,
                 custom_template=service_template or {},
             )
+
+        if distributed_config:
+            distribution_type = distributed_config.setdefault("distribution_type", "spmd")
+            workers = distributed_config.get("workers")
+            quorum_workers = distributed_config.get("quorum_workers")
+            if not quorum_workers:
+                if workers:
+                    distributed_config["quorum_workers"] = workers
+                elif self.replicas:
+                    distributed_config["quorum_workers"] = self.replicas
+            elif workers or quorum_workers:
+                self.replicas = workers or quorum_workers
+
+            # Edge case: if distribution_type is "ray" but manifest is "Deployment", convert to RayCluster
+            if distribution_type == "ray" and self.kind == "Deployment":
+                distribute_kwargs = {
+                    k: v
+                    for k, v in distributed_config.items()
+                    if k not in ["distribution_type", "quorum_timeout", "quorum_workers", "monitor_members"]
+                }
+                self.distribute(
+                    distribution_type="ray",
+                    workers=self.replicas or (distributed_config.get("quorum_workers", 0) + 1) or 1,
+                    quorum_timeout=distributed_config.get("quorum_timeout") or self.launch_timeout,
+                    quorum_workers=distributed_config.get("quorum_workers"),
+                    monitor_members=distributed_config.get("monitor_members"),
+                    **distribute_kwargs,
+                )
+            else:
+                self.distributed_config = distributed_config  # Set env var
 
     @classmethod
     def from_template(cls, service_info: dict):
@@ -440,10 +486,14 @@ class Compute:
 
     def _merge_pod_specs(self, kt_pod_spec: dict):
         """Merge kubetorch pod spec into user pod spec."""
+        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
         from kubetorch.serving.utils import nested_override
 
-        container_name = "kubetorch"
-
+        if self.kind in TrainJobServiceManager.SUPPORTED_KINDS:
+            config = TrainJobServiceManager._get_config(self.kind)
+            container_name = config["container_name"]
+        else:
+            container_name = "kubetorch"
         if not self.pod_spec or not self.pod_spec.get("containers"):
             self.pod_spec = kt_pod_spec
             return
@@ -492,6 +542,33 @@ class Compute:
                 worker_group = worker_group_specs[0]
                 worker_template = worker_group.setdefault("template", {})
                 worker_template["spec"] = copy.deepcopy(merged)
+
+        # For training jobs, ensure worker replicas
+        if self.kind in ["PyTorchJob", "TFJob", "MXJob", "XGBoostJob"]:
+            service_manager = self.service_manager
+            spec = self._manifest.get("spec", {})
+            replica_specs = spec.get(service_manager.replica_specs_key, {})
+            worker_spec = replica_specs.get(service_manager.worker_replica, {})
+            if worker_spec:
+                worker_template = worker_spec.setdefault("template", {})
+                worker_pod_spec = worker_template.setdefault("spec", {})
+                worker_containers = worker_pod_spec.get("containers", [])
+                if worker_containers:
+                    for container in worker_containers:
+                        container["name"] = container_name
+                    if "volumes" in merged:
+                        merge_list_field(worker_pod_spec, merged, "volumes", "name")
+                    if "tolerations" in merged:
+                        merge_list_field(worker_pod_spec, merged, "tolerations", "key")
+                    other_pod_spec = {
+                        k: v for k, v in merged.items() if k not in ["containers", "volumes", "tolerations"]
+                    }
+                    if other_pod_spec:
+                        nested_override(worker_pod_spec, other_pod_spec)
+                else:
+                    worker_pod_spec.update(copy.deepcopy(merged))
+                    if "containers" in worker_pod_spec and worker_pod_spec["containers"]:
+                        worker_pod_spec["containers"][0]["name"] = container_name
 
     # ----------------- Properties ----------------- #
     @property
@@ -562,19 +639,30 @@ class Compute:
 
     @property
     def service_manager(self):
-        from kubetorch.serving.base_service_manager import BaseServiceManager
-
         if self._service_manager is None:
             self._load_kube_config()
-            kind = self.kind
-            resource_api = self.apps_v1_api if kind.lower() == "deployment" else self.objects_api
 
-            ServiceManagerClass = BaseServiceManager._get_service_manager_class(kind)
-            self._service_manager = ServiceManagerClass(
-                resource_api=resource_api,
-                core_api=self.core_api,
-                namespace=self.namespace,
-            )
+            from kubetorch.serving.deployment_service_manager import DeploymentServiceManager
+            from kubetorch.serving.knative_service_manager import KnativeServiceManager
+            from kubetorch.serving.raycluster_service_manager import RayClusterServiceManager
+            from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+
+            service_manager_mapping = {
+                "deployment": DeploymentServiceManager,
+                "knative": KnativeServiceManager,
+                "raycluster": RayClusterServiceManager,
+            }
+            resource_api = self.apps_v1_api if self.deployment_mode == "deployment" else self.objects_api
+            kwargs = {
+                "resource_api": resource_api,
+                "core_api": self.core_api,
+                "namespace": self.namespace,
+            }
+            if self.deployment_mode not in service_manager_mapping:
+                kwargs["kind"] = self.kind
+                self._service_manager = TrainJobServiceManager(**kwargs)
+            else:
+                self._service_manager = service_manager_mapping[self.deployment_mode](**kwargs)
         return self._service_manager
 
     @property
@@ -613,20 +701,48 @@ class Compute:
         """Get the container from the pod spec."""
         if "containers" not in self.pod_spec:
             raise ValueError("pod_spec missing 'containers' field.")
-        containers = self.pod_spec.get("containers")
 
-        expected_name = "kubetorch"
+        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+
+        expected_name = (
+            self.kind.lower().replace("job", "") if self.kind in TrainJobServiceManager.SUPPORTED_KINDS else "kubetorch"
+        )
+        containers = self.pod_spec.get("containers")
         for container in containers:
             if container.get("name") == expected_name:
                 return container
-        # If no named container found, return the first container
-        return self.pod_spec["containers"][0]
+        # If no properly named container found, return the first container
+        return containers[0]
 
     def _container_env(self):
         container = self._container()
         if "env" not in container:
             return []
         return container["env"]
+
+    def _set_env_vars_in_container(self, container: dict, env_vars: dict) -> None:
+        """Set or update environment variables in a container spec.
+
+        Updates existing env vars if they exist, otherwise appends new ones.
+        Modifies the container dict in place.
+        """
+        if "env" not in container:
+            container["env"] = []
+
+        # Track which env vars we've updated
+        updated_names = set()
+
+        # Update existing env vars
+        for env_var in container["env"]:
+            env_name = env_var.get("name")
+            if env_name in env_vars:
+                env_var["value"] = env_vars[env_name]
+                updated_names.add(env_name)
+
+        # Append any env vars that weren't found
+        for name, value in env_vars.items():
+            if name not in updated_names:
+                container["env"].append({"name": name, "value": value})
 
     def _set_container_resource(self, resource_name: str, value: str):
         container = self._container()
@@ -726,7 +842,7 @@ class Compute:
         Args:
             value: CPU value (e.g., "2", "1000m", "0.5")
         """
-        self._set_container_resource("cpu", value)
+        self._set_container_resource("cpu", str(value))
 
     @property
     def memory(self):
@@ -738,7 +854,7 @@ class Compute:
         Args:
             value: Memory value (e.g., "4Gi", "2048Mi")
         """
-        self._set_container_resource("memory", value)
+        self._set_container_resource("memory", str(value))
 
     @property
     def disk_size(self):
@@ -1187,7 +1303,7 @@ class Compute:
     @property
     def distributed_config(self):
         # First try to get from pod spec
-        template_config = None
+        template_config = {}
         container = self._container()
         if "env" in container:
             for env_var in container["env"]:
@@ -1200,45 +1316,14 @@ class Compute:
                         template_config = env_var["value"]
                     break
 
-        if template_config:
-            return template_config
-
-        if self.kind == "RayCluster":
-            return {"distribution_type": "ray"}
-        elif self.kind == "Deployment":
-            # Check if this is a distributed deployment by looking for distributed env vars
-            pod_spec = self.pod_spec
-            containers = pod_spec.get("containers", [])
-            if containers:
-                env_vars = containers[0].get("env", [])
-                for env_var in env_vars:
-                    if env_var.get("name") == "KT_DISTRIBUTED_CONFIG":
-                        try:
-                            import json
-
-                            distributed_config = json.loads(env_var.get("value", "{}"))
-                            if distributed_config:
-                                return distributed_config
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-
-        return {}
+        return template_config
 
     @distributed_config.setter
     def distributed_config(self, config: dict):
-        # Update pod spec with distributed config
-        container = self._container()
-        if "env" not in container:
-            container["env"] = []
-
-        # Update or add KT_SERVICE_DNS, KT_DISTRIBUTED_CONFIG env vars
+        """Set distributed config in all containers."""
         import json
 
-        service_dns = None
-        if config and config.get("distribution_type") == "ray":
-            service_dns = "ray-head-svc"
-        elif config and config.get("distribution_type") == "pytorch":
-            service_dns = "rank0"
+        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
 
         # Serialize the config to JSON, ensuring it's always a string
         # Check for non-serializable values and raise an error with details
@@ -1255,20 +1340,53 @@ class Compute:
                 f"All values must be JSON serializable (strings, numbers, booleans, lists, dicts)."
             )
 
-        service_dns_found, distributed_config_found = False, False
-        for env_var in self._container_env():
-            if env_var["name"] == "KT_SERVICE_DNS" and service_dns:
-                env_var["value"] = service_dns
-                service_dns_found = True
-            elif env_var["name"] == "KT_DISTRIBUTED_CONFIG":
-                env_var["value"] = json.dumps(config)
-                distributed_config_found = True
+        distribution_type = config.get("distribution_type", "spmd")
+        service_dns = None
+        if distribution_type == "ray":
+            service_dns = "ray-head-svc"
+        elif distribution_type == "pytorch":
+            service_dns = "rank0"
 
-        # Add any missing env vars
-        if service_dns and not service_dns_found:
-            container["env"].append({"name": "KT_SERVICE_DNS", "value": service_dns})
-        if not distributed_config_found:
-            container["env"].append({"name": "KT_DISTRIBUTED_CONFIG", "value": json.dumps(config)})
+        # Prepare env vars to set
+        env_vars_to_set = {"KT_DISTRIBUTED_CONFIG": json.dumps(config)}
+        if service_dns:
+            env_vars_to_set["KT_SERVICE_DNS"] = service_dns
+
+        # For training jobs (PyTorchJob, TFJob, etc.), set in both Master and Worker replica containers
+        if self.kind in TrainJobServiceManager.SUPPORTED_KINDS:
+            service_manager = self.service_manager
+            spec = self._manifest.get("spec", {})
+            replica_specs = spec.get(service_manager.replica_specs_key, {})
+
+            for replica_name in [service_manager.primary_replica, service_manager.worker_replica]:
+                replica_spec = replica_specs.get(replica_name, {})
+                pod_spec = replica_spec.get("template", {}).get("spec", {})
+                containers = pod_spec.get("containers", [])
+
+                for container in containers:
+                    self._set_env_vars_in_container(container, env_vars_to_set)
+        # For RayCluster, set in both head and worker group containers
+        elif self.kind == "RayCluster":
+            spec = self._manifest.get("spec", {})
+
+            # Set in head group
+            head_spec = spec.get("headGroupSpec", {})
+            head_pod_spec = head_spec.get("template", {}).get("spec", {})
+            head_containers = head_pod_spec.get("containers", [])
+            for container in head_containers:
+                self._set_env_vars_in_container(container, env_vars_to_set)
+
+            # Set in worker groups
+            worker_group_specs = spec.get("workerGroupSpecs", [])
+            for worker_group in worker_group_specs:
+                worker_pod_spec = worker_group.get("template", {}).get("spec", {})
+                worker_containers = worker_pod_spec.get("containers", [])
+                for container in worker_containers:
+                    self._set_env_vars_in_container(container, env_vars_to_set)
+        else:
+            # Regular manifest - set config in main container
+            container = self._container()
+            self._set_env_vars_in_container(container, env_vars_to_set)
 
     @property
     def deployment_mode(self):
@@ -2454,6 +2572,7 @@ class Compute:
         # Note: We default to simple SPMD distribution ("spmd") if nothing specified and compute.workers > 1
 
         # User can override quorum if they want to set a lower threshold
+        # For non-Ray cases, default to workers if not provided
         quorum_workers = quorum_workers or workers
         distributed_config = {
             "distribution_type": distribution_type or "spmd",

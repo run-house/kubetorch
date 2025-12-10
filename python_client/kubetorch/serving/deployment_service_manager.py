@@ -22,6 +22,10 @@ logger = get_logger(__name__)
 class DeploymentServiceManager(BaseServiceManager):
     """Service manager for Kubernetes Deployments with distributed computing support."""
 
+    def __init__(self, *args, **kwargs):
+        kwargs["template_label"] = "deployment"
+        super().__init__(*args, **kwargs)
+
     @classmethod
     def _build_base_manifest(
         cls,
@@ -91,28 +95,10 @@ class DeploymentServiceManager(BaseServiceManager):
 
         return deployment
 
-    def _is_distributed_deployment(self, pod_spec: dict) -> bool:
-        """Check if this is a distributed deployment by looking for distributed environment variables."""
-        containers = pod_spec.get("containers")
-        if not containers:
-            return False
-
-        # Check if distributed environment variable is set in the first container
-        env_vars = containers[0].get("env", [])
-        for env_var in env_vars:
-            if (
-                env_var.get("name") == "KT_DISTRIBUTED_CONFIG"
-                and env_var.get("value") != "null"
-                and env_var.get("value")
-            ):
-                return True
-        return False
-
     def _create_or_update_resource(self, manifest: dict, service_name: str, clean_module_name: str, **kwargs) -> dict:
         deployment = manifest.copy()
 
-        pod_spec = deployment.get("spec", {}).get("template", {}).get("spec", {})
-        is_distributed = self._is_distributed_deployment(pod_spec)
+        pod_spec = self.pod_spec(deployment)
         server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
 
         labels = deployment.get("metadata", {}).get("labels", {})
@@ -152,7 +138,7 @@ class DeploymentServiceManager(BaseServiceManager):
                     raise
 
             # Create headless service for distributed pod discovery (only if distributed)
-            if is_distributed:
+            if self.is_distributed(manifest):
                 headless_service = load_template(
                     template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
                     template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),

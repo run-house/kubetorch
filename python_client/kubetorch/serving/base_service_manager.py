@@ -129,6 +129,7 @@ class BaseServiceManager:
         manifest: dict,
         template_labels: dict,
         annotations: dict,
+        path: List[str] = None,
         **kwargs,
     ) -> None:
         """Apply template metadata updates. Override in subclasses for service-specific behavior."""
@@ -139,7 +140,7 @@ class BaseServiceManager:
             if "gpu_annotations" in kwargs and kwargs["gpu_annotations"]:
                 annotations.update(kwargs["gpu_annotations"])
 
-        template_path = self._get_pod_template_path()
+        template_path = path or self._get_pod_template_path()
 
         # Navigate to template metadata
         current = manifest
@@ -180,12 +181,49 @@ class BaseServiceManager:
 
         return updated_manifest
 
+    def normalize_created_service(self, created_service) -> dict:
+        """Extract service name, namespace, and pod template from created resource.
+
+        Returns normalized dict with structure:
+        {
+            "name": str,
+            "namespace": str,
+            "template": dict  # Pod template
+        }
+        """
+        if isinstance(created_service, dict):
+            service_name = created_service.get("metadata", {}).get("name")
+            namespace = created_service.get("metadata", {}).get("namespace")
+
+            template_path = self._get_pod_template_path()
+            current = created_service
+            try:
+                for key in template_path:
+                    current = current[key]
+                pod_template = current
+            except (KeyError, TypeError):
+                raise ValueError("Failed to find pod template in created service.")
+
+            return {
+                "name": service_name,
+                "namespace": namespace,
+                "template": pod_template,
+            }
+        else:
+            # Assume it's a Kubernetes object (V1Deployment, etc.)
+            return {
+                "name": created_service.metadata.name,
+                "namespace": created_service.metadata.namespace,
+                "template": created_service.spec.template,
+            }
+
     @staticmethod
     def _get_service_manager_class(kind: str) -> Type["BaseServiceManager"]:
         from kubetorch.serving.service_manager import (
             DeploymentServiceManager,
             KnativeServiceManager,
             RayClusterServiceManager,
+            TrainJobServiceManager,
         )
 
         if kind.lower() == "deployment":
@@ -194,8 +232,8 @@ class BaseServiceManager:
             return KnativeServiceManager
         elif kind.lower() == "raycluster":
             return RayClusterServiceManager
-        else:
-            raise ValueError(f"Unsupported service type: {kind}")
+        elif kind.lower() in [k.lower() for k in TrainJobServiceManager.SUPPORTED_KINDS]:
+            return TrainJobServiceManager
 
     def _get_deployment_timestamp(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -276,43 +314,29 @@ class BaseServiceManager:
         """
         raise NotImplementedError("Subclasses must implement _get_pod_template_path")
 
-    def normalize_created_service(self, created_service) -> dict:
-        """Extract service name, namespace, and pod template from created resource.
+    def pod_spec(self, manifest: dict) -> dict:
+        """Get the pod spec from a manifest based on the pod template path."""
+        template_path = self._get_pod_template_path()
+        current = manifest
+        for key in template_path:
+            current = current.get(key, {})
+        return current.get("spec", {})
 
-        Returns normalized dict with structure:
-        {
-            "name": str,
-            "namespace": str,
-            "template": dict  # Pod template
-        }
-        """
-        if isinstance(created_service, dict):
-            service_name = created_service.get("metadata", {}).get("name")
-            namespace = created_service.get("metadata", {}).get("namespace")
+    def is_distributed(self, manifest: dict) -> bool:
+        """Check if this is a distributed job."""
+        pod_spec = self.pod_spec(manifest)
+        containers = pod_spec.get("containers", [])
+        if containers:
+            env_vars = containers[0].get("env", [])
+            for env_var in env_vars:
+                if (
+                    env_var.get("name") == "KT_DISTRIBUTED_CONFIG"
+                    and env_var.get("value") != "null"
+                    and env_var.get("value")
+                ):
+                    return True
 
-            # Try to navigate to the pod template using the manager's path
-            template_path = self._get_pod_template_path()
-            current = created_service
-            try:
-                for key in template_path:
-                    current = current[key]
-                pod_template = current
-            except (KeyError, TypeError):
-                # Fallback if path doesn't exist
-                pod_template = {}
-
-            return {
-                "name": service_name,
-                "namespace": namespace,
-                "template": pod_template,
-            }
-        else:
-            # Assume it's a Kubernetes object (V1Deployment, etc.)
-            return {
-                "name": created_service.metadata.name,
-                "namespace": created_service.metadata.namespace,
-                "template": created_service.spec.template,
-            }
+        return False
 
     @abstractmethod
     def get_replicas(self, manifest: dict) -> int:
@@ -560,12 +584,55 @@ class BaseServiceManager:
                 if e.status != 404:
                     logger.warning(f"Failed to list RayClusters: {e}")
 
+        def fetch_custom_resources():
+            """Fetch custom training job resources in parallel."""
+            from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+
+            local_services = []
+            for resource_kind in TrainJobServiceManager.SUPPORTED_KINDS:
+                config = TrainJobServiceManager._get_config(resource_kind)
+                api_group = config["api_group"]
+                plural = config["api_plural"]
+                version = config["api_version"]
+                try:
+                    label_selector = f"{serving_constants.KT_TEMPLATE_LABEL}={resource_kind.lower()}"
+
+                    resources = objects_api.list_namespaced_custom_object(
+                        group=api_group,
+                        version=version,
+                        namespace=namespace,
+                        plural=plural,
+                        label_selector=label_selector,
+                    )["items"]
+
+                    for resource in resources:
+                        resource_name = resource["metadata"]["name"]
+                        if name_filter and name_filter not in resource_name:
+                            continue
+
+                        local_services.append(
+                            {
+                                "name": resource_name,
+                                "template_type": resource_kind.lower(),
+                                "resource": resource,
+                                "namespace": namespace,
+                                "creation_timestamp": resource["metadata"]["creationTimestamp"],
+                            }
+                        )
+                except client.exceptions.ApiException as e:
+                    if e.status != 404:
+                        logger.warning(f"Failed to list {resource_kind}: {e}")
+
+            with services_lock:
+                services.extend(local_services)
+
         # Execute all API calls in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             futures = [
                 executor.submit(fetch_knative_services),
                 executor.submit(fetch_deployments),
                 executor.submit(fetch_rayclusters),
+                executor.submit(fetch_custom_resources),
             ]
 
             # Wait for all to complete
