@@ -131,7 +131,7 @@ def run_with_profile(
             with tempfile.NamedTemporaryFile(delete=True, suffix=".json") as tmp:
                 trace_path = tmp.name
                 prof.export_chrome_trace(trace_path)
-                with open(trace_path, "rb") as f:
+                with open(tmp.name, "rb") as f:
                     profiler_output = json.loads(f.read())
         return result, profiler_output
 
