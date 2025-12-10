@@ -1,3 +1,4 @@
+import copy
 import os
 import socket
 import time
@@ -203,3 +204,75 @@ def nested_override(original_dict, override_dict):
                 original_dict[key] = value  # Custom wins
         else:
             original_dict[key] = value
+
+
+def nested_merge(user_dict, kt_dict):
+    """
+    Merge kubetorch dict into user dict, preserving user values.
+
+    Strategy:
+    - For simple values (str, int, bool, etc.): user value takes precedence
+    - For dicts: recursively merge, user values take precedence
+    - For lists:
+      - If list items are dicts with a "name" key, merge by name (user items win)
+      - If list items are dicts with a "key" key (e.g., tolerations), merge by key
+      - Otherwise, append kt items that don't already exist in user list
+
+    Args:
+        user_dict: The user's dict (values take precedence)
+        kt_dict: The kubetorch dict (values are added where user doesn't have them)
+
+    Returns:
+        The merged dict (modifies user_dict in place)
+    """
+    for key, kt_value in kt_dict.items():
+        if key not in user_dict:
+            user_dict[key] = copy.deepcopy(kt_value)
+        else:
+            user_value = user_dict[key]
+
+            # Both have the key - merge based on type
+            if isinstance(user_value, dict) and isinstance(kt_value, dict):  # Recursively merge dicts
+                nested_merge(user_value, kt_value)
+            elif isinstance(user_value, list) and isinstance(kt_value, list):  # Merge lists
+                # Check if we're dealing with lists of dicts by checking first item of either list
+                first_user_item = user_value[0] if user_value else None
+                first_kt_item = kt_value[0] if kt_value else None
+
+                if (first_user_item and isinstance(first_user_item, dict)) or (
+                    first_kt_item and isinstance(first_kt_item, dict)
+                ):
+                    merge_key = None
+                    sample_item = first_user_item or first_kt_item
+                    if sample_item:
+                        if "name" in sample_item:
+                            merge_key = "name"
+                        elif "key" in sample_item:
+                            merge_key = "key"
+
+                    if merge_key:
+                        # Merge by the identified key
+                        user_dict_by_key = {item.get(merge_key): item for item in user_value if item.get(merge_key)}
+                        # Add kt items that don't conflict with user items
+                        for kt_item in kt_value:
+                            kt_key_value = kt_item.get(merge_key)
+                            if kt_key_value and kt_key_value not in user_dict_by_key:
+                                # Add kt item if user doesn't have one with this key
+                                user_dict_by_key[kt_key_value] = copy.deepcopy(kt_item)
+                        # Preserve items without the merge key from both lists
+                        user_items_without_key = [item for item in user_value if not item.get(merge_key)]
+                        kt_items_without_key = [copy.deepcopy(item) for item in kt_value if not item.get(merge_key)]
+                        # Rebuild list: items with key (merged) + user items without key + kt items without key
+                        user_dict[key] = list(user_dict_by_key.values()) + user_items_without_key + kt_items_without_key
+                    else:
+                        # List of dicts without a known merge key - append items that don't exist
+                        user_set = set(str(item) for item in user_value)
+                        for kt_item in kt_value:
+                            if str(kt_item) not in user_set:
+                                user_value.append(copy.deepcopy(kt_item))
+                else:
+                    # Simple list - append items that don't exist
+                    user_set = set(str(item) for item in user_value)
+                    for kt_item in kt_value:
+                        if str(kt_item) not in user_set:
+                            user_value.append(copy.deepcopy(kt_item))
