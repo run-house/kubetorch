@@ -1,14 +1,16 @@
 import asyncio
 import os
+from pathlib import Path
 
 # Mimic CI for this test suite even locally, to ensure that
 # resources are created with the branch name prefix
 os.environ["CI"] = "true"
 
 import pytest
-
+from kubetorch import ProfilerConfig
 from pydantic import BaseModel
 
+from .test_profiling import profiler_test_helper
 from .utils import SlowNumpyArray, summer, TestModel
 
 
@@ -705,3 +707,25 @@ async def test_debug_modes(remote_cls, remote_fn, capsys):
     assert "Hello from the cluster!" in result
 
     print("\n=== All debug tests passed! ===")
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+def test_profiling_pyspy_default_behavior(remote_profiling_pyspy_fn, caplog):
+    caplog.set_level("INFO", logger="kubetorch")
+
+    res = remote_profiling_pyspy_fn(num_iterations=6, profiler=ProfilerConfig(profiler_type="pyspy"))
+
+    assert res == "matrix_dot_np ran successfully!"
+
+    profiler_output_path = ""
+
+    # get the output path, we need to get it from the logs because the filename contains the request_id
+    http_client_logs = caplog.text.split("\n")
+    for log in http_client_logs:
+        if "profiler output can be found in" in log:
+            profiler_output_path = Path(log.split(" ")[-1])
+
+    profiler_test_helper(profiler_output_path=profiler_output_path, file_suffix="svg")
+    profiler_output_path.unlink()
+    assert not profiler_output_path.exists()
