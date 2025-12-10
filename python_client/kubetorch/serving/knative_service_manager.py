@@ -16,7 +16,7 @@ from kubetorch.resources.compute.utils import (
 from kubetorch.servers.http.utils import load_template
 from kubetorch.serving.autoscaling import AutoscalingConfig
 from kubetorch.serving.base_service_manager import BaseServiceManager
-from kubetorch.serving.utils import nested_override, pod_is_running
+from kubetorch.serving.utils import pod_is_running
 
 logger = get_logger(__name__)
 
@@ -24,10 +24,58 @@ logger = get_logger(__name__)
 class KnativeServiceManager(BaseServiceManager):
     """Service manager for Knative services with autoscaling capabilities."""
 
-    template_label = "ksvc"
+    def __init__(
+        self,
+        resource_api: client.CustomObjectsApi,
+        core_api: client.CoreV1Api,
+        namespace: str,
+        service_annotations: dict = None,
+    ):
+        # Merge Knative-specific annotations with user-provided ones
+        knative_annotations = {
+            "serving.knative.dev/container-name": "kubetorch",
+            "serving.knative.dev/probe-path": "/health",
+        }
+        if service_annotations:
+            knative_annotations.update(service_annotations)
 
-    @staticmethod
+        super().__init__(
+            resource_api=resource_api,
+            core_api=core_api,
+            namespace=namespace,
+            template_label="ksvc",
+            api_group="serving.knative.dev",
+            api_plural="services",
+            api_version="v1",
+            service_annotations=knative_annotations,
+        )
+
+        # Knative-specific template annotations
+        self.template_annotations = {
+            "networking.knative.dev/ingress.class": "kourier.ingress.networking.knative.dev",
+        }
+
+    def _get_pod_template_path(self) -> List[str]:
+        """Get the path to the pod template."""
+        return ["spec", "template"]
+
+    def get_replicas(self, manifest: dict) -> int:
+        """Get the number of replicas. Returns the min-scale annotation value, or 1 if not set."""
+        template_annotations = manifest.get("spec", {}).get("template", {}).get("metadata", {}).get("annotations", {})
+        min_scale = template_annotations.get("autoscaling.knative.dev/min-scale")
+        if min_scale:
+            return int(min_scale)
+        return 1
+
+    def set_replicas(self, manifest: dict, value: int) -> None:
+        """Set the number of replicas. Sets the min-scale annotation to the specified value."""
+        template_metadata = manifest.get("spec", {}).setdefault("template", {}).setdefault("metadata", {})
+        template_annotations = template_metadata.setdefault("annotations", {})
+        template_annotations["autoscaling.knative.dev/min-scale"] = str(value)
+
+    @classmethod
     def _convert_manifest(
+        cls,
         deployment_manifest: dict,
         namespace: str,
         autoscaling_config: AutoscalingConfig = None,
@@ -39,7 +87,7 @@ class KnativeServiceManager(BaseServiceManager):
         deployment_annotations = deployment_manifest["metadata"]["annotations"]
 
         labels = deployment_labels.copy()
-        labels[serving_constants.KT_TEMPLATE_LABEL] = "ksvc"  # Update template label
+        labels[serving_constants.KT_TEMPLATE_LABEL] = "ksvc"
 
         # Template labels (exclude template label - that's only for the top-level resource)
         template_labels = labels.copy()
@@ -49,14 +97,8 @@ class KnativeServiceManager(BaseServiceManager):
             "networking.knative.dev/ingress.class": "kourier.ingress.networking.knative.dev",
         }
 
-        # Get base annotations and add Knative-specific ones
+        # Get base annotations (Knative-specific ones already in deployment_annotations)
         annotations = deployment_annotations.copy()
-        annotations.update(
-            {
-                "serving.knative.dev/container-name": "kubetorch",
-                "serving.knative.dev/probe-path": "/health",
-            }
-        )
 
         # Note: KAI wraps the Knative revision in a podgroup, expecting at least 1 pod to schedule initially
         # Only set min-scale=1 if user hasn't explicitly provided a min_scale value
@@ -99,88 +141,13 @@ class KnativeServiceManager(BaseServiceManager):
 
         return service
 
-    @staticmethod
-    def _apply_kubetorch_updates(
-        manifest: dict,
-        inactivity_ttl: str = None,
-        custom_labels: dict = None,
-        custom_annotations: dict = None,
-        custom_template: dict = None,
-        gpu_annotations: dict = None,
-    ):
-        labels = BaseServiceManager._get_labels(
-            template_label="ksvc",
-            custom_labels=custom_labels,
-        )
-        template_labels = labels.copy()
-        template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
-
-        template_annotations = {
-            "networking.knative.dev/ingress.class": "kourier.ingress.networking.knative.dev",
-        }
-
-        annotations = BaseServiceManager._get_annotations(custom_annotations, inactivity_ttl)
-        annotations.update(
-            {
-                "serving.knative.dev/container-name": "kubetorch",
-                "serving.knative.dev/probe-path": "/health",
-            }
-        )
-        # TODO - autoscaling configs and concurrency
-        if gpu_annotations:
-            template_annotations.update(gpu_annotations)
-
-        manifest["metadata"].setdefault("labels", {}).update(labels)
-        manifest["metadata"].setdefault("annotations", {}).update(annotations)
-        manifest["spec"].setdefault("template", {}).setdefault("metadata", {})
-        manifest["spec"]["template"]["metadata"].setdefault("labels", {}).update(template_labels)
-        manifest["spec"]["template"]["metadata"].setdefault("annotations", {}).update(template_annotations)
-
-        if custom_template:
-            nested_override(manifest, custom_template)
-
-        return manifest
-
-    def _update_launchtime_manifest(self, manifest: dict, service_name: str, module_name: str) -> dict:
-        """Update manifest with service name and deployment timestamp."""
-        clean_module_name = self._clean_module_name(module_name)
-        deployment_timestamp, deployment_id = self._get_deployment_timestamp_and_id(service_name)
-
-        service = manifest.copy()
-        service["metadata"]["name"] = service_name
-        service["metadata"]["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
-        service["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
-        service["metadata"]["labels"][serving_constants.KT_APP_LABEL] = service_name
-        service["metadata"]["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
-        service["spec"]["template"]["metadata"]["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
-        service["spec"]["template"]["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
-        service["spec"]["template"]["metadata"]["labels"][serving_constants.KT_APP_LABEL] = service_name
-        service["spec"]["template"]["metadata"]["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
-
-        service["spec"]["template"]["metadata"]["annotations"][
-            "kubetorch.com/deployment_timestamp"
-        ] = deployment_timestamp
-
-        return service
-
-    def _create_or_update_resource_from_manifest(self, manifest: dict, dryrun: bool = False) -> dict:
-        """Create or update resources from a manifest."""
+    def _create_or_update_resource(self, manifest: dict, service_name: str, clean_module_name: str, **kwargs) -> dict:
         try:
-            kwargs = {"dry_run": "All"} if dryrun else {}
-            created_service: dict = self.objects_api.create_namespaced_custom_object(
-                group="serving.knative.dev",
-                version="v1",
-                namespace=self.namespace,
-                plural="services",
-                body=manifest,
-                **kwargs,
-            )
+            created_service: dict = self._create_resource(manifest, **kwargs)
 
-            logger.info(
-                f"Created Knative service {manifest['metadata']['name']} in namespace {self.namespace}",
-            )
+            if not kwargs.get("dry_run"):
+                logger.info(f"Created Knative service {manifest['metadata']['name']} in namespace {self.namespace}")
             return created_service
-
         except client.exceptions.ApiException as e:
             if e.status == 409:
                 logger.info(f"Service {manifest['metadata']['name']} already exists, updating")
@@ -192,40 +159,7 @@ class KnativeServiceManager(BaseServiceManager):
                 )
                 raise e
 
-    def get_resource(self, service_name: str) -> dict:
-        """Retrieve a Knative service by name."""
-        try:
-            service = self.objects_api.get_namespaced_custom_object(
-                group="serving.knative.dev",
-                version="v1",
-                namespace=self.namespace,
-                plural="services",
-                name=service_name,
-            )
-            return service
-
-        except client.exceptions.ApiException as e:
-            logger.error(f"Failed to load Knative service '{service_name}': {str(e)}")
-            raise
-
-    def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
-        """Update deployment timestamp annotation for Knative services."""
-        try:
-            patch_body = self._create_timestamp_patch_body(new_timestamp)
-            self.objects_api.patch_namespaced_custom_object(
-                group="serving.knative.dev",
-                version="v1",
-                namespace=self.namespace,
-                plural="services",
-                name=service_name,
-                body=patch_body,
-            )
-            return new_timestamp
-        except client.exceptions.ApiException as e:
-            logger.error(f"Failed to update deployment timestamp for Knative service '{service_name}': {str(e)}")
-            raise
-
-    def get_knative_service_endpoint(self, service_name: str) -> str:
+    def get_endpoint(self, service_name: str) -> str:
         """Get the endpoint URL for a Knative service."""
         try:
             service = self.get_resource(service_name)
@@ -242,28 +176,6 @@ class KnativeServiceManager(BaseServiceManager):
         except Exception as e:
             logger.warning(f"Could not get Knative service URL for {service_name}: {e}")
             return f"http://{service_name}.{self.namespace}.svc.cluster.local"
-
-    def create_or_update_service(
-        self,
-        service_name: str,
-        module_name: str,
-        manifest: dict = None,
-        dryrun: bool = False,
-        **kwargs,  # Ignore other args (labels, annotations, etc. are in manifest)
-    ):
-        """
-        Creates a Knative service with autoscaling capabilities.
-        """
-        logger.info(f"Deploying Kubetorch autoscaling (Knative) service with name: {service_name}")
-
-        # Update manifest with actual service name and module name
-        updated_manifest = self._update_launchtime_manifest(manifest, service_name, module_name)
-        created_service = self._create_or_update_resource_from_manifest(updated_manifest, dryrun)
-        return created_service, updated_manifest
-
-    def get_endpoint(self, service_name: str) -> str:
-        """Get the endpoint URL for a Knative service."""
-        return self.get_knative_service_endpoint(service_name)
 
     def get_pods_for_service(self, service_name: str, **kwargs) -> List[client.V1Pod]:
         """Get all pods associated with this Knative service."""
@@ -329,7 +241,7 @@ class KnativeServiceManager(BaseServiceManager):
         Args:
             service_name: Name of the Knative service
             launch_timeout: Timeout in seconds to wait for readiness
-            objects_api: Objects API instance (uses self.objects_api if None)
+            objects_api: Objects API instance (uses self.resource_api if None)
             core_api: Core API instance (uses self.core_api if None)
             **kwargs: Additional arguments
 
@@ -341,7 +253,7 @@ class KnativeServiceManager(BaseServiceManager):
             ResourceNotAvailableError: If required resources aren't available
         """
         if objects_api is None:
-            objects_api = self.objects_api
+            objects_api = self.resource_api
         if core_api is None:
             core_api = self.core_api
 
@@ -460,30 +372,3 @@ class KnativeServiceManager(BaseServiceManager):
             "To update the timeout, set the `launch_timeout` parameter in the Compute class, or set the "
             "environment variable `KT_LAUNCH_TIMEOUT`."
         )
-
-    def teardown_service(self, service_name: str, console=None) -> bool:
-        """Teardown Knative service and associated resources.
-
-        Args:
-            service_name: Name of the Knative service to teardown
-            console: Optional Rich console for output
-
-        Returns:
-            True if teardown was successful, False otherwise
-        """
-        from kubetorch.resources.compute.utils import delete_service
-
-        try:
-            # Delete the Knative service
-            delete_service(
-                custom_api=self.objects_api,
-                name=service_name,
-                namespace=self.namespace,
-                console=console,
-            )
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to teardown Knative service {service_name}: {e}")
-            return False

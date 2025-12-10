@@ -1,7 +1,7 @@
 import copy
 import os
 import time
-from typing import Optional, Tuple
+from typing import List, Optional
 
 from kubernetes import client
 
@@ -9,7 +9,6 @@ import kubetorch.serving.constants as serving_constants
 from kubetorch.logger import get_logger
 from kubetorch.servers.http.utils import load_template
 from kubetorch.serving.base_service_manager import BaseServiceManager
-from kubetorch.serving.utils import nested_override
 
 logger = get_logger(__name__)
 
@@ -17,121 +16,71 @@ logger = get_logger(__name__)
 class RayClusterServiceManager(BaseServiceManager):
     """Service manager for Ray clusters with distributed Ray workload support."""
 
-    template_label = "raycluster"
-
-    def get_resource(self, service_name: str) -> dict:
-        """Retrieve a RayCluster by name."""
-        try:
-            raycluster = self.objects_api.get_namespaced_custom_object(
-                group="ray.io",
-                version="v1",
-                namespace=self.namespace,
-                plural="rayclusters",
-                name=service_name,
-            )
-            return raycluster
-        except client.exceptions.ApiException as e:
-            logger.error(f"Failed to load RayCluster '{service_name}': {str(e)}")
-            raise
-
-    def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
-        """Update deployment timestamp annotation for RayCluster services."""
-        try:
-            patch_body = {"metadata": {"annotations": {"kubetorch.com/deployment_timestamp": new_timestamp}}}
-            self.objects_api.patch_namespaced_custom_object(
-                group="ray.io",
-                version="v1",
-                namespace=self.namespace,
-                plural="rayclusters",
-                name=service_name,
-                body=patch_body,
-            )
-            return new_timestamp
-        except client.exceptions.ApiException as e:
-            logger.error(f"Failed to update deployment timestamp for RayCluster '{service_name}': {str(e)}")
-            raise
-
-    def _update_launchtime_manifest(self, manifest: dict, service_name: str, module_name: str) -> dict:
-        """Update manifest with service name and deployment timestamp."""
-        clean_module_name = self._clean_module_name(module_name)
-        deployment_timestamp, deployment_id = self._get_deployment_timestamp_and_id(service_name)
-
-        raycluster = manifest.copy()
-        raycluster["metadata"]["name"] = service_name
-        raycluster["metadata"]["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
-        raycluster["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
-        raycluster["metadata"]["labels"][serving_constants.KT_APP_LABEL] = service_name
-        raycluster["metadata"]["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
-
-        # Collect all pod templates to update (head + all worker groups)
-        pod_templates = []
-        if "spec" in raycluster and "headGroupSpec" in raycluster["spec"]:
-            head_group_spec = raycluster["spec"]["headGroupSpec"]
-            if "template" not in head_group_spec:
-                head_group_spec["template"] = {}
-            pod_templates.append(head_group_spec["template"])
-
-        if "spec" in raycluster and "workerGroupSpecs" in raycluster["spec"]:
-            for worker_group in raycluster["spec"]["workerGroupSpecs"]:
-                if "template" not in worker_group:
-                    worker_group["template"] = {}
-                pod_templates.append(worker_group["template"])
-
-        # Update all pod templates
-        for pod_template in pod_templates:
-            if "metadata" not in pod_template:
-                pod_template["metadata"] = {}
-            metadata = pod_template["metadata"]
-
-            if "labels" not in metadata:
-                metadata["labels"] = {}
-            metadata["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
-            metadata["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
-            metadata["labels"][serving_constants.KT_APP_LABEL] = service_name
-            metadata["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
-
-            if "annotations" not in metadata:
-                metadata["annotations"] = {}
-            metadata["annotations"]["kubetorch.com/deployment_timestamp"] = deployment_timestamp
-
-        return raycluster
-
-    def create_or_update_service(
+    def __init__(
         self,
-        service_name: str,
-        module_name: str,
-        manifest: dict = None,
-        dryrun: bool = False,
-        **kwargs,
+        resource_api: client.CustomObjectsApi,
+        core_api: client.CoreV1Api,
+        namespace: str,
+        service_annotations: dict = None,
     ):
+        # Merge Ray-specific annotations with user-provided ones
+        ray_annotations = {"ray.io/overwrite-container-cmd": "true"}
+        if service_annotations:
+            ray_annotations.update(service_annotations)
+
+        super().__init__(
+            resource_api=resource_api,
+            core_api=core_api,
+            namespace=namespace,
+            template_label="raycluster",
+            api_group="ray.io",
+            api_plural="rayclusters",
+            api_version="v1",
+            service_annotations=ray_annotations,
+        )
+
+    def _get_pod_template_path(self) -> List[str]:
+        """Get the path to the pod template (head node)."""
+        return ["spec", "headGroupSpec", "template"]
+
+    def get_replicas(self, manifest: dict) -> int:
+        """Get the number of replicas from a RayCluster manifest.
+
+        Returns the sum of head replicas and all worker group replicas.
         """
-        Creates a RayCluster service.
+        spec = manifest.get("spec", {})
+        head_replicas = spec.get("headGroupSpec", {}).get("replicas", 1)
+        worker_groups = spec.get("workerGroupSpecs", [])
+        worker_replicas = sum(wg.get("replicas", 0) for wg in worker_groups)
+        return head_replicas + worker_replicas
 
-        Args:
-            service_name (str): Name for the RayCluster.
-            module_name (str): Name of the module.
-            manifest (dict): Pre-built manifest dictionary containing all configuration (replicas, labels, annotations, etc.).
-            dryrun (bool, optional): Whether to run in dryrun mode (Default: `False`).
-            **kwargs: Additional arguments (ignored).
+    def set_replicas(self, manifest: dict, value: int) -> None:
+        """Set the number of replicas in a RayCluster manifest.
+
+        Sets worker replicas to (value - 1) since head node counts as 1 replica.
+        If no worker group exists, creates one based on the head template.
         """
-        logger.info(f"Deploying Kubetorch RayCluster service with name: {service_name}")
+        worker_replicas = max(0, value - 1)  # Head counts as 1
+        spec = manifest.setdefault("spec", {})
 
-        # Ensure worker pod specs match head pod spec or sync over any changes
-        if "spec" in manifest and "headGroupSpec" in manifest["spec"]:
-            head_pod_spec = manifest["spec"]["headGroupSpec"].get("template", {}).get("spec")
-            if head_pod_spec and "workerGroupSpecs" in manifest["spec"]:
-                # Copy head pod spec to all worker groups
-                for worker_group in manifest["spec"]["workerGroupSpecs"]:
-                    if "template" not in worker_group:
-                        worker_group["template"] = {}
-                    worker_group["template"]["spec"] = copy.deepcopy(head_pod_spec)
+        if "workerGroupSpecs" in spec and len(spec["workerGroupSpecs"]) > 0:
+            spec["workerGroupSpecs"][0]["replicas"] = worker_replicas
+        else:
+            if "workerGroupSpecs" not in spec:
+                spec["workerGroupSpecs"] = []
+            if len(spec["workerGroupSpecs"]) == 0:
+                # Need to copy head template as base
+                head_spec = spec.get("headGroupSpec", {})
+                spec["workerGroupSpecs"].append(
+                    {
+                        "replicas": worker_replicas,
+                        "template": head_spec.get("template", {}),
+                    }
+                )
 
-        updated_manifest = self._update_launchtime_manifest(manifest, service_name, module_name)
-        created_service, _ = self._create_or_update_resource_from_manifest(updated_manifest, dryrun)
-        return created_service, updated_manifest
-
-    @staticmethod
+    @classmethod
     def _convert_manifest(
+        cls,
         deployment_manifest: dict,
         namespace: str,
         replicas: int,
@@ -160,13 +109,8 @@ class RayClusterServiceManager(BaseServiceManager):
             "ray.io/node-type": "worker",  # KubeRay standard label
         }
 
-        # Get base annotations and add Ray-specific ones
+        # Get base annotations (Ray-specific ones already in deployment_annotations)
         annotations = deployment_annotations.copy()
-        annotations.update(
-            {
-                "ray.io/overwrite-container-cmd": "true",
-            }
-        )
 
         # Calculate worker replicas (head node counts as 1 replica)
         worker_replicas = max(0, replicas - 1)
@@ -191,46 +135,27 @@ class RayClusterServiceManager(BaseServiceManager):
 
         return raycluster
 
-    @staticmethod
-    def _apply_kubetorch_updates(
+    def _apply_template_metadata_updates(
+        self,
         manifest: dict,
-        inactivity_ttl: str = None,
-        custom_labels: dict = None,
-        custom_annotations: dict = None,
-        custom_template: dict = None,
-    ):
-        labels = BaseServiceManager._get_labels(
-            template_label="raycluster",
-            custom_labels=custom_labels,
-        )
-        template_labels = labels.copy()
-        template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
-
-        annotations = BaseServiceManager._get_annotations(custom_annotations, inactivity_ttl)
+        template_labels: dict,
+        annotations: dict,
+        **kwargs,
+    ) -> None:
+        """Apply RayCluster-specific template metadata updates for head and worker nodes."""
         # Head node specific labels (for service selector)
         head_template_labels = {
             **template_labels,
             "ray.io/node-type": "head",  # KubeRay standard label
         }
 
+        super()._apply_template_metadata_updates(manifest, head_template_labels, annotations, **kwargs)
+
         # Worker node specific labels
         worker_template_labels = {
             **template_labels,
             "ray.io/node-type": "worker",  # KubeRay standard label
         }
-
-        # Get base annotations and add Ray-specific ones
-        annotations.update(
-            {
-                "ray.io/overwrite-container-cmd": "true",
-            }
-        )
-
-        manifest["metadata"].setdefault("labels", {}).update(labels)
-        manifest["metadata"].setdefault("annotations", {}).update(annotations)
-        manifest["spec"].setdefault("headGroupSpec", {}).setdefault("template", {}).setdefault("metadata", {})
-        manifest["spec"]["headGroupSpec"]["template"]["metadata"].setdefault("labels", {}).update(head_template_labels)
-        manifest["spec"]["headGroupSpec"]["template"]["metadata"].setdefault("annotations", {}).update(annotations)
 
         # Ensure workerGroupSpecs exists and has at least one worker group
         spec = manifest.setdefault("spec", {})
@@ -240,16 +165,41 @@ class RayClusterServiceManager(BaseServiceManager):
         first_worker_group["template"]["metadata"].setdefault("labels", {}).update(worker_template_labels)
         first_worker_group["template"]["metadata"].setdefault("annotations", {}).update(annotations)
 
-        if custom_template:
-            nested_override(manifest, custom_template)
+    def _update_launchtime_manifest(
+        self, manifest: dict, service_name: str, clean_module_name: str, deployment_timestamp: str, deployment_id: str
+    ) -> dict:
+        """Update manifest with service name and deployment timestamp."""
+        raycluster = super()._update_launchtime_manifest(
+            manifest, service_name, clean_module_name, deployment_timestamp, deployment_id
+        )
 
+        # Update worker group templates (head is already updated by base class)
+        if "spec" in raycluster and "workerGroupSpecs" in raycluster["spec"]:
+            for worker_group in raycluster["spec"]["workerGroupSpecs"]:
+                if "template" not in worker_group:
+                    worker_group["template"] = {}
+                metadata = worker_group["template"].setdefault("metadata", {})
+                metadata.setdefault("labels", {})[serving_constants.KT_SERVICE_LABEL] = service_name
+                metadata["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
+                metadata.setdefault("annotations", {})["kubetorch.com/deployment_timestamp"] = deployment_timestamp
+
+        return raycluster
+
+    def _preprocess_manifest_for_launch(self, manifest: dict) -> dict:
+        """Preprocess RayCluster manifest: sync worker pod specs with head pod spec."""
+        # Ensure worker pod specs match head pod spec or sync over any changes
+        if "spec" in manifest and "headGroupSpec" in manifest["spec"]:
+            head_pod_spec = manifest["spec"]["headGroupSpec"].get("template", {}).get("spec")
+            if head_pod_spec and "workerGroupSpecs" in manifest["spec"]:
+                # Copy head pod spec to all worker groups
+                for worker_group in manifest["spec"]["workerGroupSpecs"]:
+                    if "template" not in worker_group:
+                        worker_group["template"] = {}
+                    worker_group["template"]["spec"] = copy.deepcopy(head_pod_spec)
         return manifest
 
-    def _create_or_update_resource_from_manifest(self, manifest: dict, dryrun: bool = False) -> Tuple[dict, bool]:
-        """Create or update resources from a manifest."""
+    def _create_or_update_resource(self, manifest: dict, service_name: str, clean_module_name: str, **kwargs) -> dict:
         raycluster = manifest
-        service_name = raycluster["metadata"]["name"]
-        module_name = raycluster["metadata"]["labels"][serving_constants.KT_MODULE_LABEL]
 
         pod_spec = raycluster.get("spec", {}).get("headGroupSpec", {}).get("template", {}).get("spec", {})
         server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
@@ -262,8 +212,6 @@ class RayClusterServiceManager(BaseServiceManager):
         service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
 
         try:
-            kwargs = {"dry_run": "All"} if dryrun else {}
-
             # Create regular service for client access (head node only)
             service = load_template(
                 template_file=serving_constants.RAYCLUSTER_SERVICE_TEMPLATE_FILE,
@@ -273,7 +221,7 @@ class RayClusterServiceManager(BaseServiceManager):
                 annotations=annotations,
                 labels=service_labels,
                 deployment_name=service_name,
-                module_name=module_name,
+                module_name=clean_module_name,
                 distributed=False,  # Keep regular service for client access
                 server_port=server_port,
             )
@@ -287,7 +235,7 @@ class RayClusterServiceManager(BaseServiceManager):
                     body=service,
                     **kwargs,
                 )
-                if not dryrun:
+                if not kwargs.get("dry_run"):
                     logger.info(f"Created service {service_name} in namespace {self.namespace}")
             except client.exceptions.ApiException as e:
                 if e.status == 409:
@@ -304,7 +252,7 @@ class RayClusterServiceManager(BaseServiceManager):
                 annotations=annotations,
                 labels=service_labels,
                 deployment_name=service_name,
-                module_name=module_name,
+                module_name=clean_module_name,
                 distributed=True,  # Make headless for pod discovery
                 server_port=server_port,
             )
@@ -318,7 +266,7 @@ class RayClusterServiceManager(BaseServiceManager):
                     body=headless_service,
                     **kwargs,
                 )
-                if not dryrun:
+                if not kwargs.get("dry_run"):
                     logger.info(f"Created headless service {service_name}-headless in namespace {self.namespace}")
             except client.exceptions.ApiException as e:
                 if e.status == 409:
@@ -329,14 +277,7 @@ class RayClusterServiceManager(BaseServiceManager):
             # Create RayCluster
             created_raycluster = None
             try:
-                created_raycluster = self.objects_api.create_namespaced_custom_object(
-                    group="ray.io",
-                    version="v1",
-                    namespace=self.namespace,
-                    plural="rayclusters",
-                    body=raycluster,
-                    **kwargs,
-                )
+                created_raycluster = self._create_resource(raycluster, **kwargs)
             except client.exceptions.ApiException as e:
                 if e.status == 404:
                     logger.error(
@@ -344,11 +285,8 @@ class RayClusterServiceManager(BaseServiceManager):
                     )
                 raise e
 
-            if dryrun:
-                return created_raycluster, False
-
             logger.info(f"Created RayCluster {service_name} in namespace {self.namespace}")
-            return created_raycluster, True
+            return created_raycluster
 
         except client.exceptions.ApiException as e:
             if e.status == 409:
@@ -356,16 +294,9 @@ class RayClusterServiceManager(BaseServiceManager):
                 try:
                     # For RayCluster, we can patch the spec
                     patch_body = {"spec": raycluster["spec"]}
-                    updated_raycluster = self.objects_api.patch_namespaced_custom_object(
-                        group="ray.io",
-                        version="v1",
-                        namespace=self.namespace,
-                        plural="rayclusters",
-                        name=service_name,
-                        body=patch_body,
-                    )
+                    updated_raycluster = self._patch_resource(service_name, patch_body)
                     logger.info(f"Updated RayCluster {service_name}")
-                    return updated_raycluster, False
+                    return updated_raycluster
                 except Exception as patch_error:
                     logger.error(f"Failed to patch RayCluster {service_name}: {patch_error}")
                     raise patch_error
@@ -471,44 +402,9 @@ class RayClusterServiceManager(BaseServiceManager):
         # Timeout reached
         raise TimeoutError(f"RayCluster {service_name} did not become ready within {launch_timeout} seconds")
 
-    def teardown_service(self, service_name: str, console=None) -> bool:
-        """Teardown RayCluster and associated resources.
-
-        Args:
-            service_name: Name of the RayCluster to teardown
-            console: Optional Rich console for output
-
-        Returns:
-            True if teardown was successful, False otherwise
-        """
+    def _teardown_associated_resources(self, service_name: str, console=None) -> bool:
+        """Delete associated Kubernetes Services for RayCluster."""
         success = True
-
-        try:
-            # Delete the RayCluster
-            self.objects_api.delete_namespaced_custom_object(
-                group="ray.io",
-                version="v1",
-                namespace=self.namespace,
-                plural="rayclusters",
-                name=service_name,
-            )
-            if console:
-                console.print(f"✓ Deleted RayCluster [blue]{service_name}[/blue]")
-            else:
-                logger.info(f"Deleted RayCluster {service_name}")
-
-        except client.exceptions.ApiException as e:
-            if e.status == 404:
-                if console:
-                    console.print(f"[yellow]Note:[/yellow] RayCluster {service_name} not found or already deleted")
-                else:
-                    logger.info(f"RayCluster {service_name} not found or already deleted")
-            else:
-                if console:
-                    console.print(f"[red]Error:[/red] Failed to delete RayCluster {service_name}: {e}")
-                else:
-                    logger.error(f"Failed to delete RayCluster {service_name}: {e}")
-                success = False
 
         # Delete both regular and headless services
         for service_name_to_delete in [service_name, f"{service_name}-headless"]:

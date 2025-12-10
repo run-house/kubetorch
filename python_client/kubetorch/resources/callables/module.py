@@ -228,8 +228,6 @@ class Module:
             load_incluster_config()
         except ConfigException:
             load_kube_config()
-        objects_api = client.CustomObjectsApi()
-        apps_v1_api = client.AppsV1Api()
         core_v1_api = client.CoreV1Api()
 
         namespace = namespace or config.namespace
@@ -240,9 +238,7 @@ class Module:
         # Use unified service discovery from BaseServiceManager
         from kubetorch.serving.service_manager import BaseServiceManager
 
-        all_services = BaseServiceManager.discover_services_static(
-            namespace=namespace, objects_api=objects_api, apps_v1_api=apps_v1_api
-        )
+        all_services = BaseServiceManager.discover_services_static(namespace=namespace)
 
         # Create name-to-service lookup for efficient searching
         service_dict = {svc["name"]: svc for svc in all_services}

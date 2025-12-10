@@ -34,7 +34,6 @@ from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecr
 from kubetorch.resources.volumes.volume import Volume
 from kubetorch.servers.http.utils import is_running_in_kubernetes, load_template
 from kubetorch.serving.autoscaling import AutoscalingConfig
-from kubetorch.serving.service_manager import DeploymentServiceManager, KnativeServiceManager, RayClusterServiceManager
 from kubetorch.serving.utils import pod_is_running
 
 from kubetorch.utils import extract_host_port, http_to_ws, load_head_node_pod, load_kubeconfig
@@ -185,10 +184,10 @@ class Compute:
         self._secrets_client = None
         self._volumes = volumes
         self._logging_config = logging_config or LoggingConfig()
+        self._manifest = None
 
         # Skip template initialization if loading from existing service
         if _skip_template_init:
-            self._manifest = None
             return
 
         user_manifest = manifest if manifest else None
@@ -322,10 +321,7 @@ class Compute:
             self._merge_pod_specs(pod_spec)
 
             # Apply KT-specific metadata to user manifest
-            from kubetorch.serving.service_manager import BaseServiceManager
-
-            service_manager = BaseServiceManager._get_service_manager_class(self._manifest["kind"])
-            service_manager._apply_kubetorch_updates(
+            self.service_manager._apply_kubetorch_updates(
                 manifest=self._manifest,
                 custom_labels=labels or {},
                 custom_annotations=manifest_annotations,
@@ -367,13 +363,6 @@ class Compute:
         """Get metadata from the primary resource in the manifest."""
         # Return metadata from the manifest itself
         return self._manifest.get("metadata", {})
-
-    def _get_pod_spec_path(self, manifest: dict):
-        kind = manifest.get("kind")
-        if kind == "RayCluster":
-            return ["spec", "headGroupSpec", "template", "spec"]
-        else:  # "Deployment", "Service"
-            return ["spec", "template", "spec"]
 
     def _extract_user_values(self) -> dict:
         """Extract non-None values from user pod spec."""
@@ -453,6 +442,8 @@ class Compute:
         """Merge kubetorch pod spec into user pod spec."""
         from kubetorch.serving.utils import nested_override
 
+        container_name = "kubetorch"
+
         if not self.pod_spec or not self.pod_spec.get("containers"):
             self.pod_spec = kt_pod_spec
             return
@@ -479,7 +470,7 @@ class Compute:
         for key, value in kt_container.items():
             if key not in ["env", "volumeMounts", "resources", "name"]:
                 merged_container[key] = copy.deepcopy(value)
-        merged_container["name"] = "kubetorch"
+        merged_container["name"] = container_name
 
         # Merge pod-level fields
         kt_pod_spec.pop("containers", None)
@@ -494,7 +485,7 @@ class Compute:
         nested_override(merged, kt_pod_spec)
 
         # For RayCluster, copy the merged head pod spec to the worker group
-        if self._manifest.get("kind") == "RayCluster":
+        if self.kind == "RayCluster":
             spec = self._manifest.get("spec", {})
             worker_group_specs = spec.get("workerGroupSpecs", [])
             if worker_group_specs:
@@ -547,7 +538,9 @@ class Compute:
     @property
     def pod_spec(self):
         """Get the pod spec from the manifest."""
-        path = self._get_pod_spec_path(self._manifest)
+        template_path = self.service_manager._get_pod_template_path()
+        path = template_path + ["spec"]
+
         if path:
             current = self._manifest
             for key in path:
@@ -558,7 +551,9 @@ class Compute:
     @pod_spec.setter
     def pod_spec(self, value: dict):
         """Set the pod spec in the manifest."""
-        path = self._get_pod_spec_path(self._manifest)
+        template_path = self.service_manager._get_pod_template_path()
+        path = template_path + ["spec"]
+
         if path:
             current = self._manifest
             for key in path[:-1]:
@@ -567,33 +562,19 @@ class Compute:
 
     @property
     def service_manager(self):
+        from kubetorch.serving.base_service_manager import BaseServiceManager
+
         if self._service_manager is None:
             self._load_kube_config()
-            # Select appropriate service manager based on configuration
-            if self.deployment_mode == "knative":
-                # Use KnativeServiceManager for autoscaling services
-                self._service_manager = KnativeServiceManager(
-                    objects_api=self.objects_api,
-                    core_api=self.core_api,
-                    apps_v1_api=self.apps_v1_api,
-                    namespace=self.namespace,
-                )
-            elif self.deployment_mode == "raycluster":
-                # Use RayClusterServiceManager for Ray distributed workloads
-                self._service_manager = RayClusterServiceManager(
-                    objects_api=self.objects_api,
-                    core_api=self.core_api,
-                    apps_v1_api=self.apps_v1_api,
-                    namespace=self.namespace,
-                )
-            else:
-                # Use DeploymentServiceManager for regular deployments
-                self._service_manager = DeploymentServiceManager(
-                    objects_api=self.objects_api,
-                    core_api=self.core_api,
-                    apps_v1_api=self.apps_v1_api,
-                    namespace=self.namespace,
-                )
+            kind = self.kind
+            resource_api = self.apps_v1_api if kind.lower() == "deployment" else self.objects_api
+
+            ServiceManagerClass = BaseServiceManager._get_service_manager_class(kind)
+            self._service_manager = ServiceManagerClass(
+                resource_api=resource_api,
+                core_api=self.core_api,
+                namespace=self.namespace,
+            )
         return self._service_manager
 
     @property
@@ -633,10 +614,12 @@ class Compute:
         if "containers" not in self.pod_spec:
             raise ValueError("pod_spec missing 'containers' field.")
         containers = self.pod_spec.get("containers")
+
+        expected_name = "kubetorch"
         for container in containers:
-            if container.get("name") == "kubetorch":
+            if container.get("name") == expected_name:
                 return container
-        # If container is named "kubetorch", return the first container
+        # If no named container found, return the first container
         return self.pod_spec["containers"][0]
 
     def _container_env(self):
@@ -981,8 +964,15 @@ class Compute:
         self._container()["imagePullPolicy"] = value
 
     @property
+    def kind(self):
+        """Get the manifest kind, defaulting to 'Deployment' if not set."""
+        if self._manifest is None:
+            return "Deployment"
+        return self._manifest.get("kind", "Deployment")
+
+    @property
     def namespace(self):
-        return self._manifest.get("metadata", {}).get("namespace")
+        return self._manifest.get("metadata", {}).get("namespace") if self._manifest else None
 
     @namespace.setter
     def namespace(self, value: str):
@@ -1213,10 +1203,9 @@ class Compute:
         if template_config:
             return template_config
 
-        kind = self._manifest.get("kind")
-        if kind == "RayCluster":
+        if self.kind == "RayCluster":
             return {"distribution_type": "ray"}
-        elif kind == "Deployment":
+        elif self.kind == "Deployment":
             # Check if this is a distributed deployment by looking for distributed env vars
             pod_spec = self.pod_spec
             containers = pod_spec.get("containers", [])
@@ -1283,12 +1272,9 @@ class Compute:
 
     @property
     def deployment_mode(self):
-        kind = self._manifest.get("kind")
-        if kind == "RayCluster":
-            return "raycluster"
-        elif kind == "Service":
+        if self.kind == "Service":
             return "knative"
-        return "deployment"
+        return self.kind.lower()
 
     # ----------------- Service Level Properties ----------------- #
 
@@ -1313,51 +1299,11 @@ class Compute:
 
     @property
     def replicas(self):
-        kind = self._manifest.get("kind")
-        if kind == "Deployment":
-            return self._manifest["spec"].get("replicas", 1)
-        elif kind == "Service":  # Knative Service
-            template_annotations = (
-                self._manifest.get("spec", {}).get("template", {}).get("metadata", {}).get("annotations", {})
-            )
-            min_scale = template_annotations.get("autoscaling.knative.dev/min-scale")
-            if min_scale:
-                return int(min_scale)
-            return 1
-        elif kind == "RayCluster":
-            spec = self._manifest.get("spec", {})
-            head_replicas = spec.get("headGroupSpec", {}).get("replicas", 1)
-            worker_groups = spec.get("workerGroupSpecs", [])
-            worker_replicas = sum(wg.get("replicas", 0) for wg in worker_groups)
-            return head_replicas + worker_replicas
-        return 1
+        return self.service_manager.get_replicas(self._manifest)
 
     @replicas.setter
     def replicas(self, value: int):
-        kind = self._manifest.get("kind")
-        if kind == "Deployment":
-            self._manifest["spec"]["replicas"] = value
-        elif kind == "Service":  # Knative Service
-            template_metadata = self._manifest.get("spec", {}).setdefault("template", {}).setdefault("metadata", {})
-            template_annotations = template_metadata.setdefault("annotations", {})
-            template_annotations["autoscaling.knative.dev/min-scale"] = str(value)
-        elif kind == "RayCluster":
-            worker_replicas = max(0, value - 1)  # Head counts as 1
-            spec = self._manifest.get("spec", {})
-            if "workerGroupSpecs" in spec and len(spec["workerGroupSpecs"]) > 0:
-                spec["workerGroupSpecs"][0]["replicas"] = worker_replicas
-            else:
-                if "workerGroupSpecs" not in spec:
-                    spec["workerGroupSpecs"] = []
-                if len(spec["workerGroupSpecs"]) == 0:
-                    # Need to copy head template as base
-                    head_spec = spec.get("headGroupSpec", {})
-                    spec["workerGroupSpecs"].append(
-                        {
-                            "replicas": worker_replicas,
-                            "template": head_spec.get("template", {}),
-                        }
-                    )
+        self.service_manager.set_replicas(self._manifest, value)
 
     @property
     def annotations(self):
@@ -1572,35 +1518,15 @@ class Compute:
         )
         self._manifest = updated_manifest
 
-        # Handle service creation result based on resource type
-        if isinstance(created_service, dict):
-            # For custom resources (RayCluster, Knative), created_service is a dictionary
-            service_name = created_service.get("metadata", {}).get("name")
-            kind = created_service.get("kind", "")
-
-            if kind == "RayCluster":
-                # RayCluster has headGroupSpec instead of template
-                service_template = {
-                    "metadata": {
-                        "name": service_name,
-                        "namespace": created_service.get("metadata", {}).get("namespace"),
-                    },
-                    "spec": {"template": created_service["spec"]["headGroupSpec"]["template"]},
-                }
-            else:
-                # For Knative services and other dict-based resources
-                service_template = created_service["spec"]["template"]
-        else:
-            # For Deployments, created_service is a V1Deployment object
-            service_name = created_service.metadata.name
-            # Return dict format for compatibility with tests and reload logic
-            service_template = {
-                "metadata": {
-                    "name": created_service.metadata.name,
-                    "namespace": created_service.metadata.namespace,
-                },
-                "spec": {"template": created_service.spec.template},
-            }
+        service_info = self.service_manager.normalize_created_service(created_service)
+        service_name = service_info["name"]
+        service_template = {
+            "metadata": {
+                "name": service_info["name"],
+                "namespace": service_info["namespace"],
+            },
+            "spec": {"template": service_info["template"]},
+        }
 
         logger.debug(f"Successfully deployed {self.deployment_mode} service {service_name}")
 
