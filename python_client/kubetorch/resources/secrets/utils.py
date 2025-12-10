@@ -1,18 +1,15 @@
 import os
-import time
 from pathlib import Path
 from typing import List, Optional
 
 import yaml
-from kubernetes import client, config
-from kubernetes.client import V1Pod
-from kubernetes.stream import stream
 
 from kubetorch.constants import DEFAULT_KUBECONFIG_PATH
 from kubetorch.globals import config as kt_config
 
 from kubetorch.logger import get_logger
 from kubetorch.servers.http.utils import is_running_in_kubernetes
+from kubetorch.serving.utils import pod_is_running
 
 logger = get_logger(__name__)
 
@@ -113,36 +110,46 @@ def _read_file_if_exists(file_path: str) -> Optional[str]:
 
 def check_path_on_kubernetes_pods(path: str, service_name: str, namespace: str = None) -> bool:
     """
-    Check if a path exists on a specific Knative service's pods
+    Check if a path exists on a specific service's pods using ControllerClient.
     """
-    namespace = namespace or kt_config.namespace
-    # Load Kubernetes configuration
-    config.load_kube_config()
-    # Initialize API clients
-    core_v1_api = client.CoreV1Api()
+    from kubetorch import globals
 
-    pods = _fetch_pods_for_kubernetes_service(service_name, namespace, core_v1_api)
-    if not pods:
-        logger.error(f"No pods found for service {service_name} in namespace {namespace}")
+    namespace = namespace or kt_config.namespace
+    controller_client = globals.controller_client()
+
+    # Get pods using ControllerClient
+    pods_result = controller_client.list_pods(
+        namespace=namespace,
+        label_selector=f"kubetorch.com/service={service_name}",
+    )
+    pods = pods_result.get("items", [])
+
+    # Filter to running pods
+    running_pods = [pod for pod in pods if pod_is_running(pod)]
+
+    if not running_pods:
+        logger.error(f"No running pods found for service {service_name} in namespace {namespace}")
         return False
 
     path_found = True
-    for pod in pods:
-        pod_name = pod.metadata.name
+    for pod in running_pods:
+        pod_name = pod.get("metadata", {}).get("name")
+        if not pod_name:
+            continue
+
         command = ["/bin/bash", "-c", f"[ -f {path} ] && echo yes || echo no"]
         try:
-            resp = stream(
-                core_v1_api.connect_get_namespaced_pod_exec,
-                name=pod_name,
-                namespace=namespace,
-                command=command,
-                container="kubetorch",
-                stderr=True,
-                stdout=True,
+            resp = controller_client.post(
+                f"/api/v1/namespaces/{namespace}/pods/{pod_name}/exec",
+                json={
+                    "command": command,
+                    "container": "kubetorch",
+                },
             )
-            if "yes" in resp:
+            output = resp.get("output", "")
+            if "yes" in output:
                 continue
-        except client.exceptions.ApiException as e:
+        except Exception as e:
             logger.error(f"Error executing command on pod {pod_name}: {e}")
 
         path_found = False
@@ -158,39 +165,47 @@ def check_env_vars_on_kubernetes_pods(env_vars: list, service_name: str, namespa
     :param service_name: Name of the Knative service
     :return: Dictionary with role assumption details
     """
-    namespace = namespace or kt_config.namespace
-    # Load Kubernetes configuration
-    config.load_kube_config()
-    # Initialize API clients
-    core_v1_api = client.CoreV1Api()
+    from kubetorch import globals
 
-    pods = _fetch_pods_for_kubernetes_service(service_name, namespace, core_v1_api)
-    if not pods:
-        logger.error(f"No pods found for service {service_name} in namespace {namespace}")
+    namespace = namespace or kt_config.namespace
+    controller_client = globals.controller_client()
+
+    pods_result = controller_client.list_pods(
+        namespace=namespace,
+        label_selector=f"kubetorch.com/service={service_name}",
+    )
+    pods = pods_result.get("items", [])
+
+    running_pods = [pod for pod in pods if pod_is_running(pod)]
+
+    if not running_pods:
+        logger.error(f"No running pods found for service {service_name} in namespace {namespace}")
         return {}
 
     found_env_vars = {}
 
-    for pod in pods:
+    for pod in running_pods:
         for env_var in env_vars:
             if found_env_vars.get(env_var):
                 # Skip if already found on another pod
                 continue
-            pod_name = pod.metadata.name
+            pod_name = pod.get("metadata", {}).get("name")
+            if not pod_name:
+                continue
+
             command = ["/bin/bash", "-c", f"echo ${env_var}"]
             try:
-                resp = stream(
-                    core_v1_api.connect_get_namespaced_pod_exec,
-                    name=pod_name,
-                    namespace=namespace,
-                    command=command,
-                    container="kubetorch",
-                    stderr=True,
-                    stdout=True,
+                resp = controller_client.post(
+                    f"/api/v1/namespaces/{namespace}/pods/{pod_name}/exec",
+                    json={
+                        "command": command,
+                        "container": "kubetorch",
+                    },
                 )
-                if len(resp.strip()) > 0:
-                    found_env_vars[env_var] = resp.strip()
-            except client.exceptions.ApiException as e:
+                output = resp.get("output", "").strip()
+                if len(output) > 0:
+                    found_env_vars[env_var] = output
+            except Exception as e:
                 logger.error(f"Error executing command: {e}")
 
         if set(found_env_vars.keys()) == set(env_vars):
@@ -198,25 +213,3 @@ def check_env_vars_on_kubernetes_pods(env_vars: list, service_name: str, namespa
             break
 
     return found_env_vars
-
-
-def _fetch_pods_for_kubernetes_service(service_name: str, namespace: str, client_api: client.CoreV1Api) -> List[V1Pod]:
-    """
-    Fetch pods for a specific Knative service with timeout
-    """
-    start_time = time.time()
-    while time.time() - start_time < 30:
-        try:
-            # List pods matching the service
-            pods = client_api.list_namespaced_pod(
-                namespace=namespace,
-                label_selector=f"kubetorch.com/service={service_name}",
-            )
-            ready_pods = [pod for pod in pods.items if pod.status.phase == "Running"]
-            if ready_pods:
-                return ready_pods
-        except Exception as e:
-            logger.error(f"Error fetching pods for service {service_name} in namespace {namespace}: {e}")
-        time.sleep(1)
-
-    return []

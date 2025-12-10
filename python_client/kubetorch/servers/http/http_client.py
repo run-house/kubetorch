@@ -187,7 +187,9 @@ class CustomResponse(httpx.Response):
                     response=self,
                 )
         else:
-            logger.debug(f"Non-JSON error body: {self.text[:100]}")
+            # Don't log 502 errors - they're expected during startup as nginx DNS updates
+            if self.status_code != 502:
+                logger.debug(f"Non-JSON error body: {self.text[:100]}")
             super().raise_for_status()
 
 
@@ -471,7 +473,10 @@ class HTTPClient:
 
         return endpoint, headers, stop_event, log_task, metrics_task, request_id
 
-    def _make_request(self, method, endpoint, **kwargs):
+    def _make_request(self, method, endpoint, timeout=None, **kwargs):
+        # Allow per-request timeout override
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         response: httpx.Response = getattr(self.session, method)(endpoint, **kwargs)
         response.raise_for_status()
         return response
@@ -989,8 +994,8 @@ class HTTPClient:
     def delete(self, endpoint, json=None, headers=None):
         return self._make_request("delete", endpoint, json=json, headers=headers)
 
-    def get(self, endpoint, headers=None):
-        return self._make_request("get", endpoint, headers=headers)
+    def get(self, endpoint, headers=None, timeout=None):
+        return self._make_request("get", endpoint, headers=headers, timeout=timeout)
 
     async def post_async(self, endpoint, json=None, headers=None):
         return await self._make_request_async("post", endpoint, json=json, headers=headers)

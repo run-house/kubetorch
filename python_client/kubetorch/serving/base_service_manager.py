@@ -2,7 +2,7 @@ import hashlib
 import re
 from abc import abstractmethod
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple, Type, Union
+from typing import Dict, List, Optional, Tuple, Type
 
 import yaml
 from jinja2 import Template
@@ -13,6 +13,7 @@ import kubetorch.serving.constants as serving_constants
 from kubetorch import globals
 
 from kubetorch.logger import get_logger
+from kubetorch.utils import http_not_found
 
 logger = get_logger(__name__)
 
@@ -260,13 +261,14 @@ class BaseServiceManager:
         short_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:6]
         return f"{service_name}-{short_hash}"
 
-    def _get_deployment_timestamp_and_id(self, service_name: str) -> Tuple[str, str]:
-        """Get both deployment timestamp and deployment ID together.
+    def _get_deployment_timestamp_and_id(self, service_name: str, deployment_timestamp: str = None) -> Tuple[str, str]:
+        """Get both deployment timestamp and deployment ID together. If deployment timestamp has already
+        been provided, reuse it.
 
         Returns:
             Tuple of (timestamp, deployment_id)
         """
-        timestamp = self._get_deployment_timestamp()
+        timestamp = deployment_timestamp or self._get_deployment_timestamp()
         deployment_id = self._generate_deployment_id(service_name, timestamp)
         return timestamp, deployment_id
 
@@ -276,6 +278,7 @@ class BaseServiceManager:
 
     def _apply_yaml_template(self, yaml_file, replace_existing=False, **kwargs):
         import importlib.resources
+
         with importlib.resources.files("kubetorch.serving.templates").joinpath(yaml_file).open("r") as f:
             template = Template(f.read())
 
@@ -288,8 +291,8 @@ class BaseServiceManager:
                 if replace_existing:
                     try:
                         utils.delete_from_dict(k8s_client, obj)
-                    except client.exceptions.ApiException as e:
-                        if e.status != 404:
+                    except Exception as e:
+                        if not http_not_found(e):
                             raise
                 utils.create_from_dict(k8s_client, obj)
             except utils.FailToCreateError as e:
@@ -360,70 +363,28 @@ class BaseServiceManager:
         """Set the number of replicas in the manifest."""
         pass
 
-    def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
-        """Update deployment timestamp annotation for this service type."""
-        try:
-            patch_body = self._create_timestamp_patch_body(new_timestamp)
-
-            if isinstance(self.resource_api, AppsV1Api):
-                self.resource_api.patch_namespaced_deployment(
-                    name=service_name,
-                    namespace=self.namespace,
-                    body=patch_body,
-                )
-            else:
-                self.resource_api.patch_namespaced_custom_object(
-                    group=self.api_group,
-                    version=self.api_version,
-                    namespace=self.namespace,
-                    plural=self.api_plural,
-                    name=service_name,
-                    body=patch_body,
-                )
-            return new_timestamp
-        except client.exceptions.ApiException as e:
-            logger.error(
-                f"Failed to update deployment timestamp for {self.template_label} service '{service_name}': {str(e)}"
-            )
-            raise
-
     def _create_resource(self, manifest: dict, **kwargs) -> dict:
         """Create a resource."""
-        if isinstance(self.resource_api, AppsV1Api):
-            return self.resource_api.create_namespaced_deployment(
-                namespace=self.namespace,
-                body=manifest,
-                **kwargs,
-            )
-        else:
-            return self.resource_api.create_namespaced_custom_object(
-                group=self.api_group,
-                version=self.api_version,
-                namespace=self.namespace,
-                plural=self.api_plural,
-                body=manifest,
-                **kwargs,
-            )
+        return self.controller_client.create_namespaced_custom_object(
+            group=self.api_group,
+            version=self.api_version,
+            namespace=self.namespace,
+            plural=self.api_plural,
+            body=manifest,
+            params=kwargs,
+        )
 
     def _patch_resource(self, service_name: str, patch_body: dict, **kwargs) -> dict:
         """Patch a resource."""
-        if isinstance(self.resource_api, AppsV1Api):
-            return self.resource_api.patch_namespaced_deployment(
-                name=service_name,
-                namespace=self.namespace,
-                body=patch_body,
-                **kwargs,
-            )
-        else:
-            return self.resource_api.patch_namespaced_custom_object(
-                group=self.api_group,
-                version=self.api_version,
-                namespace=self.namespace,
-                plural=self.api_plural,
-                name=service_name,
-                body=patch_body,
-                **kwargs,
-            )
+        return self.controller_client.patch_namespaced_custom_object(
+            group=self.api_group,
+            version=self.api_version,
+            namespace=self.namespace,
+            plural=self.api_plural,
+            name=service_name,
+            body=patch_body,
+            **kwargs,
+        )
 
     def _delete_resource(self, service_name: str, force: bool = False, **kwargs) -> None:
         """Delete a resource."""
@@ -431,21 +392,14 @@ class BaseServiceManager:
             kwargs.setdefault("grace_period_seconds", 0)
             kwargs.setdefault("propagation_policy", "Foreground")
 
-        if isinstance(self.resource_api, AppsV1Api):
-            self.resource_api.delete_namespaced_deployment(
-                name=service_name,
-                namespace=self.namespace,
-                **kwargs,
-            )
-        else:
-            self.resource_api.delete_namespaced_custom_object(
-                group=self.api_group,
-                version=self.api_version,
-                namespace=self.namespace,
-                plural=self.api_plural,
-                name=service_name,
-                **kwargs,
-            )
+        self.controller_client.delete_namespaced_custom_object(
+            group=self.api_group,
+            version=self.api_version,
+            namespace=self.namespace,
+            plural=self.api_plural,
+            name=service_name,
+            **kwargs,
+        )
 
     def fetch_kubetorch_config(self) -> dict:
         """Fetch kubetorch-config ConfigMap via controller."""
@@ -454,9 +408,9 @@ class BaseServiceManager:
                 f"/api/v1/namespaces/{globals.config.install_namespace}/configmaps/kubetorch-config"
             )
             return kubetorch_config.get("data", {})
-        except client.exceptions.ApiException as e:
-            if e.status != 404:
-                logger.error(f"Error fetching kubetorch config: {e}")
+        except Exception as e:
+            if not http_not_found(e):
+                logger.error(f"Kubeconfig not found: {e}")
             return {}
 
     @staticmethod
@@ -503,10 +457,11 @@ class BaseServiceManager:
                     services.extend(local_services)
 
             except Exception as e:
-                if not ((hasattr(e, "status") and e.status == 404) or "404" in str(e)):
+                if not http_not_found(e):
                     logger.warning(f"Failed to list Knative services: {e}")
 
         def fetch_deployments():
+            """Fetch Deployments in parallel."""
             try:
                 label_selector = f"{serving_constants.KT_TEMPLATE_LABEL}=deployment"
                 result = controller_client.list_deployments(
@@ -516,18 +471,18 @@ class BaseServiceManager:
                 deployments = result.get("items", [])
 
                 local_services = []
-                for dep in deployments:
-                    name = dep.get("metadata", {}).get("name")
-                    if name_filter and name_filter not in name:
+                for deployment in deployments:
+                    deploy_name = deployment.get("metadata", {}).get("name")
+                    if name_filter and name_filter not in deploy_name:
                         continue
 
-                    creation_timestamp = dep.get("metadata", {}).get("creationTimestamp", "")
+                    creation_timestamp = deployment.get("metadata", {}).get("creationTimestamp", "")
 
                     local_services.append(
                         {
-                            "name": name,
+                            "name": deploy_name,
                             "template_type": "deployment",
-                            "resource": dep,
+                            "resource": deployment,
                             "namespace": namespace,
                             "creation_timestamp": creation_timestamp,
                         }
@@ -552,18 +507,18 @@ class BaseServiceManager:
                 clusters = result.get("items", [])
 
                 local_services = []
-                for rc in clusters:
-                    name = rc["metadata"]["name"]
-                    if name_filter and name_filter not in name:
+                for cluster in clusters:
+                    cluster_name = cluster["metadata"]["name"]
+                    if name_filter and name_filter not in cluster_name:
                         continue
 
                     local_services.append(
                         {
-                            "name": name,
+                            "name": cluster_name,
                             "template_type": "raycluster",
-                            "resource": rc,
+                            "resource": cluster,
                             "namespace": namespace,
-                            "creation_timestamp": rc["metadata"]["creationTimestamp"],
+                            "creation_timestamp": cluster["metadata"]["creationTimestamp"],
                         }
                     )
 
@@ -571,7 +526,7 @@ class BaseServiceManager:
                     services.extend(local_services)
 
             except Exception as e:
-                if not ((hasattr(e, "status") and e.status == 404) or "404" in str(e)):
+                if not http_not_found(e):
                     logger.warning(f"Failed to list RayClusters: {e}")
 
         def fetch_custom_resources():
@@ -611,7 +566,7 @@ class BaseServiceManager:
                             }
                         )
                 except Exception as e:
-                    if not ((hasattr(e, "status") and e.status == 404) or "404" in str(e)):
+                    if not http_not_found(e):
                         logger.warning(f"Failed to list {resource_kind}: {e}")
 
             with services_lock:
@@ -668,12 +623,41 @@ class BaseServiceManager:
             logger.warning(f"Failed to list pods: {e}")
             return []
 
-    # Abstract API (implemented in subclasses)
-    def create_or_update_service(self, *args, **kwargs):
-        raise NotImplementedError
+    def create_or_update_service(
+        self,
+        service_name: str,
+        module_name: str,
+        manifest: dict = None,
+        deployment_timestamp: str = None,
+        dryrun: bool = False,
+    ):
+        """Create or update service."""
+        logger.info(f"Deploying {manifest['kind']} service with name: {service_name}")
+        manifest = self._preprocess_manifest_for_launch(manifest)
+
+        # Update manifest with service name and deployment timestamp
+        clean_module_name = self._clean_module_name(module_name)
+        deployment_timestamp, deployment_id = self._get_deployment_timestamp_and_id(service_name, deployment_timestamp)
+        updated_manifest = self._update_launchtime_manifest(
+            manifest, service_name, clean_module_name, deployment_timestamp, deployment_id
+        )
+
+        # Create or update the resource
+        kwargs = {"dry_run": "All"} if dryrun else {}
+        created_service = self._create_or_update_resource(updated_manifest, service_name, clean_module_name, **kwargs)
+        return created_service, updated_manifest
+
+    def _preprocess_manifest_for_launch(self, manifest: dict) -> dict:
+        """Preprocess manifest before launch if needed for the service type."""
+        return manifest
+
+    @abstractmethod
+    def _create_or_update_resource(self, manifest: dict, service_name: str, clean_module_name: str, **kwargs) -> dict:
+        """Create or update resources from a manifest. service_name and clean_module_name are provided to avoid re-extraction."""
+        pass
 
     def get_endpoint(self, service_name: str) -> str:
-        raise NotImplementedError
+        raise NotImplementedError("Subclasses must implement get_endpoint")
 
     def check_service_ready(self, service_name: str, launch_timeout: int, **kwargs) -> bool:
         """Check if service is ready to serve requests.
@@ -713,8 +697,8 @@ class BaseServiceManager:
             else:
                 logger.info(f"Deleted {resource_type} {service_name}")
 
-        except client.exceptions.ApiException as e:
-            if e.status == 404:
+        except Exception as e:
+            if http_not_found(e):
                 resource_type = self.template_label.lower() if self.template_label else "resource"
                 if console:
                     console.print(f"[yellow]Note:[/yellow] {resource_type} {service_name} not found or already deleted")

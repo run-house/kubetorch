@@ -53,13 +53,20 @@ controller:
   image: ghcr.io/run-house/kubetorch-controller
   tag: v0.1.0
   imagePullPolicy: Always
+
+  port: 8081  # Port the controller listens on
+  workers: 8  # Number of Uvicorn worker processes (each handles ~10 concurrent requests)
+  connectionPoolSize: 20  # K8s API connection pool size per worker
+  replicas: 1  # Number of controller replica pods
+
   resources:
     cpu:
-      request: "100m"
-      limit: "500m"
+      request: "200m"   # Minimum guaranteed CPU (0.2 cores)
+      limit: "2000m"    # Maximum burst CPU (2 cores) for 8 workers
     memory:
-      request: "256Mi"
-      limit: "512Mi"
+      request: "1Gi"    # Minimum guaranteed memory
+      limit: "2Gi"      # Maximum memory for 8 workers + connection pools + headroom
+
   tolerations: []
   affinity: {}
 
@@ -69,13 +76,20 @@ nginxProxy:
     tag: 1.29.0-alpine
     pullPolicy: IfNotPresent
   maxBodySize:
-    rsync: "10G" # 10GB max body size for rsync
-    api: "250M" # 250 MB max body size to all other routes
+    rsync: "10G" # 10GB max body size for rsync operations (e.g. large data transfers)
+    api: "250M"  # 250MB max body size for all other routes
   backends:
     logging:
       route: "/loki"
     health:
       route: "/health"
+  resources:
+    cpu:
+      request: "200m"   # Minimum guaranteed CPU (0.2 cores)
+      limit: "1"        # Maximum CPU (1 core)
+    memory:
+      request: "256Mi"  # Minimum guaranteed memory
+      limit: "512Mi"    # Maximum memory - handles 1000+ concurrent connections
   tolerations: []
   affinity: {}
 

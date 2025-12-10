@@ -7,12 +7,12 @@ import warnings
 from pathlib import Path
 
 import httpx
-from kubernetes.client import ApiException, CoreV1Api, V1Pod
 
 from kubetorch import globals
 from kubetorch.logger import get_logger
 from kubetorch.servers.http.utils import is_running_in_kubernetes
 from kubetorch.serving.constants import LOKI_GATEWAY_SERVICE_NAME, PROMETHEUS_SERVICE_NAME
+from kubetorch.utils import http_not_found
 
 logger = get_logger(__name__)
 
@@ -120,8 +120,13 @@ def wait_for_port_forward(
     raise TimeoutError("Timeout waiting for port forward to be ready")
 
 
-def pod_is_running(pod: V1Pod):
-    return pod.status.phase == "Running" and pod.metadata.deletion_timestamp is None
+def pod_is_running(pod: dict) -> bool:
+    """Check if pod is running. Pod must be a dict from ControllerClient."""
+    status = pod.get("status", {})
+    phase = status.get("phase")
+    metadata = pod.get("metadata", {})
+    deletion_timestamp = metadata.get("deletionTimestamp")
+    return phase == "Running" and deletion_timestamp is None
 
 
 def check_loki_enabled() -> bool:
@@ -136,7 +141,7 @@ def check_loki_enabled() -> bool:
 
     except Exception as e:
         # controller wraps K8s 404 properly
-        if "404" in str(e):
+        if http_not_found(e):
             logger.debug(f"Loki gateway service not found in namespace {kt_namespace}")
             return False
 
@@ -166,7 +171,7 @@ def check_prometheus_enabled() -> bool:
         return True
 
     except Exception as e:
-        if "404" in str(e):
+        if http_not_found(e):
             logger.debug(f"Prometheus service not found in namespace {kt_namespace}")
             return False
 

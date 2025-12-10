@@ -15,6 +15,7 @@ from kubetorch.servers.http.utils import load_template
 from kubetorch.serving.autoscaling import AutoscalingConfig
 from kubetorch.serving.base_service_manager import BaseServiceManager
 from kubetorch.serving.utils import pod_is_running
+from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)
 
@@ -159,15 +160,13 @@ class KnativeServiceManager(BaseServiceManager):
             return created_service
 
         except Exception as e:
-            if (hasattr(e, "status") and e.status == 409) or "409" in str(e) or "already exists" in str(e).lower():
+            if http_conflict(e):
                 logger.info(f"Service {manifest['metadata']['name']} already exists, updating")
                 existing_service = self.get_resource(manifest["metadata"]["name"])
                 return existing_service
-            else:
-                logger.error(
-                    f"Failed to create Knative service: {str(e)}",
-                )
-                raise e
+
+            logger.error(f"Failed to create Knative service: {e}")
+            raise
 
     def get_resource(self, service_name: str) -> dict:
         """Retrieve a Knative service by name."""
@@ -182,7 +181,10 @@ class KnativeServiceManager(BaseServiceManager):
             return service
 
         except Exception as e:
-            logger.error(f"Failed to load Knative service '{service_name}': {str(e)}")
+            if http_not_found(e):
+                return {}
+
+            logger.error(f"Failed to load Knative service '{service_name}': {e}")
             raise
 
     def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
@@ -225,19 +227,16 @@ class KnativeServiceManager(BaseServiceManager):
         return self.get_knative_service_endpoint(service_name)
 
     def get_pods_for_service(self, service_name: str, **kwargs):
-        """
-        Unified pod lookup for Knative services using the controller client.
-
-        Returns only dict-normalized pods.
-        """
-        # 1. Try Knative revision-based lookup
+        """Get all pods associated with this Knative service."""
         try:
+            # First try to get the service to find the latest revision
             service = self.get_resource(service_name)
             status = service.get("status", {})
-            latest_rev = status.get("latestReadyRevisionName")
+            latest_ready_revision = status.get("latestReadyRevisionName")
 
-            if latest_rev:
-                label_selector = f"serving.knative.dev/revision={latest_rev}"
+            if latest_ready_revision:
+                # Look for pods with the revision label
+                label_selector = f"serving.knative.dev/revision={latest_ready_revision}"
 
                 resp = self.controller_client.list_pods(
                     namespace=self.namespace,
@@ -250,7 +249,7 @@ class KnativeServiceManager(BaseServiceManager):
         except Exception as e:
             logger.warning(f"Knative pod lookup failed for {service_name}: {e}")
 
-        # 2. Fallback: use normal KT service label lookup
+        # Fallback: use normal KT service label lookup
         try:
             return super().get_pods_for_service(service_name, **kwargs)
 
@@ -380,7 +379,7 @@ class KnativeServiceManager(BaseServiceManager):
                         check_pod_status_for_errors(pod)
 
                         # Check pod events separately from the core API
-                        check_pod_events_for_errors(pod, self.namespace, self.controller_client)
+                        check_pod_events_for_errors(pod, self.namespace)
 
                     if (
                         displayed_msgs["waiting_for_pods"] is None
@@ -424,29 +423,3 @@ class KnativeServiceManager(BaseServiceManager):
             "To update the timeout, set the `launch_timeout` parameter in the Compute class, or set the "
             "environment variable `KT_LAUNCH_TIMEOUT`."
         )
-
-    def teardown_service(self, service_name: str, console=None) -> bool:
-        """Teardown Knative service and associated resources.
-
-        Args:
-            service_name: Name of the Knative service to teardown
-            console: Optional Rich console for output
-
-        Returns:
-            True if teardown was successful, False otherwise
-        """
-        from kubetorch.resources.compute.utils import delete_service
-
-        try:
-            # Delete the Knative service
-            delete_service(
-                name=service_name,
-                namespace=self.namespace,
-                console=console,
-            )
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to teardown Knative service {service_name}: {e}")
-            return False

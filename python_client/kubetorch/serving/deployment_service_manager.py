@@ -2,8 +2,6 @@ import os
 import time
 from typing import List
 
-from kubernetes import client
-
 import kubetorch.serving.constants as serving_constants
 from kubetorch.logger import get_logger
 from kubetorch.resources.compute.utils import (
@@ -15,6 +13,7 @@ from kubetorch.resources.compute.utils import (
 from kubetorch.servers.http.utils import load_template
 from kubetorch.serving.base_service_manager import BaseServiceManager
 from kubetorch.serving.utils import nested_override
+from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)
 
@@ -108,6 +107,7 @@ class DeploymentServiceManager(BaseServiceManager):
         service_labels = labels.copy()
         service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
 
+        dryrun = kwargs.get("dry_run")
         try:
             # Create regular service for client access
             service = load_template(
@@ -125,10 +125,10 @@ class DeploymentServiceManager(BaseServiceManager):
 
             try:
                 self.controller_client.create_service(namespace=self.namespace, body=service, params=kwargs)
-                if not kwargs.get("dry_run"):
+                if not dryrun:
                     logger.info(f"Created service {service_name} in namespace {self.namespace}")
-            except client.exceptions.ApiException as e:
-                if e.status == 409:
+            except Exception as e:
+                if http_conflict(e):
                     logger.info(f"Service {service_name} already exists")
                 else:
                     raise
@@ -150,22 +150,15 @@ class DeploymentServiceManager(BaseServiceManager):
 
                 try:
                     self.controller_client.create_service(
-                        namespace=self.namespace,
-                        body=headless_service,
+                        namespace=self.namespace, body=headless_service, params=kwargs
                     )
                     if not kwargs.get("dry_run"):
                         logger.info(f"Created headless service {service_name}-headless in namespace {self.namespace}")
                 except Exception as e:
-                    if hasattr(e, "status") and e.status == 409:
-                        logger.info(f"Headless service {service_name}-headless already exists")
-                    elif "409" in str(e) or "already exists" in str(e).lower():
+                    if http_conflict(e):
                         logger.info(f"Headless service {service_name}-headless already exists")
                     else:
                         raise
-
-            if dryrun:
-                # For dryrun, just return the manifest
-                return deployment, False
 
             # Create Deployment
             created_deployment = self.controller_client.create_deployment(
@@ -177,14 +170,7 @@ class DeploymentServiceManager(BaseServiceManager):
             return created_deployment
 
         except Exception as e:
-            if hasattr(e, "status") and e.status == 409:
-                is_409 = True
-            elif "409" in str(e) or "already exists" in str(e).lower():
-                is_409 = True
-            else:
-                is_409 = False
-
-            if is_409:
+            if http_conflict(e):
                 logger.info(f"Deployment {deployment['metadata']['name']} already exists, updating")
                 existing_deployment = self.get_resource(deployment["metadata"]["name"])
 
@@ -228,7 +214,9 @@ class DeploymentServiceManager(BaseServiceManager):
             )
             return deployment
         except Exception as e:
-            logger.error(f"Failed to load Deployment '{service_name}': {str(e)}")
+            if http_not_found(e):
+                return {}
+            logger.error(f"Failed to load Deployment '{service_name}': {e}")
             raise
 
     def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
@@ -338,7 +326,7 @@ class DeploymentServiceManager(BaseServiceManager):
             else:
                 logger.info(f"Deleted service {service_name}")
         except Exception as e:
-            if (hasattr(e, "status") and e.status == 404) or "404" in str(e) or "not found" in str(e).lower():
+            if http_not_found(e):
                 if console:
                     console.print(f"[yellow]Note:[/yellow] Service {service_name} not found or already deleted")
                 else:
@@ -359,7 +347,7 @@ class DeploymentServiceManager(BaseServiceManager):
             else:
                 logger.info(f"Deleted service {headless_service_name}")
         except Exception as e:
-            if (hasattr(e, "status") and e.status == 404) or "404" in str(e) or "not found" in str(e).lower():
+            if http_not_found(e):
                 # Headless service might not exist, which is fine
                 pass
             else:

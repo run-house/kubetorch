@@ -368,9 +368,10 @@ def test_tensorflow_distributed_cls():
     """Test TensorFlow distributed with class."""
     remote_cls = kt.cls(DistributedTestClass, name=get_test_fn_name()).to(
         kt.Compute(
-            cpus="0.5",
-            memory="1Gi",
+            cpus="1",
+            memory="2Gi",
             image=kt.images.Debian().run_bash("uv pip install --system tensorflow-cpu"),
+            launch_timeout=600,
         ).distribute(
             "tf", workers=2, num_proc=2
         )  # Test "tf" alias
@@ -399,7 +400,7 @@ def test_tensorflow_distributed_cls():
 def test_distributed_exception_handling():
     """Test that exceptions are properly propagated from all workers."""
     remote_fn = kt.fn(raise_test_exception, name=get_test_fn_name()).to(
-        kt.Compute(cpus="0.5", memory="512Mi").distribute(workers=2, num_proc=2)
+        kt.Compute(cpus="1", memory="1Gi", launch_timeout=450).distribute(workers=2, num_proc=2)
     )
 
     with pytest.raises(ValueError, match="Test exception from distributed worker") as exc:
@@ -425,7 +426,7 @@ async def test_mixed_distribution_types():
 
     # Run all distributed configs concurrently
     async def launch_distributed_fns(dist_type, expected_name):
-        compute = kt.Compute(cpus="0.5", memory="512Mi")
+        compute = kt.Compute(cpus="1", memory="1Gi", launch_timeout=450)
 
         if dist_type:
             compute = compute.distribute(dist_type, workers=1, num_proc=2)

@@ -6,9 +6,6 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Union
 
-from kubernetes import client
-from kubernetes.client.rest import ApiException
-
 import kubetorch.globals
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.utils import get_local_install_path, locate_working_dir
@@ -16,6 +13,7 @@ from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecr
 from kubetorch.servers.http.utils import StartupError
 from kubetorch.serving import constants as serving_constants
 from kubetorch.serving.constants import KT_SERVICE_LABEL, KT_USERNAME_LABEL
+from kubetorch.utils import http_not_found
 
 logger = get_logger(__name__)
 
@@ -75,6 +73,17 @@ class SecretNotFound(Exception):
         super().__init__(f"kubetorch secret {secret_name} was not found in {namespace} namespace")
 
 
+class ControllerRequestError(Exception):
+    """Raised when a request to the Kubetorch controller fails."""
+
+    def __init__(self, method: str, url: str, status_code: int, message: str):
+        self.method = method
+        self.url = url
+        self.status_code = status_code
+        self.status = status_code
+        super().__init__(f"{method} {url} failed with status {status_code}: {message}")
+
+
 class RsyncError(Exception):
     def __init__(self, cmd: str, returncode: int, stdout: str, stderr: str):
         self.cmd = cmd
@@ -103,7 +112,7 @@ def _run_bash(
 ):
     if isinstance(commands, str):
         commands = [commands]
-    commands = [["/bin/sh", "-c", f'{command}; echo "::EXIT_CODE::$?"'] for command in commands]
+    commands = [f'{command}; echo "::EXIT_CODE::$?"' for command in commands]
 
     if isinstance(pod_names, str):
         pod_names = [pod_names]
@@ -193,20 +202,24 @@ def _get_rsync_exclude_options() -> str:
     return exclude_args.strip()
 
 
-def is_pod_terminated(pod: client.V1Pod) -> bool:
+def is_pod_terminated(pod: dict) -> bool:
+    """Check if pod is terminated. Pod must be a dict from ControllerClient."""
     # Check if pod is marked for deletion
-    if pod.metadata.deletion_timestamp is not None:
+    deletion_timestamp = pod.get("metadata", {}).get("deletionTimestamp")
+    if deletion_timestamp is not None:
         return True
 
     # Check pod phase
-    if pod.status.phase in ["Succeeded", "Failed"]:
+    phase = pod.get("status", {}).get("phase")
+    if phase in ["Succeeded", "Failed"]:
         return True
 
     # Check container statuses
-    if pod.status.container_statuses:
-        for container in pod.status.container_statuses:
-            if container.state.terminated:
-                return True
+    container_statuses = pod.get("status", {}).get("containerStatuses", [])
+    for container in container_statuses:
+        state = container.get("state", {})
+        if state.get("terminated"):
+            return True
 
     return False
 
@@ -262,8 +275,7 @@ def delete_configmaps(
                 console.print(f"✓ Deleted configmap [blue]{cm}[/blue]")
         except Exception as e:
             # Handle both ApiException (legacy) and HTTP errors from controller
-            is_404 = (hasattr(e, "status") and e.status == 404) or "404" in str(e)
-            if is_404:
+            if http_not_found(e):
                 if console:
                     console.print(f"[yellow]Warning:[/yellow] ConfigMap {cm} not found")
             else:
@@ -297,7 +309,7 @@ def delete_service(
         if console:
             console.print(f"✓ Deleted service [blue]{name}[/blue]")
     except Exception as e:
-        if (hasattr(e, "status") and e.status == 404) or "404" in str(e) or "not found" in str(e).lower():
+        if http_not_found(e):
             if console:
                 console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
         else:
@@ -320,8 +332,8 @@ def delete_deployment(
         )
         if console:
             console.print(f"✓ Deleted deployment [blue]{name}[/blue]")
-    except ApiException as e:
-        if e.status == 404:
+    except Exception as e:
+        if http_not_found(e):
             if console:
                 console.print(f"[yellow]Note:[/yellow] Deployment {name} not found or already deleted")
         else:
@@ -337,8 +349,7 @@ def delete_deployment(
         if console:
             console.print(f"✓ Deleted service [blue]{name}[/blue]")
     except Exception as e:
-        is_404 = (hasattr(e, "status") and e.status == 404) or "404" in str(e)
-        if is_404:
+        if http_not_found(e):
             if console:
                 console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
         else:
@@ -346,14 +357,11 @@ def delete_deployment(
                 console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
 
     try:
-        headless = controller_client.get_service(
-            namespace=namespace,
-            name=f"{name}-headless",
-        )
+        headless = controller_client.get_service(namespace=namespace, name=f"{name}-headless", ignore_not_found=True)
     except Exception:
         headless = None
 
-    if headless and "404" not in str(headless):
+    if headless:
         try:
             controller_client.delete_service(
                 namespace=namespace,
@@ -362,8 +370,7 @@ def delete_deployment(
             if console:
                 console.print(f"✓ Deleted headless service [blue]{name}-headless[/blue]")
         except Exception as e:
-            is_404 = (hasattr(e, "status") and e.status == 404) or "404" in str(e)
-            if not is_404 and console:
+            if not http_not_found(e) and console:
                 console.print(f"[red]Error:[/red] Failed to delete headless service {name}-headless: {e}")
 
 
@@ -394,7 +401,7 @@ def delete_raycluster(
         if console:
             console.print(f"✓ Deleted RayCluster [blue]{name}[/blue]")
     except Exception as e:
-        if (hasattr(e, "status") and e.status == 404) or "404" in str(e) or "not found" in str(e).lower():
+        if http_not_found(e):
             if console:
                 console.print(f"[yellow]Note:[/yellow] RayCluster {name} not found or already deleted")
         else:
@@ -410,8 +417,7 @@ def delete_raycluster(
         if console:
             console.print(f"✓ Deleted service [blue]{name}[/blue]")
     except Exception as e:
-        is_404 = (hasattr(e, "status") and e.status == 404) or "404" in str(e)
-        if is_404:
+        if http_not_found(e):
             if console:
                 console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
         else:
@@ -427,8 +433,7 @@ def delete_raycluster(
         if console:
             console.print(f"✓ Deleted headless service [blue]{name}-headless[/blue]")
     except Exception as e:
-        is_404 = (hasattr(e, "status") and e.status == 404) or "404" in str(e)
-        if is_404:
+        if http_not_found(e):
             # This is normal for older Ray clusters without headless services
             pass
         else:
@@ -518,7 +523,7 @@ def delete_cached_service_data(
             f"else echo 'Path {service_path} not found'; fi"
         )
 
-        # 4. Execute via centralized controller (always)
+        # 4. Execute via centralized controller
         resp = controller_client.post(
             f"/api/v1/namespaces/{namespace}/pods/{pod_name}/exec",
             json={
@@ -623,8 +628,9 @@ def fetch_resources_for_teardown(
                     namespace=namespace,
                     plural="services",
                     label_selector=knative_label_selector,
+                    ignore_not_found=True,
                 )
-                items = response.get("items", [])
+                items = response.get("items", []) if response else []
                 knative_services = [
                     item["metadata"]["name"]
                     for item in items
@@ -636,7 +642,7 @@ def fetch_resources_for_teardown(
                 logger.warning(f"Could not load knative services: {str(e)}")
 
         except Exception as e:
-            if not ((hasattr(e, "status") and e.status == 404) or "404" in str(e)):
+            if not http_not_found(e):
                 logger.warning(f"Failed to list Knative services: {e}")
 
         # Search Deployments
@@ -650,13 +656,13 @@ def fetch_resources_for_teardown(
                 namespace=namespace,
                 label_selector=deployment_label_selector,
             )
+            items = deployments_response.get("items", []) if deployments_response else []
             deployment_services = [
-                item["metadata"]["name"]
-                for item in deployments_response.get("items", [])
-                if (username or item["metadata"]["name"].startswith(prefix))
+                item["metadata"]["name"] for item in items if (username or item["metadata"]["name"].startswith(prefix))
             ]
             services.extend(deployment_services)
-        except client.exceptions.ApiException as e:
+        except Exception as e:
+            # Catch all errors from controller client (ControllerRequestError) or legacy K8s client (ApiException)
             logger.warning(f"Failed to list Deployments: {e}")
 
         # Search RayClusters
@@ -673,8 +679,9 @@ def fetch_resources_for_teardown(
                     namespace=namespace,
                     plural="rayclusters",
                     label_selector=raycluster_label_selector,
+                    ignore_not_found=True,
                 )
-                items = response.get("items", [])
+                items = response.get("items", []) if response else []
                 raycluster_services = [
                     item["metadata"]["name"]
                     for item in items
@@ -686,7 +693,7 @@ def fetch_resources_for_teardown(
                 logger.warning(f"Could not load raycluster services: {str(e)}")
 
         except Exception as e:
-            if not ((hasattr(e, "status") and e.status == 404) or "404" in str(e)):
+            if not http_not_found(e):
                 logger.warning(f"Failed to list RayClusters: {e}")
 
         from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
@@ -700,23 +707,25 @@ def fetch_resources_for_teardown(
                     label_selector = None
 
                 if label_selector:
-                    response = custom_api.list_namespaced_custom_object(
+                    response = controller_client.list_namespaced_custom_object(
                         group="kubeflow.org",
                         version="v1",
                         namespace=namespace,
                         plural=plural,
                         label_selector=label_selector,
+                        ignore_not_found=True,
                     )
                 else:
                     # Search all jobs when no username filter
-                    response = custom_api.list_namespaced_custom_object(
+                    response = controller_client.list_namespaced_custom_object(
                         group="kubeflow.org",
                         version="v1",
                         namespace=namespace,
                         plural=plural,
+                        ignore_not_found=True,
                     )
 
-                items = response.get("items", [])
+                items = response.get("items", []) if response else []
                 # Filter by prefix if provided, and ensure it's a kubetorch service (has template label)
                 job_services = []
                 for item in items:
@@ -731,8 +740,8 @@ def fetch_resources_for_teardown(
                         elif username and labels.get(KT_USERNAME_LABEL) == username:
                             job_services.append(item_name)
                 services.extend(job_services)
-            except client.exceptions.ApiException as e:
-                if e.status != 404:  # Ignore if Kubeflow Training Operator is not installed
+            except Exception as e:
+                if http_not_found(e):  # Ignore if Kubeflow Training Operator is not installed
                     logger.warning(f"Failed to list {job_kind}s: {e}")
 
     else:
@@ -762,6 +771,7 @@ def fetch_resources_for_teardown(
                 namespace=namespace,
                 plural="services",
                 name=service_name,
+                ignore_not_found=True,
             )
             if (
                 isinstance(service, dict)
@@ -777,7 +787,9 @@ def fetch_resources_for_teardown(
         # Check if it's a Deployment (if not found as Knative service)
         if not service_found:
             try:
-                deployment = controller_client.get_deployment(namespace=namespace, name=service_name)
+                deployment = controller_client.get_deployment(
+                    namespace=namespace, name=service_name, ignore_not_found=True
+                )
                 if isinstance(deployment, dict) and deployment.get("kind") == "Deployment":
                     service_type = "deployment"
                     service_found = True
@@ -793,6 +805,7 @@ def fetch_resources_for_teardown(
                     namespace=namespace,
                     plural="rayclusters",
                     name=service_name,
+                    ignore_not_found=True,
                 )
                 if (
                     isinstance(raycluster, dict)
@@ -811,7 +824,7 @@ def fetch_resources_for_teardown(
             for job_kind in TrainJobServiceManager.SUPPORTED_KINDS:
                 try:
                     plural = job_kind.lower() + "s"
-                    job_resource = custom_api.get_namespaced_custom_object(
+                    job_resource = controller_client.get_namespaced_custom_object(
                         group="kubeflow.org",
                         version="v1",
                         namespace=namespace,
@@ -822,20 +835,21 @@ def fetch_resources_for_teardown(
                         service_type = job_kind.lower()
                         service_found = True
                         break
-                except client.exceptions.ApiException:
+                except Exception:
                     continue
 
         # Get associated resources if service exists
         configmaps = load_configmaps(service_name, namespace)
-        pods_result = controller_client.list_pods(
-            namespace=namespace, label_selector=f"{KT_SERVICE_LABEL}={service_name}"
-        )
-        # Handle dict response from ControllerClient
-        if isinstance(pods_result, dict):
-            pods = [pod["metadata"]["name"] for pod in pods_result.get("items", [])]
-        else:
-            # Handle object response from CoreV1Api (legacy)
-            pods = [pod.metadata.name for pod in pods_result.items]
+        pods = []
+        try:
+            pods_result = controller_client.list_pods(
+                namespace=namespace, label_selector=f"{KT_SERVICE_LABEL}={service_name}"
+            )
+            # Handle dict response from ControllerClient
+            if pods_result:
+                pods = [pod["metadata"]["name"] for pod in pods_result.get("items", [])]
+        except Exception:
+            pass
 
         # Only add the service to the resources if it has configmaps, pods, or we found the service
         if service_found or configmaps or pods:
@@ -871,7 +885,7 @@ def _get_sync_package_paths(
 
 
 # ----------------- Error Handling Utils ----------------- #
-def check_pod_status_for_errors(pod: client.V1Pod):
+def check_pod_status_for_errors(pod):
     """Check pod status for errors"""
 
     def _get(obj, attr, default=None):
@@ -883,10 +897,10 @@ def check_pod_status_for_errors(pod: client.V1Pod):
     conditions = _get(status, "conditions", []) or []
 
     for condition in conditions:
-        ctype = _get(condition, "type")
-        cstatus = _get(condition, "status")
-        creason = _get(condition, "reason")
-        cmessage = _get(condition, "message", "")
+        ctype = condition.get("type")
+        cstatus = condition.get("status")
+        creason = condition.get("reason")
+        cmessage = condition.get("message", "")
 
         if ctype == "PodScheduled" and cstatus == "False" and creason == "Unschedulable":
 
@@ -907,21 +921,37 @@ def check_pod_status_for_errors(pod: client.V1Pod):
                 raise ResourceNotAvailableError(f"Required compute resources are not configured: {cmessage}")
 
     # Check container status errors
-    container_statuses = _get(status, "container_statuses", []) or []
+    container_statuses = status.get("containerStatuses", []) or []
     for cs in container_statuses:
-        state = _get(cs, "state", {})
-        waiting = _get(state, "waiting")
+        state = cs.get("state", {})
+        waiting = state.get("waiting")
         if waiting:
-            reason = _get(waiting, "reason")
-            message = _get(waiting, "message", "")
+            reason = waiting.get("reason")
+            message = waiting.get("message", "")
+
+            # For BackOff/CrashLoopBackOff, get the actual crash reason from lastState
+            if reason in ("BackOff", "CrashLoopBackOff"):
+                last_state = cs.get("lastState", {})
+                terminated = last_state.get("terminated", {})
+                if terminated:
+                    exit_code = terminated.get("exitCode", "unknown")
+                    term_reason = terminated.get("reason", "")
+                    term_message = terminated.get("message", "")
+                    # Build more informative error message
+                    message = f"{message} (exit code: {exit_code}"
+                    if term_reason:
+                        message += f", reason: {term_reason}"
+                    if term_message:
+                        message += f", error: {term_message}"
+                    message += ")"
+
             if reason in TERMINATE_EARLY_ERRORS:
-                metadata = _get(pod, "metadata", {})
-                raise TERMINATE_EARLY_ERRORS[reason](f"Pod {_get(metadata,'name')}: {message}")
+                metadata = pod.get("metadata", {})
+                raise TERMINATE_EARLY_ERRORS[reason](f"Pod {metadata.get('name')}: {message}")
 
 
 def check_pod_events_for_errors(pod, namespace: str):
     """Check pod events for scheduling errors"""
-
     meta = pod.metadata if hasattr(pod, "metadata") else pod.get("metadata", {})
     name = meta.get("name")
 
@@ -1002,10 +1032,10 @@ def check_replicaset_events_for_errors(
                             f"{message}. Please check cluster configuration and permissions."
                         )
 
-    except client.exceptions.ApiException as e:
-        logger.warning(f"Error checking ReplicaSet events for {service_name}: {e}")
     except ResourceNotAvailableError:
         raise
+    except Exception as e:
+        logger.warning(f"Error checking ReplicaSet events for {service_name}: {e}")
 
 
 def check_revision_for_errors(revision_name: str, namespace: str):
@@ -1085,7 +1115,19 @@ def list_secrets(
     controller_client = kubetorch.globals.controller_client()
     try:
         if all_namespaces:
-            secrets_result = controller_client.list_secrets_all_namespaces()
+            try:
+                secrets_result = controller_client.list_secrets_all_namespaces()
+            except ControllerRequestError as e:
+                if e.status_code == 403:
+                    msg = (
+                        "Cross-namespace secret listing requires additional RBAC permissions. "
+                        f"Falling back to namespace-scoped listing for namespace: '{namespace}'"
+                    )
+                    if console:
+                        console.print(f"[yellow]{msg}[/yellow]\n")
+                    secrets_result = controller_client.list_secrets(namespace=namespace)
+                else:
+                    raise
         else:
             secrets_result = controller_client.list_secrets(namespace=namespace)
 
@@ -1121,7 +1163,7 @@ def list_secrets(
                     filtered_secrets.append(parsed_secret)
         return filtered_secrets
 
-    except client.rest.ApiException as e:
+    except Exception as e:
         console.print(f"[red]Failed to load secrets: {e}[/red]")
         return None
 

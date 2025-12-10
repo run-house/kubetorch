@@ -6,7 +6,7 @@ metadata:
   labels:
     app: kubetorch-controller
 spec:
-  replicas: 1
+  replicas: {{ .Values.controller.replicas }}
   selector:
     matchLabels:
       app: kubetorch-controller
@@ -53,11 +53,11 @@ spec:
               subPath: nginx.conf
           resources:
             requests:
-              cpu: "100m"
-              memory: "128Mi"
+              cpu: {{ .Values.nginxProxy.resources.cpu.request | quote }}
+              memory: {{ .Values.nginxProxy.resources.memory.request | quote }}
             limits:
-              cpu: "500m"
-              memory: "256Mi"
+              cpu: {{ .Values.nginxProxy.resources.cpu.limit | quote }}
+              memory: {{ .Values.nginxProxy.resources.memory.limit | quote }}
 
         # --------------------------------------------------------------------
         # Controller container (the K8s API proxy)
@@ -65,21 +65,45 @@ spec:
         - name: controller
           image: "{{ .Values.controller.image }}:{{ .Values.controller.tag }}"
           imagePullPolicy: {{ .Values.controller.imagePullPolicy }}
+          env:
+            - name: VERSION
+              value: {{ .Values.controller.tag | quote }}
+            - name: PORT
+              value: {{ .Values.controller.port | quote }}
+            - name: WORKERS
+              value: {{ .Values.controller.workers | quote }}
+            - name: CONNECTION_POOL_SIZE
+              value: {{ .Values.controller.connectionPoolSize | quote }}
           ports:
-            - containerPort: 8081
+            - containerPort: {{ .Values.controller.port }}
               name: controller
+          # Startup probe allows arbitrary startup time (up to 5 minutes)
+          # Checks every 5s, allows up to 60 failures before giving up
+          startupProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.controller.port }}
+            initialDelaySeconds: 0
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          # Once startup succeeds, liveness checks if container is still alive
           livenessProbe:
             httpGet:
               path: /health
-              port: 8081
-            initialDelaySeconds: 5
+              port: {{ .Values.controller.port }}
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Once startup succeeds, readiness checks if ready to serve traffic
+          # Check controller directly to ensure it's ready before routing traffic
           readinessProbe:
             httpGet:
               path: /health
-              port: 8081
-            initialDelaySeconds: 3
+              port: {{ .Values.controller.port }}
             periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
           resources:
             requests:
               cpu: {{ .Values.controller.resources.cpu.request | quote }}

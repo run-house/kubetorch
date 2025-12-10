@@ -21,7 +21,6 @@ import httpx
 import typer
 import yaml
 from kubernetes import client
-from kubernetes.client.rest import ApiException
 from pydantic import BaseModel
 from rich import box
 from rich.console import Console
@@ -38,7 +37,7 @@ from kubetorch.constants import MAX_PORT_TRIES
 from kubetorch.resources.compute.utils import is_port_available
 from kubetorch.servers.http.utils import stream_logs_websocket_helper, StreamType
 from kubetorch.serving.utils import wait_for_port_forward
-from kubetorch.utils import hours_to_ns, load_kubeconfig
+from kubetorch.utils import hours_to_ns, http_not_found, load_kubeconfig
 
 from .constants import BULLET_UNICODE, CPU_RATE, DOUBLE_SPACE_UNICODE, GPU_RATE
 
@@ -122,10 +121,15 @@ def get_pods_for_service_cli(name: str, namespace: str):
     # Use unified service label - works for all deployment modes
     controller_client = globals.controller_client()
     label_selector = f"kubetorch.com/service={name}"
-    return controller_client.list_pods(
-        namespace=namespace,
-        label_selector=label_selector,
-    )
+    try:
+        return controller_client.list_pods(
+            namespace=namespace,
+            label_selector=label_selector,
+        )
+    except Exception as e:
+        if http_not_found(e):
+            return {"items": []}
+        raise
 
 
 def service_name_argument(*args, required: bool = True, **kwargs):
@@ -152,8 +156,8 @@ def get_deployment_mode(name: str, namespace: str) -> str:
         console.print(f"Found [green]{deployment_mode}[/green] service [blue]{name}[/blue]")
         return name, deployment_mode
 
-    except ApiException as e:
-        console.print(f"[red]Kubernetes API error: {e}[/red]")
+    except Exception as e:
+        console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
 
 
@@ -851,7 +855,8 @@ def load_ingress(namespace: str = globals.config.install_namespace):
         return None
 
     except Exception as e:
-        logger.error(f"Failed to load ingress: {e}")
+        if not http_not_found(e):
+            logger.error(f"Failed to load ingress: {e}")
         return None
 
 
@@ -863,44 +868,48 @@ def get_ingress_host(ingress):
         return None
 
 
-def detect_deployment_mode(name: str, namespace: str, custom_api, apps_v1_api):
+def detect_deployment_mode(name: str, namespace: str):
     """Detect if a service is deployed as Knative, Deployment, or RayCluster."""
     controller_client = globals.controller_client()
 
     # First try Deployment
     try:
-        controller_client.get_deployment(name=name, namespace=namespace)
-        return "deployment"
-    except ApiException:
-        pass
+        obj = controller_client.get_deployment(name=name, namespace=namespace)
+        if isinstance(obj, dict) and obj.get("kind") == "Deployment":
+            return "deployment"
+    except Exception as e:
+        if not http_not_found(e):
+            raise
 
     # Then try Knative
     try:
-        controller_client.get_namespaced_custom_object(
+        obj = controller_client.get_namespaced_custom_object(
             group="serving.knative.dev",
             version="v1",
             namespace=namespace,
             plural="services",
             name=name,
         )
-        return "knative"
-    except ApiException:
-        pass
+        if isinstance(obj, dict) and obj.get("kind") == "Service":
+            return "knative"
+    except Exception as e:
+        if not http_not_found(e):
+            raise
 
     # Then try RayCluster
     try:
-        controller_client.get_namespaced_custom_object(
+        obj = controller_client.get_namespaced_custom_object(
             group="ray.io",
             version="v1",
             namespace=namespace,
             plural="rayclusters",
             name=name,
         )
-        return "raycluster"
-    except ApiException:
-        pass
-
-    return None
+        if isinstance(obj, dict) and obj.get("kind") == "RayCluster":
+            return "raycluster"
+    except Exception as e:
+        if not http_not_found(e):
+            raise
 
 
 def load_selected_pod(service_name, provided_pod, service_pods):

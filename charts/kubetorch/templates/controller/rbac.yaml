@@ -12,7 +12,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
 
 ###############################################################################
-# 1. Namespace Roles per Deployment Namespace
+# Namespace Roles per Deployment Namespace
 ###############################################################################
 {{- $deployNamespaces := .Values.kubetorchConfig.deployment_namespaces | default (list) }}
 
@@ -34,10 +34,20 @@ rules:
     resources: ["services"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  # Endpoints
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list", "watch"]
+
   # Pods
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+
+  # Pod Logs
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
 
   # Pod Exec
   - apiGroups: [""]
@@ -86,7 +96,7 @@ rules:
 
 
 ###############################################################################
-# 2. RoleBindings per Deployment Namespace
+# RoleBindings per Deployment Namespace
 ###############################################################################
 {{- range $ns := $deployNamespaces }}
 ---
@@ -107,7 +117,7 @@ subjects:
 
 
 ###############################################################################
-# 3. ClusterRole for Ray + Knative CRDs
+# ClusterRole for Ray + Knative + Kubeflow CRDs
 ###############################################################################
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -125,9 +135,19 @@ rules:
     resources: ["services", "revisions"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  # Kubeflow Training Jobs (PyTorchJob, TFJob, MXJob, XGBoostJob)
+  - apiGroups: ["kubeflow.org"]
+    resources: ["pytorchjobs", "tfjobs", "mxjobs", "xgboostjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # StorageClasses (read-only for volume provisioning)
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list"]
+
 
 ###############################################################################
-# 4. ClusterRoleBinding for CRDs
+# ClusterRoleBinding for CRDs
 ###############################################################################
 ---
 apiVersion: rbac.authorization.k8s.io/v1

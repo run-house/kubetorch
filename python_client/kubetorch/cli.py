@@ -13,9 +13,9 @@ from typing import List
 from urllib.parse import urlparse
 
 import httpx
-from kubernetes.client.rest import ApiException
 
 from kubetorch.servers.http.utils import is_running_in_kubernetes
+from kubetorch.utils import http_not_found
 
 from .cli_utils import (
     create_table_for_output,
@@ -569,7 +569,7 @@ def kt_describe(
 
     try:
         name, deployment_mode = get_deployment_mode(name, namespace)
-    except ApiException:
+    except Exception:
         console.print(f"[red] Failed to load service '{name}' in namespace '{namespace}'[/red]")
         raise typer.Exit(1)
 
@@ -892,8 +892,8 @@ def kt_list(
         table.pad_bottom = 1
         console.print(table)
 
-    except ApiException as e:
-        console.print(f"[red]Kubernetes API error: {e}[/red]")
+    except Exception as e:
+        console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
 
 
@@ -1081,7 +1081,7 @@ def kt_secrets(
         "-x",
     ),
     namespace: str = typer.Option(
-        "default",
+        globals.config.namespace,
         "-n",
         "--namespace",
     ),
@@ -1117,7 +1117,7 @@ def kt_secrets(
 
         $ kt secrets list -n my_namespace  # list secrets in `my_namespace` namespace
 
-        $ kt secrets -A  # list secrets in all namespaces
+        $ kt secrets -A  # list secrets in all namespaces (note: requires cluster-wide RBAC)
 
         $ kt secrets create --provider aws  # create a secret with the aws credentials in `default` namespace
 
@@ -1326,8 +1326,8 @@ def kt_ssh(
             check=True,
         )
 
-    except ApiException as e:
-        console.print(f"[red]Kubernetes API error: {e}[/red]")
+    except Exception as e:
+        console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
 
 
@@ -1478,7 +1478,7 @@ def kt_teardown(
                                 )
                                 console.print(f"✓ Force deleted pod [blue]{pod_name}[/blue]")
                             except Exception as e:
-                                if not ("404" in str(e) or "not found" in str(e).lower()):
+                                if not http_not_found(e):
                                     console.print(f"[red]Failed to delete pod {pod_name}: {e}[/red]")
                 except Exception as e:
                     console.print(f"[red]Failed to list pods for service {service_name}: {e}[/red]")
@@ -1523,7 +1523,7 @@ def kt_teardown(
                             )
                             console.print(f"✓ Force deleted orphaned pod [blue]{pod_name}[/blue]")
                         except Exception as e:
-                            if not ("404" in str(e) or "not found" in str(e).lower()):
+                            if not http_not_found(e):
                                 console.print(f"[red]Failed to delete orphaned pod {pod_name}: {e}[/red]")
             except Exception as e:
                 console.print(f"[red]Failed to list orphaned pods: {e}[/red]")
