@@ -16,7 +16,7 @@ from kubetorch.resources.compute.utils import (
 from kubetorch.servers.http.utils import load_template
 from kubetorch.serving.autoscaling import AutoscalingConfig
 from kubetorch.serving.base_service_manager import BaseServiceManager
-from kubetorch.serving.utils import pod_is_running
+from kubetorch.serving.utils import nested_override, pod_is_running
 
 logger = get_logger(__name__)
 
@@ -98,6 +98,48 @@ class KnativeServiceManager(BaseServiceManager):
         )
 
         return service
+
+    @staticmethod
+    def _apply_kubetorch_updates(
+        manifest: dict,
+        inactivity_ttl: str = None,
+        custom_labels: dict = None,
+        custom_annotations: dict = None,
+        custom_template: dict = None,
+        gpu_annotations: dict = None,
+    ):
+        labels = BaseServiceManager._get_labels(
+            template_label="ksvc",
+            custom_labels=custom_labels,
+        )
+        template_labels = labels.copy()
+        template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+
+        template_annotations = {
+            "networking.knative.dev/ingress.class": "kourier.ingress.networking.knative.dev",
+        }
+
+        annotations = BaseServiceManager._get_annotations(custom_annotations, inactivity_ttl)
+        annotations.update(
+            {
+                "serving.knative.dev/container-name": "kubetorch",
+                "serving.knative.dev/probe-path": "/health",
+            }
+        )
+        # TODO - autoscaling configs and concurrency
+        if gpu_annotations:
+            template_annotations.update(gpu_annotations)
+
+        manifest["metadata"].setdefault("labels", {}).update(labels)
+        manifest["metadata"].setdefault("annotations", {}).update(annotations)
+        manifest["spec"].setdefault("template", {}).setdefault("metadata", {})
+        manifest["spec"]["template"]["metadata"].setdefault("labels", {}).update(template_labels)
+        manifest["spec"]["template"]["metadata"].setdefault("annotations", {}).update(template_annotations)
+
+        if custom_template:
+            nested_override(manifest, custom_template)
+
+        return manifest
 
     def _update_launchtime_manifest(self, manifest: dict, service_name: str, module_name: str) -> dict:
         """Update manifest with service name and deployment timestamp."""

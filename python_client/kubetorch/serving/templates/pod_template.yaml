@@ -37,7 +37,6 @@ tolerations:
 {% endfor %}
 {% endif %}
 
-timeoutSeconds: {{ launch_timeout }}
 containers:
   - name: kubetorch
     image: {{ server_image }}

@@ -9,6 +9,7 @@ import kubetorch.serving.constants as serving_constants
 from kubetorch.logger import get_logger
 from kubetorch.servers.http.utils import load_template
 from kubetorch.serving.base_service_manager import BaseServiceManager
+from kubetorch.serving.utils import nested_override
 
 logger = get_logger(__name__)
 
@@ -189,6 +190,60 @@ class RayClusterServiceManager(BaseServiceManager):
         )
 
         return raycluster
+
+    @staticmethod
+    def _apply_kubetorch_updates(
+        manifest: dict,
+        inactivity_ttl: str = None,
+        custom_labels: dict = None,
+        custom_annotations: dict = None,
+        custom_template: dict = None,
+    ):
+        labels = BaseServiceManager._get_labels(
+            template_label="raycluster",
+            custom_labels=custom_labels,
+        )
+        template_labels = labels.copy()
+        template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+
+        annotations = BaseServiceManager._get_annotations(custom_annotations, inactivity_ttl)
+        # Head node specific labels (for service selector)
+        head_template_labels = {
+            **template_labels,
+            "ray.io/node-type": "head",  # KubeRay standard label
+        }
+
+        # Worker node specific labels
+        worker_template_labels = {
+            **template_labels,
+            "ray.io/node-type": "worker",  # KubeRay standard label
+        }
+
+        # Get base annotations and add Ray-specific ones
+        annotations.update(
+            {
+                "ray.io/overwrite-container-cmd": "true",
+            }
+        )
+
+        manifest["metadata"].setdefault("labels", {}).update(labels)
+        manifest["metadata"].setdefault("annotations", {}).update(annotations)
+        manifest["spec"].setdefault("headGroupSpec", {}).setdefault("template", {}).setdefault("metadata", {})
+        manifest["spec"]["headGroupSpec"]["template"]["metadata"].setdefault("labels", {}).update(head_template_labels)
+        manifest["spec"]["headGroupSpec"]["template"]["metadata"].setdefault("annotations", {}).update(annotations)
+
+        # Ensure workerGroupSpecs exists and has at least one worker group
+        spec = manifest.setdefault("spec", {})
+        worker_group_specs = spec.setdefault("workerGroupSpecs", [{}])
+        first_worker_group = worker_group_specs[0]
+        first_worker_group.setdefault("template", {}).setdefault("metadata", {})
+        first_worker_group["template"]["metadata"].setdefault("labels", {}).update(worker_template_labels)
+        first_worker_group["template"]["metadata"].setdefault("annotations", {}).update(annotations)
+
+        if custom_template:
+            nested_override(manifest, custom_template)
+
+        return manifest
 
     def _create_or_update_resource_from_manifest(self, manifest: dict, dryrun: bool = False) -> Tuple[dict, bool]:
         """Create or update resources from a manifest."""

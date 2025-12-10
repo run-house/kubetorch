@@ -409,6 +409,10 @@ class Module:
                 "Kubernetes credentials not found. Please ensure you are running in a Kubernetes cluster or have a valid kubeconfig file."
             )
 
+        if compute.service_name and compute.service_name != self.service_name:
+            logger.info(f"Renaming service to match compute service name {compute.service_name}")
+            self.service_name = compute.service_name
+
         if get_if_exists:
             try:
                 existing_service = self._get_existing_service(reload_prefixes)
@@ -491,6 +495,10 @@ class Module:
                 stream_logs=True
             )
         """
+        if compute.service_name and compute.service_name != self.service_name:
+            logger.info(f"Renaming service to match compute service name {compute.service_name}")
+            self.service_name = compute.service_name
+
         if get_if_exists:
             try:
                 existing_service = await self._get_existing_service_async(reload_prefixes)

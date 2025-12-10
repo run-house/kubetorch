@@ -1,3 +1,4 @@
+import copy
 import os
 import re
 import shlex
@@ -73,6 +74,7 @@ class Compute:
         allowed_serialization: Optional[List[str]] = None,
         replicas: int = 1,
         logging_config: LoggingConfig = None,
+        manifest: Dict = None,
         _skip_template_init: bool = False,
     ):
         """Initialize the compute requirements for a Kubetorch service.
@@ -126,9 +128,10 @@ class Compute:
                 or up to half the node's RAM.
             logging_config (LoggingConfig, optional): Configuration for logging behavior on this service. Controls
                 log level, streaming options, and grace periods. See :class:`LoggingConfig` for details.
+            manifest (Dict, optional): Bring-your-own Kubernetes manifest. If provided, this manifest will be used as the base,
+                and all other kwargs will act as overrides.
 
         Note:
-            **Resource Specification Formats:**
 
             CPUs:
                 - Decimal core count: "0.5", "1.0", "2.0"
@@ -188,23 +191,66 @@ class Compute:
             self._manifest = None
             return
 
-        # determine pod spec vars
-        namespace = namespace or globals.config.namespace
-        server_port = serving_constants.DEFAULT_KT_SERVER_PORT
-        service_account_name = service_account_name or serving_constants.DEFAULT_SERVICE_ACCOUNT_NAME
-        otel_enabled = (
-            globals.config.cluster_config.get("otel_enabled", False) if globals.config.cluster_config else False
+        user_manifest = manifest if manifest else None
+        if user_manifest:
+            if "kind" not in user_manifest or "apiVersion" not in user_manifest:
+                raise ValueError("Manifest must have a 'kind' and 'apiVersion' field")
+
+            user_manifest = copy.deepcopy(user_manifest)
+            user_manifest["metadata"] = user_manifest.get("metadata") or {}
+            user_manifest["spec"] = user_manifest.get("spec") or {}
+
+            self._manifest = user_manifest
+
+            # extract values from user manifest if not provided as kwargs
+            user_manifest_annotations = user_manifest["metadata"].get("annotations", {})
+            namespace = namespace or user_manifest["metadata"].get("namespace")
+            if not kubeconfig_path:
+                self._kubeconfig_path = user_manifest_annotations.get(serving_constants.KUBECONFIG_PATH_ANNOTATION)
+            if not inactivity_ttl:
+                inactivity_ttl = user_manifest_annotations.get(serving_constants.INACTIVITY_TTL_ANNOTATION)
+
+        # extract values from user pod spec if it exists
+        extracted_values = self._extract_user_values() if user_manifest else {}
+
+        # determine pod spec vars with priority: kwarg > user manifest > default
+        namespace = namespace or extracted_values.get("namespace") or globals.config.namespace
+        server_port = extracted_values.get("server_port") or serving_constants.DEFAULT_KT_SERVER_PORT
+        service_account_name = (
+            service_account_name
+            or extracted_values.get("service_account_name")
+            or serving_constants.DEFAULT_SERVICE_ACCOUNT_NAME
         )
-        server_image = self._get_server_image(image, otel_enabled, inactivity_ttl)
-        gpus = None if gpus in (0, None) else gpus
-        self.gpu_annotations = {"gpu-memory": gpu_memory} if gpu_memory else {}
-        requested_resources = self._get_requested_resources(cpus, memory, disk_size, gpus)
+        otel_enabled = extracted_values.get("otel_enabled")
+        if otel_enabled is None:
+            otel_enabled = (
+                globals.config.cluster_config.get("otel_enabled", False) if globals.config.cluster_config else False
+            )
+
+        server_image = self._get_server_image(image or extracted_values.get("image"), otel_enabled, inactivity_ttl)
+
+        if gpus is not None:
+            gpus = None if gpus == 0 else gpus
+        else:
+            user_gpus = extracted_values.get("gpus")
+            gpus = None if user_gpus in (0, None) else user_gpus
+        gpu_annotations = {"gpu-memory": gpu_memory} if gpu_memory else {}
+
+        user_resources = extracted_values.get("resources", {})
+        requested_resources = self._get_requested_resources(
+            cpus or user_resources.get("cpus"),
+            memory or user_resources.get("memory"),
+            disk_size or user_resources.get("disk_size"),
+            gpus,
+        )
+
         secret_env_vars, secret_volumes = self._extract_secrets(secrets, namespace)
         volume_mounts, volume_specs = self._volumes_for_pod_template(volumes)
-        node_selector = self._get_node_selector(node_selector.copy() if node_selector else {}, gpu_type)
-        all_tolerations = self._get_tolerations(gpus, tolerations)
 
-        env_vars = env_vars.copy() if env_vars else {}
+        user_env_vars = extracted_values.get("env_vars", {})
+        env_vars = env_vars or {}
+        env_vars = {**user_env_vars, **env_vars}
+
         # Set KT_LOG_LEVEL from logging_config, falling back to env var
         if not env_vars.get("KT_LOG_LEVEL"):
             if self._logging_config.level:
@@ -219,6 +265,13 @@ class Compute:
             allowed_serialization_env_var = os.getenv("KT_ALLOWED_SERIALIZATION", None)
             if allowed_serialization_env_var:
                 allowed_serialization = allowed_serialization_env_var.split(",")
+        user_node_selector = extracted_values.get("node_selector", {})
+        node_selector = self._get_node_selector(
+            (node_selector or user_node_selector).copy() if (node_selector or user_node_selector) else {}, gpu_type
+        )
+
+        user_tolerations = extracted_values.get("tolerations", [])
+        all_tolerations = self._get_tolerations(gpus, tolerations or user_tolerations)
 
         template_vars = {
             "server_image": server_image,
@@ -234,17 +287,18 @@ class Compute:
             "config_env_vars": self._get_config_env_vars(allowed_serialization),
             "image_pull_policy": image_pull_policy,
             "namespace": namespace,
-            "freeze": freeze,
-            "gpu_anti_affinity": gpu_anti_affinity,
-            "working_dir": working_dir,
+            "freeze": freeze if freeze is not None else extracted_values.get("freeze", False),
+            "gpu_anti_affinity": gpu_anti_affinity
+            if gpu_anti_affinity is not None
+            else extracted_values.get("gpu_anti_affinity"),
+            "working_dir": working_dir or extracted_values.get("working_dir"),
             "tolerations": all_tolerations,
-            "shm_size_limit": shared_memory_limit,
-            "priority_class_name": priority_class_name,
-            "launch_timeout": self._get_launch_timeout(launch_timeout),
+            "shm_size_limit": shared_memory_limit or extracted_values.get("shared_memory_limit"),
+            "priority_class_name": priority_class_name or extracted_values.get("priority_class_name"),
+            "launch_timeout": self._get_launch_timeout(launch_timeout or extracted_values.get("launch_timeout")),
             "inactivity_ttl": inactivity_ttl,
             "otel_enabled": otel_enabled,
             # launch time arguments
-            "raycluster": False,
             "setup_script": "",
         }
 
@@ -258,23 +312,44 @@ class Compute:
             **template_vars,
         )
 
-        # Build initial manifest based on deployment type
-        from kubetorch.serving.service_manager import DeploymentServiceManager
-
         manifest_annotations = annotations.copy() if annotations else {}
-        manifest_annotations.update(self.gpu_annotations.copy())
+        manifest_annotations.update(gpu_annotations.copy())
         if self._kubeconfig_path is not None:
             manifest_annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
 
-        self._manifest = DeploymentServiceManager._build_base_manifest(
-            pod_spec=pod_spec,
-            namespace=namespace,
-            replicas=replicas,
-            inactivity_ttl=inactivity_ttl,
-            custom_labels=labels or {},
-            custom_annotations=manifest_annotations,
-            custom_template=service_template or {},
-        )
+        if user_manifest:
+            # Merge KT-specific pod spec into user pod spec
+            self._merge_pod_specs(pod_spec)
+
+            # Apply KT-specific metadata to user manifest
+            from kubetorch.serving.service_manager import BaseServiceManager
+
+            service_manager = BaseServiceManager._get_service_manager_class(self._manifest["kind"])
+            service_manager._apply_kubetorch_updates(
+                manifest=self._manifest,
+                custom_labels=labels or {},
+                custom_annotations=manifest_annotations,
+                inactivity_ttl=inactivity_ttl,
+                gpu_annotations=gpu_annotations,
+            )
+            # Override user manifest with specified kwargs
+            if namespace and namespace != self.namespace:
+                self.namespace = namespace
+            if replicas and replicas != self.replicas:
+                self.replicas = replicas
+        else:
+            from kubetorch.serving.service_manager import DeploymentServiceManager
+
+            # Build initial manifest based on deployment type
+            self._manifest = DeploymentServiceManager._build_base_manifest(
+                pod_spec=pod_spec,
+                namespace=namespace,
+                replicas=replicas,
+                inactivity_ttl=inactivity_ttl,
+                custom_labels=labels or {},
+                custom_annotations=manifest_annotations,
+                custom_template=service_template or {},
+            )
 
     @classmethod
     def from_template(cls, service_info: dict):
@@ -293,14 +368,139 @@ class Compute:
         # Return metadata from the manifest itself
         return self._manifest.get("metadata", {})
 
-    def _update_manifest_metadata(self, key, value):
-        """Update metadata in the primary resource in the manifest."""
-        # Update metadata in the manifest itself
-        if "metadata" not in self._manifest:
-            self._manifest["metadata"] = {}
-        if key not in self._manifest["metadata"]:
-            self._manifest["metadata"][key] = {}
-        self._manifest["metadata"][key].update(value)
+    def _get_pod_spec_path(self, manifest: dict):
+        kind = manifest.get("kind")
+        if kind == "RayCluster":
+            return ["spec", "headGroupSpec", "template", "spec"]
+        else:  # "Deployment", "Service"
+            return ["spec", "template", "spec"]
+
+    def _extract_user_values(self) -> dict:
+        """Extract non-None values from user pod spec."""
+        if not self.pod_spec:
+            return {}
+
+        def safe_get_attr(attr_name):
+            """Safely get attribute value, returning None on any error."""
+            try:
+                return getattr(self, attr_name)
+            except (ValueError, KeyError, IndexError, AttributeError):
+                return None
+
+        def is_present(value):
+            """Check if value is present (not None, empty string, empty dict, or empty list)."""
+            return value is not None and value != "" and value != {} and value != []
+
+        extracted = {}
+
+        # Container-level properties
+        # Map extracted key to property name (some properties have different names)
+        container_properties = {
+            "image": "server_image",  # Extract as "image" but use "server_image" property
+            "image_pull_policy": "image_pull_policy",
+            "working_dir": "working_dir",
+            "env_vars": "env_vars",
+            "freeze": "freeze",
+            "launch_timeout": "launch_timeout",
+            "server_port": "server_port",
+            "otel_enabled": "otel_enabled",
+        }
+        for extracted_key, prop_name in container_properties.items():
+            value = safe_get_attr(prop_name)
+            if is_present(value):
+                extracted[extracted_key] = value
+
+        # Resources (special handling - group together)
+        resources = {}
+        cpus = safe_get_attr("cpus")
+        memory = safe_get_attr("memory")
+        disk_size = safe_get_attr("disk_size")
+        if cpus:
+            resources["cpus"] = cpus
+        if memory:
+            resources["memory"] = memory
+        if disk_size:
+            resources["disk_size"] = disk_size
+        if resources:
+            extracted["resources"] = resources
+
+        # GPUs (separate from resources dict)
+        gpus = safe_get_attr("gpus")
+        if gpus:
+            extracted["gpus"] = int(gpus) if isinstance(gpus, (int, str)) and str(gpus).isdigit() else gpus
+
+        # Pod-level properties
+        pod_properties = [
+            "service_account_name",
+            "priority_class_name",
+            "node_selector",
+            "shared_memory_limit",
+            "gpu_anti_affinity",
+        ]
+        for prop in pod_properties:
+            value = safe_get_attr(prop)
+            if is_present(value):
+                extracted[prop] = value
+
+        # Pod spec fields (direct access, not properties)
+        tolerations = self.pod_spec.get("tolerations", [])
+        if is_present(tolerations):
+            extracted["tolerations"] = tolerations
+
+        return extracted
+
+    def _merge_pod_specs(self, kt_pod_spec: dict):
+        """Merge kubetorch pod spec into user pod spec."""
+        from kubetorch.serving.utils import nested_override
+
+        if not self.pod_spec or not self.pod_spec.get("containers"):
+            self.pod_spec = kt_pod_spec
+            return
+
+        # Helper to merge list fields (KT overrides/adds to user)
+        def merge_list_field(user_dict, kt_dict, field_name, key_name):
+            user_list = user_dict.get(field_name, [])
+            kt_list = kt_dict.get(field_name, [])
+            merged_dict = {item.get(key_name): item for item in user_list}
+            merged_dict.update({item.get(key_name): item for item in kt_list})
+            user_dict[field_name] = list(merged_dict.values())
+
+        # Merge "kubetorch"/base container
+        user_container = self._container()
+        kt_container = kt_pod_spec.get("containers", [None])[0]
+
+        merged_container = user_container
+        merge_list_field(merged_container, kt_container, "env", "name")
+        merge_list_field(merged_container, kt_container, "volumeMounts", "name")
+        if "resources" in kt_container:
+            if "resources" not in merged_container:
+                merged_container["resources"] = {}
+            nested_override(merged_container["resources"], kt_container["resources"])
+        for key, value in kt_container.items():
+            if key not in ["env", "volumeMounts", "resources", "name"]:
+                merged_container[key] = copy.deepcopy(value)
+        merged_container["name"] = "kubetorch"
+
+        # Merge pod-level fields
+        kt_pod_spec.pop("containers", None)
+
+        merged = self.pod_spec
+        if "volumes" in kt_pod_spec:
+            merge_list_field(merged, kt_pod_spec, "volumes", "name")
+            kt_pod_spec.pop("volumes")
+        if "tolerations" in kt_pod_spec:
+            merge_list_field(merged, kt_pod_spec, "tolerations", "key")
+            kt_pod_spec.pop("tolerations")
+        nested_override(merged, kt_pod_spec)
+
+        # For RayCluster, copy the merged head pod spec to the worker group
+        if self._manifest.get("kind") == "RayCluster":
+            spec = self._manifest.get("spec", {})
+            worker_group_specs = spec.get("workerGroupSpecs", [])
+            if worker_group_specs:
+                worker_group = worker_group_specs[0]
+                worker_template = worker_group.setdefault("template", {})
+                worker_template["spec"] = copy.deepcopy(merged)
 
     # ----------------- Properties ----------------- #
     @property
@@ -347,14 +547,23 @@ class Compute:
     @property
     def pod_spec(self):
         """Get the pod spec from the manifest."""
-        # Extract pod spec from the appropriate resource in the manifest
-        kind = self._manifest.get("kind")
-        if kind == "RayCluster":
-            # For Ray clusters, extract from head group spec
-            return self._manifest["spec"]["headGroupSpec"]["template"]["spec"]
-        else:
-            # Knative or deployment
-            return self._manifest["spec"]["template"]["spec"]
+        path = self._get_pod_spec_path(self._manifest)
+        if path:
+            current = self._manifest
+            for key in path:
+                current = current.get(key)
+            return current
+        return None
+
+    @pod_spec.setter
+    def pod_spec(self, value: dict):
+        """Set the pod spec in the manifest."""
+        path = self._get_pod_spec_path(self._manifest)
+        if path:
+            current = self._manifest
+            for key in path[:-1]:
+                current = current.setdefault(key, {})
+            current[path[-1]] = value
 
     @property
     def service_manager(self):
@@ -406,6 +615,8 @@ class Compute:
     @image.setter
     def image(self, value: "Image"):
         self._image = value
+        if self._image.image_id:
+            self.server_image = self._image.image_id
 
     @property
     def endpoint(self):
@@ -421,6 +632,11 @@ class Compute:
         """Get the container from the pod spec."""
         if "containers" not in self.pod_spec:
             raise ValueError("pod_spec missing 'containers' field.")
+        containers = self.pod_spec.get("containers")
+        for container in containers:
+            if container.get("name") == "kubetorch":
+                return container
+        # If container is named "kubetorch", return the first container
         return self.pod_spec["containers"][0]
 
     def _container_env(self):
@@ -459,12 +675,24 @@ class Compute:
 
     @property
     def server_port(self):
-        return self._container()["ports"][0].get("containerPort")
+        container = self._container()
+        ports = container.get("ports", [])
+        if ports and len(ports) > 0:
+            return ports[0].get("containerPort")
+        # Return default if ports not found
+        import kubetorch.serving.constants as serving_constants
+
+        return serving_constants.DEFAULT_KT_SERVER_PORT
 
     @server_port.setter
     def server_port(self, value: int):
         """Set the server port in the pod spec."""
-        self._container()["ports"][0]["containerPort"] = value
+        container = self._container()
+        if "ports" not in container:
+            container["ports"] = []
+        if len(container["ports"]) == 0:
+            container["ports"].append({})
+        container["ports"][0]["containerPort"] = value
 
     @property
     def env_vars(self):
@@ -810,6 +1038,10 @@ class Compute:
         return self._secrets
 
     @property
+    def gpu_annotations(self):
+        return {"gpu-memory": self.gpu_memory} if self.gpu_memory else {}
+
+    @property
     def gpu_anti_affinity(self):
         if "affinity" in self.pod_spec and "nodeAffinity" in self.pod_spec["affinity"]:
             node_affinity = self.pod_spec["affinity"]["nodeAffinity"]
@@ -822,6 +1054,18 @@ class Compute:
                                 if expr.get("key") == "nvidia.com/gpu" and expr.get("operator") == "DoesNotExist":
                                     return True
         return False
+
+    @gpu_anti_affinity.setter
+    def gpu_anti_affinity(self, value: bool):
+        if "affinity" not in self.pod_spec:
+            self.pod_spec["affinity"] = {}
+        if "nodeAffinity" not in self.pod_spec["affinity"]:
+            self.pod_spec["affinity"]["nodeAffinity"] = {}
+        if "requiredDuringSchedulingIgnoredDuringExecution" not in self.pod_spec["affinity"]["nodeAffinity"]:
+            self.pod_spec["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"] = {}
+        self.pod_spec["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"][
+            "nodeSelectorTerms"
+        ] = [{"matchExpressions": [{"key": "nvidia.com/gpu", "operator": "DoesNotExist"}]}]
 
     @property
     def concurrency(self):
@@ -1072,6 +1316,14 @@ class Compute:
         kind = self._manifest.get("kind")
         if kind == "Deployment":
             return self._manifest["spec"].get("replicas", 1)
+        elif kind == "Service":  # Knative Service
+            template_annotations = (
+                self._manifest.get("spec", {}).get("template", {}).get("metadata", {}).get("annotations", {})
+            )
+            min_scale = template_annotations.get("autoscaling.knative.dev/min-scale")
+            if min_scale:
+                return int(min_scale)
+            return 1
         elif kind == "RayCluster":
             spec = self._manifest.get("spec", {})
             head_replicas = spec.get("headGroupSpec", {}).get("replicas", 1)
@@ -1085,6 +1337,10 @@ class Compute:
         kind = self._manifest.get("kind")
         if kind == "Deployment":
             self._manifest["spec"]["replicas"] = value
+        elif kind == "Service":  # Knative Service
+            template_metadata = self._manifest.get("spec", {}).setdefault("template", {}).setdefault("metadata", {})
+            template_annotations = template_metadata.setdefault("annotations", {})
+            template_annotations["autoscaling.knative.dev/min-scale"] = str(value)
         elif kind == "RayCluster":
             worker_replicas = max(0, value - 1)  # Head counts as 1
             spec = self._manifest.get("spec", {})
@@ -1107,6 +1363,11 @@ class Compute:
     def annotations(self):
         metadata = self._get_manifest_metadata()
         return metadata.get("annotations", {})
+
+    @property
+    def labels(self):
+        metadata = self._get_manifest_metadata()
+        return metadata.get("labels", {})
 
     # ----------------- Init Template Setup Helpers ----------------- #
     def _get_server_image(self, image, otel_enabled, inactivity_ttl):
@@ -1141,7 +1402,6 @@ class Compute:
         # Add GPU if specified
         if gpus:
             requests["nvidia.com/gpu"] = str(gpus)
-            limits["nvidia.com/gpu"] = str(gpus)
 
         # Only include non-empty dicts
         resources = {}
