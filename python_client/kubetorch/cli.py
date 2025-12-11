@@ -799,18 +799,35 @@ def kt_list(
             unified_services.sort(key=get_update_time, reverse=True)
 
         try:
-            pods = core_api.list_namespaced_pod(
+            # Fetch pods with kubetorch service label
+            kt_pods = core_api.list_namespaced_pod(
                 namespace=namespace, label_selector=f"{serving_constants.KT_SERVICE_LABEL}"
-            )
+            ).items
+            # Also fetch pods with JobSet label for TrainJob v2
+            try:
+                jobset_pods = core_api.list_namespaced_pod(
+                    namespace=namespace, label_selector="jobset.sigs.k8s.io/jobset-name"
+                ).items
+            except client.exceptions.ApiException:
+                jobset_pods = []
         except client.exceptions.ApiException as e:
             logger.warning(f"Failed to list pods for all services in namespace {namespace}: {e}")
             return
-        pod_map = {
-            svc["name"]: [
-                pod for pod in pods.items if pod.metadata.labels.get(serving_constants.KT_SERVICE_LABEL) == svc["name"]
-            ]
-            for svc in unified_services
-        }
+
+        pod_map = {}
+        for svc in unified_services:
+            name = svc["name"]
+            kind = svc["template_type"]
+            if kind == "trainjob":
+                # TrainJob v2 uses JobSet labels
+                pod_map[name] = [
+                    pod for pod in jobset_pods if pod.metadata.labels.get("jobset.sigs.k8s.io/jobset-name") == name
+                ]
+            else:
+                # Other services use kubetorch labels
+                pod_map[name] = [
+                    pod for pod in kt_pods if pod.metadata.labels.get(serving_constants.KT_SERVICE_LABEL) == name
+                ]
 
         # Create table
         table_columns = [
@@ -883,7 +900,7 @@ def kt_list(
                     except Exception as e:
                         logger.warning(f"Could not get revision for {name}: {e}")
             else:
-                # Process Deployment - now using consistent dict access
+                # Process Deployment and other resource types
                 ready = res.get("status", {}).get("readyReplicas", 0) or 0
                 desired = res.get("spec", {}).get("replicas", 0) or 0
                 if kind == "raycluster":
@@ -899,6 +916,41 @@ def kt_list(
                         display_status = "[yellow]Scaling[/yellow]"
                     else:
                         display_status = "[red]Failed[/red]"
+                elif kind == "trainjob":
+                    # TrainJob v2 status handling - uses jobsStatus instead of conditions
+                    jobs_status = status_data.get("jobsStatus", [])
+                    conditions = {c["type"]: c for c in status_data.get("conditions", [])}
+                    if "Failed" in conditions and conditions["Failed"].get("status") == "True":
+                        display_status = "[red]Failed[/red]"
+                    elif "Succeeded" in conditions and conditions["Succeeded"].get("status") == "True":
+                        display_status = "[green]Completed[/green]"
+                    elif jobs_status:
+                        # Check jobsStatus for running state
+                        node_status = next((j for j in jobs_status if j.get("name") == "node"), {})
+                        if node_status.get("failed", 0) > 0:
+                            display_status = "[red]Failed[/red]"
+                        elif node_status.get("ready", 0) > 0 or node_status.get("active", 0) > 0:
+                            display_status = "[green]Running[/green]"
+                        else:
+                            display_status = "[yellow]Creating[/yellow]"
+                    else:
+                        display_status = "[yellow]Creating[/yellow]"
+                elif kind in ["pytorchjob", "tfjob", "mxjob", "xgboostjob"]:
+                    # v1 training jobs status handling
+                    conditions = status_data.get("conditions", [])
+                    if conditions:
+                        latest = conditions[-1]
+                        cond_type = latest.get("type", "").lower()
+                        if cond_type == "succeeded":
+                            display_status = "[green]Completed[/green]"
+                        elif cond_type == "failed":
+                            display_status = "[red]Failed[/red]"
+                        elif cond_type == "running":
+                            display_status = "[green]Running[/green]"
+                        else:
+                            display_status = "[yellow]Creating[/yellow]"
+                    else:
+                        display_status = "[yellow]Creating[/yellow]"
                 else:
                     display_status = (
                         "[green]Ready[/green]"

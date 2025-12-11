@@ -275,7 +275,7 @@ def delete_resources_for_service(
         "core_api": core_api,
         "namespace": namespace,
     }
-    if service_manager_class.__name__ == "TrainJobServiceManager":
+    if service_manager_class.__name__ in ["TrainJobServiceManager", "TrainJobV2ServiceManager"]:
         kwargs["kind"] = service_type
     service_manager = service_manager_class(**kwargs)
 
@@ -509,10 +509,18 @@ def fetch_resources_for_teardown(
                 logger.warning(f"Failed to list RayClusters: {e}")
 
         from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+        from kubetorch.serving.trainjob_v2_service_manager import TrainJobV2ServiceManager
 
-        for job_kind in TrainJobServiceManager.SUPPORTED_KINDS:
+        # Combine v1 and v2 training job kinds with their configs
+        all_training_kinds = [
+            (kind, TrainJobServiceManager._get_config(kind)) for kind in TrainJobServiceManager.SUPPORTED_KINDS
+        ] + [(kind, TrainJobV2ServiceManager._get_config(kind)) for kind in TrainJobV2ServiceManager.SUPPORTED_KINDS]
+
+        for job_kind, config in all_training_kinds:
             try:
-                plural = job_kind.lower() + "s"
+                plural = config["api_plural"]
+                api_group = config["api_group"]
+                api_version = config["api_version"]
                 if username:
                     label_selector = f"{KT_USERNAME_LABEL}={username}"
                 else:
@@ -520,8 +528,8 @@ def fetch_resources_for_teardown(
 
                 if label_selector:
                     response = custom_api.list_namespaced_custom_object(
-                        group="kubeflow.org",
-                        version="v1",
+                        group=api_group,
+                        version=api_version,
                         namespace=namespace,
                         plural=plural,
                         label_selector=label_selector,
@@ -529,8 +537,8 @@ def fetch_resources_for_teardown(
                 else:
                     # Search all jobs when no username filter
                     response = custom_api.list_namespaced_custom_object(
-                        group="kubeflow.org",
-                        version="v1",
+                        group=api_group,
+                        version=api_version,
                         namespace=namespace,
                         plural=plural,
                     )
@@ -638,6 +646,22 @@ def fetch_resources_for_teardown(
                         break
                 except client.exceptions.ApiException:
                     continue
+
+        # Check if it's a TrainJob v2 (trainer.kubeflow.org/v1alpha1)
+        if not service_found:
+            try:
+                trainjob_resource = custom_api.get_namespaced_custom_object(
+                    group="trainer.kubeflow.org",
+                    version="v1alpha1",
+                    namespace=namespace,
+                    plural="trainjobs",
+                    name=service_name,
+                )
+                if trainjob_resource:
+                    service_type = "trainjob"
+                    service_found = True
+            except client.exceptions.ApiException:
+                pass
 
         # Get associated resources if service exists
         configmaps = load_configmaps(core_api, service_name, namespace)

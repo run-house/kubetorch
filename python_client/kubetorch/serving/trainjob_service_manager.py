@@ -95,6 +95,15 @@ class TrainJobServiceManager(BaseServiceManager):
         self.replica_specs_key = config["replica_specs_key"]
         self.primary_replica = config["primary_replica"]
         self.worker_replica = config["worker_replica"]
+        self._container_name = config["container_name"]
+
+    def get_container_name(self) -> str:
+        """Get the container name for this training job type."""
+        return self._container_name
+
+    def supports_distributed_config(self) -> bool:
+        """Training jobs support distributed config."""
+        return True
 
     def _get_pod_template_path(self) -> List[str]:
         """Get the path to the primary replica pod template."""

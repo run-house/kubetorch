@@ -119,12 +119,14 @@ def validate_config_key(key: str = None):
 
 def get_pods_for_service_cli(name: str, namespace: str, core_api):
     """Get pods for a service using unified label selector."""
-    # Use unified service label - works for all deployment modes
+    # Use unified service label - works for most deployment modes
     label_selector = f"kubetorch.com/service={name}"
-    return core_api.list_namespaced_pod(
-        namespace=namespace,
-        label_selector=label_selector,
-    )
+    pods = core_api.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
+    # For TrainJob v2, pods use JobSet labels instead of kubetorch labels
+    if not pods.items:
+        label_selector = f"jobset.sigs.k8s.io/jobset-name={name}"
+        pods = core_api.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
+    return pods
 
 
 def service_name_argument(*args, required: bool = True, **kwargs):
@@ -769,18 +771,18 @@ def stream_logs_websocket(uri, stop_event, print_pod_name: bool = False):
 
 
 def generate_logs_query(name: str, namespace: str, selected_pod: str, deployment_mode):
+    from kubetorch.utils import get_container_name
+
+    container_name = get_container_name(deployment_mode)
+
     if not selected_pod:
-        if deployment_mode in ["knative", "deployment"]:
-            # we need to get the pod names first since Loki doesn't have a service_name label
-            core_api = client.CoreV1Api()
-            pods = validate_pods_exist(name, namespace, core_api)
-            pod_names = [pod.metadata.name for pod in pods]
-            return f'{{k8s_pod_name=~"{"|".join(pod_names)}",k8s_container_name="kubetorch"}} | json'
-        else:
-            console.print(f"[red]Logs does not support deployment mode: {deployment_mode}[/red]")
-            return None
+        # we need to get the pod names first since Loki doesn't have a service_name label
+        core_api = client.CoreV1Api()
+        pods = validate_pods_exist(name, namespace, core_api)
+        pod_names = [pod.metadata.name for pod in pods]
+        return f'{{k8s_pod_name=~"{"|".join(pod_names)}",k8s_container_name="{container_name}"}} | json'
     else:
-        return f'{{k8s_pod_name=~"{selected_pod}",k8s_container_name="kubetorch"}} | json'
+        return f'{{k8s_pod_name=~"{selected_pod}",k8s_container_name="{container_name}"}} | json'
 
 
 def follow_logs_in_cli(
@@ -854,7 +856,7 @@ def get_ingress_host(ingress):
 
 
 def detect_deployment_mode(name: str, namespace: str, custom_api, apps_v1_api):
-    """Detect if a service is deployed as Knative, Deployment, or RayCluster."""
+    """Detect if a service is deployed as Knative, Deployment, RayCluster, or training job."""
     # First try Deployment
     try:
         apps_v1_api.read_namespaced_deployment(name=name, namespace=namespace)
@@ -885,6 +887,36 @@ def detect_deployment_mode(name: str, namespace: str, custom_api, apps_v1_api):
             name=name,
         )
         return "raycluster"
+    except ApiException:
+        pass
+
+    # Try v1 training jobs (PyTorchJob, TFJob, MXJob, XGBoostJob)
+    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+
+    for job_kind in TrainJobServiceManager.SUPPORTED_KINDS:
+        try:
+            plural = job_kind.lower() + "s"
+            custom_api.get_namespaced_custom_object(
+                group="kubeflow.org",
+                version="v1",
+                namespace=namespace,
+                plural=plural,
+                name=name,
+            )
+            return job_kind.lower()
+        except ApiException:
+            continue
+
+    # Try TrainJob v2 (trainer.kubeflow.org/v1alpha1)
+    try:
+        custom_api.get_namespaced_custom_object(
+            group="trainer.kubeflow.org",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="trainjobs",
+            name=name,
+        )
+        return "trainjob"
     except ApiException:
         pass
 

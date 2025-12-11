@@ -224,6 +224,7 @@ class BaseServiceManager:
             KnativeServiceManager,
             RayClusterServiceManager,
             TrainJobServiceManager,
+            TrainJobV2ServiceManager,
         )
 
         if kind.lower() == "deployment":
@@ -234,6 +235,8 @@ class BaseServiceManager:
             return RayClusterServiceManager
         elif kind.lower() in [k.lower() for k in TrainJobServiceManager.SUPPORTED_KINDS]:
             return TrainJobServiceManager
+        elif kind.lower() in [k.lower() for k in TrainJobV2ServiceManager.SUPPORTED_KINDS]:
+            return TrainJobV2ServiceManager
 
     def _get_deployment_timestamp(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -587,10 +590,14 @@ class BaseServiceManager:
         def fetch_custom_resources():
             """Fetch custom training job resources in parallel."""
             from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+            from kubetorch.serving.trainjob_v2_service_manager import TrainJobV2ServiceManager
 
             local_services = []
-            for resource_kind in TrainJobServiceManager.SUPPORTED_KINDS:
-                config = TrainJobServiceManager._get_config(resource_kind)
+            all_training_kinds = [(kind, TrainJobServiceManager) for kind in TrainJobServiceManager.SUPPORTED_KINDS] + [
+                (kind, TrainJobV2ServiceManager) for kind in TrainJobV2ServiceManager.SUPPORTED_KINDS
+            ]
+            for resource_kind, manager_cls in all_training_kinds:
+                config = manager_cls._get_config(resource_kind)
                 api_group = config["api_group"]
                 plural = config["api_plural"]
                 version = config["api_version"]
@@ -716,6 +723,76 @@ class BaseServiceManager:
 
     def get_endpoint(self, service_name: str) -> str:
         raise NotImplementedError("Subclasses must implement get_endpoint")
+
+    def get_routing_service_name(self, service_name: str) -> str:
+        """Get the service name used for NGINX proxy routing.
+
+        By default, this is the same as service_name. Subclasses can override
+        if they use a different service name for routing (e.g., TrainJobV2 uses
+        {service_name}-kt to avoid conflicting with JobSet's headless service).
+        """
+        return service_name
+
+    def get_container_name(self) -> str:
+        """Get the expected container name for this service type.
+
+        Returns the name of the main container in the pod spec.
+        Subclasses should override if they use a different container name.
+        """
+        return "kubetorch"
+
+    def get_service_dns(self, service_name: str, namespace: str, is_distributed: bool) -> str:
+        """Get the DNS name for service discovery.
+
+        For distributed jobs, this is typically a headless service for pod discovery.
+        Subclasses can override for different DNS naming conventions.
+        """
+        if is_distributed:
+            return f"{service_name}-headless.{namespace}.svc.cluster.local"
+        return f"{service_name}.{namespace}.svc.cluster.local"
+
+    def set_pod_spec(self, manifest: dict, pod_spec: dict) -> None:
+        """Set the pod spec in the manifest.
+
+        Subclasses can override for different manifest structures.
+        """
+        template_path = self._get_pod_template_path()
+        path = template_path + ["spec"]
+        if path:
+            current = manifest
+            for key in path[:-1]:
+                current = current.setdefault(key, {})
+            current[path[-1]] = pod_spec
+
+    def set_env_vars_in_manifest(self, manifest: dict, env_vars: dict) -> None:
+        """Set environment variables in the manifest's container(s).
+
+        Subclasses can override for different manifest structures.
+        By default, sets env vars in the first container of the pod spec.
+        """
+        pod_spec = self.pod_spec(manifest)
+        containers = pod_spec.get("containers", [])
+        if containers:
+            container = containers[0]
+            env = container.setdefault("env", [])
+            for name, value in env_vars.items():
+                # Update existing or append new
+                updated = False
+                for env_var in env:
+                    if env_var.get("name") == name:
+                        env_var["value"] = value
+                        updated = True
+                        break
+                if not updated:
+                    env.append({"name": name, "value": value})
+
+    def supports_distributed_config(self) -> bool:
+        """Return True if this service manager supports distributed training config.
+
+        Training job managers (PyTorchJob, TrainJob, etc.) support distributed config
+        which includes quorum settings for distributed training.
+        """
+        return False
 
     def get_pods_for_service(self, service_name: str, **kwargs) -> List[client.V1Pod]:
         """Get all pods associated with this service."""

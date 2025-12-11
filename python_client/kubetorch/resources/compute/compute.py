@@ -422,14 +422,9 @@ class Compute:
         kubetorch values are added where user doesn't have them, but existing user
         values are preserved.
         """
-        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
         from kubetorch.serving.utils import nested_merge
 
-        if self.kind in TrainJobServiceManager.SUPPORTED_KINDS:
-            config = TrainJobServiceManager._get_config(self.kind)
-            container_name = config["container_name"]
-        else:
-            container_name = "kubetorch"
+        container_name = self.service_manager.get_container_name()
         if not self.pod_spec or not self.pod_spec.get("containers"):
             self.pod_spec = kt_pod_spec
             return
@@ -470,11 +465,15 @@ class Compute:
         kt_pod_spec_for_merge = copy.deepcopy(kt_pod_spec)
         kt_pod_spec_for_merge.pop("containers", None)
 
-        # Use general merge for all pod-level fields
-        nested_merge(self.pod_spec, kt_pod_spec_for_merge)
-
-        # Store the merged pod spec for use in worker replicas
-        merged = self.pod_spec
+        # Get current pod spec, merge in kubetorch defaults, then set it back
+        # The setter handles manifest-specific logic (e.g., TrainJob v2 podTemplateOverrides)
+        current_pod_spec = self.pod_spec
+        nested_merge(current_pod_spec, kt_pod_spec_for_merge)
+        # Update container with merged values
+        if current_pod_spec.get("containers"):
+            current_pod_spec["containers"][0] = user_container
+        self.pod_spec = current_pod_spec
+        merged = current_pod_spec
 
         # For RayCluster, copy the merged head pod spec to the worker group
         if self.kind == "RayCluster":
@@ -570,54 +569,32 @@ class Compute:
     @property
     def pod_spec(self):
         """Get the pod spec from the manifest."""
-        template_path = self.service_manager._get_pod_template_path()
-        path = template_path + ["spec"]
-
-        if path:
-            current = self._manifest
-            for key in path:
-                current = current.get(key)
-            return current
-        return None
+        # Use service manager's pod_spec method which handles different manifest structures
+        return self.service_manager.pod_spec(self._manifest)
 
     @pod_spec.setter
     def pod_spec(self, value: dict):
         """Set the pod spec in the manifest."""
-        template_path = self.service_manager._get_pod_template_path()
-        path = template_path + ["spec"]
-
-        if path:
-            current = self._manifest
-            for key in path[:-1]:
-                current = current.setdefault(key, {})
-            current[path[-1]] = value
+        self.service_manager.set_pod_spec(self._manifest, value)
 
     @property
     def service_manager(self):
         if self._service_manager is None:
             self._load_kube_config()
 
-            from kubetorch.serving.deployment_service_manager import DeploymentServiceManager
-            from kubetorch.serving.knative_service_manager import KnativeServiceManager
-            from kubetorch.serving.raycluster_service_manager import RayClusterServiceManager
-            from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+            from kubetorch.serving.base_service_manager import BaseServiceManager
 
-            service_manager_mapping = {
-                "deployment": DeploymentServiceManager,
-                "knative": KnativeServiceManager,
-                "raycluster": RayClusterServiceManager,
-            }
+            service_manager_class = BaseServiceManager._get_service_manager_class(self.kind)
             resource_api = self.apps_v1_api if self.deployment_mode == "deployment" else self.objects_api
             kwargs = {
                 "resource_api": resource_api,
                 "core_api": self.core_api,
                 "namespace": self.namespace,
             }
-            if self.deployment_mode not in service_manager_mapping:
+            # Training job managers need the kind parameter
+            if self.kind not in ["Deployment", "Service", "RayCluster"]:
                 kwargs["kind"] = self.kind
-                self._service_manager = TrainJobServiceManager(**kwargs)
-            else:
-                self._service_manager = service_manager_mapping[self.deployment_mode](**kwargs)
+            self._service_manager = service_manager_class(**kwargs)
         return self._service_manager
 
     @property
@@ -657,11 +634,7 @@ class Compute:
         if "containers" not in self.pod_spec:
             raise ValueError("pod_spec missing 'containers' field.")
 
-        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
-
-        expected_name = (
-            self.kind.lower().replace("job", "") if self.kind in TrainJobServiceManager.SUPPORTED_KINDS else "kubetorch"
-        )
+        expected_name = self.service_manager.get_container_name()
         containers = self.pod_spec.get("containers")
         for container in containers:
             if container.get("name") == expected_name:
@@ -711,7 +684,8 @@ class Compute:
         container["resources"]["requests"][resource_name] = value
 
         if limits:
-            container["resources"].setdefault("limits", {})
+            if not container["resources"].get("limits"):
+                container["resources"]["limits"] = {}
             container["resources"]["limits"][resource_name] = value
 
     def _get_container_resource(self, resource_name: str) -> Optional[str]:
@@ -1473,7 +1447,7 @@ class Compute:
         # Populate defaults if config is missing values
         workers = config.get("workers")
         config["distribution_type"] = config.get("distribution_type", "spmd")
-        config["quorum_timeout"] = config.get("quorum_timeout", self.launch_timeout)
+        config["quorum_timeout"] = config.get("quorum_timeout") or self.launch_timeout or 300
         config["quorum_workers"] = config.get("quorum_workers", workers or self.replicas)
         self.replicas = workers or config["quorum_workers"]
 
@@ -1504,7 +1478,7 @@ class Compute:
         if service_dns:
             env_vars_to_set["KT_SERVICE_DNS"] = service_dns
 
-        # For training jobs (PyTorchJob, TFJob, etc.), set in both Master and Worker replica containers
+        # For v1 training jobs (PyTorchJob, TFJob, etc.), set in both Master and Worker replica containers
         if self.kind in TrainJobServiceManager.SUPPORTED_KINDS:
             service_manager = self.service_manager
             spec = self._manifest.get("spec", {})
@@ -1517,6 +1491,9 @@ class Compute:
 
                 for container in containers:
                     self._set_env_vars_in_container(container, env_vars_to_set)
+        # For TrainJob v2, use service manager method
+        elif self.kind == "TrainJob":
+            self.service_manager.set_env_vars_in_manifest(self._manifest, env_vars_to_set)
         # For RayCluster, set in both head and worker group containers
         elif self.kind == "RayCluster":
             spec = self._manifest.get("spec", {})
@@ -1573,16 +1550,14 @@ class Compute:
     @replicas.setter
     def replicas(self, value: int):
         # Set replicas in manifest and applies to relevant containers
-        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
-
-        if isinstance(self.service_manager, TrainJobServiceManager):
-            # For kubeflow training service managers, also update distributed config
+        if self.service_manager.supports_distributed_config():
+            # For training service managers, also update distributed config
             distributed_config = self.distributed_config
 
             if not distributed_config:
                 distributed_config = {
                     "distribution_type": "spmd",
-                    "quorum_timeout": self.launch_timeout,
+                    "quorum_timeout": self.launch_timeout or 300,
                 }
             distributed_config["quorum_workers"] = value
             self.service_manager.set_replicas(self._manifest, value, distributed_config=distributed_config)
@@ -1936,16 +1911,17 @@ class Compute:
         return service_template
 
     def _update_launch_env_vars(self, service_name, pointer_env_vars, metadata_env_vars, launch_id):
+        # Use service manager to get the correct DNS name for pod discovery
+        service_dns = self.service_manager.get_service_dns(
+            service_name, self.namespace, is_distributed=bool(self.distributed_config)
+        )
+
         kt_env_vars = {
             **pointer_env_vars,
             **metadata_env_vars,
             "KT_LAUNCH_ID": launch_id,
             "KT_SERVICE_NAME": service_name,
-            "KT_SERVICE_DNS": (
-                f"{service_name}-headless.{self.namespace}.svc.cluster.local"
-                if self.distributed_config
-                else f"{service_name}.{self.namespace}.svc.cluster.local"
-            ),
+            "KT_SERVICE_DNS": service_dns,
             "KT_DEPLOYMENT_MODE": self.deployment_mode,
         }
         if "OTEL_SERVICE_NAME" not in self.config_env_vars.keys():
