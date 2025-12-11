@@ -1,0 +1,28 @@
+# PodMonitor to scrape metrics for TTL controller
+{{- if and (eq .Values.ttlController.podMonitor.enabled true) (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: kubetorch-deployment-monitor
+  namespace: {{ .Release.Namespace }}
+  labels:
+    release: {{ .Release.Namespace }}
+    monitoring: enabled
+    {{- if .Values.ttlController.podMonitor.prometheusLabel }}
+    prometheus: {{ .Values.ttlController.podMonitor.prometheusLabel }}
+    {{- end }}
+    {{- with .Values.ttlController.podMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchExpressions:
+      - key: kubetorch.com/service
+        operator: Exists  # Any pod with this label
+  namespaceSelector:
+    any: true
+  podMetricsEndpoints:
+  - targetPort: 32300  # Use targetPort instead of port
+    interval: 30s
+    path: /metrics
+{{- end }}

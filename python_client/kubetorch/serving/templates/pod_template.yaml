@@ -82,6 +82,10 @@ containers:
         valueFrom:
           fieldRef:
             fieldPath: metadata.labels['kubetorch.com/module']
+      - name: KT_SERVICE
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.labels['kubetorch.com/service']
       - name: KUBETORCH_VERSION
         valueFrom:
           fieldRef:
