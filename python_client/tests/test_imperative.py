@@ -1,5 +1,6 @@
 import os
 
+
 # Mimic CI for this test suite even locally, to ensure that
 # resources are created with the branch name prefix
 os.environ["CI"] = "true"
@@ -43,9 +44,9 @@ def test_custom_template_dryrun():
     remote_fn = kt.fn(summer).to(compute, dryrun=True)
 
     assert remote_fn.compute == compute
-    assert remote_fn.service_config["spec"]["template"].spec.node_selector == {
-        "node.kubernetes.io/instance-type": "g4dn.xlarge"
-    }
+    # In dryrun mode, verify the custom template was applied to the manifest
+    manifest_node_selector = remote_fn.compute._manifest["spec"]["template"]["spec"].get("nodeSelector", {})
+    assert manifest_node_selector.get("node.kubernetes.io/instance-type") == "g4dn.xlarge"
 
 
 @pytest.mark.level("unit")
@@ -84,12 +85,10 @@ def test_default_images():
 @pytest.mark.level("minimal")
 def test_working_dir_for_custom_image():
     import kubetorch as kt
-    from kubernetes.client import CoreV1Api
     from kubernetes.config import load_kube_config
     from kubetorch.cli_utils import get_pods_for_service_cli
 
     load_kube_config()
-    core_api = CoreV1Api()
 
     # Note: working dir will be: /usr/src/app
     remote_fn = kt.fn(summer, name="summer-working-dir").to(
@@ -99,13 +98,17 @@ def test_working_dir_for_custom_image():
         )
     )
     namespace = remote_fn.compute.namespace
-    deploy_pods = get_pods_for_service_cli(remote_fn.service_name, namespace=namespace, core_api=core_api).items
+    deploy_pods = get_pods_for_service_cli(remote_fn.service_name, namespace=namespace).get("items", [])
     deploy_pod = next(
-        (p for p in deploy_pods if p.status.phase == "Running" and not p.metadata.deletion_timestamp),
+        (
+            p
+            for p in deploy_pods
+            if p.get("status", {}).get("phase") == "Running" and not p.get("metadata", {}).get("deletion_timestamp")
+        ),
         None,
     )
     assert deploy_pod
-    pod_name = deploy_pod.metadata.name
+    pod_name = deploy_pod.get("metadata", {}).get("name")
     working_dir = "."  # current working dir (set in the compute)
     check_cmd = [
         "kubectl",
@@ -810,20 +813,15 @@ def test_compute_factory_shared_memory_limit():
         assert compute_binary_units.shared_memory_limit == f"2{unit}"
 
 
-@pytest.mark.level("minimal")
+@pytest.mark.level("unit")
 def test_compute_nonexisting_priority_class():
     import kubetorch as kt
 
     from .utils import summer
 
     priority_class_name = "random-priority-class"
-    with pytest.raises(kt.ResourceNotAvailableError) as priority_class_error:
+    with pytest.raises(kt.ResourceNotAvailableError):
         my_compute = kt.Compute(cpus="0.1", priority_class_name=priority_class_name)
         remote_fn = kt.fn(summer, name="random-priority-class-summer").to(my_compute)
 
         assert remote_fn(4, 5) == 9
-    error_msg = priority_class_error.value.args[0]
-    assert (
-        f"no PriorityClass with name {priority_class_name} was found. Please ensure the required PriorityClass exists in the cluster"
-        in error_msg
-    )

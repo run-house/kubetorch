@@ -76,7 +76,7 @@ and accessible during the scope of your program.
 
    python/secret
 
-Config
+Kubetorch Config
 ------
 
 Kubetorch uses a local configuration file (stored at ``~/.kt/config.yaml``) to allow you to set global defaults for
@@ -99,3 +99,18 @@ storage configuration.
    :maxdepth: 1
 
    python/volumes
+
+Workload Configs
+-------
+Kubetorch provides several observability and debugging features to help monitor and troubleshoot your workloads. The behavior of these features can be fully customized via their respective configurations, allowing you to adjust their settings accordingly:
+
+* `Metrics streaming <https://www.run.house/kubetorch/concepts/monitoring-and-observability#metrics-streaming>`_ : Collects and streams runtime metrics from your workloads.
+
+* `Log streaming <_Log streaming: https://www.run.house/kubetorch/concepts/monitoring-and-observability#log-streaming>`_ : Streams application logs in real-time for easy inspection.
+
+* `Debugging tools <https://www.run.house/kubetorch/guides/debugging>`_ : Enables runtime introspection and debugging of workloads.
+
+.. toctree::
+   :maxdepth: 1
+
+   python/workload_configs

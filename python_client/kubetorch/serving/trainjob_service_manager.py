@@ -3,12 +3,11 @@ import os
 import time
 from typing import List
 
-from kubernetes import client
-
 import kubetorch.serving.constants as serving_constants
 from kubetorch.logger import get_logger
 from kubetorch.servers.http.utils import load_template
 from kubetorch.serving.base_service_manager import BaseServiceManager
+from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)
 
@@ -65,8 +64,6 @@ class TrainJobServiceManager(BaseServiceManager):
 
     def __init__(
         self,
-        resource_api: client.CustomObjectsApi,
-        core_api: client.CoreV1Api,
         namespace: str,
         kind: str,
         api_group: str = "kubeflow.org",
@@ -82,8 +79,6 @@ class TrainJobServiceManager(BaseServiceManager):
         config = self._get_config(kind)
 
         super().__init__(
-            resource_api=resource_api,
-            core_api=core_api,
             namespace=namespace,
             template_label=kind.lower(),
             api_group=api_group,
@@ -108,18 +103,20 @@ class TrainJobServiceManager(BaseServiceManager):
                            expected_master, expected_worker
         """
         pods = self.get_pods_for_service(service_name)
-        running_pods = [pod for pod in pods if pod.status.phase == "Running"]
+        running_pods = [pod for pod in pods if pod.get("status", {}).get("phase") == "Running"]
 
         # Count by replica type using Kubeflow standard labels
         master_pods = [
             pod
             for pod in running_pods
-            if pod.metadata.labels.get("training.kubeflow.org/replica-type") == self.primary_replica.lower()
+            if pod.get("metadata", {}).get("labels", {}).get("training.kubeflow.org/replica-type")
+            == self.primary_replica.lower()
         ]
         worker_pods = [
             pod
             for pod in running_pods
-            if pod.metadata.labels.get("training.kubeflow.org/replica-type") == self.worker_replica.lower()
+            if pod.get("metadata", {}).get("labels", {}).get("training.kubeflow.org/replica-type")
+            == self.worker_replica.lower()
         ]
 
         # Get expected counts from spec
@@ -297,15 +294,15 @@ class TrainJobServiceManager(BaseServiceManager):
                 service["spec"]["selector"]["training.kubeflow.org/replica-type"] = self.primary_replica.lower()
 
             try:
-                self.core_api.create_namespaced_service(
+                self.controller_client.create_service(
                     namespace=self.namespace,
                     body=service,
-                    **kwargs,
+                    params=kwargs,
                 )
                 if not kwargs.get("dry_run"):
                     logger.info(f"Created service {service_name} in namespace {self.namespace}")
-            except client.exceptions.ApiException as e:
-                if e.status == 409:
+            except Exception as e:
+                if http_conflict(e):
                     logger.info(f"Service {service_name} already exists")
                 else:
                     raise
@@ -328,25 +325,24 @@ class TrainJobServiceManager(BaseServiceManager):
                 headless_service["spec"]["selector"].pop("training.kubeflow.org/replica-type", None)
 
                 try:
-                    self.core_api.create_namespaced_service(
+                    self.controller_client.create_service(
                         namespace=self.namespace,
                         body=headless_service,
-                        **kwargs,
+                        params=kwargs,
                     )
                     if not kwargs.get("dry_run"):
                         logger.info(f"Created headless service {service_name}-headless in namespace {self.namespace}")
-                except client.exceptions.ApiException as e:
-                    if e.status == 409:
+                except Exception as e:
+                    if http_conflict(e):
                         logger.info(f"Headless service {service_name}-headless already exists")
                     else:
                         raise
 
             # Create the training job resource (always, not just for distributed)
-            created_resource = None
             try:
                 created_resource = self._create_resource(manifest, **kwargs)
-            except client.exceptions.ApiException as e:
-                if e.status == 404:
+            except Exception as e:
+                if http_not_found(e):
                     logger.error(
                         "Kubeflow Custom Resource Definition (CRD) not found, please install the Kubeflow Training Operator"
                     )
@@ -354,8 +350,8 @@ class TrainJobServiceManager(BaseServiceManager):
 
             logger.info(f"Created {manifest.get('kind', 'resource')} {service_name} in namespace {self.namespace}")
             return created_resource
-        except client.exceptions.ApiException as e:
-            if e.status == 409:
+        except Exception as e:
+            if http_conflict(e):
                 logger.info(f"{manifest.get('kind', 'resource')} {service_name} already exists, updating")
                 patch_body = {"spec": manifest["spec"]}
                 updated_resource = self._patch_resource(service_name, patch_body, **kwargs)
@@ -425,6 +421,29 @@ class TrainJobServiceManager(BaseServiceManager):
 
         raise TimeoutError(f"{resource_kind} {service_name} did not become ready within {launch_timeout} seconds")
 
+    def get_resource(self, service_name: str) -> dict:
+        """Get a training job resource by name."""
+        return self.controller_client.get_namespaced_custom_object(
+            group=self.api_group,
+            version=self.api_version,
+            namespace=self.namespace,
+            plural=self.api_plural,
+            name=service_name,
+        )
+
+    def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
+        """Update deployment timestamp annotation for this training job."""
+        patch_body = {"metadata": {"annotations": {"kubetorch.com/deployment_timestamp": new_timestamp}}}
+        self.controller_client.patch_namespaced_custom_object(
+            group=self.api_group,
+            version=self.api_version,
+            namespace=self.namespace,
+            plural=self.api_plural,
+            name=service_name,
+            body=patch_body,
+        )
+        return new_timestamp
+
     def get_endpoint(self, service_name: str) -> str:
         """Get endpoint for primary replica service."""
         return f"http://{service_name}.{self.namespace}.svc.cluster.local:80"
@@ -435,13 +454,13 @@ class TrainJobServiceManager(BaseServiceManager):
 
         # Delete regular service
         try:
-            self.core_api.delete_namespaced_service(name=service_name, namespace=self.namespace)
+            self.controller_client.delete_service(name=service_name, namespace=self.namespace)
             if console:
                 console.print(f"✓ Deleted service [blue]{service_name}[/blue]")
             else:
                 logger.info(f"Deleted service {service_name}")
-        except client.exceptions.ApiException as e:
-            if e.status == 404:
+        except Exception as e:
+            if http_not_found(e):
                 if console:
                     console.print(f"[yellow]Note:[/yellow] Service {service_name} not found or already deleted")
                 else:
@@ -456,13 +475,13 @@ class TrainJobServiceManager(BaseServiceManager):
         # Delete headless service if it exists
         headless_service_name = f"{service_name}-headless"
         try:
-            self.core_api.delete_namespaced_service(name=headless_service_name, namespace=self.namespace)
+            self.controller_client.delete_service(name=headless_service_name, namespace=self.namespace)
             if console:
                 console.print(f"✓ Deleted service [blue]{headless_service_name}[/blue]")
             else:
                 logger.info(f"Deleted service {headless_service_name}")
-        except client.exceptions.ApiException as e:
-            if e.status == 404:
+        except Exception as e:
+            if http_not_found(e):
                 # Headless service might not exist (non-distributed job), which is fine
                 pass
             else:

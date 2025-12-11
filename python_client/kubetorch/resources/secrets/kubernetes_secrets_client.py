@@ -4,10 +4,6 @@ import os
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
-from kubernetes import client, config
-from kubernetes.client import V1SecretList
-from kubernetes.client.rest import ApiException
-
 import kubetorch
 from kubetorch import globals
 from kubetorch.constants import DEFAULT_KUBECONFIG_PATH
@@ -16,6 +12,7 @@ from kubetorch.resources.secrets import Secret
 from kubetorch.resources.secrets.utils import get_k8s_identity_name
 from kubetorch.servers.http.utils import is_running_in_kubernetes
 from kubetorch.serving.constants import KT_USER_IDENTIFIER_LABEL, KT_USERNAME_LABEL
+from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)
 
@@ -31,11 +28,8 @@ class KubernetesSecretsClient:
         # Derive User ID from config context
         self.user_id = get_k8s_identity_name()
 
-        try:
-            config.load_incluster_config()
-        except config.ConfigException:
-            config.load_kube_config(config_file=self.kubeconfig_path)
-        self.api_client = client.CoreV1Api()
+        # Use controller client
+        self.controller_client = globals.controller_client()
 
     @property
     def kubeconfig_path(self):
@@ -134,47 +128,50 @@ class KubernetesSecretsClient:
         return f"kt.secret.{user}.{name}"
 
     def _read_secret(self, name: str) -> Optional[dict]:
+        from kubetorch import ControllerRequestError
+
         secret_name = name
+
         try:
-            secret = self.api_client.read_namespaced_secret(name, self.namespace)
-        except ApiException as e:
-            if e.status == 404:  # secret does not exist, try to load with formatted k8 name
+            # 1) Try the user-provided name directly
+            secret = self.controller_client.get_secret(
+                self.namespace,
+                name,
+                ignore_not_found=True,
+            )
+
+            # 2) If not found, try the formatted k8s-style name
+            if secret is None:
                 secret_name = self._format_secret_name(name)
-                try:
-                    secret = self.api_client.read_namespaced_secret(secret_name, self.namespace)
-                except ApiException as e:
-                    if e.status == 404:
-                        logger.info(
-                            f"Secret {secret_name} not found in namespace {self.namespace}",
-                        )
-                        return None
-                    else:
-                        logger.error(
-                            f"Failed to read secret {name} from Kubernetes: {str(e)}",
-                        )
-                        return None
-            else:
-                logger.error(
-                    f"Failed to read secret {name} from Kubernetes: {str(e)}",
+                secret = self.controller_client.get_secret(
+                    self.namespace,
+                    secret_name,
+                    ignore_not_found=True,
                 )
-                return None
-        except Exception as e:
+
+                if secret is None:
+                    logger.info(
+                        f"Secret {secret_name} not found in namespace {self.namespace}",
+                    )
+                    return None
+
+        except ControllerRequestError as e:
+            # Any non-404 failure ends up here – network / auth / 5xx / etc
             logger.error(
-                f"Unexpected error occurred while reading secret {secret_name} from Kubernetes: {str(e)}",
+                f"Failed to read secret {name} from Kubernetes: {e}",
+            )
+            return None
+        except Exception as e:
+            # Extra safety net if something weird happens
+            logger.error(
+                f"Unexpected error reading secret {name} from Kubernetes: {e}",
             )
             return None
 
-        override = (
-            secret.metadata.annotations.get("kubetorch.com/override", "False") if secret.metadata.annotations else None
-        )
-        path = (
-            secret.metadata.annotations.get("kubetorch.com/secret-path", None) if secret.metadata.annotations else None
-        )
-        filenames = (
-            secret.metadata.annotations.get("kubetorch.com/secret-filenames", None)
-            if secret.metadata.annotations
-            else None
-        )
+        annotations = secret.get("metadata", {}).get("annotations") or {}
+        override = annotations.get("kubetorch.com/override", "False")
+        path = annotations.get("kubetorch.com/secret-path")
+        filenames = annotations.get("kubetorch.com/secret-filenames")
         filenames = json.loads(filenames) if filenames else filenames
 
         secret_config = {
@@ -183,15 +180,18 @@ class KubernetesSecretsClient:
             "override": override,
         }
 
+        # File-based secret (provider/path mode)
         if path:
             secret_config["path"] = path
             secret_config["filenames"] = filenames
             return secret_config
 
-        decoded_values = {k: base64.b64decode(v).decode("utf-8") for k, v in secret.data.items()}
+        # Key/value secret
+        decoded_values = {k: base64.b64decode(v).decode("utf-8") for k, v in secret.get("data", {}).items()}
         secret_config["values"] = decoded_values
 
-        mount_type = secret.metadata.labels.get("kubetorch.com/mount-type", None)
+        labels = secret.get("metadata", {}).get("labels") or {}
+        mount_type = labels.get("kubetorch.com/mount-type")
         if mount_type == "env":
             secret_config["env_vars"] = list(decoded_values.keys())
 
@@ -217,13 +217,18 @@ class KubernetesSecretsClient:
             annotations["kubetorch.com/secret-path"] = secret.path
             annotations["kubetorch.com/secret-filenames"] = json.dumps(secret.filenames)
 
-        metadata = client.V1ObjectMeta(
-            name=secret_name,
-            namespace=self.namespace,
-            labels=labels,
-            annotations=annotations,
-        )
-        secret_body = client.V1Secret(metadata=metadata, data=encoded_data, type="Opaque")  # default secret type
+        secret_body = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": secret_name,
+                "namespace": self.namespace,
+                "labels": labels,
+                "annotations": annotations,
+            },
+            "data": encoded_data,
+            "type": "Opaque",  # default secret type
+        }
 
         return secret_body
 
@@ -232,7 +237,7 @@ class KubernetesSecretsClient:
         secret_body = self._build_secret_body(secret=secret)
 
         try:
-            self.api_client.create_namespaced_secret(self.namespace, secret_body)
+            self.controller_client.create_secret(self.namespace, secret_body)
             if console:
                 console.print("[bold green]✔ Secret created successfully[/bold green]")
                 console.print(f"  Name: [cyan]{secret.name}[/cyan]")
@@ -241,35 +246,32 @@ class KubernetesSecretsClient:
                 logger.info(f"Created new Kubernetes secret {secret.name}")
             return True
 
-        except ApiException as e:
-            if console:
-                if e.status == 409:
-                    msg = f"[yellow]Secret '{secret.name}' already exists in namespace {self.namespace}, skipping creation[/yellow]"
-                else:
-                    msg = f"[red]Failed to create Kubernetes secret {secret_name}: {str(e)}[/red]"
-                console.print(msg)
-                return False
-            else:
-                raise e
-
         except Exception as e:
+            if http_conflict(e):
+                if console:
+                    msg = f"[yellow]Secret '{secret.name}' already exists in namespace {self.namespace}, skipping creation[/yellow]"
+                    console.print(msg)
+                return True
+
+            # For other errors, print message if console provided, otherwise raise
             if console:
-                msg = f"Unexpected error occurred while creating new Kubernetes secret {secret.name}: {str(e)}"
-                console.print(f"[red]{msg}[/red]")
+                msg = f"[red]Failed to create Kubernetes secret {secret_name}: {str(e)}[/red]"
+                console.print(msg)
                 return False
             else:
                 raise e
 
     def _get_existing_secret(self, secret: Secret):
         try:
-            return self.api_client.read_namespaced_secret(secret.name, self.namespace)
-        except ApiException as e:
-            if e.status == 404:  # try to load secret with kubernetes formatted name
+            return self.controller_client.get_secret(self.namespace, secret.name)
+        except Exception as e:
+            if http_not_found(e):
                 formatted_name = self._format_secret_name(secret.name)
                 try:
-                    return self.api_client.read_namespaced_secret(formatted_name, self.namespace)
-                except ApiException:
+                    return self.controller_client.get_secret(self.namespace, formatted_name)
+                except Exception:
                     return None
+            return None
 
     def update_secret(self, secret: Secret, console: "Console" = None):
         existing_secret = self._get_existing_secret(secret)
@@ -281,7 +283,9 @@ class KubernetesSecretsClient:
                 raise kubetorch.SecretNotFound(secret_name=secret.name, namespace=self.namespace)
 
         if not secret.override:
-            decoded_values = {k: base64.b64decode(v).decode("utf-8") for k, v in existing_secret.data.items()}
+            decoded_values = {
+                k: base64.b64decode(v).decode("utf-8") for k, v in existing_secret.get("data", {}).items()
+            }
             if not decoded_values == secret.values:
                 msg = f"Secret {secret.name} exists with different values and `secret.override` not set to True."
                 if console:
@@ -298,7 +302,7 @@ class KubernetesSecretsClient:
         secret_body = self._build_secret_body(secret=secret)
 
         try:
-            self.api_client.replace_namespaced_secret(secret_name, self.namespace, secret_body)
+            self.controller_client.patch_secret(self.namespace, secret_name, secret_body)
             if console:
                 console.print("[bold green]✔ Secret updated successfully[/bold green]")
                 console.print(f"  Name: [cyan]{secret.name}[/cyan]")
@@ -323,20 +327,19 @@ class KubernetesSecretsClient:
     def _delete_secret(self, name: str, console: "Console" = None):
         name = self._format_secret_name(name)
         try:
-            self.api_client.delete_namespaced_secret(name, self.namespace)
+            self.controller_client.delete_secret(self.namespace, name)
             if console:
                 console.print(f"✓ Deleted secret [blue]{name}[/blue]")
             else:
                 logger.info(f"Deleted Kubernetes secret: {name}")
             return True
 
-        except ApiException as e:
-            msg = f"Failed to delete Kubernetes secret: {name}: {str(e)}"
-            console.print(msg) if console else logger.error(msg)
-            return False
-
         except Exception as e:
-            msg = f"Unexpected error occurred while deleting Kubernetes secret {name}: {str(e)}"
+            if http_not_found(e):
+                # already gone, treat as success
+                return True
+
+            msg = f"Failed to delete Kubernetes secret: {name}: {str(e)}"
             console.print(msg) if console else logger.error(msg)
             return False
 
@@ -344,34 +347,29 @@ class KubernetesSecretsClient:
         username = username or self.kt_config.username
         label_selector = f"{KT_USERNAME_LABEL}={username}"
         try:
-            secrets: V1SecretList = self.api_client.list_namespaced_secret(
-                namespace=self.namespace, label_selector=label_selector
-            )
+            result = self.controller_client.list_secrets(namespace=self.namespace, label_selector=label_selector)
+            secrets = result.get("items", [])
             deleted_all = True
 
-            for secret in secrets.items:
-                secret_name = secret.metadata.name
+            for secret in secrets:
+                secret_name = secret["metadata"]["name"]
                 try:
-                    self.api_client.delete_namespaced_secret(secret_name, self.namespace)
+                    self.controller_client.delete_secret(self.namespace, secret_name)
                     logger.info(
                         f"Deleted Kubernetes secret {secret_name} for user {username}",
                     )
 
-                except ApiException as e:
-                    logger.warning(
-                        f"Failed to delete specific Kubernetes secret {secret_name} for user {username}: {str(e)}",
-                    )
+                except Exception as e:
+                    if not http_not_found(e):
+                        logger.warning(
+                            f"Failed to delete specific Kubernetes secret {secret_name} for user {username}: {str(e)}",
+                        )
                     deleted_all = False
 
             return deleted_all
 
-        except ApiException as e:
-            logger.error(
-                f"Failed to list Kubernetes secrets: {str(e)}",
-            )
-            return False
-
         except Exception as e:
             logger.error(
-                f"Unexpected error occurred while listing Kubernetes secrets: {str(e)}",
+                f"Failed to list or delete Kubernetes secrets: {str(e)}",
             )
+            return False

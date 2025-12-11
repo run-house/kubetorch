@@ -1,0 +1,118 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubetorch-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: kubetorch-controller
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  selector:
+    matchLabels:
+      app: kubetorch-controller
+  template:
+    metadata:
+      labels:
+        app: kubetorch-controller
+      annotations:
+        chart-version: "{{ .Chart.Version }}"
+    spec:
+      serviceAccountName: kubetorch-controller
+
+      {{- if .Values.nginxProxy.affinity }}
+      affinity:
+        {{- toYaml .Values.nginxProxy.affinity | nindent 8 }}
+      {{- end }}
+
+      {{- if .Values.nginxProxy.tolerations }}
+      tolerations:
+        {{- toYaml .Values.nginxProxy.tolerations | nindent 8 }}
+      {{- end }}
+
+      containers:
+        # --------------------------------------------------------------------
+        # NGINX sidecar (public-facing) running on port 8080
+        # --------------------------------------------------------------------
+        - name: nginx
+          image: "{{ .Values.nginxProxy.image.repository }}:{{ .Values.nginxProxy.image.tag }}"
+          imagePullPolicy: {{ .Values.nginxProxy.image.pullPolicy }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Starting nginx with static config"
+              cat /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
+              nginx -g 'daemon off;'
+          ports:
+            - containerPort: 8080
+              name: nginx
+            - containerPort: 8873
+              name: rsync
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf.template
+              subPath: nginx.conf
+          resources:
+            requests:
+              cpu: {{ .Values.nginxProxy.resources.cpu.request | quote }}
+              memory: {{ .Values.nginxProxy.resources.memory.request | quote }}
+            limits:
+              cpu: {{ .Values.nginxProxy.resources.cpu.limit | quote }}
+              memory: {{ .Values.nginxProxy.resources.memory.limit | quote }}
+
+        # --------------------------------------------------------------------
+        # Controller container (the K8s API proxy)
+        # --------------------------------------------------------------------
+        - name: controller
+          image: "{{ .Values.controller.image }}:{{ .Values.controller.tag }}"
+          imagePullPolicy: {{ .Values.controller.imagePullPolicy }}
+          env:
+            - name: VERSION
+              value: {{ .Values.controller.tag | quote }}
+            - name: PORT
+              value: {{ .Values.controller.port | quote }}
+            - name: WORKERS
+              value: {{ .Values.controller.workers | quote }}
+            - name: CONNECTION_POOL_SIZE
+              value: {{ .Values.controller.connectionPoolSize | quote }}
+          ports:
+            - containerPort: {{ .Values.controller.port }}
+              name: controller
+          # Startup probe allows arbitrary startup time (up to 5 minutes)
+          # Checks every 5s, allows up to 60 failures before giving up
+          startupProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.controller.port }}
+            initialDelaySeconds: 0
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          # Once startup succeeds, liveness checks if container is still alive
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.controller.port }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Once startup succeeds, readiness checks if ready to serve traffic
+          # Check controller directly to ensure it's ready before routing traffic
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.controller.port }}
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: {{ .Values.controller.resources.cpu.request | quote }}
+              memory: {{ .Values.controller.resources.memory.request | quote }}
+            limits:
+              cpu: {{ .Values.controller.resources.cpu.limit | quote }}
+              memory: {{ .Values.controller.resources.memory.limit | quote }}
+
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: kubetorch-controller-config

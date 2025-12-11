@@ -13,10 +13,9 @@ from typing import List
 from urllib.parse import urlparse
 
 import httpx
-from kubernetes import client
-from kubernetes.client.rest import ApiException
 
 from kubetorch.servers.http.utils import is_running_in_kubernetes
+from kubetorch.utils import http_not_found
 
 from .cli_utils import (
     create_table_for_output,
@@ -40,7 +39,7 @@ from .cli_utils import (
     VolumeAction,
 )
 
-from .utils import initialize_k8s_clients, load_head_node_pod
+from .utils import load_head_node_pod
 
 try:
     import typer
@@ -107,213 +106,153 @@ def kt_check(
 
     If a step fails, will dump ``kubectl describe`` and pod logs for relevant pods.
     """
-    core_api, custom_api, apps_v1_api = initialize_k8s_clients()
 
-    def dump_pod_debug(pod_name):
-        try:
-            describe_proc = subprocess.run(
-                ["kubectl", "describe", "pod", pod_name, "-n", namespace],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            describe_output = describe_proc.stdout or describe_proc.stderr or "<no output>"
-
-            logs_proc = subprocess.run(
-                ["kubectl", "logs", pod_name, "-n", namespace, "-c", "kubetorch"],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            logs_output = logs_proc.stdout or logs_proc.stderr or "<no output>"
-
-            console.print(
-                Panel(
-                    describe_output,
-                    title=f"POD DESCRIPTION ({pod_name})",
-                    border_style="yellow",
-                    expand=False,
-                )
-            )
-            console.print(
-                Panel(
-                    logs_output,
-                    title=f"POD LOGS ({pod_name})",
-                    border_style="yellow",
-                    expand=False,
-                )
-            )
-        except subprocess.TimeoutExpired:
-            console.print(f"[yellow]Timed out while fetching debug info for pod {pod_name}[/yellow]")
-
-        except Exception as e:
-            console.print(f"[red]Failed to dump pod info: {e}[/red]")
-
-    def fail(msg, pod_names=None):
+    def fail(msg, pods=None):
         console.print(f"[red]{msg}[/red]")
-        if pod_names:
-            for pod_name in pod_names:
-                dump_pod_debug(pod_name)
+        if pods:
+            for pn in pods:
+                try:
+                    pod_output = subprocess.run(
+                        ["kubectl", "describe", "pod", pn, "-n", namespace], capture_output=True, text=True
+                    )
+                    logs_output = subprocess.run(
+                        ["kubectl", "logs", pn, "-n", namespace, "-c", "kubetorch"], capture_output=True, text=True
+                    )
+                    console.print(Panel(pod_output.stdout or pod_output.stderr, title=f"DESCRIBE {pn}"))
+                    console.print(Panel(logs_output.stdout or logs_output.stderr, title=f"LOGS {pn}"))
+                except:
+                    pass
         raise typer.Exit(1)
 
-    try:
-        # Validate service exists and get deployment mode
-        name, deployment_mode = get_deployment_mode(name, namespace, custom_api, apps_v1_api)
+    controller = globals.controller_client()
 
-        console.print(f"[bold blue]Checking {deployment_mode} service...[/bold blue]")
+    # --------------------------------------------------
+    # 1. Determine mode
+    # --------------------------------------------------
+    name, deployment_mode = get_deployment_mode(name, namespace)
 
-        # 1. Deployment pod check
-        console.print("[bold blue]Checking deployment pod...[/bold blue]")
-        deploy_pods = validate_pods_exist(name, namespace, core_api)
+    console.print(f"[bold blue]Checking {deployment_mode} service...[/bold blue]")
 
-        if not deploy_pods:
-            if deployment_mode == "knative":
-                try:
-                    # Check if the Knative service is marked as ready (e.g. scaled to zero)
-                    service = custom_api.get_namespaced_custom_object(
-                        group="serving.knative.dev",
-                        version="v1",
-                        namespace=namespace,
-                        plural="services",
-                        name=name,
-                    )
-                    conditions = service.get("status", {}).get("conditions", [])
-                    ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
-                    if ready:
-                        console.print(
-                            f"[yellow]No deployment pods found. Service [bold]{name}[/bold] is scaled to zero but marked as 'READY'. "
-                            "It will scale up on demand.[/yellow]"
-                        )
-                        return
-                    else:
-                        fail("Deployment pod not found and service is not READY.")
+    # --------------------------------------------------
+    # 2. Get pods
+    # --------------------------------------------------
+    console.print("[bold blue]Checking deployment pod...[/bold blue]")
 
-                except Exception as e:
-                    fail(f"Failed to check Knative service status: {e}")
-            else:
-                fail("No Deployment pods found.")
+    pods = validate_pods_exist(name, namespace)  # returns dicts now, we assume it
 
-        deploy_pod = next(
-            (p for p in deploy_pods if p.status.phase == "Running" and not p.metadata.deletion_timestamp),
-            None,
-        )
-        if not deploy_pod:
-            fail(
-                "No deployment pod in 'Running' state found.",
-                [p.metadata.name for p in deploy_pods],
-            )
-
-        deploy_pod_name = deploy_pod.metadata.name
-        if deploy_pod.status.phase != "Running":
-            fail(
-                f"Deployment pod not running (status: {deploy_pod.status.phase})",
-                [deploy_pod_name],
-            )
-
-        # 2. Rsync check
-        console.print("[bold blue]Checking rsync...[/bold blue]")
-        current_working_dir = "."
-        check_cmd = [
-            "kubectl",
-            "exec",
-            deploy_pod_name,
-            "-n",
-            namespace,
-            "--",
-            "ls",
-            "-l",
-            current_working_dir,
-        ]
-        try:
-            result = subprocess.run(check_cmd, capture_output=True, text=True, check=True)
-            lines = result.stdout.splitlines()
-            entries = [line for line in lines if not line.startswith("total")]
-            if not entries:
-                fail("Rsync directory exists but is empty.", [deploy_pod_name])
-        except subprocess.CalledProcessError as e:
-            fail(
-                f"Rsync directory check failed: {e.stderr or e.stdout}",
-                [deploy_pod_name],
-            )
-
-        # 3. Service call check
-        console.print("[bold blue]Checking service call...[/bold blue]")
-        try:
-            with port_forward_to_pod(
-                pod_name=deploy_pod_name,
-                namespace=namespace,
-                local_port=32300,
-                remote_port=32300,
-            ) as local_port:
-                url = f"http://localhost:{local_port}/health"
-                resp = httpx.get(url, timeout=10)
-                if not resp.is_success:
-                    fail(
-                        f"Service call failed: {resp.status_code} {resp.text}",
-                        [deploy_pod_name],
-                    )
-        except Exception as e:
-            fail(f"Service call check failed: {e}", [deploy_pod_name])
-
-        # 5. GPU + autoscaler test (if GPU requested)
-        gpu_requested = any(
-            c.resources.requests and "nvidia.com/gpu" in c.resources.requests for c in deploy_pod.spec.containers
-        )
-        if gpu_requested:
-            gpus_configured = False
-            console.print("[bold blue]Checking GPU plugin support...[/bold blue]")
-            nodes = core_api.list_node().items
-            for node in nodes:
-                gpus = node.status.capacity.get("nvidia.com/gpu")
-                if gpus and int(gpus) > 0:
-                    gpus_configured = True
-                    break
-
-            if not gpus_configured:
-                console.print(
-                    "[yellow]No GPU nodes currently configured on the cluster, is autoscaling configured?[/yellow]"
-                )
-
-            dcgm_exporter = True
-            dcgm_namespace = globals.config.install_namespace
-
-            pods = core_api.list_namespaced_pod(
-                namespace=dcgm_namespace,
-                label_selector="app.kubernetes.io/name=dcgm-exporter",
-            ).items
-            if not pods:
-                dcgm_exporter = False
-
-            if not dcgm_exporter:
-                console.print(f"[yellow]DCGM exporter not found in namespace {dcgm_namespace}[/yellow]")
-
-        # 6. Check logs
-        if globals.config.stream_logs:
+    if not pods:
+        if deployment_mode == "knative":
             try:
-                streaming_enabled = core_api.read_namespaced_service(
-                    name=serving_constants.LOKI_GATEWAY_SERVICE_NAME,
-                    namespace=globals.config.install_namespace,
-                )
-            except ApiException:
-                streaming_enabled = False
+                svc = controller.get_namespaced_custom_object("serving.knative.dev", "v1", namespace, "services", name)
+                conds = svc.get("status", {}).get("conditions", [])
+                ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conds)
+                if ready:
+                    console.print(f"[yellow]Knative service {name} READY but scaled to zero.[/yellow]")
+                    return
+            except Exception as e:
+                fail(f"Failed knative service lookup: {e}")
+        fail("No deployment pods found.")
 
-            if streaming_enabled:
+    # --------------------------------------------------
+    # 3. Pick running pod
+    # --------------------------------------------------
+    running_pod = None
+    for p in pods:
+        phase = p.get("status", {}).get("phase")
+        del_ts = p.get("metadata", {}).get("deletionTimestamp")
+        if phase == "Running" and not del_ts:
+            running_pod = p
+            break
 
-                console.print("[bold blue]Checking log streaming...[/bold blue]")
-                query = f'{{k8s_pod_name="{deploy_pod_name}", k8s_container_name="kubetorch"}}'
-                try:
-                    logs = load_logs_for_pod(query=query, print_pod_name=False, timeout=2.0)
-                    if logs is None:
-                        fail("No logs found for service", [deploy_pod_name])
+    if not running_pod:
+        fail("No running deployment pod found.", [p["metadata"]["name"] for p in pods])
 
-                except Exception as e:
-                    fail(f"Logs check failed: {e}", [deploy_pod_name])
+    pod_name = running_pod["metadata"]["name"]
 
-        console.print("[bold green]✓ All service checks passed[/bold green]")
+    # --------------------------------------------------
+    # 4. Rsync check
+    # --------------------------------------------------
+    console.print("[bold blue]Checking rsync...[/bold blue]")
 
-    except typer.Exit:
-        # Just re-raise, don't print
-        raise
+    try:
+        proc = subprocess.run(
+            ["kubectl", "exec", pod_name, "-n", namespace, "--", "ls", "-l", "."],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        lines = [line for line in proc.stdout.splitlines() if line and not line.startswith("total")]
+        if not lines:
+            fail("Rsync directory exists but is empty.", [pod_name])
+    except subprocess.CalledProcessError as e:
+        fail(f"Rsync check failed: {e.stderr or e.stdout}", [pod_name])
+
+    # --------------------------------------------------
+    # 5. Service health check
+    # --------------------------------------------------
+    console.print("[bold blue]Checking service call...[/bold blue]")
+
+    try:
+        with port_forward_to_pod(
+            pod_name=pod_name,
+            namespace=namespace,
+            local_port=32300,
+            remote_port=32300,
+        ) as lp:
+            url = f"http://localhost:{lp}/health"
+            r = httpx.get(url, timeout=10)
+            if not r.is_success:
+                fail(f"Service returned {r.status_code}: {r.text}", [pod_name])
+    except Exception as e:
+        fail(f"Service call failed: {e}", [pod_name])
+
+    # --------------------------------------------------
+    # 6. GPU check (dict only)
+    # --------------------------------------------------
+    containers = running_pod.get("spec", {}).get("containers", [])
+    gpu_requested = False
+
+    for c in containers:
+        limits = c.get("resources", {}).get("limits", {})
+        if "nvidia.com/gpu" in limits:
+            gpu_requested = True
+            break
+
+    if gpu_requested:
+        console.print("[bold blue]Checking GPU nodes...[/bold blue]")
+        nodes = controller.list_nodes().get("items", [])
+        gpu_nodes = [n for n in nodes if int(n.get("status", {}).get("capacity", {}).get("nvidia.com/gpu", "0")) > 0]
+        if not gpu_nodes:
+            console.print("[yellow]No GPU nodes currently active.[/yellow]")
+
+        # DCGM
+        dcgm_ns = globals.config.install_namespace
+        dcgm_pods = controller.list_pods(
+            namespace=dcgm_ns,
+            label_selector="app.kubernetes.io/name=dcgm-exporter",
+        ).get("items", [])
+        if not dcgm_pods:
+            console.print(f"[yellow]No DCGM exporter found in {dcgm_ns}[/yellow]")
+
+    # --------------------------------------------------
+    # 7. Log streaming check (dict only)
+    # --------------------------------------------------
+    if globals.config.stream_logs:
+        console.print("[bold blue]Checking log streaming...[/bold blue]")
+
+        try:
+            controller.get_service(
+                name=serving_constants.LOKI_GATEWAY_SERVICE_NAME,
+                namespace=globals.config.install_namespace,
+            )
+            q = f'{{k8s_pod_name="{pod_name}", k8s_container_name="kubetorch"}}'
+            logs = load_logs_for_pod(query=q, print_pod_name=False, timeout=2.0)
+            if logs is None:
+                fail("No logs found for pod", [pod_name])
+        except Exception as e:
+            fail(f"Log streaming check failed: {e}", [pod_name])
+
+    console.print("[bold green]✓ All service checks passed[/bold green]")
 
 
 @app.command("config")
@@ -625,15 +564,12 @@ def kt_describe(
     """
     Show basic info for calling the service depending on whether an ingress is configured.
     """
-
-    core_api, custom_api, apps_v1_api = initialize_k8s_clients()
-
     endpoint_placeholder = "METHOD_OR_CLS_NAME"
     args_placeholder = []
 
     try:
-        name, deployment_mode = get_deployment_mode(name, namespace, custom_api, apps_v1_api)
-    except ApiException:
+        name, deployment_mode = get_deployment_mode(name, namespace)
+    except Exception:
         console.print(f"[red] Failed to load service '{name}' in namespace '{namespace}'[/red]")
         raise typer.Exit(1)
 
@@ -763,7 +699,6 @@ def kt_list(
 
       $ kt list -t dev-branch
     """
-    core_api, custom_api, _ = initialize_k8s_clients()
 
     # Import here to avoid circular imports
     from kubetorch.serving.service_manager import BaseServiceManager
@@ -799,15 +734,18 @@ def kt_list(
             unified_services.sort(key=get_update_time, reverse=True)
 
         try:
-            pods = core_api.list_namespaced_pod(
+            pods_result = globals.controller_client().list_pods(
                 namespace=namespace, label_selector=f"{serving_constants.KT_SERVICE_LABEL}"
             )
-        except client.exceptions.ApiException as e:
+            pods = pods_result.get("items", [])
+        except Exception as e:
             logger.warning(f"Failed to list pods for all services in namespace {namespace}: {e}")
             return
         pod_map = {
             svc["name"]: [
-                pod for pod in pods.items if pod.metadata.labels.get(serving_constants.KT_SERVICE_LABEL) == svc["name"]
+                pod
+                for pod in pods
+                if pod.get("metadata", {}).get("labels", {}).get(serving_constants.KT_SERVICE_LABEL) == svc["name"]
             ]
             for svc in unified_services
         }
@@ -868,7 +806,7 @@ def kt_list(
                 rev_name = status_data.get("latestCreatedRevisionName")
                 if rev_name:
                     try:
-                        rev = custom_api.get_namespaced_custom_object(
+                        rev = globals.controller_client().get_namespaced_custom_object(
                             group="serving.knative.dev",
                             version="v1",
                             namespace=namespace,
@@ -919,15 +857,18 @@ def kt_list(
             # Common pod processing
             pod_lines = []
             for pod in pods:
-                pod_status = pod.status.phase
-                ready = all(c.ready for c in (pod.status.container_statuses or []))
+                pod_status = pod.get("status", {}).get("phase", "Unknown")
+                container_statuses = pod.get("status", {}).get("containerStatuses", []) or []
+                ready = all(cs.get("ready", False) for cs in container_statuses)
                 if ready and pod_status == "Running":
                     color = "green"
                 elif "Creating" in display_status or "Scaling" in display_status:
                     color = "yellow"
                 else:
                     color = "red"
-                pod_lines.append(f"[{color}]{pod.metadata.name}[/{color}]")
+
+                pod_name = pod.get("metadata", {}).get("name", "unknown")
+                pod_lines.append(f"[{color}]{pod_name}[/{color}]")
 
                 # Update service status if pod is pending
                 if pod_status == "Pending":
@@ -951,8 +892,8 @@ def kt_list(
         table.pad_bottom = 1
         console.print(table)
 
-    except ApiException as e:
-        console.print(f"[red]Kubernetes API error: {e}[/red]")
+    except Exception as e:
+        console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
 
 
@@ -993,95 +934,61 @@ def kt_port_forward(
 
     This allows you to access the service locally using `curl http://localhost:<port>`.
     """
-
     from kubetorch.resources.compute.utils import is_port_available
 
     if not is_port_available(local_port):
         console.print(f"\n[red]Local port {local_port} is already in use.[/red]")
         raise typer.Exit(1)
 
-    core_api, custom_api, apps_v1_api = initialize_k8s_clients()
+    name, _ = get_deployment_mode(name, namespace)
+    pods = validate_pods_exist(name, namespace)
 
-    name, _ = get_deployment_mode(name, namespace, custom_api, apps_v1_api)
-    pods = validate_pods_exist(name, namespace, core_api)
-    sorted_by_time = sorted(pods, key=lambda pod: pod.metadata.creation_timestamp)
+    if not pods:
+        console.print(f"[red]No pods found for service {name}[/red]")
+        raise typer.Exit(1)
 
-    if pod:  # case when the user provides a pod
-        pod_name = load_selected_pod(service_name=name, provided_pod=pod, service_pods=sorted_by_time)
-    else:  # if user does not provide pod, port-forward to the first pod by default
-        pod_name = sorted_by_time[0].metadata.name
+    try:
+        sorted_by_time = sorted(pods, key=lambda p: p.get("metadata", {}).get("creationTimestamp", "9999"))
+    except Exception:
+        sorted_by_time = pods  # fallback if timestamps missing
 
-    process = None
+    if pod:
+        # If pod is an index
+        if pod.isdigit():
+            idx = int(pod)
+            if idx < 0 or idx >= len(sorted_by_time):
+                console.print(f"[red]Pod index {idx} out of range[/red]")
+                raise typer.Exit(1)
+            chosen = sorted_by_time[idx]
+        else:
+            # Match by pod name
+            matches = [p for p in sorted_by_time if p.get("metadata", {}).get("name") == pod]
+            if not matches:
+                console.print(f"[red]Pod '{pod}' not found[/red]")
+                raise typer.Exit(1)
+            chosen = matches[0]
+    else:
+        # Default: oldest pod = first element
+        chosen = sorted_by_time[0]
 
-    def cleanup_process():
-        # Clean up the port forward process
-        if process:
-            process.kill()
+    pod_name = chosen.get("metadata", {}).get("name")
+    if not pod_name:
+        console.print("[red]Pod missing metadata.name[/red]")
+        raise typer.Exit(1)
 
-    def signal_handler(signum, frame):
-        """Handle interrupt signals for graceful shutdown."""
-        console.print(f"\nReceived signal {signum}, cleaning up port forward...")
-        cleanup_process()
-        console.print("Port forward stopped.")
-        raise typer.Exit(0)
-
-    # Register signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    from kubetorch.serving.utils import wait_for_port_forward
+    console.print(f"[blue]Forwarding to pod {pod_name}[/blue]")
 
     cmd = [
         "kubectl",
         "port-forward",
         f"pod/{pod_name}",
         f"{local_port}:{remote_port}",
-        "--namespace",
+        "-n",
         namespace,
     ]
 
-    port_forward_msg = f"Starting port forward to {name} in namespace {namespace}"
-
-    if pod:
-        port_forward_msg = port_forward_msg + f", pod: [reset]{pod}"
-    console.print(port_forward_msg)
-
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-
-    try:
-        wait_for_port_forward(process, local_port)
-        time.sleep(2)
-    except Exception as e:
-        logger.info(f"Failed to establish port forward on port {local_port}: {e}")
-        if process:
-            cleanup_process()
-            process = None
-        return
-
-    console.print(f"[green]✓ Port forward active on localhost:{local_port} -> {pod_name}:{remote_port}[/green]")
-    console.print(f"[cyan]You can now run: curl http://localhost:{local_port}[/cyan]")
-    console.print("[dim]Press Ctrl+C to stop the port forward[/dim]")
-
-    # Keep the port forward running until interrupted
-    try:
-        while True:
-            if process.poll() is not None:
-                # Process has terminated
-                console.print("[red]Port forward process has terminated unexpectedly[/red]")
-                break
-            time.sleep(1)
-    except KeyboardInterrupt:
-        # This should be handled by the signal handler, but just in case
-        pass
-
-    except typer.Exit:
-        # Re-raise typer.Exit to maintain proper CLI behavior
-        raise
-    except Exception as e:
-        console.print(f"[red]Error during port forwarding: {e}[/red]")
-        raise typer.Exit(1)
-    finally:
-        cleanup_process()
+    console.print(f"[green]Running: {' '.join(cmd)}[/green]")
+    subprocess.run(cmd)
 
 
 @app.command("run", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -1174,7 +1081,7 @@ def kt_secrets(
         "-x",
     ),
     namespace: str = typer.Option(
-        "default",
+        globals.config.namespace,
         "-n",
         "--namespace",
     ),
@@ -1210,7 +1117,7 @@ def kt_secrets(
 
         $ kt secrets list -n my_namespace  # list secrets in `my_namespace` namespace
 
-        $ kt secrets -A  # list secrets in all namespaces
+        $ kt secrets -A  # list secrets in all namespaces (note: requires cluster-wide RBAC)
 
         $ kt secrets create --provider aws  # create a secret with the aws credentials in `default` namespace
 
@@ -1226,11 +1133,8 @@ def kt_secrets(
 
     secrets_client = KubernetesSecretsClient(namespace=namespace)
 
-    core_api, custom_api, apps_v1_api = initialize_k8s_clients()
-
     if action == SecretAction.list:
         secrets = list_secrets(
-            core_api=core_api,
             namespace=namespace,
             prefix=prefix,
             all_namespaces=all_namespaces,
@@ -1286,7 +1190,6 @@ def kt_secrets(
         prefix = name if name else prefix
         all_namespaces = False if name else all_namespaces
         secrets_to_delete = list_secrets(
-            core_api=core_api,
             namespace=namespace,
             prefix=prefix,
             all_namespaces=all_namespaces,
@@ -1337,7 +1240,6 @@ def kt_secrets(
         prefix = name if name else prefix
         all_namespaces = False if name else all_namespaces
         secrets_to_describe = list_secrets(
-            core_api=core_api,
             namespace=namespace,
             prefix=name or prefix,
             all_namespaces=all_namespaces,
@@ -1395,14 +1297,12 @@ def kt_ssh(
     """
     from kubetorch.serving.utils import pod_is_running
 
-    core_api, custom_api, apps_v1_api = initialize_k8s_clients()
-
     try:
         # Validate service exists and get deployment mode
-        name, deployment_mode = get_deployment_mode(name, namespace, custom_api, apps_v1_api)
+        name, deployment_mode = get_deployment_mode(name, namespace)
 
         # Get and validate pods
-        pods = validate_pods_exist(name, namespace, core_api)
+        pods = validate_pods_exist(name, namespace)
 
         # case when the user provides a specific pod to ssh into
         if pod:
@@ -1426,8 +1326,8 @@ def kt_ssh(
             check=True,
         )
 
-    except ApiException as e:
-        console.print(f"[red]Kubernetes API error: {e}[/red]")
+    except Exception as e:
+        console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
 
 
@@ -1452,7 +1352,6 @@ def kt_teardown(
 ):
     """Delete a service and all its associated resources (deployments, configmaps, etc).
 
-
     Examples:
 
     .. code-block:: bash
@@ -1467,8 +1366,6 @@ def kt_teardown(
     from kubetorch.resources.compute.utils import delete_resources_for_service, fetch_resources_for_teardown
 
     name, yes, teardown_all, namespace, prefix = default_typer_values(name, yes, teardown_all, namespace, prefix)
-
-    core_api, custom_api, _ = initialize_k8s_clients()
 
     if teardown_all:
         if not config.username:
@@ -1494,8 +1391,6 @@ def kt_teardown(
     resources = fetch_resources_for_teardown(
         namespace=namespace,
         target=name,
-        core_api=core_api,
-        custom_api=custom_api,
         prefix=prefix,
         username=config.username if teardown_all else None,
         exact_match=exact_match,
@@ -1534,6 +1429,8 @@ def kt_teardown(
     else:
         console.print("\n[yellow]Deleting resources...[/yellow]")
 
+    controller_client = globals.controller_client()
+
     service_types = set()
     for name in services:
         service_info = resources["services"][name]
@@ -1542,8 +1439,6 @@ def kt_teardown(
         service_types.add(service_type)
 
         delete_resources_for_service(
-            core_api=core_api,
-            custom_api=custom_api,
             configmaps=configmaps,
             name=name,
             service_type=service_type,
@@ -1565,24 +1460,26 @@ def kt_teardown(
             for service_name in service_names_to_check:
                 try:
                     # Get pods matching the service
-                    pods = core_api.list_namespaced_pod(
+                    pods_result = controller_client.list_pods(
                         namespace=namespace,
                         label_selector=f"kubetorch.com/service={service_name}",
-                    ).items
+                    )
+                    pods = pods_result.get("items", [])
 
                     if pods:
                         for pod in pods:
+                            pod_name = pod.get("metadata", {}).get("name")
                             try:
-                                core_api.delete_namespaced_pod(
-                                    name=pod.metadata.name,
+                                controller_client.delete_pod(
+                                    name=pod_name,
                                     namespace=namespace,
                                     grace_period_seconds=0,
                                     propagation_policy="Background",
                                 )
-                                console.print(f"✓ Force deleted pod [blue]{pod.metadata.name}[/blue]")
-                            except ApiException as e:
-                                if e.status != 404:  # Ignore if already deleted
-                                    console.print(f"[red]Failed to delete pod {pod.metadata.name}: {e}[/red]")
+                                console.print(f"✓ Force deleted pod [blue]{pod_name}[/blue]")
+                            except Exception as e:
+                                if not http_not_found(e):
+                                    console.print(f"[red]Failed to delete pod {pod_name}: {e}[/red]")
                 except Exception as e:
                     console.print(f"[red]Failed to list pods for service {service_name}: {e}[/red]")
 
@@ -1593,35 +1490,41 @@ def kt_teardown(
                 if teardown_all and config.username:
                     label_selector += f",kubetorch.com/username={config.username}"
 
-                all_pods = core_api.list_namespaced_pod(namespace=namespace, label_selector=label_selector).items
+                all_pods_result = controller_client.list_pods(namespace=namespace, label_selector=label_selector)
+                all_pods = all_pods_result.get("items", [])
 
                 # Filter by prefix if specified
                 if prefix:
                     all_pods = [
-                        p for p in all_pods if p.metadata.labels.get("kubetorch.com/service", "").startswith(prefix)
+                        p
+                        for p in all_pods
+                        if p.get("metadata", {}).get("labels", {}).get("kubetorch.com/service", "").startswith(prefix)
                     ]
 
                 # Delete any remaining pods not already handled
                 for pod in all_pods:
-                    if pod.metadata.name not in [
-                        p.metadata.name
+                    pod_name = pod.get("metadata", {}).get("name")
+                    if pod_name not in [
+                        p.get("metadata", {}).get("name")
                         for s in service_names_to_check
-                        for p in core_api.list_namespaced_pod(
+                        for p in globals.controller_client()
+                        .list_pods(
                             namespace=namespace,
                             label_selector=f"kubetorch.com/service={s}",
-                        ).items
+                        )
+                        .get("items", [])
                     ]:
                         try:
-                            core_api.delete_namespaced_pod(
-                                name=pod.metadata.name,
+                            controller_client.delete_pod(
+                                name=pod_name,
                                 namespace=namespace,
                                 grace_period_seconds=0,
                                 propagation_policy="Background",
                             )
-                            console.print(f"✓ Force deleted orphaned pod [blue]{pod.metadata.name}[/blue]")
-                        except ApiException as e:
-                            if e.status != 404:
-                                console.print(f"[red]Failed to delete orphaned pod {pod.metadata.name}: {e}[/red]")
+                            console.print(f"✓ Force deleted orphaned pod [blue]{pod_name}[/blue]")
+                        except Exception as e:
+                            if not http_not_found(e):
+                                console.print(f"[red]Failed to delete orphaned pod {pod_name}: {e}[/red]")
             except Exception as e:
                 console.print(f"[red]Failed to list orphaned pods: {e}[/red]")
 
@@ -1666,13 +1569,11 @@ def kt_volumes(
 
         $ kt volumes ssh my-vol
     """
-    from kubernetes import client
-
-    from kubetorch import Volume
+    from kubetorch import globals, Volume
     from kubetorch.utils import load_kubeconfig
 
     load_kubeconfig()
-    core_v1 = client.CoreV1Api()
+    controller_client = globals.controller_client()
 
     target_namespace = None
     if not all_namespaces:
@@ -1681,15 +1582,29 @@ def kt_volumes(
     if action == VolumeAction.list:
         try:
             if all_namespaces:
-                pvcs = core_v1.list_persistent_volume_claim_for_all_namespaces()
+                # Controller doesn't have all-namespaces endpoint, so we need to list from each namespace
+                # Get list of allowed namespaces from config (or use common defaults)
+                allowed_namespaces = globals.config.deployment_namespaces or ["default", "kubetorch"]
+                all_pvcs = []
+                for ns in allowed_namespaces:
+                    try:
+                        result = controller_client.list_pvcs(ns)
+                        all_pvcs.extend(result.get("items", []))
+                    except Exception:
+                        # Skip namespaces that don't exist or we don't have access to
+                        pass
+                pvcs_items = all_pvcs
                 title = "Kubetorch Volumes (All Namespaces)"
             else:
-                pvcs = core_v1.list_namespaced_persistent_volume_claim(namespace=target_namespace)
+                result = controller_client.list_pvcs(target_namespace)
+                pvcs_items = result.get("items", [])
                 title = f"Kubetorch Volumes (Namespace: {target_namespace})"
 
             # List all Kubetorch PVCs
             kubetorch_pvcs = [
-                pvc for pvc in pvcs.items if (pvc.metadata.annotations or {}).get("kubetorch.com/mount-path")
+                pvc
+                for pvc in pvcs_items
+                if (pvc.get("metadata", {}).get("annotations") or {}).get("kubetorch.com/mount-path")
             ]
 
             if not kubetorch_pvcs:
@@ -1712,26 +1627,26 @@ def kt_volumes(
 
             for pvc in kubetorch_pvcs:
                 # Extract volume name from PVC name
-                volume_name = pvc.metadata.name
-                status = pvc.status.phase
-                size = pvc.spec.resources.requests.get("storage", "Unknown")
-                storage_class = pvc.spec.storage_class_name or "Default"
-                access_mode = pvc.spec.access_modes[0] if pvc.spec.access_modes else "Unknown"
+                volume_name = pvc["metadata"]["name"]
+                status = pvc["status"]["phase"]
+                size = pvc["spec"]["resources"]["requests"].get("storage", "Unknown")
+                storage_class = pvc["spec"].get("storageClassName") or "Default"
+                access_mode = pvc["spec"]["accessModes"][0] if pvc["spec"].get("accessModes") else "Unknown"
 
                 # Get mount path from annotations
-                annotations = pvc.metadata.annotations or {}
+                annotations = pvc["metadata"].get("annotations") or {}
                 mount_path_display = annotations.get("kubetorch.com/mount-path", f"/{KT_MOUNT_FOLDER}/{volume_name}")
 
                 status_color = "green" if status == "Bound" else "yellow" if status == "Pending" else "red"
 
                 row_data = []
                 if all_namespaces:
-                    row_data.append(pvc.metadata.namespace)
+                    row_data.append(pvc["metadata"]["namespace"])
 
                 row_data.extend(
                     [
                         volume_name,
-                        pvc.metadata.name,
+                        pvc["metadata"]["name"],
                         f"[{status_color}]{status}[/{status_color}]",
                         size,
                         storage_class,
@@ -1753,7 +1668,7 @@ def kt_volumes(
             console.print("[red]Volume name is required[/red]")
             raise typer.Exit(1)
 
-        volume = Volume.from_name(name=name, namespace=namespace, core_v1=core_v1)
+        volume = Volume.from_name(name=name, namespace=namespace)
         volume.ssh()
 
     elif action == VolumeAction.create:
@@ -1804,7 +1719,7 @@ def kt_volumes(
             raise typer.Exit(1)
 
         try:
-            volume = Volume.from_name(name=name, namespace=namespace, core_v1=core_v1)
+            volume = Volume.from_name(name=name, namespace=namespace)
 
             console.print(f"Deleting volume [blue]{name}[/blue]...")
             volume.delete()
@@ -1951,13 +1866,17 @@ def kt_notebook(
         compute.pip_install(["jupyterlab"])
 
         # Get pod information
-        core_api, custom_api, apps_v1_api = initialize_k8s_clients()
-        pods = validate_pods_exist(remote_fn.service_name, namespace, core_api)
+        pods_result = globals.controller_client().list_pods(
+            namespace=namespace, label_selector=f"kubetorch.com/service={remote_fn.service_name}"
+        )
+        pods = pods_result.get("items", [])
         if not pods:
             console.print(f"[red]No pods found for service {service_name}[/red]")
             raise typer.Exit(1)
 
-        pod_name = sorted(pods, key=lambda p: p.metadata.creation_timestamp)[0].metadata.name
+        # Sort by creation timestamp and get the first pod
+        sorted_pods = sorted(pods, key=lambda p: p.get("metadata", {}).get("creationTimestamp", ""))
+        pod_name = sorted_pods[0].get("metadata", {}).get("name")
         console.print(f"[green]Service is up (pod: {pod_name})[/green]")
 
         # Start jupyter in background
@@ -2094,17 +2013,15 @@ def kt_logs(
         $ kt logs my-service -t 50   # tail last 50 lines
     """
 
-    core_api, custom_api, apps_v1_api = initialize_k8s_clients()
-
     console.print(f"Looking for service [blue]{name}[/blue]...")
 
     # Validate service exists and get deployment mode
-    name, deployment_mode = get_deployment_mode(name, namespace, custom_api, apps_v1_api)
+    name, deployment_mode = get_deployment_mode(name, namespace)
 
     try:
         # Get pods using the correct label selector for the deployment mode
-        pods = validate_pods_exist(name, namespace, core_api)
-        sorted_by_time = sorted(pods, key=lambda pod: pod.metadata.creation_timestamp)
+        pods = validate_pods_exist(name, namespace)
+        sorted_by_time = sorted(pods, key=lambda p: p.get("metadata", {}).get("creationTimestamp", "9999"))
 
         if pod:
             # specific pod is requested

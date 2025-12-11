@@ -21,7 +21,6 @@ import httpx
 import typer
 import yaml
 from kubernetes import client
-from kubernetes.client.rest import ApiException
 from pydantic import BaseModel
 from rich import box
 from rich.console import Console
@@ -38,7 +37,7 @@ from kubetorch.constants import MAX_PORT_TRIES
 from kubetorch.resources.compute.utils import is_port_available
 from kubetorch.servers.http.utils import stream_logs_websocket_helper, StreamType
 from kubetorch.serving.utils import wait_for_port_forward
-from kubetorch.utils import hours_to_ns, load_kubeconfig
+from kubetorch.utils import get_container_name, hours_to_ns, http_not_found, load_kubeconfig
 
 from .constants import BULLET_UNICODE, CPU_RATE, DOUBLE_SPACE_UNICODE, GPU_RATE
 
@@ -117,14 +116,20 @@ def validate_config_key(key: str = None):
     return key
 
 
-def get_pods_for_service_cli(name: str, namespace: str, core_api):
+def get_pods_for_service_cli(name: str, namespace: str):
     """Get pods for a service using unified label selector."""
     # Use unified service label - works for all deployment modes
+    controller_client = globals.controller_client()
     label_selector = f"kubetorch.com/service={name}"
-    return core_api.list_namespaced_pod(
-        namespace=namespace,
-        label_selector=label_selector,
-    )
+    try:
+        return controller_client.list_pods(
+            namespace=namespace,
+            label_selector=label_selector,
+        )
+    except Exception as e:
+        if http_not_found(e):
+            return {"items": []}
+        raise
 
 
 def service_name_argument(*args, required: bool = True, **kwargs):
@@ -135,15 +140,15 @@ def service_name_argument(*args, required: bool = True, **kwargs):
     return typer.Argument(default, callback=_lowercase, *args, **kwargs)
 
 
-def get_deployment_mode(name: str, namespace: str, custom_api, apps_v1_api) -> str:
+def get_deployment_mode(name: str, namespace: str) -> str:
     """Validate service exists and return deployment mode."""
     try:
         original_name = name
-        deployment_mode = detect_deployment_mode(name, namespace, custom_api, apps_v1_api)
+        deployment_mode = detect_deployment_mode(name, namespace)
         # If service not found and not already prefixed with username, try with username prefix
         if not deployment_mode and globals.config.username and not name.startswith(globals.config.username + "-"):
             name = f"{globals.config.username}-{name}"
-            deployment_mode = detect_deployment_mode(name, namespace, custom_api, apps_v1_api)
+            deployment_mode = detect_deployment_mode(name, namespace)
 
         if not deployment_mode:
             console.print(f"[red]Failed to load service [bold]{original_name}[/bold] in namespace {namespace}[/red]")
@@ -151,19 +156,20 @@ def get_deployment_mode(name: str, namespace: str, custom_api, apps_v1_api) -> s
         console.print(f"Found [green]{deployment_mode}[/green] service [blue]{name}[/blue]")
         return name, deployment_mode
 
-    except ApiException as e:
-        console.print(f"[red]Kubernetes API error: {e}[/red]")
+    except Exception as e:
+        console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
 
 
-def validate_pods_exist(name: str, namespace: str, core_api) -> list:
+def validate_pods_exist(name: str, namespace: str) -> list:
     """Validate pods exist for service and return pod list."""
-    pods = get_pods_for_service_cli(name, namespace, core_api)
-    if not pods.items:
+    result = get_pods_for_service_cli(name, namespace)
+    pods = result.get("items", [])
+    if not pods:
         console.print(f"\n[red]No pods found for service {name} in namespace {namespace}[/red]")
         console.print(f"You can view the service's status using:\n [yellow]  kt status {name}[/yellow]")
         raise typer.Exit(1)
-    return pods.items
+    return pods
 
 
 @contextmanager
@@ -769,18 +775,21 @@ def stream_logs_websocket(uri, stop_event, print_pod_name: bool = False):
 
 
 def generate_logs_query(name: str, namespace: str, selected_pod: str, deployment_mode):
+    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+
+    container_name = get_container_name(deployment_mode)
+
     if not selected_pod:
-        if deployment_mode in ["knative", "deployment"]:
+        if deployment_mode in ["knative", "deployment"] + TrainJobServiceManager.SUPPORTED_KINDS:
             # we need to get the pod names first since Loki doesn't have a service_name label
-            core_api = client.CoreV1Api()
-            pods = validate_pods_exist(name, namespace, core_api)
-            pod_names = [pod.metadata.name for pod in pods]
-            return f'{{k8s_pod_name=~"{"|".join(pod_names)}",k8s_container_name="kubetorch"}} | json'
+            pods = validate_pods_exist(name, namespace)
+            pod_names = [pod["metadata"]["name"] for pod in pods]
+            return f'{{k8s_pod_name=~"{"|".join(pod_names)}",k8s_container_name="{container_name}"}} | json'
         else:
             console.print(f"[red]Logs does not support deployment mode: {deployment_mode}[/red]")
             return None
     else:
-        return f'{{k8s_pod_name=~"{selected_pod}",k8s_container_name="kubetorch"}} | json'
+        return f'{{k8s_pod_name=~"{selected_pod}",k8s_container_name="{container_name}"}} | json'
 
 
 def follow_logs_in_cli(
@@ -837,12 +846,21 @@ def is_ingress_vpc_only(annotations: dict):
 
 
 def load_ingress(namespace: str = globals.config.install_namespace):
-    networking_v1_api = client.NetworkingV1Api()
-    ingresses = networking_v1_api.list_namespaced_ingress(namespace=namespace)
+    controller = globals.controller_client()
 
-    for ingress in ingresses.items:
-        if ingress.metadata.name == "kubetorch-proxy-ingress":
-            return ingress
+    try:
+        data = controller.list_ingresses(namespace=namespace)
+        items = data.get("items", [])
+        for ing in items:
+            if ing["metadata"]["name"] == "kubetorch-controller-ingress":
+                return ing
+
+        return None
+
+    except Exception as e:
+        if not http_not_found(e):
+            logger.error(f"Failed to load ingress: {e}")
+        return None
 
 
 def get_ingress_host(ingress):
@@ -853,31 +871,37 @@ def get_ingress_host(ingress):
         return None
 
 
-def detect_deployment_mode(name: str, namespace: str, custom_api, apps_v1_api):
+def detect_deployment_mode(name: str, namespace: str):
     """Detect if a service is deployed as Knative, Deployment, or RayCluster."""
+    controller_client = globals.controller_client()
+
     # First try Deployment
     try:
-        apps_v1_api.read_namespaced_deployment(name=name, namespace=namespace)
-        return "deployment"
-    except ApiException:
-        pass
+        obj = controller_client.get_deployment(name=name, namespace=namespace)
+        if isinstance(obj, dict) and obj.get("kind") == "Deployment":
+            return "deployment"
+    except Exception as e:
+        if not http_not_found(e):
+            raise
 
     # Then try Knative
     try:
-        custom_api.get_namespaced_custom_object(
+        obj = controller_client.get_namespaced_custom_object(
             group="serving.knative.dev",
             version="v1",
             namespace=namespace,
             plural="services",
             name=name,
         )
-        return "knative"
-    except ApiException:
-        pass
+        if isinstance(obj, dict) and obj.get("kind") == "Service":
+            return "knative"
+    except Exception as e:
+        if not http_not_found(e):
+            raise
 
     # Then try RayCluster
     try:
-        custom_api.get_namespaced_custom_object(
+        obj = controller_client.get_namespaced_custom_object(
             group="ray.io",
             version="v1",
             namespace=namespace,
@@ -885,8 +909,27 @@ def detect_deployment_mode(name: str, namespace: str, custom_api, apps_v1_api):
             name=name,
         )
         return "raycluster"
-    except ApiException:
-        pass
+    except Exception as e:
+        if not http_not_found(e):
+            raise
+
+    # Then try TrainJobs
+
+    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+
+    for kind in TrainJobServiceManager.SUPPORTED_KINDS:
+        try:
+            controller_client.get_namespaced_custom_object(
+                group="kubeflow.org",
+                version="v1",
+                namespace=namespace,
+                plural=kind.lower() + "s",
+                name=name,
+            )
+            return kind.lower()
+        except Exception as e:
+            if not http_not_found(e):
+                raise
 
     return None
 
@@ -900,11 +943,11 @@ def load_selected_pod(service_name, provided_pod, service_pods):
         if pod < 0 or pod >= len(service_pods):
             console.print(f"[red]Pod index {pod} is out of range[/red]")
             raise typer.Exit(1)
-        pod_name = service_pods[pod].metadata.name
+        pod_name = service_pods[pod]["metadata"]["name"]
 
     # case when the user provides pod name
     else:
-        pod_names = [pod.metadata.name for pod in service_pods]
+        pod_names = [pod["metadata"]["name"] for pod in service_pods]
         if provided_pod not in pod_names:
             console.print(f"[red]{service_name} does not have an associated pod called {provided_pod}[/red]")
             raise typer.Exit(1)
@@ -914,31 +957,24 @@ def load_selected_pod(service_name, provided_pod, service_pods):
     return pod_name
 
 
-def load_kubetorch_volumes_from_pods(pods: List[client.V1Pod]) -> List[str]:
+def load_kubetorch_volumes_from_pods(pods: list) -> List[str]:
     """Extract volume information from service definition"""
-    volumes = []
+    volumes = set()
 
-    if pods:
-        pod = pods[0]
-        for v in pod.spec.volumes or []:
-            if v.persistent_volume_claim:
-                volumes.append(v.name)
-
-    return volumes
-
-
-def load_kubetorch_volumes_for_service(namespace, service_name, core_v1) -> List[str]:
-    """Extract volume information from service definition"""
-    try:
-        pods = core_v1.list_namespaced_pod(
-            namespace=namespace,
-            label_selector=f"kubetorch.com/service={service_name}",
-        )
-        return load_kubetorch_volumes_from_pods(pods.items)
-
-    except Exception as e:
-        logger.warning(f"Failed to extract volumes from service: {e}")
+    if not pods:
         return []
+
+    for pod in pods:
+        # Normalize each pod into dict
+        if not isinstance(pod, dict):
+            pod = client.ApiClient().sanitize_for_serialization(pod)
+
+        for vol in pod.get("spec", {}).get("volumes", []) or []:
+            pvc = vol.get("persistentVolumeClaim")
+            if pvc:
+                volumes.add(vol["name"])
+
+    return list(volumes)
 
 
 def create_table_for_output(columns: List[set], no_wrap_columns_names: list = None, header_style: dict = None):

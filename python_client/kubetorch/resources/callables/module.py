@@ -27,7 +27,13 @@ from kubetorch.servers.http.utils import (
     is_running_in_kubernetes,
 )
 from kubetorch.serving.utils import has_k8s_credentials, KubernetesCredentialsError
-from kubetorch.utils import extract_host_port, get_kt_install_url, iso_timestamp_to_nanoseconds, ServerLogsFormatter
+from kubetorch.utils import (
+    extract_host_port,
+    get_container_name,
+    get_kt_install_url,
+    iso_timestamp_to_nanoseconds,
+    ServerLogsFormatter,
+)
 
 logger = get_logger(__name__)
 
@@ -219,7 +225,6 @@ class Module:
         reload_prefixes: Union[str, List[str]] = [],
     ):
         """Reload an existing callable by its service name."""
-        from kubernetes import client
         from kubernetes.config import ConfigException, load_incluster_config, load_kube_config
 
         import kubetorch as kt
@@ -228,7 +233,10 @@ class Module:
             load_incluster_config()
         except ConfigException:
             load_kube_config()
-        core_v1_api = client.CoreV1Api()
+
+        from kubetorch import globals
+
+        controller_client = globals.controller_client()
 
         namespace = namespace or config.namespace
         if isinstance(reload_prefixes, str):
@@ -251,19 +259,21 @@ class Module:
 
             compute = kt.Compute.from_template(service_info)
 
-            pods = core_v1_api.list_namespaced_pod(
+            pods_result = controller_client.list_pods(
                 namespace=namespace,
                 label_selector=f"kubetorch.com/service={name}",
             )
             volumes = []
 
             # TODO: handle case where service is scaled to 0?
-            if pods.items:
+            pod_items = pods_result.get("items", [])
+            if pod_items:
                 # Use runtime Pod spec
-                pod = pods.items[0]
-                for v in pod.spec.volumes or []:
-                    if v.persistent_volume_claim:
-                        existing_volume = kt.Volume.from_name(name=v.name)
+                pod = pod_items[0]
+                volumes_list = pod.get("spec", {}).get("volumes", [])
+                for v in volumes_list:
+                    if v.get("persistentVolumeClaim"):
+                        existing_volume = kt.Volume.from_name(name=v.get("name"))
                         volumes.append(existing_volume)
 
             module_args = compute.get_env_vars(
@@ -650,15 +660,14 @@ class Module:
                 metadata_env_vars=self._get_metadata_env_vars(init_args),
                 startup_rsync_command=startup_rsync_command,
                 launch_id=launch_request_id,
+                deployment_timestamp=deployment_timestamp,
                 dryrun=dryrun,
             )
             self.service_config = service_config
 
             if not self.compute.freeze and not dryrun:
-                self.deployment_timestamp = self.compute.service_manager.update_deployment_timestamp_annotation(
-                    service_name=self.service_name,
-                    new_timestamp=deployment_timestamp,
-                )
+                # Timestamp is now included in the initial manifest, no need to patch
+                self.deployment_timestamp = deployment_timestamp
             if not dryrun:
                 self.compute._check_service_ready()
                 # Additional health check to ensure HTTP server is ready
@@ -710,15 +719,14 @@ class Module:
                 metadata_env_vars=self._get_metadata_env_vars(init_args),
                 startup_rsync_command=startup_rsync_command,
                 launch_id=launch_request_id,
+                deployment_timestamp=deployment_timestamp,
                 dryrun=dryrun,
             )
             self.service_config = service_config
 
+            # Timestamp is now included in the initial manifest, no need to patch
             if not self.compute.freeze and not dryrun:
-                self.deployment_timestamp = self.compute.service_manager.update_deployment_timestamp_annotation(
-                    service_name=self.service_name,
-                    new_timestamp=deployment_timestamp,
-                )
+                self.deployment_timestamp = deployment_timestamp
             if not dryrun:
                 await self.compute._check_service_ready_async()
                 await self._wait_for_http_health_async()
@@ -804,21 +812,18 @@ class Module:
             return
 
         configmaps = load_configmaps(
-            core_api=self.compute.core_api,
             service_name=self.service_name,
             namespace=self.compute.namespace,
         )
         if configmaps:
             logger.info(f"Deleting {len(configmaps)} configmap{'' if len(configmaps) == 1 else 's'}")
             delete_configmaps(
-                core_api=self.compute.core_api,
                 configmaps=configmaps,
                 namespace=self.compute.namespace,
             )
 
         logger.info("Deleting service data from cache in rsync pod")
         delete_cached_service_data(
-            core_api=self.compute.core_api,
             service_name=self.service_name,
             namespace=self.compute.namespace,
         )
@@ -859,9 +864,10 @@ class Module:
             deployment_timestamp: Timestamp to filter logs after
         """
         try:
-            # Only use "kubetorch" container to exclude queue-proxy (e.g. Knative sidecars) container logs which
+            # Use the correct container name based on job type to exclude queue-proxy (e.g. Knative sidecars) container logs which
             # are spammy with tons of healthcheck calls
-            pod_query = f'{{k8s_container_name="kubetorch"}} | json | request_id="{request_id}"'
+            container_name = get_container_name(self.compute.kind)
+            pod_query = f'{{k8s_container_name="{container_name}"}} | json | request_id="{request_id}"'
             event_query = f'{{service_name="unknown_service"}} | json | k8s_object_name=~"{self.service_name}.*" | k8s_namespace_name="{self.namespace}"'
 
             encoded_pod_query = urllib.parse.quote_plus(pod_query)
@@ -926,9 +932,10 @@ class Module:
             deployment_timestamp: Timestamp to filter logs after
         """
         try:
-            # Only use "kubetorch" container to exclude queue-proxy (e.g. Knative sidecars) container logs which
+            # Only use correct container to exclude queue-proxy (e.g. Knative sidecars) container logs which
             # are spammy with tons of healthcheck calls
-            pod_query = f'{{k8s_container_name="kubetorch"}} | json | request_id="{request_id}"'
+            container_name = get_container_name(self.compute.kind)
+            pod_query = f'{{k8s_container_name="{container_name}"}} | json | request_id="{request_id}"'
             event_query = f'{{service_name="unknown_service"}} | json | k8s_object_name=~"{self.service_name}.*" | k8s_namespace_name="{self.namespace}"'
 
             encoded_pod_query = urllib.parse.quote_plus(pod_query)
@@ -1264,6 +1271,7 @@ class Module:
                 response = client.get(
                     endpoint=f"{self.base_endpoint}/health",
                     headers=self.request_headers,
+                    timeout=5,  # timeout per health check attempt
                 )
                 if response.status_code == 200:
                     logger.info(f"HTTP server is ready for service {self.service_name}")
@@ -1275,7 +1283,9 @@ class Module:
                 raise e
 
             except Exception as e:
-                logger.debug(f"Health check failed: {e}, retrying...")
+                # Don't log 502 errors - they're expected during startup as nginx DNS updates
+                if "502" not in str(e):
+                    logger.debug(f"Health check failed: {e}, retrying...")
 
             time.sleep(retry_interval)
             retry_interval *= backoff  # Exponential backoff
@@ -1303,6 +1313,7 @@ class Module:
                 response = client.get(
                     endpoint=f"{self.base_endpoint}/health",
                     headers=self.request_headers,
+                    timeout=5,  # add timeout per health check attempt to allow retries
                 )
                 if response.status_code == 200:
                     logger.info(f"HTTP server is ready for service {self.service_name}")
@@ -1310,7 +1321,9 @@ class Module:
                 else:
                     logger.debug(f"Health check returned status {response.status_code}, retrying...")
             except Exception as e:
-                logger.debug(f"Health check failed: {e}, retrying...")
+                # Don't log 502 errors - they're expected during startup as nginx DNS updates
+                if "502" not in str(e):
+                    logger.debug(f"Health check failed: {e}, retrying...")
 
             await asyncio.sleep(retry_interval)
             retry_interval *= backoff  # Exponential backoff
