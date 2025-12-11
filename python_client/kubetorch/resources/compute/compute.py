@@ -546,6 +546,8 @@ class Compute:
         if path:
             current = self._manifest
             for key in path:
+                if current is None:
+                    return None
                 current = current.get(key)
             return current
         return None

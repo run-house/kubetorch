@@ -24,7 +24,7 @@ from kubetorch.servers.http.utils import (
 )
 
 from kubetorch.serving.constants import DEFAULT_DEBUG_PORT, DEFAULT_NGINX_PORT
-from kubetorch.utils import extract_host_port, ServerLogsFormatter
+from kubetorch.utils import extract_host_port, get_container_name, ServerLogsFormatter
 
 logger = get_logger(__name__)
 
@@ -538,7 +538,8 @@ class HTTPClient:
         websocket = None
 
         try:
-            query = f'{{k8s_container_name="kubetorch"}} | json | request_id="{request_id}"'
+            container_name = get_container_name(self.compute.kind)
+            query = f'{{k8s_container_name="{container_name}"}} | json | request_id="{request_id}"'
             encoded_query = urllib.parse.quote_plus(query)
             uri = f"ws://{host}:{port}/loki/api/v1/tail?query={encoded_query}"
             # Track when we should stop
