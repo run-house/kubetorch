@@ -37,7 +37,7 @@ from kubetorch.constants import MAX_PORT_TRIES
 from kubetorch.resources.compute.utils import is_port_available
 from kubetorch.servers.http.utils import stream_logs_websocket_helper, StreamType
 from kubetorch.serving.utils import wait_for_port_forward
-from kubetorch.utils import hours_to_ns, http_not_found, load_kubeconfig
+from kubetorch.utils import get_container_name, hours_to_ns, http_not_found, load_kubeconfig
 
 from .constants import BULLET_UNICODE, CPU_RATE, DOUBLE_SPACE_UNICODE, GPU_RATE
 
@@ -775,18 +775,21 @@ def stream_logs_websocket(uri, stop_event, print_pod_name: bool = False):
 
 
 def generate_logs_query(name: str, namespace: str, selected_pod: str, deployment_mode):
-    if not selected_pod:
-        if deployment_mode in ["knative", "deployment"]:
-            # we need to get the pod names first since Loki doesn't have a service_name label
+    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
 
+    container_name = get_container_name(deployment_mode)
+
+    if not selected_pod:
+        if deployment_mode in ["knative", "deployment"] + TrainJobServiceManager.SUPPORTED_KINDS:
+            # we need to get the pod names first since Loki doesn't have a service_name label
             pods = validate_pods_exist(name, namespace)
             pod_names = [pod["metadata"]["name"] for pod in pods]
-            return f'{{k8s_pod_name=~"{"|".join(pod_names)}",k8s_container_name="kubetorch"}} | json'
+            return f'{{k8s_pod_name=~"{"|".join(pod_names)}",k8s_container_name="{container_name}"}} | json'
         else:
             console.print(f"[red]Logs does not support deployment mode: {deployment_mode}[/red]")
             return None
     else:
-        return f'{{k8s_pod_name=~"{selected_pod}",k8s_container_name="kubetorch"}} | json'
+        return f'{{k8s_pod_name=~"{selected_pod}",k8s_container_name="{container_name}"}} | json'
 
 
 def follow_logs_in_cli(
@@ -905,11 +908,30 @@ def detect_deployment_mode(name: str, namespace: str):
             plural="rayclusters",
             name=name,
         )
-        if isinstance(obj, dict) and obj.get("kind") == "RayCluster":
-            return "raycluster"
+        return "raycluster"
     except Exception as e:
         if not http_not_found(e):
             raise
+
+    # Then try TrainJobs
+
+    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+
+    for kind in TrainJobServiceManager.SUPPORTED_KINDS:
+        try:
+            controller_client.get_namespaced_custom_object(
+                group="kubeflow.org",
+                version="v1",
+                namespace=namespace,
+                plural=kind.lower() + "s",
+                name=name,
+            )
+            return kind.lower()
+        except Exception as e:
+            if not http_not_found(e):
+                raise
+
+    return None
 
 
 def load_selected_pod(service_name, provided_pod, service_pods):
