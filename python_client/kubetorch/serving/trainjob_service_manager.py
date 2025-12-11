@@ -1,13 +1,11 @@
 import copy
-import os
 import time
 from typing import List
 
 import kubetorch.serving.constants as serving_constants
 from kubetorch.logger import get_logger
-from kubetorch.servers.http.utils import load_template
 from kubetorch.serving.base_service_manager import BaseServiceManager
-from kubetorch.utils import http_conflict, http_not_found
+from kubetorch.utils import http_not_found
 
 logger = get_logger(__name__)
 
@@ -76,6 +74,7 @@ class TrainJobServiceManager(BaseServiceManager):
                 kind = supported_kind
                 break
 
+        self.kind = kind
         config = self._get_config(kind)
 
         super().__init__(
@@ -263,100 +262,58 @@ class TrainJobServiceManager(BaseServiceManager):
 
         return manifest
 
-    def _create_or_update_resource(self, manifest: dict, service_name: str, clean_module_name: str, **kwargs) -> dict:
-        """Create or update custom resource via CustomObjectsApi."""
-        pod_spec = self.pod_spec(manifest)
-        server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
+    def _create_or_update_resource(
+        self, manifest: dict, service_name: str, clean_module_name: str, resource_config: dict = None, **kwargs
+    ) -> dict:
+        """Create or update training job resource via controller.
 
-        labels = manifest.get("metadata", {}).get("labels", {})
-        annotations = manifest.get("metadata", {}).get("annotations", {})
-        service_labels = labels.copy()
-        service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+        The controller handles:
+        - Creating the training job CRD (PyTorchJob, TFJob, etc.)
+        - Creating the regular Service for client access (primary replica only)
+        - Creating the headless Service for distributed pod discovery (if distributed)
+        - Storing resource_config for pod heartbeat delivery
+        """
+        dryrun = kwargs.get("dry_run")
+        if dryrun:
+            logger.info(f"[DRY RUN] Would deploy {self.kind} {service_name}")
+            return manifest
+
+        is_distributed = self.is_distributed(manifest)
+        num_replicas = self.get_replicas(manifest)
 
         try:
-            service = load_template(
-                template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
-                template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
-                name=service_name,
+            # Deploy via controller - handles TrainJob + Services creation
+            # resource_config is stored by controller and sent to pods via heartbeat
+            result = self.controller_client.deploy(
+                service_name=service_name,
                 namespace=self.namespace,
-                annotations=annotations,
-                labels=service_labels,
-                deployment_name=service_name,
-                module_name=clean_module_name,
-                distributed=False,  # Regular service for client access
-                server_port=server_port,
+                resource_type=self.kind.lower(),  # pytorchjob, tfjob, etc.
+                resource_manifest=manifest,
+                resource_config=resource_config,
+                distributed=is_distributed,
+                num_workers=num_replicas if is_distributed else None,
             )
 
-            service["spec"]["selector"][serving_constants.KT_SERVICE_LABEL] = service_name
+            status = result.get("status", "")
+            if status == "success":
+                logger.info(f"Deployed {self.kind} {service_name} in namespace {self.namespace}")
+            elif status == "error":
+                raise Exception(f"Deploy failed: {result.get('message', 'Unknown error')}")
 
-            is_distributed = self.is_distributed(manifest)
-            if is_distributed:
-                service["spec"]["selector"]["training.kubeflow.org/replica-type"] = self.primary_replica.lower()
+            return result.get("resource", manifest)
 
-            try:
-                self.controller_client.create_service(
-                    namespace=self.namespace,
-                    body=service,
-                    params=kwargs,
-                )
-                if not kwargs.get("dry_run"):
-                    logger.info(f"Created service {service_name} in namespace {self.namespace}")
-            except Exception as e:
-                if http_conflict(e):
-                    logger.info(f"Service {service_name} already exists")
-                else:
-                    raise
-
-            if is_distributed:
-                # Create headless service for distributed pod discovery
-                headless_service = load_template(
-                    template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
-                    template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
-                    name=f"{service_name}-headless",
-                    namespace=self.namespace,
-                    annotations=annotations,
-                    labels=service_labels,
-                    deployment_name=service_name,
-                    module_name=clean_module_name,
-                    distributed=True,  # Headless service for pod discovery
-                    server_port=server_port,
-                )
-
-                headless_service["spec"]["selector"].pop("training.kubeflow.org/replica-type", None)
-
-                try:
-                    self.controller_client.create_service(
-                        namespace=self.namespace,
-                        body=headless_service,
-                        params=kwargs,
-                    )
-                    if not kwargs.get("dry_run"):
-                        logger.info(f"Created headless service {service_name}-headless in namespace {self.namespace}")
-                except Exception as e:
-                    if http_conflict(e):
-                        logger.info(f"Headless service {service_name}-headless already exists")
-                    else:
-                        raise
-
-            # Create the training job resource (always, not just for distributed)
-            try:
-                created_resource = self._create_resource(manifest, **kwargs)
-            except Exception as e:
-                if http_not_found(e):
-                    logger.error(
-                        "Kubeflow Custom Resource Definition (CRD) not found, please install the Kubeflow Training Operator"
-                    )
-                raise e
-
-            logger.info(f"Created {manifest.get('kind', 'resource')} {service_name} in namespace {self.namespace}")
-            return created_resource
         except Exception as e:
             if http_conflict(e):
-                logger.info(f"{manifest.get('kind', 'resource')} {service_name} already exists, updating")
+                logger.info(f"{self.kind} {service_name} already exists, updating")
                 patch_body = {"spec": manifest["spec"]}
                 updated_resource = self._patch_resource(service_name, patch_body, **kwargs)
-                logger.info(f"Updated {manifest.get('kind', 'resource')} {service_name}")
+                logger.info(f"Updated {self.kind} {service_name}")
                 return updated_resource
+
+            if http_not_found(e):
+                logger.error(
+                    "Kubeflow Custom Resource Definition (CRD) not found, please install the Kubeflow Training Operator"
+                )
             raise e
 
     def check_service_ready(self, service_name: str, launch_timeout: int, **kwargs) -> bool:

@@ -89,3 +89,6 @@ kubetorch_ui/yarn-error.log*
 !kubetorch_ui/lib/
 !kubetorch_ui/.env.local
 !kubetorch_ui/.env.production
+
+# Claude config
+CLAUDE.md

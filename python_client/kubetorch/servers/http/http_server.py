@@ -90,6 +90,9 @@ LOKI_HOST = os.environ.get("LOKI_HOST", "loki-gateway.kubetorch.svc.cluster.loca
 LOKI_PORT = int(os.environ.get("LOKI_PORT", 80))  # Default Loki port
 KT_OTEL_ENABLED = os.environ.get("KT_OTEL_ENABLED", "False").lower() == "true"
 
+# Controller URL
+KUBETORCH_CONTROLLER_URL = os.environ.get("KUBETORCH_CONTROLLER_URL")
+
 # Global termination event that can be checked by running requests
 TERMINATION_EVENT = threading.Event()
 # Create a client for FastAPI service
@@ -108,6 +111,9 @@ if os.getenv("KT_CALLABLE_TYPE") == "app" and os.getenv("KT_APP_PORT"):
     proxy_client = httpx.AsyncClient(base_url=f"http://localhost:{port}/", timeout=None)
 else:
     proxy_client = None
+
+# Reusable client for controller communication (heartbeats, etc.)
+controller_http_client = httpx.AsyncClient(base_url=KUBETORCH_CONTROLLER_URL, timeout=10.0)
 
 
 async def _http_reverse_proxy(request: Request):
@@ -961,6 +967,83 @@ def rsync_file_updates():
 
 
 #####################################
+######## Controller Heartbeat #######
+#####################################
+async def send_controller_heartbeat():
+    """
+    Send a heartbeat to the kubetorch controller to register this pod.
+
+    The controller will return the service config if available, which can be
+    used to configure the pod's behavior.
+    """
+    # if not is_running_in_kubernetes():
+    #     logger.debug("Not running in Kubernetes, skipping controller heartbeat")
+    #     return None
+
+    pod_name = os.environ.get("POD_NAME")
+    service_name = os.environ.get("KT_SERVICE_NAME")
+    namespace = os.environ.get("POD_NAMESPACE")
+
+    if not all([pod_name, service_name, namespace]):
+        logger.debug(
+            f"Missing required env vars for registering heartbeat with the controller: POD_NAME={pod_name}, "
+            f"KT_SERVICE_NAME={service_name}, POD_NAMESPACE={namespace}"
+        )
+        return None
+
+    try:
+        response = await controller_http_client.post(
+            "/kubetorch/heartbeat",
+            json={
+                "pod_name": pod_name,
+                "service_name": service_name,
+                "namespace": namespace,
+            },
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        if result.get("config"):
+            logger.info(f"Received config from controller: {result['config']}")
+            return result["config"]
+        else:
+            logger.debug("Heartbeat sent, no config available yet")
+            return None
+
+    except httpx.HTTPStatusError as e:
+        logger.warning(f"Controller heartbeat failed with status {e.response.status_code}: {e}")
+        return None
+    except httpx.RequestError as e:
+        logger.warning(f"Controller heartbeat request failed: {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"Controller heartbeat failed: {e}")
+        return None
+
+
+def _apply_config_to_env(config: dict):
+    """Apply runtime config from controller heartbeat to environment variables.
+
+    This allows existing code that reads os.environ to continue working.
+    The config contains runtime settings like:
+    - KT_FILE_PATH: Path to the module file
+    - KT_MODULE_NAME: Module name to import
+    - KT_CLS_OR_FN_NAME: Class or function name
+    - KT_INIT_ARGS: Initialization arguments (JSON)
+    - KT_CALLABLE_TYPE: Type of callable (function/class/app)
+    - KT_DISTRIBUTED_CONFIG: Distributed execution config (JSON)
+    """
+    if not config:
+        return
+
+    for key, value in config.items():
+        if value is not None:
+            # Config values are already serialized as strings
+            os.environ[key] = str(value) if not isinstance(value, str) else value
+            logger.debug(f"Set env var {key} from controller config")
+
+
+#####################################
 ########### App setup ###############
 #####################################
 class HealthCheckFilter(logging.Filter):
@@ -1196,6 +1279,16 @@ async def lifespan(app: FastAPI):
         logger.debug("No TTL annotation found, heartbeat disabled")
 
     try:
+        # Send heartbeat to controller FIRST to get runtime config
+        # The controller stores resource_config from deploy() and returns it here
+        config = await send_controller_heartbeat()
+        if config:
+            # Store config in app state for access by endpoints
+            app.state.controller_config = config
+            # Set config values as env vars so existing code can use them
+            _apply_config_to_env(config)
+            logger.info(f"Applied runtime config from controller: {list(config.keys())}")
+
         if os.getenv("KT_CALLABLE_TYPE") == "app":
             run_image_setup()
         else:

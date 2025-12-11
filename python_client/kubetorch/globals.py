@@ -506,10 +506,6 @@ class ControllerClient:
         return self.get(f"/api/v1/namespaces/{namespace}/persistentvolumeclaims", params=params)
 
     # Services
-    def create_service(self, namespace: str, body: Dict[str, Any], params: Dict = None) -> Dict[str, Any]:
-        """Create a Service"""
-        return self.post(f"/api/v1/namespaces/{namespace}/services", json=body, params=params)
-
     def get_service(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
         """Get a Service"""
         return self.get(f"/api/v1/namespaces/{namespace}/services/{name}", ignore_not_found=ignore_not_found)
@@ -785,6 +781,8 @@ class ControllerClient:
         resource_type: str,
         resource_manifest: Dict[str, Any],
         resource_config: Optional[Dict[str, Any]] = None,
+        distributed: bool = False,
+        num_workers: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Deploy a resource and store its configuration.
@@ -795,6 +793,8 @@ class ControllerClient:
             resource_type: Type of resource ("deployment", "knative", "raycluster", "service")
             resource_manifest: The K8s manifest to apply
             resource_config: Optional config to send to pods when they register
+            distributed: Whether this is a distributed deployment (creates headless service)
+            num_workers: Number of workers for distributed deployments
 
         Returns:
             Deploy response with status and message
@@ -805,6 +805,8 @@ class ControllerClient:
             "resource_type": resource_type,
             "resource_manifest": resource_manifest,
             "resource_config": resource_config,
+            "distributed": distributed,
+            "num_workers": num_workers,
         }
         return self.post("/kubetorch/deploy", json=body)
 

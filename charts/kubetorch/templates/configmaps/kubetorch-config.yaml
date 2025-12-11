@@ -5,6 +5,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
 data:
   NGINX_RESOLVER: {{ .Values.nginx.resolver | default "kube-dns.kube-system.svc.cluster.local" }}
+  KUBETORCH_CONTROLLER_URL: http://kubetorch-controller.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.controller.servicePort | default 8080 }}
   COMPUTE_DEFAULTS: |-
 {{- range $key, $value := .Values.kubetorchConfig.computeDefaults }}
     {{ $key }}: {{ if not (kindOf $value | eq "slice") }}{{ $value }}{{ else }}

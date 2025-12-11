@@ -183,6 +183,8 @@ class Compute:
         if _skip_template_init:
             return
 
+        self.kubetorch_config = self.service_manager.fetch_kubetorch_config()
+
         template_vars = {
             "cpus": cpus,
             "memory": memory,
@@ -1711,6 +1713,10 @@ class Compute:
         config_env_vars = globals.config._get_config_env_vars()
         if allowed_serialization:
             config_env_vars["KT_ALLOWED_SERIALIZATION"] = ",".join(allowed_serialization)
+
+        if self.kubetorch_config and self.kubetorch_config.get("KUBETORCH_CONTROLLER_URL"):
+            config_env_vars["KUBETORCH_CONTROLLER_URL"] = self.kubetorch_config["KUBETORCH_CONTROLLER_URL"]
+
         return config_env_vars
 
     def _server_should_enable_otel(self, otel_enabled, inactivity_ttl):
@@ -1778,9 +1784,8 @@ class Compute:
 
     def _load_kubetorch_global_config(self):
         global_config = {}
-        kubetorch_config = self.service_manager.fetch_kubetorch_config()
-        if kubetorch_config:
-            defaults_yaml = kubetorch_config.get("COMPUTE_DEFAULTS", "")
+        if self.kubetorch_config:
+            defaults_yaml = self.kubetorch_config.get("COMPUTE_DEFAULTS", "")
             if defaults_yaml:
                 try:
                     validated_config = {}
@@ -1832,9 +1837,13 @@ class Compute:
     ):
         """Creates a new service on the compute for the provided service. If the service already exists,
         it will update the service with the latest copy of the code."""
-        # Finalize pod spec with launch time env vars
-        self._update_launch_env_vars(service_name, pointer_env_vars, metadata_env_vars, launch_id)
+        # Set only K8s-essential env vars in the manifest
+        # Runtime config (pointer/metadata) is passed via resource_config to the controller
+        self._update_launch_env_vars(service_name, launch_id)
         self._upload_secrets_list()
+
+        # Build resource_config to send to controller (delivered to pods via heartbeat)
+        resource_config = self._build_resource_config(pointer_env_vars, metadata_env_vars)
 
         setup_script = self._get_setup_script(install_url, startup_rsync_command)
 
@@ -1850,6 +1859,7 @@ class Compute:
             module_name=pointer_env_vars["KT_MODULE_NAME"],
             manifest=self._manifest,
             deployment_timestamp=deployment_timestamp,
+            resource_config=resource_config,
             dryrun=dryrun,
         )
         self._manifest = updated_manifest
@@ -1901,10 +1911,14 @@ class Compute:
 
         return service_template
 
-    def _update_launch_env_vars(self, service_name, pointer_env_vars, metadata_env_vars, launch_id):
+    def _update_launch_env_vars(self, service_name, launch_id):
+        """Set env vars that MUST be in the pod manifest (needed for K8s/pod startup).
+
+        Runtime config vars (pointer_env_vars, metadata_env_vars) are passed via
+        resource_config to the controller and delivered to pods via heartbeat.
+        """
+        # Only set vars that are needed for K8s functionality or pod-to-pod communication
         kt_env_vars = {
-            **pointer_env_vars,
-            **metadata_env_vars,
             "KT_LAUNCH_ID": launch_id,
             "KT_SERVICE_NAME": service_name,
             "KT_SERVICE_DNS": (
@@ -1933,6 +1947,19 @@ class Compute:
         for key, val in kt_env_vars.items():
             if key not in updated_env_vars:
                 self._container_env().append({"name": key, "value": val})
+
+    def _build_resource_config(self, pointer_env_vars: Dict, metadata_env_vars: Dict) -> Dict:
+        """Build resource_config dict to be sent via deploy and delivered to pods via heartbeat.
+
+        These are runtime config vars that don't need to be baked into the K8s manifest.
+        The pod receives them when it registers with the controller via heartbeat.
+        """
+        resource_config = {
+            **pointer_env_vars,
+            **metadata_env_vars,
+        }
+        # Serialize for JSON compatibility (controller stores as JSON)
+        return self._serialize_env_vars(resource_config)
 
     def _serialize_env_vars(self, env_vars: Dict) -> Dict:
         import json

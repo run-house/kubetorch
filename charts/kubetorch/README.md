@@ -26,8 +26,9 @@ A Helm chart for kubetorch
 | controller.resources.cpu.request | string | `"200m"` |  |
 | controller.resources.memory.limit | string | `"2Gi"` |  |
 | controller.resources.memory.request | string | `"1Gi"` |  |
+| controller.servicePort | int | `8080` |  |
 | controller.storage.size | string | `"1Gi"` |  |
-| controller.tag | string | `"v0.1.0"` |  |
+| controller.tag | string | `"deploy-endpoint"` |  |
 | controller.tolerations | list | `[]` |  |
 | controller.workers | int | `8` |  |
 | dcgm-exporter.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key | string | `"karpenter.k8s.aws/instance-gpu-manufacturer"` |  |

@@ -23,6 +23,8 @@ logger = get_logger(__name__)
 class KnativeServiceManager(BaseServiceManager):
     """Service manager for Knative services with autoscaling capabilities."""
 
+    RESOURCE_TYPE = "knative"
+
     def __init__(
         self,
         namespace: str,
@@ -145,24 +147,42 @@ class KnativeServiceManager(BaseServiceManager):
 
         return service
 
-    def _create_or_update_resource(self, manifest: dict, service_name: str, clean_module_name: str, **kwargs) -> dict:
+    def _create_or_update_resource(
+        self, manifest: dict, service_name: str, clean_module_name: str, resource_config: dict = None, **kwargs
+    ) -> dict:
+        """Create or update Knative service via controller.
+
+        Knative services handle their own Service creation (via Knative's networking),
+        so we only need to create the Knative Service resource itself.
+        """
+        dryrun = kwargs.get("dry_run")
+        if dryrun:
+            return manifest
+
         try:
-            created_service: dict = self.controller_client.create_namespaced_custom_object(
-                group="serving.knative.dev",
-                version="v1",
+            # Deploy via controller - Knative handles its own Service creation
+            # resource_config is stored by controller and sent to pods via heartbeat
+            result = self.controller_client.deploy(
+                service_name=service_name,
                 namespace=self.namespace,
-                plural="services",
-                body=manifest,
+                resource_type=self.RESOURCE_TYPE,
+                resource_manifest=manifest,
+                resource_config=resource_config,
+                distributed=False,  # Knative handles its own autoscaling
             )
 
-            if not kwargs.get("dry_run"):
-                logger.info(f"Created Knative service {manifest['metadata']['name']} in namespace {self.namespace}")
-            return created_service
+            status = result.get("status", "")
+            if status == "success":
+                logger.info(f"Deployed Knative service {service_name} in namespace {self.namespace}")
+            elif status == "error":
+                raise Exception(f"Deploy failed: {result.get('message', 'Unknown error')}")
+
+            return result.get("resource", manifest)
 
         except Exception as e:
             if http_conflict(e):
-                logger.info(f"Service {manifest['metadata']['name']} already exists, updating")
-                existing_service = self.get_resource(manifest["metadata"]["name"])
+                logger.info(f"Knative service {service_name} already exists, updating")
+                existing_service = self.get_resource(service_name)
                 return existing_service
 
             logger.error(f"Failed to create Knative service: {e}")

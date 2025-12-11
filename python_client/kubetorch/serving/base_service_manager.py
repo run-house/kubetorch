@@ -629,9 +629,19 @@ class BaseServiceManager:
         module_name: str,
         manifest: dict = None,
         deployment_timestamp: str = None,
+        resource_config: dict = None,
         dryrun: bool = False,
     ):
-        """Create or update service."""
+        """Create or update service.
+
+        Args:
+            service_name: Name of the service
+            module_name: Name of the module being deployed
+            manifest: K8s manifest for the resource
+            deployment_timestamp: Optional timestamp for deployment tracking
+            resource_config: Runtime config to send to pods via controller heartbeat
+            dryrun: If True, validate without creating resources
+        """
         logger.info(f"Deploying {manifest['kind']} service with name: {service_name}")
         manifest = self._preprocess_manifest_for_launch(manifest)
 
@@ -644,7 +654,9 @@ class BaseServiceManager:
 
         # Create or update the resource
         kwargs = {"dry_run": "All"} if dryrun else {}
-        created_service = self._create_or_update_resource(updated_manifest, service_name, clean_module_name, **kwargs)
+        created_service = self._create_or_update_resource(
+            updated_manifest, service_name, clean_module_name, resource_config=resource_config, **kwargs
+        )
         return created_service, updated_manifest
 
     def _preprocess_manifest_for_launch(self, manifest: dict) -> dict:
@@ -652,8 +664,21 @@ class BaseServiceManager:
         return manifest
 
     @abstractmethod
-    def _create_or_update_resource(self, manifest: dict, service_name: str, clean_module_name: str, **kwargs) -> dict:
-        """Create or update resources from a manifest. service_name and clean_module_name are provided to avoid re-extraction."""
+    def _create_or_update_resource(
+        self, manifest: dict, service_name: str, clean_module_name: str, resource_config: dict = None, **kwargs
+    ) -> dict:
+        """Create or update resources from a manifest.
+
+        Args:
+            manifest: K8s manifest for the resource
+            service_name: Name of the service
+            clean_module_name: Cleaned module name for labels
+            resource_config: Runtime config to send to controller for pod heartbeat delivery
+            **kwargs: Additional arguments (e.g., dry_run)
+
+        Returns:
+            Created or updated resource
+        """
         pass
 
     def get_endpoint(self, service_name: str) -> str:

@@ -10,9 +10,7 @@ from kubetorch.resources.compute.utils import (
     check_replicaset_events_for_errors,
     ServiceTimeoutError,
 )
-from kubetorch.servers.http.utils import load_template
 from kubetorch.serving.base_service_manager import BaseServiceManager
-from kubetorch.serving.utils import nested_override
 from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)
@@ -21,8 +19,10 @@ logger = get_logger(__name__)
 class DeploymentServiceManager(BaseServiceManager):
     """Service manager for Kubernetes Deployments with distributed computing support."""
 
+    RESOURCE_TYPE = "deployment"
+
     def __init__(self, *args, **kwargs):
-        kwargs["template_label"] = "deployment"
+        kwargs["template_label"] = self.RESOURCE_TYPE
         super().__init__(*args, **kwargs)
 
     @classmethod
@@ -41,9 +41,12 @@ class DeploymentServiceManager(BaseServiceManager):
         Returns:
             Deployment manifest dictionary
         """
+        from kubetorch.servers.http.utils import load_template
+        from kubetorch.serving.utils import nested_override
+
         # Build labels
         labels = cls._get_labels(
-            template_label="deployment",
+            template_label=cls.RESOURCE_TYPE,
             custom_labels=custom_labels,
         )
 
@@ -94,107 +97,76 @@ class DeploymentServiceManager(BaseServiceManager):
 
         return deployment
 
-    def _create_or_update_resource(self, manifest: dict, service_name: str, clean_module_name: str, **kwargs) -> dict:
+    def _create_or_update_resource(
+        self, manifest: dict, service_name: str, clean_module_name: str, resource_config: dict = None, **kwargs
+    ) -> dict:
+        """Create or update Deployment resource via controller.
+
+        The controller handles:
+        - Creating the Deployment
+        - Creating the regular Service for client access
+        - Creating headless Service for distributed deployments
+        - Storing resource_config for pod heartbeat delivery
+        """
         deployment = manifest.copy()
 
-        pod_spec = self.pod_spec(deployment)
-        server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
-
-        labels = deployment.get("metadata", {}).get("labels", {})
-        annotations = deployment.get("metadata", {}).get("annotations", {})
-
-        # Service labels (exclude kt template label)
-        service_labels = labels.copy()
-        service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
-
         dryrun = kwargs.get("dry_run")
+        if dryrun:
+            return deployment
+
+        # Check if this is a distributed deployment
+        is_distributed = self.is_distributed(manifest)
+        num_replicas = self.get_replicas(manifest)
+
         try:
-            # Create regular service for client access
-            service = load_template(
-                template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
-                template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
-                name=service_name,
+            # Deploy via controller - handles Deployment + Services creation
+            # resource_config is stored by controller and sent to pods via heartbeat
+            result = self.controller_client.deploy(
+                service_name=service_name,
                 namespace=self.namespace,
-                annotations=annotations,
-                labels=service_labels,
-                deployment_name=service_name,
-                module_name=clean_module_name,
-                distributed=False,  # Regular service for client access
-                server_port=server_port,
+                resource_type=self.RESOURCE_TYPE,
+                resource_manifest=deployment,
+                resource_config=resource_config,
+                distributed=is_distributed,
+                num_workers=num_replicas if is_distributed else None,
             )
 
-            try:
-                self.controller_client.create_service(namespace=self.namespace, body=service, params=kwargs)
-                if not dryrun:
-                    logger.info(f"Created service {service_name} in namespace {self.namespace}")
-            except Exception as e:
-                if http_conflict(e):
-                    logger.info(f"Service {service_name} already exists")
-                else:
-                    raise
+            status = result.get("status", "")
+            if status == "success":
+                logger.info(f"Deployed {service_name} in namespace {self.namespace}")
+            elif status == "error":
+                raise Exception(f"Deploy failed: {result.get('message', 'Unknown error')}")
 
-            # Create headless service for distributed pod discovery (only if distributed)
-            if self.is_distributed(manifest):
-                headless_service = load_template(
-                    template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
-                    template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
-                    name=f"{service_name}-headless",
-                    namespace=self.namespace,
-                    annotations=annotations,
-                    labels=service_labels,
-                    deployment_name=service_name,
-                    module_name=clean_module_name,
-                    distributed=True,
-                    server_port=server_port,
-                )
-
-                try:
-                    self.controller_client.create_service(
-                        namespace=self.namespace, body=headless_service, params=kwargs
-                    )
-                    if not kwargs.get("dry_run"):
-                        logger.info(f"Created headless service {service_name}-headless in namespace {self.namespace}")
-                except Exception as e:
-                    if http_conflict(e):
-                        logger.info(f"Headless service {service_name}-headless already exists")
-                    else:
-                        raise
-
-            # Create Deployment
-            created_deployment = self.controller_client.create_deployment(
-                namespace=self.namespace,
-                body=deployment,
-            )
-
-            logger.info(f"Created Deployment {deployment['metadata']['name']} in namespace {self.namespace}")
-            return created_deployment
+            # Return the deployment manifest (controller may return the created resource)
+            return result.get("resource", deployment)
 
         except Exception as e:
             if http_conflict(e):
-                logger.info(f"Deployment {deployment['metadata']['name']} already exists, updating")
-                existing_deployment = self.get_resource(deployment["metadata"]["name"])
+                logger.info(f"Deployment {service_name} already exists, updating replicas")
+                existing_deployment = self.get_resource(service_name)
 
-                # Update replicas if different
-                existing_replicas = existing_deployment.get("spec", {}).get("replicas", 0)
-                desired_replicas = deployment["spec"]["replicas"]
-                if existing_replicas != desired_replicas:
-                    patch_body = {"spec": {"replicas": desired_replicas}}
-                    try:
-                        self.controller_client.patch_deployment(
-                            namespace=self.namespace,
-                            name=deployment["metadata"]["name"],
-                            body=patch_body,
-                        )
-                        logger.info(
-                            f"Updated Deployment {deployment['metadata']['name']} replicas to {desired_replicas}"
-                        )
-                    except Exception as patch_error:
-                        logger.error(f"Failed to patch Deployment {deployment['metadata']['name']}: {patch_error}")
-                        raise patch_error
+                if existing_deployment:
+                    # Update replicas if different
+                    existing_replicas = existing_deployment.get("spec", {}).get("replicas", 0)
+                    desired_replicas = deployment["spec"]["replicas"]
+                    if existing_replicas != desired_replicas:
+                        patch_body = {"spec": {"replicas": desired_replicas}}
+                        try:
+                            self.controller_client.patch_deployment(
+                                namespace=self.namespace,
+                                name=service_name,
+                                body=patch_body,
+                            )
+                            logger.info(f"Updated Deployment {service_name} replicas to {desired_replicas}")
+                        except Exception as patch_error:
+                            logger.error(f"Failed to patch Deployment {service_name}: {patch_error}")
+                            raise patch_error
 
-                return existing_deployment
+                    return existing_deployment
+
+                return deployment
             else:
-                logger.error(f"Failed to create Deployment: {str(e)}")
+                logger.error(f"Failed to deploy {service_name}: {str(e)}")
                 raise e
 
     def get_replicas(self, manifest: dict) -> int:

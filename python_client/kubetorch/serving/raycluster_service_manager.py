@@ -7,7 +7,7 @@ import kubetorch.serving.constants as serving_constants
 from kubetorch.logger import get_logger
 from kubetorch.servers.http.utils import load_template
 from kubetorch.serving.base_service_manager import BaseServiceManager
-from kubetorch.utils import http_conflict, http_not_found
+from kubetorch.utils import http_not_found
 
 logger = get_logger(__name__)
 
@@ -15,10 +15,12 @@ logger = get_logger(__name__)
 class RayClusterServiceManager(BaseServiceManager):
     """Service manager for Ray clusters with distributed Ray workload support."""
 
+    RESOURCE_TYPE = "raycluster"
+
     def __init__(
         self,
         namespace: str,
-        template_label: str = "raycluster",
+        template_label: str = RESOURCE_TYPE,
         api_group: str = "ray.io",
         api_plural: str = "rayclusters",
         api_version: str = "v1",
@@ -135,7 +137,7 @@ class RayClusterServiceManager(BaseServiceManager):
         deployment_annotations = deployment_manifest["metadata"]["annotations"]
 
         labels = deployment_labels.copy()
-        labels[serving_constants.KT_TEMPLATE_LABEL] = "raycluster"
+        labels[serving_constants.KT_TEMPLATE_LABEL] = cls.RESOURCE_TYPE
 
         # Template labels (exclude template label - that's only for the top-level resource)
         template_labels = labels.copy()
@@ -246,97 +248,46 @@ class RayClusterServiceManager(BaseServiceManager):
                     worker_group["template"]["spec"] = copy.deepcopy(head_pod_spec)
         return manifest
 
-    def _create_or_update_resource(self, manifest: dict, service_name: str, clean_module_name: str, **kwargs) -> dict:
+    def _create_or_update_resource(
+        self, manifest: dict, service_name: str, clean_module_name: str, resource_config: dict = None, **kwargs
+    ) -> dict:
+        """Create or update RayCluster resource via controller.
+
+        The controller handles:
+        - Creating the RayCluster CRD
+        - Creating the regular Service for client access (head node only)
+        - Creating the headless Service for Ray pod discovery
+        - Storing resource_config for pod heartbeat delivery
+        """
         raycluster = manifest
 
-        pod_spec = self.pod_spec(raycluster)
-        server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
+        dryrun = kwargs.get("dry_run")
+        if dryrun:
+            return raycluster
 
-        labels = raycluster.get("metadata", {}).get("labels", {})
-        annotations = raycluster.get("metadata", {}).get("annotations", {})
-
-        # Service labels (exclude kt template label)
-        service_labels = labels.copy()
-        service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+        # RayClusters are always distributed (head + workers)
+        num_replicas = self.get_replicas(manifest)
 
         try:
-            # Create regular service for client access (head node only)
-            service = load_template(
-                template_file=serving_constants.RAYCLUSTER_SERVICE_TEMPLATE_FILE,
-                template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
-                name=service_name,
+            # Deploy via controller - handles RayCluster + Services creation
+            # resource_config is stored by controller and sent to pods via heartbeat
+            result = self.controller_client.deploy(
+                service_name=service_name,
                 namespace=self.namespace,
-                annotations=annotations,
-                labels=service_labels,
-                deployment_name=service_name,
-                module_name=clean_module_name,
-                distributed=False,  # Keep regular service for client access
-                server_port=server_port,
+                resource_type=self.RESOURCE_TYPE,
+                resource_manifest=raycluster,
+                resource_config=resource_config,
+                distributed=True,  # RayClusters always need headless service for pod discovery
+                num_workers=num_replicas,
             )
 
-            # For regular service, only select head nodes
-            service["spec"]["selector"]["ray.io/node-type"] = "head"
+            status = result.get("status", "")
+            if status == "success":
+                logger.info(f"Deployed RayCluster {service_name} in namespace {self.namespace}")
+            elif status == "error":
+                raise Exception(f"Deploy failed: {result.get('message', 'Unknown error')}")
 
-            try:
-                self.controller_client.create_service(namespace=self.namespace, body=service, params=kwargs)
-                if not kwargs.get("dry_run"):
-                    logger.info(f"Created service {service_name} in namespace {self.namespace}")
-            except Exception as e:
-                if http_conflict(e):
-                    logger.info(f"Service {service_name} already exists")
-                else:
-                    raise
-
-            # Create headless service for Ray pod discovery (all nodes)
-            headless_service = load_template(
-                template_file=serving_constants.RAYCLUSTER_SERVICE_TEMPLATE_FILE,
-                template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
-                name=f"{service_name}-headless",
-                namespace=self.namespace,
-                annotations=annotations,
-                labels=service_labels,
-                deployment_name=service_name,
-                module_name=clean_module_name,
-                distributed=True,  # Make headless for pod discovery
-                server_port=server_port,
-            )
-
-            # For headless service, select all Ray nodes (not just head)
-            headless_service["spec"]["selector"].pop("ray.io/node-type", None)
-
-            dryrun = kwargs.get("dry_run")
-            try:
-                self.controller_client.create_service(
-                    namespace=self.namespace,
-                    body=headless_service,
-                )
-                if not dryrun:
-                    logger.info(f"Created headless service {service_name}-headless in namespace {self.namespace}")
-            except Exception as e:
-                if http_conflict(e):
-                    logger.info(f"Headless service {service_name}-headless already exists")
-                else:
-                    raise
-
-            # Create RayCluster
-            try:
-                created_raycluster = self.controller_client.create_namespaced_custom_object(
-                    group="ray.io",
-                    version="v1",
-                    namespace=self.namespace,
-                    plural="rayclusters",
-                    body=raycluster,
-                    params=kwargs,
-                )
-            except Exception as e:
-                if http_not_found(e):
-                    logger.error(
-                        "RayCluster Custom Resource Definition (CRD) not found, please install the KubeRay operator"
-                    )
-                raise
-
-            logger.info(f"Created RayCluster {service_name} in namespace {self.namespace}")
-            return created_raycluster
+            return result.get("resource", raycluster)
 
         except Exception as e:
             if http_conflict(e):
@@ -358,6 +309,10 @@ class RayClusterServiceManager(BaseServiceManager):
                     logger.error(f"Failed to patch RayCluster {service_name}: {patch_error}")
                     raise patch_error
 
+            if http_not_found(e):
+                logger.error(
+                    "RayCluster Custom Resource Definition (CRD) not found, please install the KubeRay operator"
+                )
             raise e
 
     def get_endpoint(self, service_name: str) -> str:
