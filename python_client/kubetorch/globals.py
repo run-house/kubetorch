@@ -32,6 +32,14 @@ config = KubetorchConfig()
 
 @dataclass
 class MetricsConfig:
+    """
+    Configuration for streaming metrics during a Kubetorch service call.
+
+    Attributes:
+        interval: Time between two consecutive metrics outputs, in seconds. Default: 30.
+        scope: Metrics aggregation level. Options: "pod", "resource". Default: "resource"
+    """
+
     interval: int = 30  # polling interval in seconds
     scope: Literal["pod", "resource"] = "resource"  # aggregation level (default to "resource")
 
