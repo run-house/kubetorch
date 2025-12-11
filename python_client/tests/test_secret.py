@@ -89,6 +89,12 @@ def test_secret_create_using_path_and_reload():
         secret = kt.secret(name=secret_name, path=full_secret_path)
         client = KubernetesSecretsClient()
 
+        # Delete if exists from previous run
+        try:
+            client.delete_secret(secret_name)
+        except Exception:
+            pass
+
         success = client.create_secret(secret)
         assert success
 
@@ -115,6 +121,12 @@ def test_secret_create_provider_and_path_and_reload():
 
         secret = kt.secret(name=secret_name, provider=provider, path=full_secret_path)
         client = KubernetesSecretsClient()
+
+        # Delete if exists from previous run
+        try:
+            client.delete_secret(secret_name)
+        except Exception:
+            pass
 
         success = client.create_secret(secret)
         assert success
@@ -295,6 +307,9 @@ def test_secret_custom_env_vars_propogated_to_pod():
     client = KubernetesSecretsClient()
     loaded_secret = client.load_secret(secret_name)
     assert loaded_secret
+
+    # Make another call to ensure pod is running before checking env vars
+    assert remote_fn(CUSTOM_ENV_VAR) == CUSTOM_ENV_VAR_VALUE
 
     # Check that the secret is propogated to the pod (check env_vars)
     env_var_names = [CUSTOM_ENV_VAR]

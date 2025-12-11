@@ -13,8 +13,6 @@ import httpx
 import requests
 import websockets
 
-from kubernetes import client
-
 from kubetorch.globals import config, DebugConfig, LoggingConfig, MetricsConfig, service_url
 from kubetorch.logger import get_logger
 
@@ -189,7 +187,9 @@ class CustomResponse(httpx.Response):
                     response=self,
                 )
         else:
-            logger.debug(f"Non-JSON error body: {self.text[:100]}")
+            # Don't log 502 errors - they're expected during startup as nginx DNS updates
+            if self.status_code != 502:
+                logger.debug(f"Non-JSON error body: {self.text[:100]}")
             super().raise_for_status()
 
 
@@ -223,9 +223,6 @@ class HTTPClient:
     instances. Each port forward instance is cleaned up when the last reference is closed."""
 
     def __init__(self, base_url, compute, service_name):
-        self._core_api = None
-        self._objects_api = None
-
         self.compute = compute
         self.service_name = service_name
         self.base_url = base_url.rstrip("/")
@@ -272,18 +269,6 @@ class HTTPClient:
                 logger.debug(f"Error closing session: {e}")
             finally:
                 self.session = None
-
-    @property
-    def core_api(self):
-        if self._core_api is None:
-            self._core_api = client.CoreV1Api()
-        return self._core_api
-
-    @property
-    def objects_api(self):
-        if self._objects_api is None:
-            self._objects_api = client.CustomObjectsApi()
-        return self._objects_api
 
     @property
     def local_port(self):
@@ -488,7 +473,10 @@ class HTTPClient:
 
         return endpoint, headers, stop_event, log_task, metrics_task, request_id
 
-    def _make_request(self, method, endpoint, **kwargs):
+    def _make_request(self, method, endpoint, timeout=None, **kwargs):
+        # Allow per-request timeout override
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         response: httpx.Response = getattr(self.session, method)(endpoint, **kwargs)
         response.raise_for_status()
         return response
@@ -1009,8 +997,8 @@ class HTTPClient:
     def delete(self, endpoint, json=None, headers=None):
         return self._make_request("delete", endpoint, json=json, headers=headers)
 
-    def get(self, endpoint, headers=None):
-        return self._make_request("get", endpoint, headers=headers)
+    def get(self, endpoint, headers=None, timeout=None):
+        return self._make_request("get", endpoint, headers=headers, timeout=timeout)
 
     async def post_async(self, endpoint, json=None, headers=None):
         return await self._make_request_async("post", endpoint, json=json, headers=headers)

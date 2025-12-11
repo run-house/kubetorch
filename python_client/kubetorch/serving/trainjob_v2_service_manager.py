@@ -63,8 +63,6 @@ class TrainJobV2ServiceManager(BaseServiceManager):
 
     def __init__(
         self,
-        resource_api: client.CustomObjectsApi,
-        core_api: client.CoreV1Api,
         namespace: str,
         kind: str = "TrainJob",
         api_group: str = "trainer.kubeflow.org",
@@ -74,8 +72,6 @@ class TrainJobV2ServiceManager(BaseServiceManager):
         config = self._get_config(kind)
 
         super().__init__(
-            resource_api=resource_api,
-            core_api=core_api,
             namespace=namespace,
             template_label="trainjob",
             api_group=api_group,
@@ -316,11 +312,14 @@ class TrainJobV2ServiceManager(BaseServiceManager):
                 service["spec"]["selector"]["batch.kubernetes.io/job-completion-index"] = "0"
 
             try:
-                self.core_api.create_namespaced_service(namespace=self.namespace, body=service, **kwargs)
+                params = {"dryRun": "All"} if kwargs.get("dry_run") else None
+                self.controller_client.create_service(namespace=self.namespace, body=service, params=params)
                 if not kwargs.get("dry_run"):
                     logger.info(f"Created service {kt_service_name} in namespace {self.namespace}")
-            except client.exceptions.ApiException as e:
-                if e.status == 409:
+            except Exception as e:
+                if hasattr(e, "response") and e.response.status_code == 409:
+                    logger.info(f"Service {kt_service_name} already exists")
+                elif "409" in str(e) or "AlreadyExists" in str(e):
                     logger.info(f"Service {kt_service_name} already exists")
                 else:
                     raise
@@ -489,7 +488,7 @@ class TrainJobV2ServiceManager(BaseServiceManager):
             if not updated:
                 env.append({"name": name, "value": value})
 
-    def get_pods_for_service(self, service_name: str, **kwargs) -> List:
+    def get_pods_for_service(self, service_name: str, **kwargs) -> List[dict]:
         """Get all pods associated with this TrainJob.
 
         TrainJob v2 uses JobSet labels, not kubetorch labels for pods.
@@ -497,9 +496,9 @@ class TrainJobV2ServiceManager(BaseServiceManager):
         # TrainJob v2 pods are labeled with jobset.sigs.k8s.io/jobset-name
         label_selector = f"jobset.sigs.k8s.io/jobset-name={service_name}"
         try:
-            pods = self.core_api.list_namespaced_pod(namespace=self.namespace, label_selector=label_selector)
-            return pods.items
-        except client.exceptions.ApiException as e:
+            result = self.controller_client.list_pods(namespace=self.namespace, label_selector=label_selector)
+            return result.get("items", [])
+        except Exception as e:
             logger.warning(f"Failed to list pods for TrainJob {service_name}: {e}")
             return []
 
@@ -511,19 +510,16 @@ class TrainJobV2ServiceManager(BaseServiceManager):
         # Note: JobSet creates/deletes its own headless service named {service_name}
         kt_service_name = f"{service_name}-kt"
         try:
-            self.core_api.delete_namespaced_service(name=kt_service_name, namespace=self.namespace)
+            self.controller_client.delete_service(namespace=self.namespace, name=kt_service_name, ignore_not_found=True)
             if console:
                 console.print(f"✓ Deleted service [blue]{kt_service_name}[/blue]")
             else:
                 logger.info(f"Deleted service {kt_service_name}")
-        except client.exceptions.ApiException as e:
-            if e.status == 404:
-                pass  # Already deleted
+        except Exception as e:
+            if console:
+                console.print(f"[red]Error:[/red] Failed to delete service {kt_service_name}: {e}")
             else:
-                if console:
-                    console.print(f"[red]Error:[/red] Failed to delete service {kt_service_name}: {e}")
-                else:
-                    logger.error(f"Failed to delete service {kt_service_name}: {e}")
-                success = False
+                logger.error(f"Failed to delete service {kt_service_name}: {e}")
+            success = False
 
         return success
