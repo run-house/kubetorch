@@ -57,7 +57,10 @@ controller:
   port: 8081  # Port the controller listens on
   workers: 8  # Number of Uvicorn worker processes (each handles ~10 concurrent requests)
   connectionPoolSize: 20  # K8s API connection pool size per worker
-  replicas: 1  # Number of controller replica pods
+  replicas: 1  # Number of controller replica pods (must be 1 for SQLite persistence)
+  storage:
+    size: "1Gi"  # Size of the PVC for controller state (SQLite database)
+    # storageClassName: ""  # Optional: specify a storage class (defaults to cluster default)
 
   resources:
     cpu:

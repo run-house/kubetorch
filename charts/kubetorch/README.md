@@ -26,6 +26,7 @@ A Helm chart for kubetorch
 | controller.resources.cpu.request | string | `"200m"` |  |
 | controller.resources.memory.limit | string | `"2Gi"` |  |
 | controller.resources.memory.request | string | `"1Gi"` |  |
+| controller.storage.size | string | `"1Gi"` |  |
 | controller.tag | string | `"v0.1.0"` |  |
 | controller.tolerations | list | `[]` |  |
 | controller.workers | int | `8` |  |

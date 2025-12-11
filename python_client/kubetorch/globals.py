@@ -775,6 +775,153 @@ class ControllerClient:
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get(f"/apis/{group}/{version}/{plural}", params=params)
 
+    # -------------------------------------------------------------------------
+    # Kubetorch Deploy / Heartbeat / Config Endpoints
+    # -------------------------------------------------------------------------
+    def deploy(
+        self,
+        service_name: str,
+        namespace: str,
+        resource_type: str,
+        resource_manifest: Dict[str, Any],
+        resource_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Deploy a resource and store its configuration.
+
+        Args:
+            service_name: Unique name for this service
+            namespace: Kubernetes namespace
+            resource_type: Type of resource ("deployment", "knative", "raycluster", "service")
+            resource_manifest: The K8s manifest to apply
+            resource_config: Optional config to send to pods when they register
+
+        Returns:
+            Deploy response with status and message
+        """
+        body = {
+            "service_name": service_name,
+            "namespace": namespace,
+            "resource_type": resource_type,
+            "resource_manifest": resource_manifest,
+            "resource_config": resource_config,
+        }
+        return self.post("/kubetorch/deploy", json=body)
+
+    def heartbeat(
+        self,
+        pod_name: str,
+        service_name: str,
+        namespace: str,
+        pod_ip: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Send a heartbeat from a pod and receive config if available.
+
+        Args:
+            pod_name: Name of the pod sending the heartbeat
+            service_name: Name of the service this pod belongs to
+            namespace: Kubernetes namespace
+            pod_ip: Optional pod IP (will be inferred from request if not provided)
+
+        Returns:
+            Heartbeat response with status and optional config
+        """
+        body = {
+            "pod_name": pod_name,
+            "service_name": service_name,
+            "namespace": namespace,
+        }
+        if pod_ip:
+            body["pod_ip"] = pod_ip
+        return self.post("/kubetorch/heartbeat", json=body)
+
+    def get_service_config(self, service_name: str) -> Dict[str, Any]:
+        """
+        Get the config for a deployed service.
+
+        Args:
+            service_name: Name of the service
+
+        Returns:
+            Service config dict with service_name and config fields
+        """
+        return self.get(f"/kubetorch/config/{service_name}")
+
+    def list_deployed_resources(
+        self,
+        namespace: Optional[str] = None,
+        resource_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        List all deployed resources from the controller database.
+
+        Args:
+            namespace: Optional filter by namespace
+            resource_type: Optional filter by resource type
+
+        Returns:
+            Dict with resources list and count
+        """
+        params = {}
+        if namespace:
+            params["namespace"] = namespace
+        if resource_type:
+            params["resource_type"] = resource_type
+        return self.get("/kubetorch/resources", params=params)
+
+    def get_deployed_resource(self, service_name: str) -> Dict[str, Any]:
+        """
+        Get a specific deployed resource by service name.
+
+        Args:
+            service_name: Name of the service
+
+        Returns:
+            Resource details including manifest and config
+        """
+        return self.get(f"/kubetorch/resources/{service_name}")
+
+    def delete_deployed_resource(
+        self,
+        service_name: str,
+        delete_k8s_resource: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Delete a deployed resource from the controller database.
+
+        Args:
+            service_name: Name of the service to delete
+            delete_k8s_resource: Whether to also delete the K8s resource (default True)
+
+        Returns:
+            Delete confirmation
+        """
+        params = {"delete_k8s_resource": str(delete_k8s_resource).lower()}
+        return self.delete(f"/kubetorch/resources/{service_name}", params=params)
+
+    def list_registered_pods(
+        self,
+        service_name: Optional[str] = None,
+        namespace: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        List all registered pods.
+
+        Args:
+            service_name: Optional filter by service name
+            namespace: Optional filter by namespace
+
+        Returns:
+            Dict with pods list and count
+        """
+        params = {}
+        if service_name:
+            params["service_name"] = service_name
+        if namespace:
+            params["namespace"] = namespace
+        return self.get("/kubetorch/pods", params=params)
+
 
 @cache
 def controller_client() -> ControllerClient:

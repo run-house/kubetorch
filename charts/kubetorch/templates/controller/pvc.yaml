@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kubetorch-controller-data
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: kubetorch-controller
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.controller.storage.size | default "1Gi" }}
+  {{- if .Values.controller.storage.storageClassName }}
+  storageClassName: {{ .Values.controller.storage.storageClassName }}
+  {{- end }}

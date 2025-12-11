@@ -74,6 +74,11 @@ spec:
               value: {{ .Values.controller.workers | quote }}
             - name: CONNECTION_POOL_SIZE
               value: {{ .Values.controller.connectionPoolSize | quote }}
+            - name: KUBETORCH_DB_PATH
+              value: "/data/kubetorch.db"
+          volumeMounts:
+            - name: controller-data
+              mountPath: /data
           ports:
             - containerPort: {{ .Values.controller.port }}
               name: controller
@@ -116,3 +121,6 @@ spec:
         - name: nginx-config
           configMap:
             name: kubetorch-controller-config
+        - name: controller-data
+          persistentVolumeClaim:
+            claimName: kubetorch-controller-data
