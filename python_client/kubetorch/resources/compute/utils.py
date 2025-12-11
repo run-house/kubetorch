@@ -830,6 +830,7 @@ def fetch_resources_for_teardown(
                         namespace=namespace,
                         plural=plural,
                         name=service_name,
+                        ignore_not_found=True,
                     )
                     if job_resource:
                         service_type = job_kind.lower()
