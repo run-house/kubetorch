@@ -52,12 +52,6 @@ class ServiceTimeoutError(KnativeServiceError):
     pass
 
 
-class QueueUnschedulableError(KnativeServiceError):
-    """Raised when the service pod is unschedulable in the requested queue."""
-
-    pass
-
-
 class KnativeServiceConflictError(Exception):
     """Raised when a conflicting non-Knative Kubernetes Service prevents Knative service creation."""
 
@@ -259,182 +253,6 @@ def delete_configmaps(
                     console.print(f"[red]Error:[/red] Failed to delete configmap {cm}: {e}")
 
 
-def delete_service(
-    custom_api: client.CustomObjectsApi,
-    name: str,
-    namespace,
-    console: "Console" = None,
-    force: bool = False,
-):
-    """Delete a Knative service."""
-
-    grace_period_seconds, propagation_policy = None, None
-    if force:
-        grace_period_seconds = 0
-        propagation_policy = "Foreground"
-
-    try:
-        custom_api.delete_namespaced_custom_object(
-            group="serving.knative.dev",
-            version="v1",
-            namespace=namespace,
-            plural="services",
-            name=name,
-            grace_period_seconds=grace_period_seconds,
-            propagation_policy=propagation_policy,
-        )
-        if console:
-            console.print(f"✓ Deleted service [blue]{name}[/blue]")
-    except Exception as e:
-        if e.status == 404:
-            if console:
-                console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
-
-
-def delete_deployment(
-    apps_v1_api: client.AppsV1Api,
-    core_api: client.CoreV1Api,
-    name: str,
-    namespace: str,
-    console: "Console" = None,
-    force: bool = False,
-):
-    """Delete a Deployment and its associated service."""
-    grace_period_seconds, propagation_policy = None, None
-    if force:
-        grace_period_seconds = 0
-        propagation_policy = "Foreground"
-    try:
-        # Delete the Deployment
-        apps_v1_api.delete_namespaced_deployment(
-            name=name,
-            namespace=namespace,
-            grace_period_seconds=grace_period_seconds,
-            propagation_policy=propagation_policy,
-        )
-        if console:
-            console.print(f"✓ Deleted deployment [blue]{name}[/blue]")
-    except ApiException as e:
-        if e.status == 404:
-            if console:
-                console.print(f"[yellow]Note:[/yellow] Deployment {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete deployment {name}: {e}")
-
-    # Delete the associated service (regular service, not headless)
-    try:
-        core_api.delete_namespaced_service(
-            name=name,
-            namespace=namespace,
-            grace_period_seconds=grace_period_seconds,
-            propagation_policy=propagation_policy,
-        )
-        if console:
-            console.print(f"✓ Deleted service [blue]{name}[/blue]")
-    except ApiException as e:
-        if e.status == 404:
-            if console:
-                console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
-
-    # Also try to delete the headless service for distributed deployments
-    try:
-        core_api.delete_namespaced_service(
-            name=f"{name}-headless",
-            namespace=namespace,
-            grace_period_seconds=grace_period_seconds,
-            propagation_policy=propagation_policy,
-        )
-        if console:
-            console.print(f"✓ Deleted headless service [blue]{name}-headless[/blue]")
-    except ApiException as e:
-        if e.status == 404:
-            # This is normal for non-distributed deployments
-            pass
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete headless service {name}-headless: {e}")
-
-
-def delete_raycluster(
-    custom_api: client.CustomObjectsApi,
-    core_api: client.CoreV1Api,
-    name: str,
-    namespace: str,
-    console: "Console" = None,
-    force: bool = False,
-):
-    """Delete a RayCluster and its associated service."""
-
-    grace_period_seconds, propagation_policy = None, None
-    if force:
-        grace_period_seconds = 0
-        propagation_policy = "Foreground"
-
-    try:
-        # Delete the RayCluster
-        custom_api.delete_namespaced_custom_object(
-            group="ray.io",
-            version="v1",
-            namespace=namespace,
-            plural="rayclusters",
-            name=name,
-            grace_period_seconds=grace_period_seconds,
-            propagation_policy=propagation_policy,
-        )
-        if console:
-            console.print(f"✓ Deleted RayCluster [blue]{name}[/blue]")
-    except ApiException as e:
-        if e.status == 404:
-            if console:
-                console.print(f"[yellow]Note:[/yellow] RayCluster {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete RayCluster {name}: {e}")
-
-    # Delete the associated service (created alongside RayCluster)
-    try:
-        core_api.delete_namespaced_service(
-            name=name,
-            namespace=namespace,
-            grace_period_seconds=grace_period_seconds,
-            propagation_policy=propagation_policy,
-        )
-        if console:
-            console.print(f"✓ Deleted service [blue]{name}[/blue]")
-    except ApiException as e:
-        if e.status == 404:
-            if console:
-                console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
-
-    # Delete the headless service for Ray pod discovery
-    try:
-        core_api.delete_namespaced_service(
-            name=f"{name}-headless",
-            namespace=namespace,
-            grace_period_seconds=grace_period_seconds,
-            propagation_policy=propagation_policy,
-        )
-        if console:
-            console.print(f"✓ Deleted headless service [blue]{name}-headless[/blue]")
-    except ApiException as e:
-        if e.status == 404:
-            # This is normal for older Ray clusters without headless services
-            pass
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete headless service {name}-headless: {e}")
-
-
 def delete_resources_for_service(
     core_api: client.CoreV1Api,
     custom_api: client.CustomObjectsApi,
@@ -446,34 +264,22 @@ def delete_resources_for_service(
     force: bool = False,
 ):
     """Delete service resources based on service type."""
-    # Delete the main service (Knative, Deployment, or RayCluster)
-    if service_type == "deployment":
-        apps_v1_api = client.AppsV1Api()
-        delete_deployment(
-            apps_v1_api=apps_v1_api,
-            core_api=core_api,
-            name=name,
-            namespace=namespace,
-            console=console,
-            force=force,
-        )
-    elif service_type == "raycluster":
-        delete_raycluster(
-            custom_api=custom_api,
-            core_api=core_api,
-            name=name,
-            namespace=namespace,
-            console=console,
-            force=force,
-        )
-    else:  # knative or unknown - try deleting as Knative service
-        delete_service(
-            custom_api=custom_api,
-            name=name,
-            namespace=namespace,
-            console=console,
-            force=force,
-        )
+    from kubernetes.client import AppsV1Api
+
+    from kubetorch.serving.base_service_manager import BaseServiceManager
+
+    service_manager_class = BaseServiceManager._get_service_manager_class(service_type)
+    resource_api = AppsV1Api() if service_type.lower() == "deployment" else custom_api
+    kwargs = {
+        "resource_api": resource_api,
+        "core_api": core_api,
+        "namespace": namespace,
+    }
+    if service_manager_class.__name__ in ["TrainJobServiceManager", "TrainJobV2ServiceManager"]:
+        kwargs["kind"] = service_type
+    service_manager = service_manager_class(**kwargs)
+
+    service_manager.teardown_service(name, console=console, force=force)
 
     # Delete configmaps
     if configmaps:
@@ -620,7 +426,7 @@ def fetch_resources_for_teardown(
         [service_name]: {
             "configmaps": List[str],
             "pods": List[str],
-            "type": str,  # "knative" or "deployment"
+            "type": str,
         }
     }
     """
@@ -702,6 +508,60 @@ def fetch_resources_for_teardown(
             if e.status != 404:  # Ignore if Ray operator is not installed
                 logger.warning(f"Failed to list RayClusters: {e}")
 
+        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+        from kubetorch.serving.trainjob_v2_service_manager import TrainJobV2ServiceManager
+
+        # Combine v1 and v2 training job kinds with their configs
+        all_training_kinds = [
+            (kind, TrainJobServiceManager._get_config(kind)) for kind in TrainJobServiceManager.SUPPORTED_KINDS
+        ] + [(kind, TrainJobV2ServiceManager._get_config(kind)) for kind in TrainJobV2ServiceManager.SUPPORTED_KINDS]
+
+        for job_kind, config in all_training_kinds:
+            try:
+                plural = config["api_plural"]
+                api_group = config["api_group"]
+                api_version = config["api_version"]
+                if username:
+                    label_selector = f"{KT_USERNAME_LABEL}={username}"
+                else:
+                    label_selector = None
+
+                if label_selector:
+                    response = custom_api.list_namespaced_custom_object(
+                        group=api_group,
+                        version=api_version,
+                        namespace=namespace,
+                        plural=plural,
+                        label_selector=label_selector,
+                    )
+                else:
+                    # Search all jobs when no username filter
+                    response = custom_api.list_namespaced_custom_object(
+                        group=api_group,
+                        version=api_version,
+                        namespace=namespace,
+                        plural=plural,
+                    )
+
+                items = response.get("items", [])
+                # Filter by prefix if provided, and ensure it's a kubetorch service (has template label)
+                job_services = []
+                for item in items:
+                    item_name = item["metadata"]["name"]
+                    labels = item.get("metadata", {}).get("labels", {})
+                    template_label = labels.get(serving_constants.KT_TEMPLATE_LABEL)
+                    # Check if it's a kubetorch service (has template label with value matching job kind or "generic")
+                    if template_label in (job_kind.lower(), "generic"):
+                        # If prefix is provided, check if name starts with prefix
+                        if prefix and item_name.startswith(prefix):
+                            job_services.append(item_name)
+                        elif username and labels.get(KT_USERNAME_LABEL) == username:
+                            job_services.append(item_name)
+                services.extend(job_services)
+            except client.exceptions.ApiException as e:
+                if e.status != 404:  # Ignore if Kubeflow Training Operator is not installed
+                    logger.warning(f"Failed to list {job_kind}s: {e}")
+
     else:
         if not target:
             raise ValueError("Please provide a service name or use the --all or --prefix flags")
@@ -766,10 +626,69 @@ def fetch_resources_for_teardown(
             except client.exceptions.ApiException:
                 pass
 
+        # Check if it's a custom training job (PyTorchJob, TFJob, MXJob, XGBoostJob) if not found as other types
+        if not service_found:
+            from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+
+            for job_kind in TrainJobServiceManager.SUPPORTED_KINDS:
+                try:
+                    plural = job_kind.lower() + "s"
+                    job_resource = custom_api.get_namespaced_custom_object(
+                        group="kubeflow.org",
+                        version="v1",
+                        namespace=namespace,
+                        plural=plural,
+                        name=service_name,
+                    )
+                    if job_resource:
+                        service_type = job_kind.lower()
+                        service_found = True
+                        break
+                except client.exceptions.ApiException:
+                    continue
+
+        # Check if it's a TrainJob v2 (trainer.kubeflow.org/v1alpha1)
+        if not service_found:
+            try:
+                trainjob_resource = custom_api.get_namespaced_custom_object(
+                    group="trainer.kubeflow.org",
+                    version="v1alpha1",
+                    namespace=namespace,
+                    plural="trainjobs",
+                    name=service_name,
+                )
+                if trainjob_resource:
+                    service_type = "trainjob"
+                    service_found = True
+            except client.exceptions.ApiException:
+                pass
+
         # Get associated resources if service exists
         configmaps = load_configmaps(core_api, service_name, namespace)
-        pods = core_api.list_namespaced_pod(namespace=namespace, label_selector=f"{KT_SERVICE_LABEL}={service_name}")
-        pods = [pod.metadata.name for pod in pods.items]
+
+        # Validate service name before using in label selector (K8s labels can't end with hyphen)
+        # Label values must match: ^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$
+        import re
+
+        label_value_pattern = re.compile(r"^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$")
+        pods = []
+        if label_value_pattern.match(service_name):
+            try:
+                pods_response = core_api.list_namespaced_pod(
+                    namespace=namespace, label_selector=f"{KT_SERVICE_LABEL}={service_name}"
+                )
+                pods = [pod.metadata.name for pod in pods_response.items]
+            except client.exceptions.ApiException as e:
+                if e.status == 400:
+                    # Invalid label selector - service name is not a valid label value
+                    logger.warning(
+                        f"Service name '{service_name}' is not a valid Kubernetes label value. Skipping pod lookup."
+                    )
+                else:
+                    raise
+        else:
+            # Service name is not a valid label value (e.g., ends with hyphen)
+            logger.warning(f"Service name '{service_name}' is not a valid Kubernetes label value. Skipping pod lookup.")
 
         # Only add the service to the resources if it has configmaps, pods, or we found the service
         if service_found or configmaps or pods:
@@ -805,21 +724,12 @@ def _get_sync_package_paths(
 
 
 # ----------------- Error Handling Utils ----------------- #
-def check_pod_status_for_errors(pod: client.V1Pod, queue_name: str = None, scheduler_name: str = None):
+def check_pod_status_for_errors(pod: client.V1Pod):
     """Check pod status for errors"""
     # Check for scheduling issues
     for condition in pod.status.conditions or []:
         if condition.type == "PodScheduled" and condition.status == "False" and condition.reason == "Unschedulable":
             msg = condition.message.lower()
-
-            # Check if the pod is scheduled in the correct queue and scheduler
-            if queue_name and scheduler_name:
-                scheduler = pod.metadata.annotations.get("schedulerName", "")
-                queue_label = pod.metadata.labels.get("kai.scheduler/queue")
-                if queue_label == queue_name and scheduler == scheduler_name:
-                    raise QueueUnschedulableError(
-                        f"Pod {pod.metadata.name} could not be scheduled: {condition.message}"
-                    )
 
             # Skip instant-fail if autoscaler taints are present (wait for autoscaler to provision)
             has_autoscaler_taints = any(

@@ -6,6 +6,8 @@ from kubetorch.serving.base_service_manager import BaseServiceManager
 from kubetorch.serving.deployment_service_manager import DeploymentServiceManager
 from kubetorch.serving.knative_service_manager import KnativeServiceManager
 from kubetorch.serving.raycluster_service_manager import RayClusterServiceManager
+from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+from kubetorch.serving.trainjob_v2_service_manager import TrainJobV2ServiceManager
 
 # Export all service managers
 __all__ = [
@@ -13,6 +15,8 @@ __all__ = [
     "DeploymentServiceManager",
     "KnativeServiceManager",
     "RayClusterServiceManager",
+    "TrainJobServiceManager",
+    "TrainJobV2ServiceManager",
 ]
 
 logger = get_logger(__name__)

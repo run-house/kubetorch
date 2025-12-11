@@ -56,6 +56,7 @@ jobs:
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
+          KT_STREAM_METRICS: false
 
   cleanup:
     if: ${{ always() }}

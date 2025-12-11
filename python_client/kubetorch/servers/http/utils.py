@@ -132,6 +132,50 @@ def ensure_structured_logging():
 request_id_ctx_var: ContextVar[str] = ContextVar("request_id", default="-")
 
 
+def setup_trainjob_v2_env_vars():
+    """Translate Kubeflow Training Operator v2 (TrainJob) PET_* env vars to torch.distributed format.
+
+    TrainJob v2 (trainer.kubeflow.org/v1alpha1) uses PET_* environment variables
+    set by the training runtime (e.g., torch-distributed). This function translates
+    them to the standard MASTER_ADDR, MASTER_PORT, RANK, WORLD_SIZE format expected
+    by torch.distributed.
+
+    PET_* vars are set by JobSet/TrainJob:
+    - PET_MASTER_ADDR: Hostname of rank 0 pod (resolves via JobSet headless service)
+    - PET_MASTER_PORT: Port for distributed communication
+    - PET_NODE_RANK: This node's rank (0 for master)
+    - PET_NNODES: Total number of nodes
+    - PET_NPROC_PER_NODE: Processes per node (can be "auto" for GPU count)
+
+    Note: This is NOT used for other distributed training (PyTorchJob v1, kubetorch SIMD, etc.)
+    which set MASTER_ADDR/MASTER_PORT/RANK/WORLD_SIZE directly.
+    """
+    # Translate PET_* to legacy torch.distributed env vars
+    env_mappings = [
+        ("PET_MASTER_ADDR", "MASTER_ADDR"),
+        ("PET_MASTER_PORT", "MASTER_PORT"),
+        ("PET_NODE_RANK", "RANK"),
+    ]
+    for pet_var, legacy_var in env_mappings:
+        if pet_var in os.environ and legacy_var not in os.environ:
+            os.environ[legacy_var] = os.environ[pet_var]
+
+    # Calculate WORLD_SIZE from PET_NNODES * PET_NPROC_PER_NODE
+    if "PET_NNODES" in os.environ and "PET_NPROC_PER_NODE" in os.environ and "WORLD_SIZE" not in os.environ:
+        nproc_per_node = os.environ["PET_NPROC_PER_NODE"]
+        if nproc_per_node.lower() == "auto":
+            # Auto-detect number of GPUs, default to 1 if none found
+            try:
+                import torch
+
+                nproc_per_node = torch.cuda.device_count() or 1
+            except Exception:
+                nproc_per_node = 1
+        else:
+            nproc_per_node = int(nproc_per_node)
+        os.environ["WORLD_SIZE"] = str(int(os.environ["PET_NNODES"]) * nproc_per_node)
+
+
 def collect_reload_modules(kt_home_dir_str: str) -> list:
     """
     Collect user modules from sys.modules that should be reloaded. Returns sorted list of modules (children to parents)

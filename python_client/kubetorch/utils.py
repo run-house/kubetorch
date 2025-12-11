@@ -36,6 +36,31 @@ def http_to_ws(url: str) -> str:
     return "ws://" + url
 
 
+def get_container_name(kind: str = None) -> str:
+    """Get the container name for the service based on its kind.
+
+    Args:
+        kind: The resource kind (e.g., "PyTorchJob", "TrainJob", "Deployment")
+
+    Returns:
+        The container name used by this kind of resource.
+    """
+    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+    from kubetorch.serving.trainjob_v2_service_manager import TrainJobV2ServiceManager
+
+    if kind:
+        # Normalize kind for case-insensitive comparison
+        kind_lower = kind.lower()
+        for supported_kind in TrainJobServiceManager.SUPPORTED_KINDS:
+            if supported_kind.lower() == kind_lower:
+                config = TrainJobServiceManager._get_config(supported_kind)
+                return config["container_name"]
+        for supported_kind in TrainJobV2ServiceManager.SUPPORTED_KINDS:
+            if supported_kind.lower() == kind_lower:
+                return TrainJobV2ServiceManager._get_config(supported_kind)["container_name"]
+    return "kubetorch"
+
+
 def validate_username(username):
     if username is None:  # will be used in case we run kt config user username
         return username

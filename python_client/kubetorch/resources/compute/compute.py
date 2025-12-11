@@ -1,3 +1,4 @@
+import copy
 import os
 import re
 import shlex
@@ -33,8 +34,7 @@ from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecr
 from kubetorch.resources.volumes.volume import Volume
 from kubetorch.servers.http.utils import is_running_in_kubernetes, load_template
 from kubetorch.serving.autoscaling import AutoscalingConfig
-from kubetorch.serving.service_manager import DeploymentServiceManager, KnativeServiceManager, RayClusterServiceManager
-from kubetorch.serving.utils import GPUConfig, pod_is_running
+from kubetorch.serving.utils import pod_is_running
 
 from kubetorch.utils import extract_host_port, http_to_ws, load_head_node_pod, load_kubeconfig
 
@@ -48,9 +48,8 @@ class Compute:
         memory: str = None,
         disk_size: str = None,
         gpus: Union[str, int] = None,
-        queue: str = None,
-        priority_class_name: str = None,
         gpu_type: str = None,
+        priority_class_name: str = None,
         gpu_memory: str = None,
         namespace: str = None,
         image: "Image" = None,
@@ -72,7 +71,7 @@ class Compute:
         working_dir: str = None,
         shared_memory_limit: str = None,
         allowed_serialization: Optional[List[str]] = None,
-        replicas: int = 1,
+        replicas: int = None,
         logging_config: LoggingConfig = None,
         _skip_template_init: bool = False,
     ):
@@ -88,9 +87,6 @@ class Compute:
                 passed, which will be used to set a `nodeSelector` on the service. More info below.
             gpu_memory (str, optional): GPU memory request (e.g., "4Gi"). Will still request whole GPU but limit
                 memory usage.
-            queue (str, optional): Name of the Kubernetes queue that will be responsible for placing the service's
-                pods onto nodes. Controls how cluster resources are allocated and prioritized for this service.
-                Pods will be scheduled according to the quota, priority, and limits configured for the queue.
             priority_class_name (str, optional): Name of the Kubernetes priority class to use for the service. If
                 not specified, the default priority class will be used.
             namespace (str, optional): Kubernetes namespace. Defaults to global config default, or "default".
@@ -122,7 +118,8 @@ class Compute:
                 If not specified, will wait {serving_constants.KT_LAUNCH_TIMEOUT} seconds.
                 Note: you can also control this timeout globally by setting the `KT_LAUNCH_TIMEOUT` environment variable.
             replicas (int, optional): Number of replicas to create for deployment-based services. Can also be set via
-                the `.distribute(workers=N)` method for distributed training. (Default: 1)
+                the `.distribute(workers=N)` method for distributed training. If not specified, defaults to 1 for new
+                manifests. (Default: None)
             working_dir (str, optional): Working directory to use inside the remote images. Must be an absolute path (e.g. `/kt`)
             shared_memory_limit (str, optional):  Maximum size of the shared memory filesystem (/dev/shm) available to
                 each pod created by the service. Value should be a Kubernetes quantity string, for example: "512Mi",
@@ -132,7 +129,6 @@ class Compute:
                 log level, streaming options, and grace periods. See :class:`LoggingConfig` for details.
 
         Note:
-            **Resource Specification Formats:**
 
             CPUs:
                 - Decimal core count: "0.5", "1.0", "2.0"
@@ -186,34 +182,176 @@ class Compute:
         self._secrets_client = None
         self._volumes = volumes
         self._logging_config = logging_config or LoggingConfig()
-
-        self._gpu_annotations = {}  # Will be populated during init or from_template
+        self._manifest = None
 
         # Skip template initialization if loading from existing service
         if _skip_template_init:
-            self._manifest = None
             return
 
-        # determine pod spec vars
-        namespace = namespace or globals.config.namespace
+        template_vars = {
+            "cpus": cpus,
+            "memory": memory,
+            "disk_size": disk_size,
+            "gpus": gpus,
+            "priority_class_name": priority_class_name,
+            "gpu_type": gpu_type,
+            "gpu_memory": gpu_memory,
+            "namespace": namespace,
+            "image": image,
+            "volumes": volumes,
+            "node_selector": node_selector,
+            "tolerations": tolerations,
+            "env_vars": env_vars,
+            "secrets": secrets,
+            "freeze": freeze,
+            "service_account_name": service_account_name,
+            "image_pull_policy": image_pull_policy,
+            "inactivity_ttl": inactivity_ttl,
+            "gpu_anti_affinity": gpu_anti_affinity,
+            "launch_timeout": launch_timeout,
+            "working_dir": working_dir,
+            "shared_memory_limit": shared_memory_limit,
+            "allowed_serialization": allowed_serialization,
+        }
+
+        # Build pod spec with defaults
+        pod_spec, template_vars = self._build_kubetorch_pod_spec(config=template_vars)
+
+        # Prepare manifest annotations
+        manifest_annotations = annotations.copy() if annotations else {}
+        gpu_annotations = {"gpu-memory": gpu_memory} if gpu_memory else {}
+        manifest_annotations.update(gpu_annotations)
+        if self._kubeconfig_path is not None:
+            manifest_annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
+
+        # Build initial manifest based on deployment type
+        from kubetorch.serving.service_manager import DeploymentServiceManager
+
+        self._manifest = DeploymentServiceManager._build_base_manifest(
+            pod_spec=pod_spec,
+            namespace=template_vars["namespace"],
+            replicas=replicas if replicas else 1,
+            inactivity_ttl=template_vars["inactivity_ttl"],
+            custom_labels=labels or {},
+            custom_annotations=manifest_annotations,
+            custom_template=service_template or {},
+        )
+
+    @classmethod
+    def from_template(cls, service_info: dict):
+        """Create a Compute object from a deployed Kubernetes resource."""
+        if "resource" not in service_info:
+            raise ValueError("service_info missing required key: resource")
+
+        compute = cls(_skip_template_init=True)
+        compute._manifest = service_info["resource"]
+        return compute
+
+    @classmethod
+    def from_manifest(cls, manifest: Union[Dict, str]):
+        """Create a Compute instance from a user-provided Kubernetes manifest.
+
+        The user manifest is used as the baseline, and kubetorch-specific default
+        configurations (env vars, labels, annotations, setup script) are merged in
+        if missing from the user manifest.
+
+        Args:
+            manifest: Kubernetes manifest dict or path to YAML file
+
+        Returns:
+            Compute instance
+
+        Examples:
+
+        .. code-block:: python
+
+            import kubetorch as kt
+
+            compute = kt.Compute.from_manifest(user_manifest)
+
+            # Override properties after creation
+            compute.cpus = "2"
+            compute.image = kt.images.Debian().pip_install(["numpy"])
+        """
+        # Load manifest from file if provided as a string
+        if isinstance(manifest, str):
+            with open(manifest, "r") as f:
+                manifest = yaml.safe_load(f)
+
+        # Validate manifest
+        if "kind" not in manifest or "apiVersion" not in manifest:
+            raise ValueError("Manifest must have a 'kind' and 'apiVersion' field")
+
+        # Create instance with minimal init
+        compute = cls(_skip_template_init=True)
+        compute._manifest = copy.deepcopy(manifest)
+        compute._manifest.setdefault("metadata", {})
+        compute._manifest.setdefault("spec", {})
+
+        # Extract kubeconfig_path from manifest annotations if present
+        user_annotations = compute._manifest["metadata"].get("annotations", {})
+        compute._kubeconfig_path = user_annotations.get(serving_constants.KUBECONFIG_PATH_ANNOTATION)
+
+        # Merge kubetorch defaults into user manifest
+        compute._build_and_merge_kubetorch_defaults()
+
+        return compute
+
+    def _build_and_merge_kubetorch_defaults(self):
+        """Build minimal kubetorch manifest with defaults, then merge user manifest."""
+        # Build kubetorch pod spec with empty defaults
+        pod_spec, template_vars = self._build_kubetorch_pod_spec(config={})
+
+        # Merge kubetorch pod spec into user pod spec
+        # This keeps user values where they exist, adds kubetorch defaults where missing
+        self._merge_pod_specs(pod_spec)
+
+        manifest_annotations = {}
+        if self._kubeconfig_path is not None:
+            manifest_annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
+
+        # Apply kubetorch-specific metadata to user manifest
+        self.service_manager._apply_kubetorch_updates(
+            manifest=self._manifest,
+            custom_labels={},
+            custom_annotations=manifest_annotations,
+            inactivity_ttl=template_vars["inactivity_ttl"],
+        )
+
+    def _build_kubetorch_pod_spec(self, config: dict):
+        """
+        Build the kubetorch pod spec with defaults from config.
+
+        Args:
+            config: Configuration dict with kwargs (None values mean use defaults)
+
+        Returns:
+            tuple: (pod_spec dict, template_vars dict)
+        """
+        namespace = config.get("namespace") or globals.config.namespace
         server_port = serving_constants.DEFAULT_KT_SERVER_PORT
-        service_account_name = service_account_name or serving_constants.DEFAULT_SERVICE_ACCOUNT_NAME
+        service_account_name = config.get("service_account_name") or serving_constants.DEFAULT_SERVICE_ACCOUNT_NAME
         otel_enabled = (
             globals.config.cluster_config.get("otel_enabled", False) if globals.config.cluster_config else False
         )
-        server_image = self._get_server_image(image, otel_enabled, inactivity_ttl)
-        gpus = None if gpus in (0, None) else gpus
-        gpu_config = self._load_gpu_config(gpus, gpu_memory, gpu_type)
-        self._gpu_annotations = self._get_gpu_annotations(gpu_config)
-        requested_resources = self._get_requested_resources(cpus, memory, disk_size, gpu_config)
-        secret_env_vars, secret_volumes = self._extract_secrets(secrets, namespace)
-        volume_mounts, volume_specs = self._volumes_for_pod_template(volumes)
-        scheduler_name = self._get_scheduler_name(queue)
-        node_selector = self._get_node_selector(node_selector.copy() if node_selector else {}, gpu_type)
-        all_tolerations = self._get_tolerations(gpus, tolerations)
-        queue_name = queue if queue else globals.config.queue
 
-        env_vars = env_vars.copy() if env_vars else {}
+        server_image = self._get_server_image(
+            config.get("image") or self._image, otel_enabled, config.get("inactivity_ttl")
+        )
+
+        gpus = None if config.get("gpus") == 0 else config.get("gpus")
+        requested_resources = self._get_requested_resources(
+            config.get("cpus"),
+            config.get("memory"),
+            config.get("disk_size"),
+            gpus,
+        )
+        secret_env_vars, secret_volumes = self._extract_secrets(config.get("secrets") or self._secrets, namespace)
+        processed_volumes = self._process_volumes(config.get("volumes") or self._volumes)
+        volume_mounts, volume_specs = self._volumes_for_pod_template(processed_volumes)
+
+        env_vars = config.get("env_vars") or {}
+
         # Set KT_LOG_LEVEL from logging_config, falling back to env var
         if not env_vars.get("KT_LOG_LEVEL"):
             if self._logging_config.level:
@@ -224,10 +362,14 @@ class Compute:
             # If KT_DEBUG_MODE is set, add it to env vars so the debug mode is set on the server
             env_vars["KT_DEBUG_MODE"] = os.getenv("KT_DEBUG_MODE")
 
+        allowed_serialization = config.get("allowed_serialization")
         if not allowed_serialization:
             allowed_serialization_env_var = os.getenv("KT_ALLOWED_SERIALIZATION", None)
             if allowed_serialization_env_var:
                 allowed_serialization = allowed_serialization_env_var.split(",")
+        node_selector = self._get_node_selector(config.get("node_selector") or {}, config.get("gpu_type"))
+
+        all_tolerations = self._get_tolerations(gpus, config.get("tolerations") or [])
 
         template_vars = {
             "server_image": server_image,
@@ -241,21 +383,17 @@ class Compute:
             "volume_specs": volume_specs,
             "service_account_name": service_account_name,
             "config_env_vars": self._get_config_env_vars(allowed_serialization),
-            "image_pull_policy": image_pull_policy,
+            "image_pull_policy": config.get("image_pull_policy"),
             "namespace": namespace,
-            "freeze": freeze,
-            "gpu_anti_affinity": gpu_anti_affinity,
-            "working_dir": working_dir,
+            "freeze": config.get("freeze", False),
+            "gpu_anti_affinity": config.get("gpu_anti_affinity"),
+            "working_dir": config.get("working_dir"),
             "tolerations": all_tolerations,
-            "shm_size_limit": shared_memory_limit,
-            "priority_class_name": priority_class_name,
-            "launch_timeout": self._get_launch_timeout(launch_timeout),
-            "queue_name": queue_name,
-            "scheduler_name": scheduler_name,
-            "inactivity_ttl": inactivity_ttl,
+            "shm_size_limit": config.get("shared_memory_limit"),
+            "priority_class_name": config.get("priority_class_name"),
+            "launch_timeout": self._get_launch_timeout(config.get("launch_timeout")),
+            "inactivity_ttl": config.get("inactivity_ttl"),
             "otel_enabled": otel_enabled,
-            # launch time arguments
-            "raycluster": False,
             "setup_script": "",
         }
 
@@ -268,36 +406,7 @@ class Compute:
             ),
             **template_vars,
         )
-
-        # Build initial manifest based on deployment type
-        from kubetorch.serving.service_manager import DeploymentServiceManager
-
-        manifest_annotations = annotations.copy() if annotations else {}
-        manifest_annotations.update(self.gpu_annotations.copy())
-        if self._kubeconfig_path is not None:
-            manifest_annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
-
-        self._manifest = DeploymentServiceManager._build_base_manifest(
-            pod_spec=pod_spec,
-            namespace=namespace,
-            replicas=replicas,
-            inactivity_ttl=inactivity_ttl,
-            custom_labels=labels or {},
-            custom_annotations=manifest_annotations,
-            custom_template=service_template or {},
-            scheduler_name=scheduler_name,
-            queue_name=queue_name,
-        )
-
-    @classmethod
-    def from_template(cls, service_info: dict):
-        """Create a Compute object from a deployed Kubernetes resource."""
-        if "resource" not in service_info:
-            raise ValueError("service_info missing required key: resource")
-
-        compute = cls(_skip_template_init=True)
-        compute._manifest = service_info["resource"]
-        return compute
+        return pod_spec, template_vars
 
     # ----------------- Helper Methods ----------------- #
 
@@ -306,14 +415,88 @@ class Compute:
         # Return metadata from the manifest itself
         return self._manifest.get("metadata", {})
 
-    def _update_manifest_metadata(self, key, value):
-        """Update metadata in the primary resource in the manifest."""
-        # Update metadata in the manifest itself
-        if "metadata" not in self._manifest:
-            self._manifest["metadata"] = {}
-        if key not in self._manifest["metadata"]:
-            self._manifest["metadata"][key] = {}
-        self._manifest["metadata"][key].update(value)
+    def _merge_pod_specs(self, kt_pod_spec: dict):
+        """Merge kubetorch pod spec into user pod spec.
+
+        User values take precedence over kubetorch defaults. For lists and dicts,
+        kubetorch values are added where user doesn't have them, but existing user
+        values are preserved.
+        """
+        from kubetorch.serving.utils import nested_merge
+
+        container_name = self.service_manager.get_container_name()
+        if not self.pod_spec or not self.pod_spec.get("containers"):
+            self.pod_spec = kt_pod_spec
+            return
+
+        # Merge container
+        user_container = self._container()
+        kt_container = kt_pod_spec.get("containers", [None])[0]
+
+        if kt_container:
+            # Special handling for resources: only merge if kubetorch has actual values
+            kt_resources = kt_container.get("resources")
+            if kt_resources and isinstance(kt_resources, dict):
+                requests = kt_resources.get("requests")
+                limits = kt_resources.get("limits")
+                # Filter out None values and check if any remain
+                filtered_requests = (
+                    {k: v for k, v in requests.items() if v is not None}
+                    if (requests and isinstance(requests, dict))
+                    else {}
+                )
+                filtered_limits = (
+                    {k: v for k, v in limits.items() if v is not None} if (limits and isinstance(limits, dict)) else {}
+                )
+
+                if not (filtered_requests or filtered_limits):
+                    # No actual resource values, remove from kt_container before merging
+                    kt_container = copy.deepcopy(kt_container)
+                    kt_container.pop("resources", None)
+
+            # Use general merge function - user values take precedence
+            nested_merge(user_container, kt_container)
+
+        # Set main container name to kubetorch container name
+        user_container["name"] = container_name
+
+        # Merge pod-level fields
+        # Remove containers from kt_pod_spec since we've already merged it
+        kt_pod_spec_for_merge = copy.deepcopy(kt_pod_spec)
+        kt_pod_spec_for_merge.pop("containers", None)
+
+        # Get current pod spec, merge in kubetorch defaults, then set it back
+        # The setter handles manifest-specific logic (e.g., TrainJob v2 podTemplateOverrides)
+        current_pod_spec = self.pod_spec
+        nested_merge(current_pod_spec, kt_pod_spec_for_merge)
+        # Update container with merged values
+        if current_pod_spec.get("containers"):
+            current_pod_spec["containers"][0] = user_container
+        self.pod_spec = current_pod_spec
+        merged = current_pod_spec
+
+        # For RayCluster, copy the merged head pod spec to the worker group
+        if self.kind == "RayCluster":
+            spec = self._manifest.get("spec", {})
+            worker_group_specs = spec.get("workerGroupSpecs", [])
+            if worker_group_specs:
+                worker_group = worker_group_specs[0]
+                worker_template = worker_group.setdefault("template", {})
+                worker_template["spec"] = copy.deepcopy(merged)
+
+        # For training jobs, ensure worker replicas
+        if self.kind in ["PyTorchJob", "TFJob", "MXJob", "XGBoostJob"]:
+            service_manager = self.service_manager
+            spec = self._manifest.get("spec", {})
+            replica_specs = spec.get(service_manager.replica_specs_key, {})
+            worker_spec = replica_specs.get(service_manager.worker_replica, {})
+            if worker_spec:
+                worker_template = worker_spec.setdefault("template", {})
+                worker_pod_spec = worker_template.setdefault("spec", {})
+
+                # Merge all pod-level fields from merged spec minus containers
+                merged_without_containers = {k: v for k, v in merged.items() if k != "containers"}
+                nested_merge(worker_pod_spec, merged_without_containers)
 
     # ----------------- Properties ----------------- #
     @property
@@ -347,6 +530,18 @@ class Compute:
             self._kubeconfig_path = os.getenv("KUBECONFIG") or constants.DEFAULT_KUBECONFIG_PATH
         return str(Path(self._kubeconfig_path).expanduser())
 
+    @kubeconfig_path.setter
+    def kubeconfig_path(self, value: str):
+        """Set kubeconfig_path and update the manifest annotations."""
+        self._kubeconfig_path = value
+
+        self._manifest.setdefault("metadata", {}).setdefault("annotations", {})
+
+        if value is not None:
+            self._manifest["metadata"]["annotations"][serving_constants.KUBECONFIG_PATH_ANNOTATION] = value
+        elif serving_constants.KUBECONFIG_PATH_ANNOTATION in self._manifest["metadata"].get("annotations", {}):
+            del self._manifest["metadata"]["annotations"][serving_constants.KUBECONFIG_PATH_ANNOTATION]
+
     @property
     def manifest(self):
         """Get the current resource manifest."""
@@ -357,47 +552,49 @@ class Compute:
         """Get the logging configuration for this compute."""
         return self._logging_config
 
+    @logging_config.setter
+    def logging_config(self, value: LoggingConfig):
+        """Set the logging configuration for this compute."""
+        self._logging_config = value
+
+        if self._manifest is not None:
+            try:
+                container = self._container()
+                if value and value.level:
+                    env_vars = {"KT_LOG_LEVEL": value.level.upper()}
+                    self._set_env_vars_in_container(container, env_vars)
+            except (ValueError, AttributeError):
+                pass
+
     @property
     def pod_spec(self):
         """Get the pod spec from the manifest."""
-        # Extract pod spec from the appropriate resource in the manifest
-        kind = self._manifest.get("kind")
-        if kind == "RayCluster":
-            # For Ray clusters, extract from head group spec
-            return self._manifest["spec"]["headGroupSpec"]["template"]["spec"]
-        else:
-            # Knative or deployment
-            return self._manifest["spec"]["template"]["spec"]
+        # Use service manager's pod_spec method which handles different manifest structures
+        return self.service_manager.pod_spec(self._manifest)
+
+    @pod_spec.setter
+    def pod_spec(self, value: dict):
+        """Set the pod spec in the manifest."""
+        self.service_manager.set_pod_spec(self._manifest, value)
 
     @property
     def service_manager(self):
         if self._service_manager is None:
             self._load_kube_config()
-            # Select appropriate service manager based on configuration
-            if self.deployment_mode == "knative":
-                # Use KnativeServiceManager for autoscaling services
-                self._service_manager = KnativeServiceManager(
-                    objects_api=self.objects_api,
-                    core_api=self.core_api,
-                    apps_v1_api=self.apps_v1_api,
-                    namespace=self.namespace,
-                )
-            elif self.deployment_mode == "raycluster":
-                # Use RayClusterServiceManager for Ray distributed workloads
-                self._service_manager = RayClusterServiceManager(
-                    objects_api=self.objects_api,
-                    core_api=self.core_api,
-                    apps_v1_api=self.apps_v1_api,
-                    namespace=self.namespace,
-                )
-            else:
-                # Use DeploymentServiceManager for regular deployments
-                self._service_manager = DeploymentServiceManager(
-                    objects_api=self.objects_api,
-                    core_api=self.core_api,
-                    apps_v1_api=self.apps_v1_api,
-                    namespace=self.namespace,
-                )
+
+            from kubetorch.serving.base_service_manager import BaseServiceManager
+
+            service_manager_class = BaseServiceManager._get_service_manager_class(self.kind)
+            resource_api = self.apps_v1_api if self.deployment_mode == "deployment" else self.objects_api
+            kwargs = {
+                "resource_api": resource_api,
+                "core_api": self.core_api,
+                "namespace": self.namespace,
+            }
+            # Training job managers need the kind parameter
+            if self.kind not in ["Deployment", "Service", "RayCluster"]:
+                kwargs["kind"] = self.kind
+            self._service_manager = service_manager_class(**kwargs)
         return self._service_manager
 
     @property
@@ -419,6 +616,8 @@ class Compute:
     @image.setter
     def image(self, value: "Image"):
         self._image = value
+        if self._image.image_id:
+            self.server_image = self._image.image_id
 
     @property
     def endpoint(self):
@@ -434,7 +633,14 @@ class Compute:
         """Get the container from the pod spec."""
         if "containers" not in self.pod_spec:
             raise ValueError("pod_spec missing 'containers' field.")
-        return self.pod_spec["containers"][0]
+
+        expected_name = self.service_manager.get_container_name()
+        containers = self.pod_spec.get("containers")
+        for container in containers:
+            if container.get("name") == expected_name:
+                return container
+        # If no properly named container found, return the first container
+        return containers[0]
 
     def _container_env(self):
         container = self._container()
@@ -442,22 +648,49 @@ class Compute:
             return []
         return container["env"]
 
-    def _set_container_resource(self, resource_name: str, value: str):
+    def _set_env_vars_in_container(self, container: dict, env_vars: dict) -> None:
+        """Set or update environment variables in a container spec.
+
+        Updates existing env vars if they exist, otherwise appends new ones.
+        Modifies the container dict in place.
+        """
+        container.setdefault("env", [])
+
+        # Track which env vars we've updated
+        updated_names = set()
+
+        # Update existing env vars
+        for env_var in container["env"]:
+            env_name = env_var.get("name")
+            if env_name in env_vars:
+                env_var["value"] = env_vars[env_name]
+                updated_names.add(env_name)
+
+        # Append any env vars that weren't found
+        for name, value in env_vars.items():
+            if name not in updated_names:
+                container["env"].append({"name": name, "value": value})
+
+    def _set_container_resource(self, resource_name: str, value: str, limits: bool = False):
         container = self._container()
 
         # Ensure resources dict exists
-        if "resources" not in container:
-            container["resources"] = {}
+        container.setdefault("resources", {})
 
         # Ensure requests dict exists
-        if "requests" not in container["resources"]:
+        if not container["resources"].get("requests"):
             container["resources"]["requests"] = {}
 
         container["resources"]["requests"][resource_name] = value
 
+        if limits:
+            if not container["resources"].get("limits"):
+                container["resources"]["limits"] = {}
+            container["resources"]["limits"][resource_name] = value
+
     def _get_container_resource(self, resource_name: str) -> Optional[str]:
         resources = self._container().get("resources", {})
-        requests = resources.get("requests", {})
+        requests = resources.get("requests") or {}
         return requests.get(resource_name)
 
     # -------------- Properties From Template -------------- #
@@ -472,12 +705,23 @@ class Compute:
 
     @property
     def server_port(self):
-        return self._container()["ports"][0].get("containerPort")
+        container = self._container()
+        ports = container.get("ports", [])
+        if ports and len(ports) > 0:
+            return ports[0].get("containerPort")
+        # Return default if ports not found
+        import kubetorch.serving.constants as serving_constants
+
+        return serving_constants.DEFAULT_KT_SERVER_PORT
 
     @server_port.setter
     def server_port(self, value: int):
         """Set the server port in the pod spec."""
-        self._container()["ports"][0]["containerPort"] = value
+        container = self._container()
+        container.setdefault("ports", [])
+        if len(container["ports"]) == 0:
+            container["ports"].append({})
+        container["ports"][0]["containerPort"] = value
 
     @property
     def env_vars(self):
@@ -528,7 +772,7 @@ class Compute:
         Args:
             value: CPU value (e.g., "2", "1000m", "0.5")
         """
-        self._set_container_resource("cpu", value)
+        self._set_container_resource("cpu", str(value))
 
     @property
     def memory(self):
@@ -540,7 +784,7 @@ class Compute:
         Args:
             value: Memory value (e.g., "4Gi", "2048Mi")
         """
-        self._set_container_resource("memory", value)
+        self._set_container_resource("memory", str(value))
 
     @property
     def disk_size(self):
@@ -564,11 +808,11 @@ class Compute:
         Args:
             value: Number of GPUs (e.g., 1, "2")
         """
-        self._set_container_resource("nvidia.com/gpu", str(value))
+        self._set_container_resource("nvidia.com/gpu", str(value), limits=True)
 
     @property
     def gpu_type(self):
-        node_selector = self.pod_spec.get("nodeSelector")
+        node_selector = self.pod_spec.get("nodeSelector") or {}
         return node_selector.get("nvidia.com/gpu.product")
 
     @gpu_type.setter
@@ -577,8 +821,7 @@ class Compute:
         Args:
             value: GPU product name (e.g., "L4", "V100", "A100", "T4")
         """
-        if "nodeSelector" not in self.pod_spec:
-            self.pod_spec["nodeSelector"] = {}
+        self.pod_spec.setdefault("nodeSelector", {})
         self.pod_spec["nodeSelector"]["nvidia.com/gpu.product"] = value
 
     @property
@@ -595,9 +838,12 @@ class Compute:
         Args:
             value: GPU memory in MiB (e.g., "4096", "8192", "16384")
         """
-        if "annotations" not in self.pod_spec:
-            self.pod_spec["annotations"] = {}
-        self.pod_spec["annotations"]["gpu-memory"] = value
+        self._manifest.setdefault("metadata", {}).setdefault("annotations", {})
+
+        if value is not None:
+            self._manifest["metadata"]["annotations"]["gpu-memory"] = value
+        elif "gpu-memory" in self._manifest["metadata"].get("annotations", {}):
+            del self._manifest["metadata"]["annotations"]["gpu-memory"]
 
     @property
     def volumes(self):
@@ -617,6 +863,42 @@ class Compute:
             self._volumes = volumes
         return self._volumes
 
+    @volumes.setter
+    def volumes(self, value: List[Union[str, Volume]]):
+        """
+        Set volumes and update the manifest pod spec.
+
+        Args:
+            value: List of volumes (strings or Volume objects) to add to existing volumes
+        """
+        processed_volumes = self._process_volumes(value)
+        new_volume_names = [vol.name for vol in (processed_volumes or [])]
+        self._volumes = list(dict.fromkeys((self._volumes or []) + new_volume_names))
+
+        volume_mounts, volume_specs = self._volumes_for_pod_template(processed_volumes)
+
+        container = self._container()
+        volume_mounts_list = container.setdefault("volumeMounts", [])
+        existing_mount_names = {
+            vm["name"] for vm in volume_mounts_list if vm["name"] != "dshm" and not vm["name"].startswith("secrets-")
+        }
+
+        for mount in volume_mounts or []:
+            if mount["name"] not in existing_mount_names:
+                volume_mounts_list.append(mount)
+                existing_mount_names.add(mount["name"])
+
+        volumes_list = self.pod_spec.setdefault("volumes", [])
+        existing_vol_names = {
+            vol.get("name") for vol in volumes_list if vol.get("name") != "dshm" and "secret" not in vol
+        }
+
+        for vol_spec in volume_specs or []:
+            vol_name = vol_spec.get("name")
+            if vol_name and vol_name not in existing_vol_names:
+                volumes_list.append(vol_spec)
+                existing_vol_names.add(vol_name)
+
     @property
     def shared_memory_limit(self):
         if "volumes" not in self.pod_spec:
@@ -624,7 +906,7 @@ class Compute:
 
         for volume in self.pod_spec["volumes"]:
             if volume.get("name") == "dshm" and "emptyDir" in volume:
-                empty_dir = volume["emptyDir"]
+                empty_dir = volume["emptyDir"] or {}
                 return empty_dir.get("sizeLimit")
 
         return None
@@ -635,8 +917,7 @@ class Compute:
         Args:
             value: Size limit (e.g., "512Mi", "1Gi", "2G")
         """
-        if "volumes" not in self.pod_spec:
-            self.pod_spec["volumes"] = []
+        self.pod_spec.setdefault("volumes", [])
 
         # Find existing dshm volume and update it
         for volume in self.pod_spec["volumes"]:
@@ -689,8 +970,7 @@ class Compute:
                             break
 
                     if existing_secret:
-                        if "env_vars" not in existing_secret:
-                            existing_secret["env_vars"] = []
+                        existing_secret.setdefault("env_vars", [])
                         if env_var["name"] not in existing_secret["env_vars"]:
                             existing_secret["env_vars"].append(env_var["name"])
                     else:
@@ -766,13 +1046,19 @@ class Compute:
         self._container()["imagePullPolicy"] = value
 
     @property
+    def kind(self):
+        """Get the manifest kind, defaulting to 'Deployment' if not set."""
+        if self._manifest is None:
+            return "Deployment"
+        return self._manifest.get("kind", "Deployment")
+
+    @property
     def namespace(self):
-        return self._manifest.get("metadata", {}).get("namespace")
+        return self._manifest.get("metadata", {}).get("namespace") if self._manifest else globals.config.namespace
 
     @namespace.setter
     def namespace(self, value: str):
-        if "metadata" not in self._manifest:
-            self._manifest["metadata"] = {}
+        self._manifest.setdefault("metadata", {})
         self._manifest["metadata"]["namespace"] = value
 
     @property
@@ -795,6 +1081,67 @@ class Compute:
                 if env_var["name"] == "KT_FREEZE" and "value" in env_var:
                     return env_var["value"].lower() == "true"
         return False
+
+    @freeze.setter
+    def freeze(self, value: bool):
+        if value == self.freeze:
+            return
+
+        container = self._container()
+
+        self._set_env_vars_in_container(container, {"KT_FREEZE": str(value).lower()})
+
+        # Update securityContext from pod template based on freeze value
+        if value:  # Remove SYS_PTRACE capability when freeze is enabled
+            security_context = container.get("securityContext")
+            if not security_context:
+                return
+
+            capabilities_dict = security_context.get("capabilities")
+            if not capabilities_dict:
+                return
+
+            capabilities = capabilities_dict.get("add")
+            if not capabilities or "SYS_PTRACE" not in capabilities:
+                return
+
+            capabilities.remove("SYS_PTRACE")
+            if not capabilities:  # empty after removal
+                del capabilities_dict["add"]
+                if not capabilities_dict:
+                    del security_context["capabilities"]
+        else:  # When freeze is False, ensure SYS_PTRACE capability is present
+            capabilities = (
+                container.setdefault("securityContext", {}).setdefault("capabilities", {}).setdefault("add", [])
+            )
+            if "SYS_PTRACE" not in capabilities:
+                capabilities.append("SYS_PTRACE")
+
+    @property
+    def allowed_serialization(self):
+        """Get allowed_serialization from the container's KT_ALLOWED_SERIALIZATION env var."""
+        container = self._container()
+        if "env" in container:
+            for env_var in container["env"]:
+                if env_var["name"] == "KT_ALLOWED_SERIALIZATION" and "value" in env_var:
+                    value = env_var["value"]
+                    if value:
+                        return value.split(",")
+        return None
+
+    @allowed_serialization.setter
+    def allowed_serialization(self, value: Optional[List[str]]):
+        """Set allowed_serialization and update the manifest pod spec."""
+        container = self._container()
+
+        if value:
+            env_value = ",".join(value)
+            self._set_env_vars_in_container(container, {"KT_ALLOWED_SERIALIZATION": env_value})
+        else:
+            if "env" in container:
+                container["env"] = [
+                    env_var for env_var in container["env"] if env_var.get("name") != "KT_ALLOWED_SERIALIZATION"
+                ]
 
     @property
     def secrets(self):
@@ -822,19 +1169,130 @@ class Compute:
 
         return self._secrets
 
+    @secrets.setter
+    def secrets(self, value: List[Union[str, "Secret"]]):
+        """
+        Set secrets and update the manifest pod spec.
+
+        Args:
+            value: List of secrets (strings or Secret objects) to add to existing secrets
+        """
+        # Combine secrets avoiding duplicates
+        seen_names = set()
+        combined_secrets = []
+        for secret in (self._secrets or []) + (value or []):
+            name = secret.name if hasattr(secret, "name") else secret
+            if name not in seen_names:
+                combined_secrets.append(secret)
+                seen_names.add(name)
+        self._secrets = combined_secrets
+
+        secret_env_vars, secret_volumes = self._extract_secrets(value, self.namespace)
+
+        container = self._container()
+        env_list = container.setdefault("env", [])
+        existing_env_names = {
+            env_var["name"] for env_var in env_list if env_var.get("valueFrom", {}).get("secretKeyRef")
+        }
+
+        for secret_dict in secret_env_vars or []:
+            for key in secret_dict["env_vars"]:
+                if key not in existing_env_names:
+                    env_list.append(
+                        {"name": key, "valueFrom": {"secretKeyRef": {"name": secret_dict["secret_name"], "key": key}}}
+                    )
+                    existing_env_names.add(key)
+
+        volume_mounts_list = container.setdefault("volumeMounts", [])
+        existing_mount_names = {vm["name"] for vm in volume_mounts_list if vm["name"].startswith("secrets-")}
+
+        for secret_dict in secret_volumes or []:
+            if secret_dict["name"] not in existing_mount_names:
+                volume_mounts_list.append(
+                    {"name": secret_dict["name"], "mountPath": secret_dict["path"], "readOnly": True}
+                )
+                existing_mount_names.add(secret_dict["name"])
+
+        volumes_list = self.pod_spec.setdefault("volumes", [])
+        existing_vol_names = {vol.get("name") for vol in volumes_list if "secret" in vol}
+
+        for secret_dict in secret_volumes or []:
+            if secret_dict["name"] not in existing_vol_names:
+                volumes_list.append({"name": secret_dict["name"], "secret": {"secretName": secret_dict["secret_name"]}})
+                existing_vol_names.add(secret_dict["name"])
+
+    @property
+    def gpu_annotations(self):
+        return {"gpu-memory": self.gpu_memory} if self.gpu_memory else {}
+
     @property
     def gpu_anti_affinity(self):
-        if "affinity" in self.pod_spec and "nodeAffinity" in self.pod_spec["affinity"]:
-            node_affinity = self.pod_spec["affinity"]["nodeAffinity"]
-            if "requiredDuringSchedulingIgnoredDuringExecution" in node_affinity:
-                required = node_affinity["requiredDuringSchedulingIgnoredDuringExecution"]
-                if "nodeSelectorTerms" in required:
-                    for term in required["nodeSelectorTerms"]:
-                        if "matchExpressions" in term:
-                            for expr in term["matchExpressions"]:
-                                if expr.get("key") == "nvidia.com/gpu" and expr.get("operator") == "DoesNotExist":
-                                    return True
+        affinity = self.pod_spec.get("affinity", {})
+        node_affinity = affinity.get("nodeAffinity", {})
+        required = node_affinity.get("requiredDuringSchedulingIgnoredDuringExecution", {})
+        node_selector_terms = required.get("nodeSelectorTerms", [])
+
+        for term in node_selector_terms:
+            match_expressions = term.get("matchExpressions", [])
+            for expr in match_expressions:
+                if expr.get("key") == "nvidia.com/gpu" and expr.get("operator") == "DoesNotExist":
+                    return True
         return False
+
+    @gpu_anti_affinity.setter
+    def gpu_anti_affinity(self, value: bool):
+        if value:
+            self.pod_spec.setdefault("affinity", {}).setdefault("nodeAffinity", {}).setdefault(
+                "requiredDuringSchedulingIgnoredDuringExecution", {}
+            )
+            self.pod_spec["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"][
+                "nodeSelectorTerms"
+            ] = [{"matchExpressions": [{"key": "nvidia.com/gpu", "operator": "DoesNotExist"}]}]
+        else:
+            # Remove the affinity rule when value is False
+            affinity = self.pod_spec.get("affinity")
+            if not affinity:
+                return
+
+            node_affinity = affinity.get("nodeAffinity")
+            if not node_affinity:
+                return
+
+            required = node_affinity.get("requiredDuringSchedulingIgnoredDuringExecution")
+            if not required:
+                return
+
+            node_selector_terms = required.get("nodeSelectorTerms")
+            if not node_selector_terms:
+                return
+
+            # Filter out GPU DoesNotExist expressions from each term
+            updated_terms = []
+            for term in node_selector_terms:
+                match_expressions = term.get("matchExpressions", [])
+                if match_expressions:
+                    filtered = [
+                        expr
+                        for expr in match_expressions
+                        if not (expr.get("key") == "nvidia.com/gpu" and expr.get("operator") == "DoesNotExist")
+                    ]
+                    if filtered:  # Keep term only if it has remaining expressions
+                        updated_terms.append({**term, "matchExpressions": filtered})
+                else:
+                    updated_terms.append(term)  # Keep terms without matchExpressions
+
+            # Update or remove nodeSelectorTerms
+            if updated_terms:
+                required["nodeSelectorTerms"] = updated_terms
+            else:
+                # Clean up empty structures
+                del required["nodeSelectorTerms"]
+                if not required:
+                    del node_affinity["requiredDuringSchedulingIgnoredDuringExecution"]
+                    if not node_affinity:
+                        del affinity["nodeAffinity"]
+                        if not affinity:
+                            del self.pod_spec["affinity"]
 
     @property
     def concurrency(self):
@@ -884,42 +1342,9 @@ class Compute:
     @launch_timeout.setter
     def launch_timeout(self, value: int):
         container = self._container()
-        if "startupProbe" not in container:
-            container["startupProbe"] = {}
+        container.setdefault("startupProbe", {})
         # Convert timeout to failure threshold (launch_timeout // 5)
         container["startupProbe"]["failureThreshold"] = value // 5
-
-    @property
-    def queue(self):
-        """Get queue name from manifest or stored fallback value."""
-        # Try to extract from pod spec schedulerName
-        if "schedulerName" in self.pod_spec:
-            # If schedulerName is set, we have a queue
-            # Extract queue from labels
-            metadata = self._get_manifest_metadata()
-            labels = metadata.get("labels", {})
-            queue_label = labels.get("kai.scheduler/queue")
-            if queue_label:
-                return queue_label
-
-        default_queue = globals.config.queue
-        if default_queue:
-            return default_queue
-
-    @queue.setter
-    def queue(self, value: str):
-        pod_spec = self.pod_spec
-        pod_spec["schedulerName"] = self._get_scheduler_name(value)
-
-        metadata = self._get_manifest_metadata()
-        if "labels" not in metadata:
-            metadata["labels"] = {}
-
-        metadata["labels"]["kai.scheduler/queue"] = value
-
-    @property
-    def scheduler_name(self):
-        return self._get_scheduler_name(self.queue)
 
     @property
     def inactivity_ttl(self):
@@ -947,8 +1372,7 @@ class Compute:
             )
 
         container = self._container()
-        if "env" not in container:
-            container["env"] = []
+        container.setdefault("env", [])
 
         # Find existing KT_INACTIVITY_TTL env var and update it
         for env_var in container["env"]:
@@ -998,7 +1422,7 @@ class Compute:
     @property
     def distributed_config(self):
         # First try to get from pod spec
-        template_config = None
+        template_config = {}
         container = self._container()
         if "env" in container:
             for env_var in container["env"]:
@@ -1011,46 +1435,21 @@ class Compute:
                         template_config = env_var["value"]
                     break
 
-        if template_config:
-            return template_config
-
-        kind = self._manifest.get("kind")
-        if kind == "RayCluster":
-            return {"distribution_type": "ray"}
-        elif kind == "Deployment":
-            # Check if this is a distributed deployment by looking for distributed env vars
-            pod_spec = self.pod_spec
-            containers = pod_spec.get("containers", [])
-            if containers:
-                env_vars = containers[0].get("env", [])
-                for env_var in env_vars:
-                    if env_var.get("name") == "KT_DISTRIBUTED_CONFIG":
-                        try:
-                            import json
-
-                            distributed_config = json.loads(env_var.get("value", "{}"))
-                            if distributed_config:
-                                return distributed_config
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-
-        return {}
+        return template_config
 
     @distributed_config.setter
     def distributed_config(self, config: dict):
-        # Update pod spec with distributed config
-        container = self._container()
-        if "env" not in container:
-            container["env"] = []
-
-        # Update or add KT_SERVICE_DNS, KT_DISTRIBUTED_CONFIG env vars
+        """Set distributed config in all containers."""
         import json
 
-        service_dns = None
-        if config and config.get("distribution_type") == "ray":
-            service_dns = "ray-head-svc"
-        elif config and config.get("distribution_type") == "pytorch":
-            service_dns = "rank0"
+        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+
+        # Populate defaults if config is missing values
+        workers = config.get("workers")
+        config["distribution_type"] = config.get("distribution_type", "spmd")
+        config["quorum_timeout"] = config.get("quorum_timeout") or self.launch_timeout or 300
+        config["quorum_workers"] = config.get("quorum_workers", workers or self.replicas)
+        self.replicas = workers or config["quorum_workers"]
 
         # Serialize the config to JSON, ensuring it's always a string
         # Check for non-serializable values and raise an error with details
@@ -1067,29 +1466,62 @@ class Compute:
                 f"All values must be JSON serializable (strings, numbers, booleans, lists, dicts)."
             )
 
-        service_dns_found, distributed_config_found = False, False
-        for env_var in self._container_env():
-            if env_var["name"] == "KT_SERVICE_DNS" and service_dns:
-                env_var["value"] = service_dns
-                service_dns_found = True
-            elif env_var["name"] == "KT_DISTRIBUTED_CONFIG":
-                env_var["value"] = json.dumps(config)
-                distributed_config_found = True
+        distribution_type = config.get("distribution_type", "spmd")
+        service_dns = None
+        if distribution_type == "ray":
+            service_dns = "ray-head-svc"
+        elif distribution_type == "pytorch":
+            service_dns = "rank0"
 
-        # Add any missing env vars
-        if service_dns and not service_dns_found:
-            container["env"].append({"name": "KT_SERVICE_DNS", "value": service_dns})
-        if not distributed_config_found:
-            container["env"].append({"name": "KT_DISTRIBUTED_CONFIG", "value": json.dumps(config)})
+        # Prepare env vars to set
+        env_vars_to_set = {"KT_DISTRIBUTED_CONFIG": json.dumps(config)}
+        if service_dns:
+            env_vars_to_set["KT_SERVICE_DNS"] = service_dns
+
+        # For v1 training jobs (PyTorchJob, TFJob, etc.), set in both Master and Worker replica containers
+        if self.kind in TrainJobServiceManager.SUPPORTED_KINDS:
+            service_manager = self.service_manager
+            spec = self._manifest.get("spec", {})
+            replica_specs = spec.get(service_manager.replica_specs_key, {})
+
+            for replica_name in [service_manager.primary_replica, service_manager.worker_replica]:
+                replica_spec = replica_specs.get(replica_name, {})
+                pod_spec = replica_spec.get("template", {}).get("spec", {})
+                containers = pod_spec.get("containers", [])
+
+                for container in containers:
+                    self._set_env_vars_in_container(container, env_vars_to_set)
+        # For TrainJob v2, use service manager method
+        elif self.kind == "TrainJob":
+            self.service_manager.set_env_vars_in_manifest(self._manifest, env_vars_to_set)
+        # For RayCluster, set in both head and worker group containers
+        elif self.kind == "RayCluster":
+            spec = self._manifest.get("spec", {})
+
+            # Set in head group
+            head_spec = spec.get("headGroupSpec", {})
+            head_pod_spec = head_spec.get("template", {}).get("spec", {})
+            head_containers = head_pod_spec.get("containers", [])
+            for container in head_containers:
+                self._set_env_vars_in_container(container, env_vars_to_set)
+
+            # Set in worker groups
+            worker_group_specs = spec.get("workerGroupSpecs", [])
+            for worker_group in worker_group_specs:
+                worker_pod_spec = worker_group.get("template", {}).get("spec", {})
+                worker_containers = worker_pod_spec.get("containers", [])
+                for container in worker_containers:
+                    self._set_env_vars_in_container(container, env_vars_to_set)
+        else:
+            # Regular manifest - set config in main container
+            container = self._container()
+            self._set_env_vars_in_container(container, env_vars_to_set)
 
     @property
     def deployment_mode(self):
-        kind = self._manifest.get("kind")
-        if kind == "RayCluster":
-            return "raycluster"
-        elif kind == "Service":
+        if self.kind == "Service":
             return "knative"
-        return "deployment"
+        return self.kind.lower()
 
     # ----------------- Service Level Properties ----------------- #
 
@@ -1102,61 +1534,132 @@ class Compute:
         current_name = self._manifest.get("metadata", {}).get("name")
         if current_name and not current_name == value:
             raise ValueError("Service name cannot be changed after it has been set")
-        if "metadata" not in self._manifest:
-            self._manifest["metadata"] = {}
+        self._manifest.setdefault("metadata", {})
         self._manifest["metadata"]["name"] = value
 
     # ----------------- GPU Properties ----------------- #
 
     @property
     def tolerations(self):
-        return self.pod_template.get("tolerations", [])
-
-    @property
-    def gpu_annotations(self):
-        # GPU annotations for KAI scheduler
-        return self._gpu_annotations
+        return self.pod_spec.get("tolerations", []) if self.pod_spec else []
 
     @property
     def replicas(self):
-        kind = self._manifest.get("kind")
-        if kind == "Deployment":
-            return self._manifest["spec"].get("replicas", 1)
-        elif kind == "RayCluster":
-            spec = self._manifest.get("spec", {})
-            head_replicas = spec.get("headGroupSpec", {}).get("replicas", 1)
-            worker_groups = spec.get("workerGroupSpecs", [])
-            worker_replicas = sum(wg.get("replicas", 0) for wg in worker_groups)
-            return head_replicas + worker_replicas
-        return 1
+        return self.service_manager.get_replicas(self._manifest)
 
     @replicas.setter
     def replicas(self, value: int):
-        kind = self._manifest.get("kind")
-        if kind == "Deployment":
-            self._manifest["spec"]["replicas"] = value
-        elif kind == "RayCluster":
-            worker_replicas = max(0, value - 1)  # Head counts as 1
-            spec = self._manifest.get("spec", {})
-            if "workerGroupSpecs" in spec and len(spec["workerGroupSpecs"]) > 0:
-                spec["workerGroupSpecs"][0]["replicas"] = worker_replicas
-            else:
-                if "workerGroupSpecs" not in spec:
-                    spec["workerGroupSpecs"] = []
-                if len(spec["workerGroupSpecs"]) == 0:
-                    # Need to copy head template as base
-                    head_spec = spec.get("headGroupSpec", {})
-                    spec["workerGroupSpecs"].append(
-                        {
-                            "replicas": worker_replicas,
-                            "template": head_spec.get("template", {}),
-                        }
-                    )
+        # Set replicas in manifest and applies to relevant containers
+        if self.service_manager.supports_distributed_config():
+            # For training service managers, also update distributed config
+            distributed_config = self.distributed_config
+
+            if not distributed_config:
+                distributed_config = {
+                    "distribution_type": "spmd",
+                    "quorum_timeout": self.launch_timeout or 300,
+                }
+            distributed_config["quorum_workers"] = value
+            self.service_manager.set_replicas(self._manifest, value, distributed_config=distributed_config)
+        else:
+            self.service_manager.set_replicas(self._manifest, value)
 
     @property
     def annotations(self):
         metadata = self._get_manifest_metadata()
         return metadata.get("annotations", {})
+
+    @property
+    def labels(self):
+        metadata = self._get_manifest_metadata()
+        return metadata.get("labels", {})
+
+    @property
+    def pod_template(self):
+        """Get the pod template from the manifest (includes metadata and spec)."""
+        template_path = self.service_manager._get_pod_template_path()
+        if template_path:
+            current = self._manifest
+            for key in template_path:
+                current = current.get(key, {})
+            return current
+        return {}
+
+    def add_labels(self, labels: Dict):
+        """Add or update labels in the manifest metadata.
+
+        Args:
+            labels (Dict): Dictionary of labels to add or update.
+        """
+        if not labels:
+            return
+
+        metadata = self._get_manifest_metadata()
+        metadata.setdefault("labels", {})
+        metadata["labels"].update(labels)
+
+    def add_annotations(self, annotations: Dict):
+        """Add or update annotations in the manifest metadata.
+
+        Args:
+            annotations (Dict): Dictionary of annotations to add or update.
+        """
+        if not annotations:
+            return
+
+        metadata = self._get_manifest_metadata()
+        metadata.setdefault("annotations", {})
+        metadata["annotations"].update(annotations)
+
+    def add_tolerations(self, tolerations: List[Dict]):
+        """Add or update tolerations in the pod spec.
+
+        Args:
+            tolerations (List[Dict]): List of toleration dictionaries to add or update. Each toleration should have keys like
+                "key", "operator", "value", and "effect".
+        """
+        if not tolerations:
+            return
+
+        if not self.pod_spec:
+            raise ValueError("pod_spec is not available. Cannot add tolerations.")
+
+        existing_tolerations = self.pod_spec.get("tolerations", [])
+
+        # Create a dictionary keyed by "key" for easy lookup and override
+        toleration_dict = {}
+        tolerations_without_key = []
+
+        for tol in existing_tolerations:
+            key = tol.get("key")
+            if key:
+                toleration_dict[key] = tol
+            else:
+                tolerations_without_key.append(tol)
+
+        # Update or add new tolerations
+        for tol in tolerations:
+            key = tol.get("key")
+            if key:
+                toleration_dict[key] = tol
+            else:
+                # If no key, append it (though this is unusual)
+                tolerations_without_key.append(tol)
+
+        # Combine all tolerations: those with keys (merged) + those without keys (appended)
+        self.pod_spec["tolerations"] = list(toleration_dict.values()) + tolerations_without_key
+
+    def add_env_vars(self, env_vars: Dict):
+        """Add or update environment variables in the container spec.
+
+        Args:
+            env_vars (Dict): Dictionary of environment variables to add or update. Existing env vars with the same key will be overridden.
+        """
+        if not env_vars:
+            return
+
+        container = self._container()
+        self._set_env_vars_in_container(container, env_vars)
 
     # ----------------- Init Template Setup Helpers ----------------- #
     def _get_server_image(self, image, otel_enabled, inactivity_ttl):
@@ -1171,7 +1674,7 @@ class Compute:
 
         return image
 
-    def _get_requested_resources(self, cpus, memory, disk_size, gpu_config):
+    def _get_requested_resources(self, cpus, memory, disk_size, gpus):
         """Return requested resources."""
         requests = {}
         limits = {}
@@ -1189,16 +1692,9 @@ class Compute:
             requests["ephemeral-storage"] = disk_size
 
         # Add GPU if specified
-        gpu_config: dict = gpu_config
-        gpu_count = gpu_config.get("count", 1)
-        if gpu_config:
-            if gpu_config.get("sharing_type") == "fraction":
-                # For fractional GPUs, we still need to request the base GPU resource
-                requests["nvidia.com/gpu"] = "1"
-                limits["nvidia.com/gpu"] = "1"
-            else:
-                requests["nvidia.com/gpu"] = str(gpu_count)
-                limits["nvidia.com/gpu"] = str(gpu_count)
+        if gpus:
+            requests["nvidia.com/gpu"] = str(gpus)
+            limits["nvidia.com/gpu"] = str(gpus)
 
         # Only include non-empty dicts
         resources = {}
@@ -1218,9 +1714,6 @@ class Compute:
             else serving_constants.KT_LAUNCH_TIMEOUT
         )
         return int(os.getenv("KT_LAUNCH_TIMEOUT", default_launch_timeout))
-
-    def _get_scheduler_name(self, queue_name):
-        return serving_constants.KAI_SCHEDULER_NAME if queue_name else None
 
     def _get_config_env_vars(self, allowed_serialization):
         config_env_vars = globals.config._get_config_env_vars()
@@ -1280,69 +1773,6 @@ class Compute:
             return all_tolerations
 
         return user_tolerations if user_tolerations else None
-
-    def _get_gpu_annotations(self, gpu_config):
-        # https://blog.devops.dev/struggling-with-gpu-waste-on-kubernetes-how-kai-schedulers-sharing-unlocks-efficiency-1029e9bd334b
-        if gpu_config is None:
-            return {}
-
-        if gpu_config.get("sharing_type") == "memory":
-            return {
-                "gpu-memory": str(gpu_config["gpu_memory"]),
-            }
-        elif gpu_config.get("sharing_type") == "fraction":
-            return {
-                "gpu-fraction": str(gpu_config["gpu_fraction"]),
-            }
-        else:
-            return {}
-
-    def _load_gpu_config(self, gpus, gpu_memory, gpu_type) -> dict:
-        if all(x is None for x in [gpus, gpu_memory, gpu_type]):
-            return {}
-
-        if gpus is not None:
-            if isinstance(gpus, (int, float)):
-                if gpus <= 0:
-                    raise ValueError("GPU count must be greater than 0")
-                if gpus < 1:
-                    raise ValueError("Fractional GPUs are not currently supported. Please use whole GPUs.")
-            if not str(gpus).isdigit():
-                raise ValueError("Unexpected format for GPUs, expecting a numeric count")
-
-        gpu_config = {
-            "count": int(gpus) if gpus else 1,
-            "sharing_type": None,
-            "gpu_memory": None,
-            "gpu_type": None,
-        }
-
-        # Handle memory specification
-        if gpu_memory is not None:
-            if not isinstance(gpu_memory, str):
-                raise ValueError("GPU memory must be a string with suffix Mi, Gi, or Ti")
-
-            units = {"mi": 1, "gi": 1024, "ti": 1024 * 1024}
-            val = gpu_memory.lower()
-
-            for suffix, factor in units.items():
-                if val.endswith(suffix):
-                    try:
-                        num = float(val[: -len(suffix)])
-                        mi_value = int(num * factor)
-                        gpu_config["sharing_type"] = "memory"
-                        gpu_config["gpu_memory"] = str(mi_value)
-                        break  # Successfully parsed, exit the loop
-                    except ValueError:
-                        raise ValueError("Invalid numeric value in GPU memory spec")
-            else:
-                # Only raise error if no suffix matched
-                raise ValueError("GPU memory must end with Mi, Gi, or Ti")
-
-        if gpu_type is not None:
-            gpu_config["gpu_type"] = gpu_type
-
-        return GPUConfig(**gpu_config).to_dict()
 
     # ----------------- Generic Helpers ----------------- #
     def _load_kube_config(self):
@@ -1435,35 +1865,15 @@ class Compute:
         )
         self._manifest = updated_manifest
 
-        # Handle service creation result based on resource type
-        if isinstance(created_service, dict):
-            # For custom resources (RayCluster, Knative), created_service is a dictionary
-            service_name = created_service.get("metadata", {}).get("name")
-            kind = created_service.get("kind", "")
-
-            if kind == "RayCluster":
-                # RayCluster has headGroupSpec instead of template
-                service_template = {
-                    "metadata": {
-                        "name": service_name,
-                        "namespace": created_service.get("metadata", {}).get("namespace"),
-                    },
-                    "spec": {"template": created_service["spec"]["headGroupSpec"]["template"]},
-                }
-            else:
-                # For Knative services and other dict-based resources
-                service_template = created_service["spec"]["template"]
-        else:
-            # For Deployments, created_service is a V1Deployment object
-            service_name = created_service.metadata.name
-            # Return dict format for compatibility with tests and reload logic
-            service_template = {
-                "metadata": {
-                    "name": created_service.metadata.name,
-                    "namespace": created_service.metadata.namespace,
-                },
-                "spec": {"template": created_service.spec.template},
-            }
+        service_info = self.service_manager.normalize_created_service(created_service)
+        service_name = service_info["name"]
+        service_template = {
+            "metadata": {
+                "name": service_info["name"],
+                "namespace": service_info["namespace"],
+            },
+            "spec": {"template": service_info["template"]},
+        }
 
         logger.debug(f"Successfully deployed {self.deployment_mode} service {service_name}")
 
@@ -1501,16 +1911,17 @@ class Compute:
         return service_template
 
     def _update_launch_env_vars(self, service_name, pointer_env_vars, metadata_env_vars, launch_id):
+        # Use service manager to get the correct DNS name for pod discovery
+        service_dns = self.service_manager.get_service_dns(
+            service_name, self.namespace, is_distributed=bool(self.distributed_config)
+        )
+
         kt_env_vars = {
             **pointer_env_vars,
             **metadata_env_vars,
             "KT_LAUNCH_ID": launch_id,
             "KT_SERVICE_NAME": service_name,
-            "KT_SERVICE_DNS": (
-                f"{service_name}-headless.{self.namespace}.svc.cluster.local"
-                if self.distributed_config
-                else f"{service_name}.{self.namespace}.svc.cluster.local"
-            ),
+            "KT_SERVICE_DNS": service_dns,
             "KT_DEPLOYMENT_MODE": self.deployment_mode,
         }
         if "OTEL_SERVICE_NAME" not in self.config_env_vars.keys():
@@ -1706,8 +2117,6 @@ class Compute:
             launch_timeout=self.launch_timeout,
             objects_api=self.objects_api,
             core_api=self.core_api,
-            queue_name=self.queue,
-            scheduler_name=self.scheduler_name,
         )
 
     async def _check_service_ready_async(self):
@@ -2393,6 +2802,7 @@ class Compute:
         # Note: We default to simple SPMD distribution ("spmd") if nothing specified and compute.workers > 1
 
         # User can override quorum if they want to set a lower threshold
+        # For non-Ray cases, default to workers if not provided
         quorum_workers = quorum_workers or workers
         distributed_config = {
             "distribution_type": distribution_type or "spmd",

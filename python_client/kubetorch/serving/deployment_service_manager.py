@@ -1,6 +1,6 @@
 import os
 import time
-from typing import Tuple
+from typing import List
 
 from kubernetes import client
 
@@ -22,10 +22,13 @@ logger = get_logger(__name__)
 class DeploymentServiceManager(BaseServiceManager):
     """Service manager for Kubernetes Deployments with distributed computing support."""
 
-    template_label = "deployment"
+    def __init__(self, *args, **kwargs):
+        kwargs["template_label"] = "deployment"
+        super().__init__(*args, **kwargs)
 
-    @staticmethod
+    @classmethod
     def _build_base_manifest(
+        cls,
         pod_spec: dict,
         namespace: str,
         replicas: int = 1,
@@ -33,26 +36,27 @@ class DeploymentServiceManager(BaseServiceManager):
         custom_labels: dict = None,
         custom_annotations: dict = None,
         custom_template: dict = None,
-        scheduler_name: str = None,
-        queue_name: str = None,
     ) -> dict:
         """Build a base deployment manifest from pod spec and configuration.
 
         Returns:
             Deployment manifest dictionary
         """
-        labels = BaseServiceManager._get_labels(
+        # Build labels
+        labels = cls._get_labels(
             template_label="deployment",
             custom_labels=custom_labels,
-            scheduler_name=scheduler_name,
-            queue_name=queue_name,
         )
 
         # Template labels (exclude kt template label)
         template_labels = labels.copy()
         template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
 
-        annotations = BaseServiceManager._get_annotations(custom_annotations, inactivity_ttl)
+        annotations = cls._get_annotations(
+            service_annotations=None,
+            custom_annotations=custom_annotations,
+            inactivity_ttl=inactivity_ttl,
+        )
 
         # Create Deployment manifest
         deployment = load_template(
@@ -73,57 +77,28 @@ class DeploymentServiceManager(BaseServiceManager):
 
         return deployment
 
-    def _update_launchtime_manifest(self, manifest: dict, service_name: str, module_name: str) -> dict:
-        """Update manifest with service name and deployment timestamp."""
-        clean_module_name = self._clean_module_name(module_name)
-        deployment_timestamp, deployment_id = self._get_deployment_timestamp_and_id(service_name)
+    def _get_pod_template_path(self) -> List[str]:
+        """Get the path to the pod template."""
+        return ["spec", "template"]
 
-        deployment = manifest.copy()
-        deployment["metadata"]["name"] = service_name
-        deployment["metadata"]["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
-        deployment["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
-        deployment["metadata"]["labels"][serving_constants.KT_APP_LABEL] = service_name
-        deployment["metadata"]["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
+    def _update_launchtime_manifest(
+        self, manifest: dict, service_name: str, clean_module_name: str, deployment_timestamp: str, deployment_id: str
+    ) -> dict:
+        """Update manifest with service name and deployment timestamp."""
+        deployment = super()._update_launchtime_manifest(
+            manifest, service_name, clean_module_name, deployment_timestamp, deployment_id
+        )
+
+        deployment["spec"].setdefault("selector", {}).setdefault("matchLabels", {})
         deployment["spec"]["selector"]["matchLabels"][serving_constants.KT_SERVICE_LABEL] = service_name
         deployment["spec"]["selector"]["matchLabels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
-        deployment["spec"]["template"]["metadata"]["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
-        deployment["spec"]["template"]["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
-        deployment["spec"]["template"]["metadata"]["labels"][serving_constants.KT_APP_LABEL] = service_name
-        deployment["spec"]["template"]["metadata"]["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
-
-        # Add deployment timestamp
-        deployment["spec"]["template"]["metadata"]["annotations"][
-            "kubetorch.com/deployment_timestamp"
-        ] = deployment_timestamp
 
         return deployment
 
-    def _is_distributed_deployment(self, pod_spec: dict) -> bool:
-        """Check if this is a distributed deployment by looking for distributed environment variables."""
-        containers = pod_spec.get("containers")
-        if not containers:
-            return False
-
-        # Check if distributed environment variable is set in the first container
-        env_vars = containers[0].get("env", [])
-        for env_var in env_vars:
-            if (
-                env_var.get("name") == "KT_DISTRIBUTED_CONFIG"
-                and env_var.get("value") != "null"
-                and env_var.get("value")
-            ):
-                return True
-        return False
-
-    def _create_or_update_resource_from_manifest(self, manifest: dict, dryrun: bool = False) -> Tuple[dict, bool]:
-        """Create or update resources from a manifest."""
+    def _create_or_update_resource(self, manifest: dict, service_name: str, clean_module_name: str, **kwargs) -> dict:
         deployment = manifest.copy()
-        service_name = deployment["metadata"]["name"]
-        module_name = deployment["metadata"]["labels"][serving_constants.KT_MODULE_LABEL]
 
-        pod_spec = deployment.get("spec", {}).get("template", {}).get("spec", {})
-        is_distributed = self._is_distributed_deployment(pod_spec)
-
+        pod_spec = self.pod_spec(deployment)
         server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
 
         labels = deployment.get("metadata", {}).get("labels", {})
@@ -134,8 +109,6 @@ class DeploymentServiceManager(BaseServiceManager):
         service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
 
         try:
-            kwargs = {"dry_run": "All"} if dryrun else {}
-
             # Create regular service for client access
             service = load_template(
                 template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
@@ -145,7 +118,7 @@ class DeploymentServiceManager(BaseServiceManager):
                 annotations=annotations,
                 labels=service_labels,
                 deployment_name=service_name,
-                module_name=module_name,
+                module_name=clean_module_name,
                 distributed=False,  # Regular service for client access
                 server_port=server_port,
             )
@@ -156,7 +129,7 @@ class DeploymentServiceManager(BaseServiceManager):
                     body=service,
                     **kwargs,
                 )
-                if not dryrun:
+                if not kwargs.get("dry_run"):
                     logger.info(f"Created service {service_name} in namespace {self.namespace}")
             except client.exceptions.ApiException as e:
                 if e.status == 409:
@@ -165,7 +138,7 @@ class DeploymentServiceManager(BaseServiceManager):
                     raise
 
             # Create headless service for distributed pod discovery (only if distributed)
-            if is_distributed:
+            if self.is_distributed(manifest):
                 headless_service = load_template(
                     template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
                     template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
@@ -174,7 +147,7 @@ class DeploymentServiceManager(BaseServiceManager):
                     annotations=annotations,
                     labels=service_labels,
                     deployment_name=service_name,
-                    module_name=module_name,
+                    module_name=clean_module_name,
                     distributed=True,
                     server_port=server_port,
                 )
@@ -185,7 +158,7 @@ class DeploymentServiceManager(BaseServiceManager):
                         body=headless_service,
                         **kwargs,
                     )
-                    if not dryrun:
+                    if not kwargs.get("dry_run"):
                         logger.info(f"Created headless service {service_name}-headless in namespace {self.namespace}")
                 except client.exceptions.ApiException as e:
                     if e.status == 409:
@@ -194,17 +167,10 @@ class DeploymentServiceManager(BaseServiceManager):
                         raise
 
             # Create Deployment
-            created_deployment = self.apps_v1_api.create_namespaced_deployment(
-                namespace=self.namespace,
-                body=deployment,
-                **kwargs,
-            )
-
-            if dryrun:
-                return created_deployment, False
+            created_deployment = self._create_resource(deployment, **kwargs)
 
             logger.info(f"Created Deployment {deployment['metadata']['name']} in namespace {self.namespace}")
-            return created_deployment, True
+            return created_deployment
 
         except client.exceptions.ApiException as e:
             if e.status == 409:
@@ -215,11 +181,7 @@ class DeploymentServiceManager(BaseServiceManager):
                 if existing_deployment.spec.replicas != deployment["spec"]["replicas"]:
                     patch_body = {"spec": {"replicas": deployment["spec"]["replicas"]}}
                     try:
-                        self.apps_v1_api.patch_namespaced_deployment(
-                            name=deployment["metadata"]["name"],
-                            namespace=self.namespace,
-                            body=patch_body,
-                        )
+                        self._patch_resource(deployment["metadata"]["name"], patch_body)
                         logger.info(
                             f"Updated Deployment {deployment['metadata']['name']} replicas to {deployment['spec']['replicas']}"
                         )
@@ -227,60 +189,18 @@ class DeploymentServiceManager(BaseServiceManager):
                         logger.error(f"Failed to patch Deployment {deployment['metadata']['name']}: {e}")
                         raise e
 
-                return existing_deployment, False
+                return existing_deployment
             else:
                 logger.error(f"Failed to create Deployment: {str(e)}")
                 raise e
 
-    def get_resource(self, service_name: str) -> dict:
-        """Retrieve a Deployment by name."""
-        try:
-            deployment = self.apps_v1_api.read_namespaced_deployment(
-                name=service_name,
-                namespace=self.namespace,
-            )
-            return deployment
-        except client.exceptions.ApiException as e:
-            logger.error(f"Failed to load Deployment '{service_name}': {str(e)}")
-            raise
+    def get_replicas(self, manifest: dict) -> int:
+        """Get the number of replicas."""
+        return manifest.get("spec", {}).get("replicas", 1)
 
-    def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
-        """Update deployment timestamp annotation for Deployment services."""
-        try:
-            patch_body = self._create_timestamp_patch_body(new_timestamp)
-            self.apps_v1_api.patch_namespaced_deployment(
-                name=service_name,
-                namespace=self.namespace,
-                body=patch_body,
-            )
-            return new_timestamp
-        except client.exceptions.ApiException as e:
-            logger.error(f"Failed to update deployment timestamp for '{service_name}': {str(e)}")
-            raise
-
-    def create_or_update_service(
-        self,
-        service_name: str,
-        module_name: str,
-        manifest: dict = None,
-        dryrun: bool = False,
-        **kwargs,
-    ):
-        """
-        Creates a Deployment service.
-
-        Args:
-            service_name (str): Name for the pod/service.
-            module_name (str): Name of the module.
-            manifest (dict): Pre-built manifest dictionary containing all configuration (replicas, labels, annotations, etc.).
-            dryrun (bool): Whether to run in dryrun mode (Default: `False`).
-            **kwargs: Additional arguments (ignored).
-        """
-        logger.info(f"Deploying Kubetorch service with name: {service_name}")
-
-        updated_manifest = self._update_launchtime_manifest(manifest, service_name, module_name)
-        created_service, _ = self._create_or_update_resource_from_manifest(updated_manifest, dryrun)
-        return created_service, updated_manifest
+    def set_replicas(self, manifest: dict, value: int) -> None:
+        """Set the number of replicas."""
+        manifest.setdefault("spec", {})["replicas"] = value
 
     def get_endpoint(self, service_name: str) -> str:
         """Get the endpoint URL for a Deployment service."""
@@ -351,7 +271,7 @@ class DeploymentServiceManager(BaseServiceManager):
                     check_replicaset_events_for_errors(
                         namespace=self.namespace,
                         service_name=service_name,
-                        apps_v1_api=self.apps_v1_api,
+                        apps_v1_api=self.resource_api,
                         core_api=core_api,
                     )
 
@@ -368,30 +288,47 @@ class DeploymentServiceManager(BaseServiceManager):
 
         raise ServiceTimeoutError(f"Deployment {service_name} is not ready after {launch_timeout} seconds")
 
-    def teardown_service(self, service_name: str, console=None) -> bool:
-        """Teardown Deployment and associated resources.
+    def _teardown_associated_resources(self, service_name: str, console=None) -> bool:
+        """Teardown associated Kubernetes Services for Deployment."""
+        success = True
 
-        Args:
-            service_name: Name of the Deployment to teardown
-            console: Optional Rich console for output
-
-        Returns:
-            True if teardown was successful, False otherwise
-        """
-        from kubetorch.resources.compute.utils import delete_deployment
-
+        # Delete regular service
         try:
-            # Delete the Deployment and its associated service
-            delete_deployment(
-                apps_v1_api=self.apps_v1_api,
-                core_api=self.core_api,
-                name=service_name,
-                namespace=self.namespace,
-                console=console,
-            )
+            self.core_api.delete_namespaced_service(name=service_name, namespace=self.namespace)
+            if console:
+                console.print(f"✓ Deleted service [blue]{service_name}[/blue]")
+            else:
+                logger.info(f"Deleted service {service_name}")
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                if console:
+                    console.print(f"[yellow]Note:[/yellow] Service {service_name} not found or already deleted")
+                else:
+                    logger.info(f"Service {service_name} not found or already deleted")
+            else:
+                if console:
+                    console.print(f"[red]Error:[/red] Failed to delete service {service_name}: {e}")
+                else:
+                    logger.error(f"Failed to delete service {service_name}: {e}")
+                success = False
 
-            return True
+        # Delete headless service if it exists
+        headless_service_name = f"{service_name}-headless"
+        try:
+            self.core_api.delete_namespaced_service(name=headless_service_name, namespace=self.namespace)
+            if console:
+                console.print(f"✓ Deleted service [blue]{headless_service_name}[/blue]")
+            else:
+                logger.info(f"Deleted service {headless_service_name}")
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                # Headless service might not exist, which is fine
+                pass
+            else:
+                if console:
+                    console.print(f"[red]Error:[/red] Failed to delete service {headless_service_name}: {e}")
+                else:
+                    logger.error(f"Failed to delete service {headless_service_name}: {e}")
+                success = False
 
-        except Exception as e:
-            logger.error(f"Failed to teardown Deployment {service_name}: {e}")
-            return False
+        return success

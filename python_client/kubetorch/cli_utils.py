@@ -119,12 +119,14 @@ def validate_config_key(key: str = None):
 
 def get_pods_for_service_cli(name: str, namespace: str, core_api):
     """Get pods for a service using unified label selector."""
-    # Use unified service label - works for all deployment modes
+    # Use unified service label - works for most deployment modes
     label_selector = f"kubetorch.com/service={name}"
-    return core_api.list_namespaced_pod(
-        namespace=namespace,
-        label_selector=label_selector,
-    )
+    pods = core_api.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
+    # For TrainJob v2, pods use JobSet labels instead of kubetorch labels
+    if not pods.items:
+        label_selector = f"jobset.sigs.k8s.io/jobset-name={name}"
+        pods = core_api.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
+    return pods
 
 
 def service_name_argument(*args, required: bool = True, **kwargs):
@@ -579,12 +581,9 @@ def get_current_cluster_name():
     return None
 
 
-def print_pod_info(pod_name, pod_idx, is_gpu, metrics=None, queue_name=None):
+def print_pod_info(pod_name, pod_idx, is_gpu, metrics=None):
     """Print pod info with metrics if available"""
-    queue_msg = f" | [bold]Queue Name[/bold]: {queue_name}"
     base_msg = f"{BULLET_UNICODE} [reset][bold cyan]{pod_name}[/bold cyan] (idx: {pod_idx})"
-    if queue_name:
-        base_msg += queue_msg
     console.print(base_msg)
     if metrics:
         console.print(
@@ -772,18 +771,18 @@ def stream_logs_websocket(uri, stop_event, print_pod_name: bool = False):
 
 
 def generate_logs_query(name: str, namespace: str, selected_pod: str, deployment_mode):
+    from kubetorch.utils import get_container_name
+
+    container_name = get_container_name(deployment_mode)
+
     if not selected_pod:
-        if deployment_mode in ["knative", "deployment"]:
-            # we need to get the pod names first since Loki doesn't have a service_name label
-            core_api = client.CoreV1Api()
-            pods = validate_pods_exist(name, namespace, core_api)
-            pod_names = [pod.metadata.name for pod in pods]
-            return f'{{k8s_pod_name=~"{"|".join(pod_names)}",k8s_container_name="kubetorch"}} | json'
-        else:
-            console.print(f"[red]Logs does not support deployment mode: {deployment_mode}[/red]")
-            return None
+        # we need to get the pod names first since Loki doesn't have a service_name label
+        core_api = client.CoreV1Api()
+        pods = validate_pods_exist(name, namespace, core_api)
+        pod_names = [pod.metadata.name for pod in pods]
+        return f'{{k8s_pod_name=~"{"|".join(pod_names)}",k8s_container_name="{container_name}"}} | json'
     else:
-        return f'{{k8s_pod_name=~"{selected_pod}",k8s_container_name="kubetorch"}} | json'
+        return f'{{k8s_pod_name=~"{selected_pod}",k8s_container_name="{container_name}"}} | json'
 
 
 def follow_logs_in_cli(
@@ -856,79 +855,8 @@ def get_ingress_host(ingress):
         return None
 
 
-def list_all_queues():
-    try:
-        custom_api = client.CustomObjectsApi()
-        queues = custom_api.list_cluster_custom_object(
-            group="scheduling.run.ai",
-            version="v2",
-            plural="queues",
-        )["items"]
-
-        if not queues:
-            console.print("[yellow]No queues found in the cluster[/yellow]")
-            return
-
-        # Insert "default" queue if missing
-        if not any(q["metadata"]["name"] == "default" for q in queues):
-            default_children = [
-                q["metadata"]["name"] for q in queues if q.get("spec", {}).get("parentQueue") == "default"
-            ]
-            queues.insert(
-                0,
-                {
-                    "metadata": {"name": "default"},
-                    "spec": {
-                        "parentQueue": "-",
-                        "children": default_children,
-                        "resources": {
-                            "cpu": {"quota": "-", "overQuotaWeight": "-"},
-                            "gpu": {"quota": "-", "overQuotaWeight": "-"},
-                            "memory": {"quota": "-", "overQuotaWeight": "-"},
-                        },
-                        "priority": "-",
-                    },
-                },
-            )
-
-        queue_table = Table(title="Available Queues", header_style=Style(bold=True))
-        queue_table.add_column("QUEUE NAME", style="cyan")
-        queue_table.add_column("PRIORITY", style="magenta")
-        queue_table.add_column("PARENT", style="green")
-        queue_table.add_column("CHILDREN", style="yellow")
-        queue_table.add_column("CPU QUOTA", style="white")
-        queue_table.add_column("GPU QUOTA", style="white")
-        queue_table.add_column("MEMORY QUOTA", style="white")
-        queue_table.add_column("OVERQUOTA WEIGHT", style="blue")
-
-        for q in queues:
-            spec = q.get("spec", {})
-            resources = spec.get("resources", {})
-            cpu = resources.get("cpu", {})
-            gpu = resources.get("gpu", {})
-            memory = resources.get("memory", {})
-
-            queue_table.add_row(
-                q["metadata"]["name"],
-                str(spec.get("priority", "-")),
-                spec.get("parentQueue", "-"),
-                ", ".join(spec.get("children", [])) or "-",
-                str(cpu.get("quota", "-")),
-                str(gpu.get("quota", "-")),
-                str(memory.get("quota", "-")),
-                str(cpu.get("overQuotaWeight", "-")),  # use CPU's overQuotaWeight as example
-            )
-
-        console.print(queue_table)
-        return
-
-    except client.exceptions.ApiException as e:
-        console.print(f"[red]Failed to list queues: {e}[/red]")
-        raise typer.Exit(1)
-
-
 def detect_deployment_mode(name: str, namespace: str, custom_api, apps_v1_api):
-    """Detect if a service is deployed as Knative, Deployment, or RayCluster."""
+    """Detect if a service is deployed as Knative, Deployment, RayCluster, or training job."""
     # First try Deployment
     try:
         apps_v1_api.read_namespaced_deployment(name=name, namespace=namespace)
@@ -959,6 +887,36 @@ def detect_deployment_mode(name: str, namespace: str, custom_api, apps_v1_api):
             name=name,
         )
         return "raycluster"
+    except ApiException:
+        pass
+
+    # Try v1 training jobs (PyTorchJob, TFJob, MXJob, XGBoostJob)
+    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+
+    for job_kind in TrainJobServiceManager.SUPPORTED_KINDS:
+        try:
+            plural = job_kind.lower() + "s"
+            custom_api.get_namespaced_custom_object(
+                group="kubeflow.org",
+                version="v1",
+                namespace=namespace,
+                plural=plural,
+                name=name,
+            )
+            return job_kind.lower()
+        except ApiException:
+            continue
+
+    # Try TrainJob v2 (trainer.kubeflow.org/v1alpha1)
+    try:
+        custom_api.get_namespaced_custom_object(
+            group="trainer.kubeflow.org",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="trainjobs",
+            name=name,
+        )
+        return "trainjob"
     except ApiException:
         pass
 

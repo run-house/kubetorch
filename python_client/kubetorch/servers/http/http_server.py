@@ -43,6 +43,7 @@ try:
         LOG_CONFIG,
         request_id_ctx_var,
         RSYNC_PORT,
+        setup_trainjob_v2_env_vars,
         wait_for_app_start,
     )
 except ImportError:
@@ -57,6 +58,7 @@ except ImportError:
         LOG_CONFIG,
         request_id_ctx_var,
         RSYNC_PORT,
+        setup_trainjob_v2_env_vars,
         wait_for_app_start,
     )
 
@@ -1146,6 +1148,9 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
     import signal
     import threading
+
+    # Setup env vars for TrainJob v2 (Kubeflow Training Operator v2)
+    setup_trainjob_v2_env_vars()
 
     # Only register signal handlers if we're in the main thread
     # This allows tests to run without signal handling

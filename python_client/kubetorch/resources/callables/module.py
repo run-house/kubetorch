@@ -156,7 +156,9 @@ class Module:
                 return self._compute._wait_for_endpoint()
             return self._compute.endpoint
         # URL format when using the NGINX proxy
-        return f"http://localhost:{self._compute.client_port()}/{self.namespace}/{self.service_name}"
+        # Use routing_service_name which may differ from service_name (e.g., TrainJobV2 uses -kt suffix)
+        routing_name = self._compute.service_manager.get_routing_service_name(self.service_name)
+        return f"http://localhost:{self._compute.client_port()}/{self.namespace}/{routing_name}"
 
     @property
     def request_headers(self):
@@ -228,8 +230,6 @@ class Module:
             load_incluster_config()
         except ConfigException:
             load_kube_config()
-        objects_api = client.CustomObjectsApi()
-        apps_v1_api = client.AppsV1Api()
         core_v1_api = client.CoreV1Api()
 
         namespace = namespace or config.namespace
@@ -240,9 +240,7 @@ class Module:
         # Use unified service discovery from BaseServiceManager
         from kubetorch.serving.service_manager import BaseServiceManager
 
-        all_services = BaseServiceManager.discover_services_static(
-            namespace=namespace, objects_api=objects_api, apps_v1_api=apps_v1_api
-        )
+        all_services = BaseServiceManager.discover_services_static(namespace=namespace)
 
         # Create name-to-service lookup for efficient searching
         service_dict = {svc["name"]: svc for svc in all_services}
@@ -409,6 +407,10 @@ class Module:
                 "Kubernetes credentials not found. Please ensure you are running in a Kubernetes cluster or have a valid kubeconfig file."
             )
 
+        if compute.service_name and compute.service_name != self.service_name:
+            logger.info(f"Renaming service to match compute service name {compute.service_name}")
+            self.service_name = compute.service_name
+
         if get_if_exists:
             try:
                 existing_service = self._get_existing_service(reload_prefixes)
@@ -491,6 +493,10 @@ class Module:
                 stream_logs=True
             )
         """
+        if compute.service_name and compute.service_name != self.service_name:
+            logger.info(f"Renaming service to match compute service name {compute.service_name}")
+            self.service_name = compute.service_name
+
         if get_if_exists:
             try:
                 existing_service = await self._get_existing_service_async(reload_prefixes)
@@ -855,9 +861,12 @@ class Module:
             deployment_timestamp: Timestamp to filter logs after
         """
         try:
-            # Only use "kubetorch" container to exclude queue-proxy (e.g. Knative sidecars) container logs which
-            # are spammy with tons of healthcheck calls
-            pod_query = f'{{k8s_container_name="kubetorch"}} | json | request_id="{request_id}"'
+            from kubetorch.utils import get_container_name
+
+            # Use the correct container name for this kind to exclude sidecar container logs
+            # (e.g. queue-proxy for Knative) which are spammy with healthcheck calls
+            container_name = get_container_name(self._compute.kind)
+            pod_query = f'{{k8s_container_name="{container_name}"}} | json | request_id="{request_id}"'
             event_query = f'{{service_name="unknown_service"}} | json | k8s_object_name=~"{self.service_name}.*" | k8s_namespace_name="{self.namespace}"'
 
             encoded_pod_query = urllib.parse.quote_plus(pod_query)
@@ -922,9 +931,12 @@ class Module:
             deployment_timestamp: Timestamp to filter logs after
         """
         try:
-            # Only use "kubetorch" container to exclude queue-proxy (e.g. Knative sidecars) container logs which
-            # are spammy with tons of healthcheck calls
-            pod_query = f'{{k8s_container_name="kubetorch"}} | json | request_id="{request_id}"'
+            from kubetorch.utils import get_container_name
+
+            # Use the correct container name for this kind to exclude sidecar container logs
+            # (e.g. queue-proxy for Knative) which are spammy with healthcheck calls
+            container_name = get_container_name(self._compute.kind)
+            pod_query = f'{{k8s_container_name="{container_name}"}} | json | request_id="{request_id}"'
             event_query = f'{{service_name="unknown_service"}} | json | k8s_object_name=~"{self.service_name}.*" | k8s_namespace_name="{self.namespace}"'
 
             encoded_pod_query = urllib.parse.quote_plus(pod_query)

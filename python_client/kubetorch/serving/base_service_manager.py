@@ -1,14 +1,10 @@
 import hashlib
-import importlib
 import re
 from abc import abstractmethod
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Type, Union
 
-import yaml
-from jinja2 import Template
-
-from kubernetes import client, utils
+from kubernetes import client
 from kubernetes.client import AppsV1Api, CoreV1Api, CustomObjectsApi
 
 import kubetorch.serving.constants as serving_constants
@@ -24,29 +20,34 @@ class BaseServiceManager:
 
     def __init__(
         self,
-        objects_api: CustomObjectsApi,
+        resource_api: Union[AppsV1Api, CustomObjectsApi],
         core_api: CoreV1Api,
-        apps_v1_api: AppsV1Api,
         namespace: str,
+        template_label: str = "",
+        api_group: str = None,
+        api_plural: str = None,
+        api_version: str = "v1",
+        service_annotations: dict = None,
     ):
-        self.objects_api = objects_api
-        self.core_api = core_api
-        self.apps_v1_api = apps_v1_api
-
-        # Load config
         self.global_config = globals.config
         self.namespace = namespace or self.global_config.namespace
+        self.resource_api = resource_api
+        self.core_api = core_api
+        self.template_label = template_label or "deployment"
+        self.api_group = api_group
+        self.api_plural = api_plural
+        self.api_version = api_version
+        self.service_annotations = service_annotations or {}
 
     @property
     def username(self):
         return self.global_config.username
 
-    @staticmethod
+    @classmethod
     def _get_labels(
+        cls,
         template_label: str,
         custom_labels: dict = None,
-        scheduler_name: str = None,
-        queue_name: str = None,
     ) -> dict:
         from kubetorch import __version__
 
@@ -59,18 +60,23 @@ class BaseServiceManager:
         if custom_labels:
             labels.update(custom_labels)
 
-        if scheduler_name and queue_name:
-            labels["kai.scheduler/queue"] = queue_name
-
         return labels
 
-    @staticmethod
-    def _get_annotations(custom_annotations: dict = None, inactivity_ttl: str = None) -> dict:
+    @classmethod
+    def _get_annotations(
+        cls,
+        service_annotations: dict = None,
+        custom_annotations: dict = None,
+        inactivity_ttl: str = None,
+    ) -> dict:
         annotations = {
             "prometheus.io/scrape": "true",
             "prometheus.io/path": serving_constants.PROMETHEUS_HEALTH_ENDPOINT,
             "prometheus.io/port": "8080",
         }
+        if service_annotations:
+            annotations.update(service_annotations)
+
         if custom_annotations:
             annotations.update(custom_annotations)
 
@@ -79,6 +85,158 @@ class BaseServiceManager:
             logger.info(f"Configuring auto-down after idle timeout ({inactivity_ttl})")
 
         return annotations
+
+    def _apply_kubetorch_updates(
+        self,
+        manifest: dict,
+        inactivity_ttl: str = None,
+        custom_labels: dict = None,
+        custom_annotations: dict = None,
+        custom_template: dict = None,
+        **kwargs,  # Allow subclasses to accept additional kwargs (e.g., gpu_annotations)
+    ) -> dict:
+        """Apply kubetorch labels and annotations to manifest."""
+        from kubetorch.serving.utils import nested_override
+
+        # Get base labels and annotations
+        labels = self._get_labels(
+            template_label=self.template_label,
+            custom_labels=custom_labels,
+        )
+        template_labels = labels.copy()
+        template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+        annotations = self._get_annotations(
+            service_annotations=self.service_annotations,
+            custom_annotations=custom_annotations,
+            inactivity_ttl=inactivity_ttl,
+        )
+
+        # Update top-level metadata
+        manifest["metadata"].setdefault("labels", {}).update(labels)
+        manifest["metadata"].setdefault("annotations", {}).update(annotations)
+
+        # Apply service-specific template metadata updates
+        self._apply_template_metadata_updates(manifest, template_labels, annotations, **kwargs)
+
+        # Apply custom template overrides
+        if custom_template:
+            nested_override(manifest, custom_template)
+
+        return manifest
+
+    def _apply_template_metadata_updates(
+        self,
+        manifest: dict,
+        template_labels: dict,
+        annotations: dict,
+        path: List[str] = None,
+        **kwargs,
+    ) -> None:
+        """Apply template metadata updates. Override in subclasses for service-specific behavior."""
+        # Use template_annotations if available (e.g., for Knative), otherwise use annotations
+        template_annotations = getattr(self, "template_annotations", None)
+        if template_annotations is not None:
+            annotations = template_annotations.copy()
+            if "gpu_annotations" in kwargs and kwargs["gpu_annotations"]:
+                annotations.update(kwargs["gpu_annotations"])
+
+        template_path = path or self._get_pod_template_path()
+
+        # Navigate to template metadata
+        current = manifest
+        for key in template_path:
+            current = current.setdefault(key, {})
+        metadata = current.setdefault("metadata", {})
+        metadata.setdefault("labels", {}).update(template_labels)
+        metadata.setdefault("annotations", {}).update(annotations)
+
+    def _update_launchtime_manifest(
+        self, manifest: dict, service_name: str, clean_module_name: str, deployment_timestamp: str, deployment_id: str
+    ) -> dict:
+        """Update manifest with service name and deployment timestamp."""
+        updated_manifest = manifest.copy()
+
+        # Update top-level metadata
+        updated_manifest["metadata"]["name"] = service_name
+        updated_manifest["metadata"].setdefault("labels", {})
+        updated_manifest["metadata"]["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
+        updated_manifest["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
+        updated_manifest["metadata"]["labels"][serving_constants.KT_APP_LABEL] = service_name
+        updated_manifest["metadata"]["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
+
+        # Update template metadata
+        template_path = self._get_pod_template_path()
+        current = updated_manifest
+        for key in template_path:
+            current = current.setdefault(key, {})
+        metadata = current.setdefault("metadata", {})
+        metadata.setdefault("labels", {})
+        metadata["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
+        metadata["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
+        metadata["labels"][serving_constants.KT_APP_LABEL] = service_name
+        metadata["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
+
+        # Update deployment timestamp annotation
+        metadata.setdefault("annotations", {})["kubetorch.com/deployment_timestamp"] = deployment_timestamp
+
+        return updated_manifest
+
+    def normalize_created_service(self, created_service) -> dict:
+        """Extract service name, namespace, and pod template from created resource.
+
+        Returns normalized dict with structure:
+        {
+            "name": str,
+            "namespace": str,
+            "template": dict  # Pod template
+        }
+        """
+        if isinstance(created_service, dict):
+            service_name = created_service.get("metadata", {}).get("name")
+            namespace = created_service.get("metadata", {}).get("namespace")
+
+            template_path = self._get_pod_template_path()
+            current = created_service
+            try:
+                for key in template_path:
+                    current = current[key]
+                pod_template = current
+            except (KeyError, TypeError):
+                raise ValueError("Failed to find pod template in created service.")
+
+            return {
+                "name": service_name,
+                "namespace": namespace,
+                "template": pod_template,
+            }
+        else:
+            # Assume it's a Kubernetes object (V1Deployment, etc.)
+            return {
+                "name": created_service.metadata.name,
+                "namespace": created_service.metadata.namespace,
+                "template": created_service.spec.template,
+            }
+
+    @staticmethod
+    def _get_service_manager_class(kind: str) -> Type["BaseServiceManager"]:
+        from kubetorch.serving.service_manager import (
+            DeploymentServiceManager,
+            KnativeServiceManager,
+            RayClusterServiceManager,
+            TrainJobServiceManager,
+            TrainJobV2ServiceManager,
+        )
+
+        if kind.lower() == "deployment":
+            return DeploymentServiceManager
+        elif kind.lower() in ["service", "knative", "ksvc"]:
+            return KnativeServiceManager
+        elif kind.lower() == "raycluster":
+            return RayClusterServiceManager
+        elif kind.lower() in [k.lower() for k in TrainJobServiceManager.SUPPORTED_KINDS]:
+            return TrainJobServiceManager
+        elif kind.lower() in [k.lower() for k in TrainJobV2ServiceManager.SUPPORTED_KINDS]:
+            return TrainJobV2ServiceManager
 
     def _get_deployment_timestamp(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -107,33 +265,6 @@ class BaseServiceManager:
         """Clean module name to remove invalid characters for Kubernetes labels."""
         return re.sub(r"[^A-Za-z0-9.-]|^[-.]|[-.]$", "", module_name)
 
-    def _apply_yaml_template(self, yaml_file, replace_existing=False, **kwargs):
-        with importlib.resources.files("kubetorch.serving.templates").joinpath(yaml_file).open("r") as f:
-            template = Template(f.read())
-
-        yaml_content = template.render(**kwargs)
-        yaml_objects = list(yaml.safe_load_all(yaml_content))
-        k8s_client = client.ApiClient()
-
-        for obj in yaml_objects:
-            logger.info(f"Applying {obj.get('kind')}/{obj.get('metadata', {}).get('name')}")
-            try:
-                if replace_existing:
-                    # Try to delete existing resource first
-                    try:
-                        utils.delete_from_dict(k8s_client, obj)
-                    except client.exceptions.ApiException as e:
-                        if e.status != 404:  # Ignore if resource doesn't exist
-                            raise
-
-                utils.create_from_dict(k8s_client, obj)
-                logger.info(f"Successfully applied {obj.get('kind')}/{obj.get('metadata', {}).get('name')}")
-            except utils.FailToCreateError as e:
-                if "already exists" in str(e):
-                    logger.info(f"Resource already exists: {obj.get('kind')}/{obj.get('metadata', {}).get('name')}")
-                else:
-                    raise
-
     def get_deployment_timestamp_annotation(self, service_name: str) -> Optional[str]:
         """Get deployment timestamp annotation for any service type."""
         try:
@@ -152,19 +283,160 @@ class BaseServiceManager:
             pass
         return None
 
-    @abstractmethod
-    def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
-        """Update deployment timestamp annotation for this service type."""
-        pass
-
     def _create_timestamp_patch_body(self, new_timestamp: str) -> dict:
         """Create the standard patch body for timestamp annotation updates."""
         return {"metadata": {"annotations": {"kubetorch.com/deployment_timestamp": new_timestamp}}}
 
-    @abstractmethod
     def get_resource(self, service_name: str) -> dict:
-        """Get a resource by name. Must be implemented by subclasses."""
+        """Get a resource by name."""
+        try:
+            if isinstance(self.resource_api, AppsV1Api):
+                # Standard Kubernetes resource (e.g., Deployment)
+                return self.resource_api.read_namespaced_deployment(
+                    name=service_name,
+                    namespace=self.namespace,
+                )
+            else:
+                # Custom resource (e.g., Knative Service, RayCluster)
+                return self.resource_api.get_namespaced_custom_object(
+                    group=self.api_group,
+                    version=self.api_version,
+                    namespace=self.namespace,
+                    plural=self.api_plural,
+                    name=service_name,
+                )
+        except client.exceptions.ApiException as e:
+            logger.error(f"Failed to load {self.template_label} service '{service_name}': {str(e)}")
+            raise
+
+    def _get_pod_template_path(self) -> List[str]:
+        """Get the path to the pod template in the manifest as a list of keys.
+
+        To get the pod spec, append ["spec"] to this path.
+        Must be implemented by subclasses.
+        """
+        raise NotImplementedError("Subclasses must implement _get_pod_template_path")
+
+    def pod_spec(self, manifest: dict) -> dict:
+        """Get the pod spec from a manifest based on the pod template path."""
+        template_path = self._get_pod_template_path()
+        current = manifest
+        for key in template_path:
+            current = current.get(key, {})
+        return current.get("spec", {})
+
+    def is_distributed(self, manifest: dict) -> bool:
+        """Check if this is a distributed job."""
+        pod_spec = self.pod_spec(manifest)
+        containers = pod_spec.get("containers", [])
+        if containers:
+            env_vars = containers[0].get("env", [])
+            for env_var in env_vars:
+                if (
+                    env_var.get("name") == "KT_DISTRIBUTED_CONFIG"
+                    and env_var.get("value") != "null"
+                    and env_var.get("value")
+                ):
+                    return True
+
+        return False
+
+    @abstractmethod
+    def get_replicas(self, manifest: dict) -> int:
+        """Get the number of replicas from the manifest."""
         pass
+
+    @abstractmethod
+    def set_replicas(self, manifest: dict, value: int) -> None:
+        """Set the number of replicas in the manifest."""
+        pass
+
+    def update_deployment_timestamp_annotation(self, service_name: str, new_timestamp: str) -> str:
+        """Update deployment timestamp annotation for this service type."""
+        try:
+            patch_body = self._create_timestamp_patch_body(new_timestamp)
+
+            if isinstance(self.resource_api, AppsV1Api):
+                self.resource_api.patch_namespaced_deployment(
+                    name=service_name,
+                    namespace=self.namespace,
+                    body=patch_body,
+                )
+            else:
+                self.resource_api.patch_namespaced_custom_object(
+                    group=self.api_group,
+                    version=self.api_version,
+                    namespace=self.namespace,
+                    plural=self.api_plural,
+                    name=service_name,
+                    body=patch_body,
+                )
+            return new_timestamp
+        except client.exceptions.ApiException as e:
+            logger.error(
+                f"Failed to update deployment timestamp for {self.template_label} service '{service_name}': {str(e)}"
+            )
+            raise
+
+    def _create_resource(self, manifest: dict, **kwargs) -> dict:
+        """Create a resource."""
+        if isinstance(self.resource_api, AppsV1Api):
+            return self.resource_api.create_namespaced_deployment(
+                namespace=self.namespace,
+                body=manifest,
+                **kwargs,
+            )
+        else:
+            return self.resource_api.create_namespaced_custom_object(
+                group=self.api_group,
+                version=self.api_version,
+                namespace=self.namespace,
+                plural=self.api_plural,
+                body=manifest,
+                **kwargs,
+            )
+
+    def _patch_resource(self, service_name: str, patch_body: dict, **kwargs) -> dict:
+        """Patch a resource."""
+        if isinstance(self.resource_api, AppsV1Api):
+            return self.resource_api.patch_namespaced_deployment(
+                name=service_name,
+                namespace=self.namespace,
+                body=patch_body,
+                **kwargs,
+            )
+        else:
+            return self.resource_api.patch_namespaced_custom_object(
+                group=self.api_group,
+                version=self.api_version,
+                namespace=self.namespace,
+                plural=self.api_plural,
+                name=service_name,
+                body=patch_body,
+                **kwargs,
+            )
+
+    def _delete_resource(self, service_name: str, force: bool = False, **kwargs) -> None:
+        """Delete a resource."""
+        if force:
+            kwargs.setdefault("grace_period_seconds", 0)
+            kwargs.setdefault("propagation_policy", "Foreground")
+
+        if isinstance(self.resource_api, AppsV1Api):
+            self.resource_api.delete_namespaced_deployment(
+                name=service_name,
+                namespace=self.namespace,
+                **kwargs,
+            )
+        else:
+            self.resource_api.delete_namespaced_custom_object(
+                group=self.api_group,
+                version=self.api_version,
+                namespace=self.namespace,
+                plural=self.api_plural,
+                name=service_name,
+                **kwargs,
+            )
 
     def fetch_kubetorch_config(self) -> dict:
         """Fetch the kubetorch configmap from the namespace."""
@@ -179,17 +451,13 @@ class BaseServiceManager:
             return {}
 
     @staticmethod
-    def discover_services_static(
-        namespace: str, objects_api=None, apps_v1_api=None, name_filter: str = None
-    ) -> List[Dict]:
+    def discover_services_static(namespace: str, name_filter: str = None) -> List[Dict]:
         """Static method to discover Kubetorch services without ServiceManager instance.
 
         Uses parallel API calls for faster discovery across service types.
 
         Args:
             namespace: Kubernetes namespace
-            objects_api: Optional CustomObjectsApi instance (created if None)
-            apps_v1_api: Optional AppsV1Api instance (created if None)
             name_filter: Optional name filter for services
 
         Returns:
@@ -205,10 +473,8 @@ class BaseServiceManager:
         import concurrent.futures
         import threading
 
-        if objects_api is None:
-            objects_api = client.CustomObjectsApi()
-        if apps_v1_api is None:
-            apps_v1_api = client.AppsV1Api()
+        objects_api = client.CustomObjectsApi()
+        apps_v1_api = client.AppsV1Api()
 
         services = []
         services_lock = threading.Lock()
@@ -321,12 +587,59 @@ class BaseServiceManager:
                 if e.status != 404:
                     logger.warning(f"Failed to list RayClusters: {e}")
 
+        def fetch_custom_resources():
+            """Fetch custom training job resources in parallel."""
+            from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+            from kubetorch.serving.trainjob_v2_service_manager import TrainJobV2ServiceManager
+
+            local_services = []
+            all_training_kinds = [(kind, TrainJobServiceManager) for kind in TrainJobServiceManager.SUPPORTED_KINDS] + [
+                (kind, TrainJobV2ServiceManager) for kind in TrainJobV2ServiceManager.SUPPORTED_KINDS
+            ]
+            for resource_kind, manager_cls in all_training_kinds:
+                config = manager_cls._get_config(resource_kind)
+                api_group = config["api_group"]
+                plural = config["api_plural"]
+                version = config["api_version"]
+                try:
+                    label_selector = f"{serving_constants.KT_TEMPLATE_LABEL}={resource_kind.lower()}"
+
+                    resources = objects_api.list_namespaced_custom_object(
+                        group=api_group,
+                        version=version,
+                        namespace=namespace,
+                        plural=plural,
+                        label_selector=label_selector,
+                    )["items"]
+
+                    for resource in resources:
+                        resource_name = resource["metadata"]["name"]
+                        if name_filter and name_filter not in resource_name:
+                            continue
+
+                        local_services.append(
+                            {
+                                "name": resource_name,
+                                "template_type": resource_kind.lower(),
+                                "resource": resource,
+                                "namespace": namespace,
+                                "creation_timestamp": resource["metadata"]["creationTimestamp"],
+                            }
+                        )
+                except client.exceptions.ApiException as e:
+                    if e.status != 404:
+                        logger.warning(f"Failed to list {resource_kind}: {e}")
+
+            with services_lock:
+                services.extend(local_services)
+
         # Execute all API calls in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             futures = [
                 executor.submit(fetch_knative_services),
                 executor.submit(fetch_deployments),
                 executor.submit(fetch_rayclusters),
+                executor.submit(fetch_custom_resources),
             ]
 
             # Wait for all to complete
@@ -373,18 +686,113 @@ class BaseServiceManager:
             'namespace': str
         }
         """
-        return self.discover_services_static(
-            namespace=namespace or self.namespace,
-            objects_api=self.objects_api,
-            apps_v1_api=self.apps_v1_api,
+        return self.discover_services_static(namespace=namespace or self.namespace)
+
+    def create_or_update_service(
+        self,
+        service_name: str,
+        module_name: str,
+        manifest: dict = None,
+        dryrun: bool = False,
+        **kwargs,
+    ):
+        """Create or update service."""
+        logger.info(f"Deploying {manifest['kind']} service with name: {service_name}")
+        manifest = self._preprocess_manifest_for_launch(manifest)
+
+        # Update manifest with service name and deployment timestamp
+        clean_module_name = self._clean_module_name(module_name)
+        deployment_timestamp, deployment_id = self._get_deployment_timestamp_and_id(service_name)
+        updated_manifest = self._update_launchtime_manifest(
+            manifest, service_name, clean_module_name, deployment_timestamp, deployment_id
         )
 
-    # Abstract methods to be implemented by subclasses
-    def create_or_update_service(self, *args, **kwargs):
-        raise NotImplementedError("Subclasses must implement create_or_update_service")
+        # Create or update the resource
+        kwargs = {"dry_run": "All"} if dryrun else {}
+        created_service = self._create_or_update_resource(updated_manifest, service_name, clean_module_name, **kwargs)
+        return created_service, updated_manifest
+
+    def _preprocess_manifest_for_launch(self, manifest: dict) -> dict:
+        """Preprocess manifest before launch if needed for the service type."""
+        return manifest
+
+    @abstractmethod
+    def _create_or_update_resource(self, manifest: dict, service_name: str, clean_module_name: str, **kwargs) -> dict:
+        """Create or update resources from a manifest. service_name and clean_module_name are provided to avoid re-extraction."""
+        pass
 
     def get_endpoint(self, service_name: str) -> str:
         raise NotImplementedError("Subclasses must implement get_endpoint")
+
+    def get_routing_service_name(self, service_name: str) -> str:
+        """Get the service name used for NGINX proxy routing.
+
+        By default, this is the same as service_name. Subclasses can override
+        if they use a different service name for routing (e.g., TrainJobV2 uses
+        {service_name}-kt to avoid conflicting with JobSet's headless service).
+        """
+        return service_name
+
+    def get_container_name(self) -> str:
+        """Get the expected container name for this service type.
+
+        Returns the name of the main container in the pod spec.
+        Subclasses should override if they use a different container name.
+        """
+        return "kubetorch"
+
+    def get_service_dns(self, service_name: str, namespace: str, is_distributed: bool) -> str:
+        """Get the DNS name for service discovery.
+
+        For distributed jobs, this is typically a headless service for pod discovery.
+        Subclasses can override for different DNS naming conventions.
+        """
+        if is_distributed:
+            return f"{service_name}-headless.{namespace}.svc.cluster.local"
+        return f"{service_name}.{namespace}.svc.cluster.local"
+
+    def set_pod_spec(self, manifest: dict, pod_spec: dict) -> None:
+        """Set the pod spec in the manifest.
+
+        Subclasses can override for different manifest structures.
+        """
+        template_path = self._get_pod_template_path()
+        path = template_path + ["spec"]
+        if path:
+            current = manifest
+            for key in path[:-1]:
+                current = current.setdefault(key, {})
+            current[path[-1]] = pod_spec
+
+    def set_env_vars_in_manifest(self, manifest: dict, env_vars: dict) -> None:
+        """Set environment variables in the manifest's container(s).
+
+        Subclasses can override for different manifest structures.
+        By default, sets env vars in the first container of the pod spec.
+        """
+        pod_spec = self.pod_spec(manifest)
+        containers = pod_spec.get("containers", [])
+        if containers:
+            container = containers[0]
+            env = container.setdefault("env", [])
+            for name, value in env_vars.items():
+                # Update existing or append new
+                updated = False
+                for env_var in env:
+                    if env_var.get("name") == name:
+                        env_var["value"] = value
+                        updated = True
+                        break
+                if not updated:
+                    env.append({"name": name, "value": value})
+
+    def supports_distributed_config(self) -> bool:
+        """Return True if this service manager supports distributed training config.
+
+        Training job managers (PyTorchJob, TrainJob, etc.) support distributed config
+        which includes quorum settings for distributed training.
+        """
+        return False
 
     def get_pods_for_service(self, service_name: str, **kwargs) -> List[client.V1Pod]:
         """Get all pods associated with this service."""
@@ -412,17 +820,51 @@ class BaseServiceManager:
         """
         raise NotImplementedError("Subclasses must implement check_service_ready")
 
-    def teardown_service(self, service_name: str, console=None) -> bool:
+    def teardown_service(self, service_name: str, console=None, force: bool = False) -> bool:
         """Teardown/delete service and associated resources.
-
-        This method should be implemented by subclasses to provide service-type-specific
-        teardown logic.
 
         Args:
             service_name: Name of the service to teardown
             console: Optional Rich console for output
+            force: Force deletion without graceful shutdown
 
         Returns:
             True if teardown was successful, False otherwise
         """
-        raise NotImplementedError("Subclasses must implement teardown_service")
+        success = True
+
+        # Delete the main resource
+        try:
+            self._delete_resource(service_name, force=force)
+            resource_type = self.template_label.lower() if self.template_label else "resource"
+            if console:
+                console.print(f"✓ Deleted {resource_type} [blue]{service_name}[/blue]")
+            else:
+                logger.info(f"Deleted {resource_type} {service_name}")
+
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                resource_type = self.template_label.lower() if self.template_label else "resource"
+                if console:
+                    console.print(f"[yellow]Note:[/yellow] {resource_type} {service_name} not found or already deleted")
+                else:
+                    logger.info(f"{resource_type} {service_name} not found or already deleted")
+            else:
+                resource_type = self.template_label.lower() if self.template_label else "resource"
+                if console:
+                    console.print(f"[red]Error:[/red] Failed to delete {resource_type} {service_name}: {e}")
+                else:
+                    logger.error(f"Failed to delete {resource_type} {service_name}: {e}")
+                success = False
+
+        # Delete associated resources
+        associated_success = self._teardown_associated_resources(service_name, console)
+        return success and associated_success
+
+    def _teardown_associated_resources(self, service_name: str, console=None) -> bool:
+        """Teardown associated resources (e.g., Kubernetes Services).
+
+        Returns:
+            True if all associated resources were deleted successfully, False otherwise
+        """
+        return True
