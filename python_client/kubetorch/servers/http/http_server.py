@@ -1513,7 +1513,6 @@ async def run_callable_internal(
             user_method,
             *args,
             profiler=profiler,
-            request_id=request_id,
             callable_name=callable_name,
             **kwargs,
         )

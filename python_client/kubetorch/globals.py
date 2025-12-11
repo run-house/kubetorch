@@ -7,7 +7,7 @@ import subprocess
 import threading
 import time
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache
 from typing import Any, Dict, Literal, Optional
 
@@ -111,12 +111,10 @@ class ProfilerConfig:
     """Configuration for profiling behavior on a Kubetorch service.
 
     Attributes:
-        type: profiler type - "py-spy" (default, for cPU workloads) or "pytorch" (for GPU workloads)
         output_path: Local directory path for saving profiling output (default: None, auto-generated if not set).
         output_filename: Base name for the profiling output file (without extensions like .svg, .json, etc.; default: None, auto-generated if not set)
     """
 
-    type: Literal["pyspy", "pytorch"] = "pyspy"
     output_path: str = None
     output_filename: str = None
 
@@ -129,10 +127,12 @@ class PyspyProfilerConfig(ProfilerConfig):
     """Configuration for py-spy profiling behavior on a Kubetorch service.
 
     Attributes:
+        type: profiler type, equals to pyspy
         output_format: Output file format. Default: flamegraph
 
     """
 
+    type: str = field(default="pyspy", init=False)
     output_format: Literal["flamegraph", "raw", "speedscope", "chrometrace"] = "flamegraph"
 
     def output_file_suffix(self):
@@ -149,6 +149,7 @@ class TorchProfilerConfig(ProfilerConfig):
     """Configuration for pytorch profiling behavior on a Kubetorch service.
 
     Attributes:
+        type: profiler type, equals to torch.
         output_format: Output format. Default: 'chrometrace'.
         analyze_stack_traces: Should the profiler analyze Python and TorchScript stack traces
 
@@ -162,6 +163,7 @@ class TorchProfilerConfig(ProfilerConfig):
     For more information on how to visualize the profiling data, see PyTorch profiler `docs <https://docs.pytorch.org/tutorials/recipes/recipes/profiler_recipe.html>`_.
     """
 
+    type: str = field(default="torch", init=False)
     output_format: Literal["profiler", "chrometrace"] = "chrometrace"
     analyze_stack_traces: bool = True
 

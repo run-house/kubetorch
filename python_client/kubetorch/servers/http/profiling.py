@@ -100,7 +100,6 @@ def run_with_profile(
     fn,
     *args,
     profiler: Union[PyspyProfilerConfig, TorchProfilerConfig] = None,
-    request_id: str = None,
     callable_name: str = None,
     **kwargs,
 ):
@@ -117,7 +116,6 @@ def run_with_profile(
         from torch.profiler import profile, ProfilerActivity, record_function
 
         analyze_stack_traces = profiler.analyze_stack_traces
-
         if analyze_stack_traces:
             with profile(
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
@@ -137,7 +135,7 @@ def run_with_profile(
             with tempfile.NamedTemporaryFile(delete=True, suffix=".json") as tmp:
                 trace_path = tmp.name
                 prof.export_chrome_trace(trace_path)
-                with open(trace_path, "rb") as f:
+                with open(tmp.name, "rb") as f:
                     profiler_output = json.loads(f.read())
         else:
             # serialize the profiler, so we could return it to the http client as a python object

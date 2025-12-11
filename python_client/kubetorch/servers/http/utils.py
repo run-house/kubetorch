@@ -820,8 +820,16 @@ def _deserialize_response(response, serialization: str):
 
 
 # Profiler utils
+
+
+def filename_contains_suffix(filename: str):
+    return len(filename.split(".")) == 2
+
+
 def generate_profiler_output_filename(filename: str, file_suffix: str, service_name: str, request_id: str) -> str:
     if filename:
+        if filename_contains_suffix(filename):
+            return filename
         return f"{filename}.{file_suffix}"
     else:
         return f"{service_name}_{request_id}.{file_suffix}"  # added request id to prevent collisions. The running ts will be a part of the file metadata.
@@ -848,7 +856,10 @@ def parse_profiler_output(
 
     if profiler.output_format != "profiler":
         with open(output_full_path, "w+") as output_file:
-            output_file.write(profiler_output)
+            if isinstance(profiler_output, dict):
+                json.dump(profiler_output, output_file, indent=2)
+            else:
+                output_file.write(profiler_output)
             logger.info(f"profiler output can be found in {output_full_path}")
 
         return call_output.pop("fn_output"), None
