@@ -21,12 +21,13 @@ A Helm chart for kubetorch
 | controller.image | string | `"ghcr.io/run-house/kubetorch-controller"` |  |
 | controller.imagePullPolicy | string | `"Always"` |  |
 | controller.port | int | `8081` |  |
-| controller.replicas | int | `1` |  |
 | controller.resources.cpu.limit | string | `"2000m"` |  |
 | controller.resources.cpu.request | string | `"200m"` |  |
 | controller.resources.memory.limit | string | `"2Gi"` |  |
 | controller.resources.memory.request | string | `"1Gi"` |  |
-| controller.tag | string | `"v0.1.0"` |  |
+| controller.servicePort | int | `8080` |  |
+| controller.storage.size | string | `"1Gi"` |  |
+| controller.tag | string | `"deploy-endpoint"` |  |
 | controller.tolerations | list | `[]` |  |
 | controller.workers | int | `8` |  |
 | dataStore.affinity | object | `{}` |  |

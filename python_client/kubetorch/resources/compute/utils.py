@@ -317,6 +317,29 @@ def delete_knative_service(
                 console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
 
 
+def delete_pool(
+    name: str,
+    namespace: str,
+    console: "Console" = None,
+):
+    """Delete a self-register pool from controller database."""
+    controller_client = kubetorch.globals.controller_client()
+    try:
+        controller_client.delete_pool(
+            name=name,
+            namespace=namespace,
+        )
+        if console:
+            console.print(f"✓ Deleted resource [blue]{name}[/blue]")
+    except Exception as e:
+        if http_not_found(e):
+            if console:
+                console.print(f"[yellow]Note:[/yellow] Resource {name} not found or already deleted")
+        else:
+            if console:
+                console.print(f"[red]Error:[/red] Failed to delete resource {name}: {e}")
+
+
 def delete_deployment(
     name: str,
     namespace: str,
@@ -515,7 +538,15 @@ def delete_resources_for_service(
 ):
     """Delete service resources based on service type."""
     # Delete the main service (Knative, Deployment, or RayCluster)
-    if service_type == "deployment":
+    if service_type == "self-register":
+        # For self-register pools, delete the resource from controller database
+        # Do NOT delete the K8s deployment - user manages their own BYO deployment
+        delete_pool(
+            name=name,
+            namespace=namespace,
+            console=console,
+        )
+    elif service_type == "deployment":
         delete_deployment(
             name=name,
             namespace=namespace,
@@ -622,7 +653,7 @@ def fetch_resources_for_teardown(
     username: Optional[str] = None,
     exact_match: bool = False,
 ) -> dict:
-    """Fetchs the resources for a given service.
+    """Fetches the resources for a given service.
 
     Returns a dictionary with the following keys:
     - services: {
@@ -775,6 +806,25 @@ def fetch_resources_for_teardown(
                 if http_not_found(e):  # Ignore if Kubeflow Training Operator is not installed
                     logger.warning(f"Failed to list {job_kind}s: {e}")
 
+        # Search self-register pools from controller database
+        try:
+            pools_resp = controller_client.list_pools(namespace=namespace)
+            pools = pools_resp.get("pools", []) if pools_resp else []
+            for pool in pools:
+                specifier = pool.get("specifier") or {}
+                if specifier.get("type") != "self_register":
+                    continue
+                pool_name = pool.get("name")
+                pool_metadata = pool.get("pool_metadata") or {}
+                pool_username = pool_metadata.get("username")
+                # Filter by username or prefix
+                if username and pool_username == username:
+                    services.append(pool_name)
+                elif prefix and pool_name.startswith(prefix):
+                    services.append(pool_name)
+        except Exception as e:
+            logger.warning(f"Failed to list self-register pools: {e}")
+
     else:
         if not target:
             raise ValueError("Please provide a service name or use the --all or --prefix flags")
@@ -794,27 +844,42 @@ def fetch_resources_for_teardown(
         service_type = None
         service_found = False
         service_group = None
+        pool_selector = None
+
+        # Check if it's a self-register pool FIRST
+        # Self-register pools take priority - we only delete the pool from DB, not the K8s resources
+        try:
+            pool_info = controller_client.get_pool(namespace=namespace, name=service_name)
+            if pool_info:
+                specifier = pool_info.get("specifier") or {}
+                if specifier.get("type") == "self_register":
+                    service_type = "self-register"
+                    service_found = True
+                    pool_selector = specifier.get("selector")
+        except Exception as e:
+            logger.debug(f"Pool lookup for {service_name} failed: {e}")
 
         # Check if it's a Knative service
-        try:
-            service = controller_client.get_namespaced_custom_object(
-                group="serving.knative.dev",
-                version="v1",
-                namespace=namespace,
-                plural="services",
-                name=service_name,
-                ignore_not_found=True,
-            )
-            if (
-                isinstance(service, dict)
-                and service.get("kind") == "Service"
-                and service.get("metadata", {}).get("name") == service_name
-            ):
-                service_type = "knative"
-                service_found = True
+        if not service_found:
+            try:
+                service = controller_client.get_namespaced_custom_object(
+                    group="serving.knative.dev",
+                    version="v1",
+                    namespace=namespace,
+                    plural="services",
+                    name=service_name,
+                    ignore_not_found=True,
+                )
+                if (
+                    isinstance(service, dict)
+                    and service.get("kind") == "Service"
+                    and service.get("metadata", {}).get("name") == service_name
+                ):
+                    service_type = "knative"
+                    service_found = True
 
-        except Exception:
-            pass
+            except Exception:
+                pass
 
         # Check if it's a Deployment (if not found as Knative service)
         if not service_found:
@@ -876,9 +941,13 @@ def fetch_resources_for_teardown(
         configmaps = load_configmaps(service_name, namespace)
         pods = []
         try:
-            pods_result = controller_client.list_pods(
-                namespace=namespace, label_selector=f"{KT_SERVICE_LABEL}={service_name}"
-            )
+            # For self-register pools, use the pool selector to find pods
+            if pool_selector:
+                label_selector = ",".join(f"{k}={v}" for k, v in pool_selector.items())
+            else:
+                label_selector = f"{KT_SERVICE_LABEL}={service_name}"
+
+            pods_result = controller_client.list_pods(namespace=namespace, label_selector=label_selector)
             # Handle dict response from ControllerClient
             if pods_result:
                 pods = [pod["metadata"]["name"] for pod in pods_result.get("items", [])]

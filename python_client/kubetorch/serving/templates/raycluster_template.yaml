@@ -22,7 +22,7 @@ spec:
         annotations: {{ template_annotations | tojson }}
         labels: {{ head_template_labels | tojson }}
       spec: {{ pod_spec | tojson }}
-  workerGroupSpecs:
+  workerGroupSpecs:in
   - groupName: worker-group
     rayStartParams: {}
     minReplicas: 0

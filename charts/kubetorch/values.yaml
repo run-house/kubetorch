@@ -56,13 +56,16 @@ dataStore:
 
 controller:
   image: ghcr.io/run-house/kubetorch-controller
-  tag: v0.1.0
+  tag: deploy-endpoint # TODO: flip to main
   imagePullPolicy: Always
 
-  port: 8081  # Port the controller listens on
+  servicePort: 8080  # Port the controller service is exposed on (via nginx)
+  port: 8081  # Internal port the controller listens on
   workers: 8  # Number of Uvicorn worker processes (each handles ~10 concurrent requests)
   connectionPoolSize: 20  # K8s API connection pool size per worker
-  replicas: 1  # Number of controller replica pods
+  storage:
+    size: "1Gi"  # Size of the PVC for controller state
+    # storageClassName: ""  # Optional: specify a storage class (defaults to cluster default)
 
   resources:
     cpu:
