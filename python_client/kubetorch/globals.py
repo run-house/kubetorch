@@ -9,7 +9,7 @@ import time
 
 from dataclasses import dataclass
 from functools import cache
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import requests
 
@@ -774,6 +774,118 @@ class ControllerClient:
         """List cluster-scoped custom resources"""
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get(f"/apis/{group}/{version}/{plural}", params=params)
+
+    # Kubetorch Controller API endpoints - Pool Management
+    def register_pool(
+        self,
+        name: str,
+        namespace: str,
+        specifier: Dict[str, Any],
+        service: Optional[Dict[str, Any]] = None,
+        dockerfile: Optional[str] = None,
+        modules: Optional[List[Dict[str, Any]]] = None,
+        pool_metadata: Optional[Dict[str, Any]] = None,
+        server_port: int = 32300,
+        labels: Optional[Dict[str, Any]] = None,
+        annotations: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Register a compute pool via /controller/pool.
+
+        A pool is a logical group of pods that calls can be directed to.
+        This registers the pool in the controller and creates K8s Service(s)
+        for label_selector pools, but does not create pods.
+
+        Args:
+            name: Unique identifier for the pool
+            namespace: Kubernetes namespace
+            specifier: How to track pods in the pool:
+                - {"type": "label_selector", "selector": {"app": "workers"}}
+                - {"type": "self_register", "heartbeat": True}
+            service: Optional service configuration:
+                - {"url": "..."} - user-provided URL (e.g. Knative)
+                - {"selector": {...}} - custom selector for routing
+                - {"name": "..."} - custom service name
+            dockerfile: Optional dockerfile instructions for rebuilding workers
+            modules: Optional list of modules to deploy on the pool
+            pool_metadata: Optional metadata (username, etc.)
+            server_port: Port for the K8s service (default: 32300)
+            labels: Labels for the K8s service
+            annotations: Annotations for the K8s service
+
+        Returns:
+            Pool response with status, message, and service_url
+        """
+        body = {
+            "name": name,
+            "namespace": namespace,
+            "specifier": specifier,
+            "server_port": server_port,
+        }
+        if service is not None:
+            body["service"] = service
+        if dockerfile is not None:
+            body["dockerfile"] = dockerfile
+        if modules is not None:
+            body["modules"] = modules
+        if pool_metadata is not None:
+            body["pool_metadata"] = pool_metadata
+        if labels is not None:
+            body["labels"] = labels
+        if annotations is not None:
+            body["annotations"] = annotations
+
+        return self.post("/controller/pool", json=body)
+
+    def get_pool(self, name: str) -> Dict[str, Any]:
+        """Get information about a registered pool.
+
+        Args:
+            name: Pool name
+
+        Returns:
+            Pool response with status and service_url
+        """
+        return self.get(f"/controller/pool/{name}", ignore_not_found=True)
+
+    def delete_pool(self, name: str) -> Dict[str, Any]:
+        """Delete a registered pool and its associated K8s services.
+
+        Args:
+            name: Pool name
+
+        Returns:
+            Delete response with status
+        """
+        return self.delete(f"/controller/pool/{name}", ignore_not_found=True)
+
+    def apply(
+        self,
+        service_name: str,
+        namespace: str,
+        resource_type: str,
+        resource_manifest: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Apply a K8s compute manifest via /kubetorch/apply.
+
+        This creates pods/workloads in the cluster by applying the provided manifest.
+        It does not create K8s Services.
+
+        Args:
+            service_name: Name of the service
+            namespace: Kubernetes namespace
+            resource_type: Type of resource (deployment, raycluster, etc.)
+            resource_manifest: The full K8s manifest to apply
+
+        Returns:
+            Apply response with status, message, and created resource
+        """
+        body = {
+            "service_name": service_name,
+            "namespace": namespace,
+            "resource_type": resource_type,
+            "resource_manifest": resource_manifest,
+        }
+        return self.post("/controller/apply", json=body)
 
 
 @cache
