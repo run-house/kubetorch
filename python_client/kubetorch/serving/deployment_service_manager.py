@@ -21,8 +21,10 @@ logger = get_logger(__name__)
 class DeploymentServiceManager(BaseServiceManager):
     """Service manager for Kubernetes Deployments with distributed computing support."""
 
+    RESOURCE_TYPE = "deployment"
+
     def __init__(self, *args, **kwargs):
-        kwargs["template_label"] = "deployment"
+        kwargs["template_label"] = self.RESOURCE_TYPE
         super().__init__(*args, **kwargs)
 
     @classmethod
@@ -43,7 +45,7 @@ class DeploymentServiceManager(BaseServiceManager):
         """
         # Build labels
         labels = cls._get_labels(
-            template_label="deployment",
+            template_label=cls.RESOURCE_TYPE,
             custom_labels=custom_labels,
         )
 
@@ -99,7 +101,6 @@ class DeploymentServiceManager(BaseServiceManager):
 
         pod_spec = self.pod_spec(deployment)
         server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
-
         labels = deployment.get("metadata", {}).get("labels", {})
         annotations = deployment.get("metadata", {}).get("annotations", {})
 
@@ -108,66 +109,64 @@ class DeploymentServiceManager(BaseServiceManager):
         service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
 
         dryrun = kwargs.get("dry_run")
+        dockerfile = kwargs.get("dockerfile")
+        module = kwargs.get("module")
+        pod_selector = kwargs.get("pod_selector")
+        create_headless_service = kwargs.get("create_headless_service", False)
+
         try:
-            # Create regular service for client access
-            service = load_template(
-                template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
-                template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
-                name=service_name,
+            # Step 1: Apply the compute manifest (creates the pods)
+            apply_response = self.controller_client.apply(
+                service_name=service_name,
                 namespace=self.namespace,
-                annotations=annotations,
-                labels=service_labels,
-                deployment_name=service_name,
-                module_name=clean_module_name,
-                distributed=False,  # Regular service for client access
-                server_port=server_port,
+                resource_type=self.RESOURCE_TYPE,
+                resource_manifest=deployment,
             )
 
-            try:
-                self.controller_client.create_service(namespace=self.namespace, body=service, params=kwargs)
-                if not dryrun:
-                    logger.info(f"Created service {service_name} in namespace {self.namespace}")
-            except Exception as e:
-                if http_conflict(e):
-                    logger.info(f"Service {service_name} already exists")
+            if apply_response.get("status") == "error":
+                raise Exception(f"Apply failed: {apply_response.get('message')}")
+
+            logger.info(f"Applied deployment {deployment['metadata']['name']} in namespace {self.namespace}")
+
+            # Step 2: Register pool via /pool (creates K8s Service to route to pods)
+            if not dryrun:
+                # Use provided pod_selector (BYO manifest) or build from kubetorch labels
+                if pod_selector:
+                    # BYO manifest: use user's selector
+                    selector = pod_selector
                 else:
-                    raise
+                    # Standard kubetorch deployment: use kubetorch labels
+                    selector = {
+                        serving_constants.KT_SERVICE_LABEL: service_name,
+                        serving_constants.KT_MODULE_LABEL: clean_module_name,
+                    }
+                specifier = {
+                    "type": "label_selector",
+                    "selector": selector,
+                }
 
-            # Create headless service for distributed pod discovery (only if distributed)
-            if self.is_distributed(manifest):
-                headless_service = load_template(
-                    template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
-                    template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
-                    name=f"{service_name}-headless",
+                pool_response = self.controller_client.register_pool(
+                    name=service_name,
                     namespace=self.namespace,
-                    annotations=annotations,
-                    labels=service_labels,
-                    deployment_name=service_name,
-                    module_name=clean_module_name,
-                    distributed=True,
+                    specifier=specifier,
                     server_port=server_port,
+                    labels=service_labels,
+                    annotations=annotations,
+                    pool_metadata={
+                        "username": self.username,
+                    },
+                    dockerfile=dockerfile,
+                    module=module,
+                    resource_kind="Deployment",
+                    resource_name=service_name,
+                    create_headless_service=create_headless_service,
                 )
+                if pool_response.get("status") != "success":
+                    raise Exception(f"Resource registration failed: {pool_response.get('message')}")
+                logger.info(f"Registered {service_name} in namespace {self.namespace}")
 
-                try:
-                    self.controller_client.create_service(
-                        namespace=self.namespace, body=headless_service, params=kwargs
-                    )
-                    if not kwargs.get("dry_run"):
-                        logger.info(f"Created headless service {service_name}-headless in namespace {self.namespace}")
-                except Exception as e:
-                    if http_conflict(e):
-                        logger.info(f"Headless service {service_name}-headless already exists")
-                    else:
-                        raise
-
-            # Create Deployment
-            created_deployment = self.controller_client.create_deployment(
-                namespace=self.namespace,
-                body=deployment,
-            )
-
-            logger.info(f"Created Deployment {deployment['metadata']['name']} in namespace {self.namespace}")
-            return created_deployment
+            # Return the created resource from apply response
+            return apply_response.get("resource", deployment)
 
         except Exception as e:
             if http_conflict(e):
@@ -315,12 +314,12 @@ class DeploymentServiceManager(BaseServiceManager):
         raise ServiceTimeoutError(f"Deployment {service_name} is not ready after {launch_timeout} seconds")
 
     def _teardown_associated_resources(self, service_name: str, console=None) -> bool:
-        """Teardown associated Kubernetes Services for Deployment."""
+        """Teardown associated pool and Kubernetes Services for Deployment."""
         success = True
 
-        # Delete regular service
+        # Delete pool (this also deletes associated K8s services)
         try:
-            self.controller_client.delete_service(name=service_name, namespace=self.namespace)
+            self.controller_client.delete_pool(namespace=self.namespace, name=service_name)
             if console:
                 console.print(f"✓ Deleted service [blue]{service_name}[/blue]")
             else:
@@ -336,25 +335,6 @@ class DeploymentServiceManager(BaseServiceManager):
                     console.print(f"[red]Error:[/red] Failed to delete service {service_name}: {e}")
                 else:
                     logger.error(f"Failed to delete service {service_name}: {e}")
-                success = False
-
-        # Delete headless service if it exists
-        headless_service_name = f"{service_name}-headless"
-        try:
-            self.controller_client.delete_service(name=headless_service_name, namespace=self.namespace)
-            if console:
-                console.print(f"✓ Deleted service [blue]{headless_service_name}[/blue]")
-            else:
-                logger.info(f"Deleted service {headless_service_name}")
-        except Exception as e:
-            if http_not_found(e):
-                # Headless service might not exist, which is fine
-                pass
-            else:
-                if console:
-                    console.print(f"[red]Error:[/red] Failed to delete service {headless_service_name}: {e}")
-                else:
-                    logger.error(f"Failed to delete service {headless_service_name}: {e}")
                 success = False
 
         return success
