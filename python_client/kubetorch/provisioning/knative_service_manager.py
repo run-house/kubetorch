@@ -23,6 +23,8 @@ logger = get_logger(__name__)
 class KnativeServiceManager(BaseServiceManager):
     """Service manager for Knative services with autoscaling capabilities."""
 
+    RESOURCE_TYPE = "knative"
+
     def __init__(
         self,
         namespace: str,
@@ -146,18 +148,69 @@ class KnativeServiceManager(BaseServiceManager):
         return service
 
     def _create_or_update_resource(self, manifest: dict, service_name: str, clean_module_name: str, **kwargs) -> dict:
+        dryrun = kwargs.get("dry_run")
+        dockerfile = kwargs.get("dockerfile")
+        module = kwargs.get("module")
+        create_headless_service = kwargs.get("create_headless_service", False)
+
+        labels = manifest.get("metadata", {}).get("labels", {})
+        annotations = manifest.get("metadata", {}).get("annotations", {})
+
+        # Service labels (exclude kt template label)
+        service_labels = labels.copy()
+        service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+
         try:
-            created_service: dict = self.controller_client.create_namespaced_custom_object(
-                group="serving.knative.dev",
-                version="v1",
+            # Step 1: Apply the Knative Service manifest via /apply
+            apply_response = self.controller_client.apply(
+                service_name=service_name,
                 namespace=self.namespace,
-                plural="services",
-                body=manifest,
+                resource_type=self.RESOURCE_TYPE,
+                resource_manifest=manifest,
             )
 
-            if not kwargs.get("dry_run"):
-                logger.info(f"Created Knative service {manifest['metadata']['name']} in namespace {self.namespace}")
-            return created_service
+            if apply_response.get("status") == "error":
+                raise Exception(f"Apply failed: {apply_response.get('message')}")
+
+            logger.info(f"Applied Knative service {manifest['metadata']['name']} in namespace {self.namespace}")
+
+            # Step 2: Register pool - Knative provides its own URL routing
+            if not dryrun:
+                # Build the label selector for tracking pods
+                selector = {
+                    serving_constants.KT_SERVICE_LABEL: service_name,
+                    serving_constants.KT_MODULE_LABEL: clean_module_name,
+                }
+                specifier = {
+                    "type": "label_selector",
+                    "selector": selector,
+                }
+
+                # Knative provides its own URL - register it as a user-provided URL
+                knative_url = self.get_knative_service_endpoint(service_name)
+
+                pool_response = self.controller_client.register_pool(
+                    name=service_name,
+                    namespace=self.namespace,
+                    specifier=specifier,
+                    service={"type": "url", "url": knative_url},
+                    labels=service_labels,
+                    annotations=annotations,
+                    pool_metadata={
+                        "username": self.username,
+                    },
+                    dockerfile=dockerfile,
+                    module=module,
+                    resource_kind="KnativeService",
+                    resource_name=service_name,
+                    create_headless_service=create_headless_service,
+                )
+                if pool_response.get("status") != "success":
+                    raise Exception(f"Knative service registration failed: {pool_response.get('message')}")
+                logger.info(f"Registered {service_name} in namespace {self.namespace}")
+
+            # Return the created resource from apply response
+            return apply_response.get("resource", manifest)
 
         except Exception as e:
             if http_conflict(e):
@@ -416,3 +469,29 @@ class KnativeServiceManager(BaseServiceManager):
             "To update the timeout, set the `launch_timeout` parameter in the Compute class, or set the "
             "environment variable `KT_LAUNCH_TIMEOUT`."
         )
+
+    def _teardown_associated_resources(self, service_name: str, console=None) -> bool:
+        """Teardown associated pool for Knative service."""
+        success = True
+
+        # Delete pool (this also deletes associated K8s services)
+        try:
+            self.controller_client.delete_pool(namespace=self.namespace, name=service_name)
+            if console:
+                console.print(f"✓ Deleted resource [blue]{service_name}[/blue]")
+            else:
+                logger.info(f"Deleted resource {service_name}")
+        except Exception as e:
+            if http_not_found(e):
+                if console:
+                    console.print(f"[yellow]Note:[/yellow] Resource {service_name} not found or already deleted")
+                else:
+                    logger.info(f"Resource {service_name} not found or already deleted")
+            else:
+                if console:
+                    console.print(f"[red]Error:[/red] Failed to delete resource {service_name}: {e}")
+                else:
+                    logger.error(f"Failed to delete resource {service_name}: {e}")
+                success = False
+
+        return success

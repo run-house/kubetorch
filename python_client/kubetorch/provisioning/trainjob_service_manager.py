@@ -1,12 +1,10 @@
 import copy
-import os
 import time
 from typing import List
 
 import kubetorch.provisioning.constants as provisioning_constants
 from kubetorch.logger import get_logger
 from kubetorch.provisioning.base_service_manager import BaseServiceManager
-from kubetorch.serving.utils import load_template
 from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)
@@ -264,7 +262,12 @@ class TrainJobServiceManager(BaseServiceManager):
         return manifest
 
     def _create_or_update_resource(self, manifest: dict, service_name: str, clean_module_name: str, **kwargs) -> dict:
-        """Create or update custom resource via CustomObjectsApi."""
+        """Create or update training job resource via controller."""
+        dryrun = kwargs.get("dry_run")
+        dockerfile = kwargs.get("dockerfile")
+        module = kwargs.get("module")
+        create_headless_service = kwargs.get("create_headless_service", False)
+
         pod_spec = self.pod_spec(manifest)
         server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
 
@@ -273,90 +276,76 @@ class TrainJobServiceManager(BaseServiceManager):
         service_labels = labels.copy()
         service_labels.pop(provisioning_constants.KT_TEMPLATE_LABEL, None)
 
+        # Map kind to resource type for /apply
+        kind = manifest.get("kind", "").lower()
+        resource_type = kind  # pytorchjob, tfjob, mxjob, xgboostjob
+
         try:
-            service = load_template(
-                template_file=provisioning_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
-                template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
-                name=service_name,
+            # Step 1: Apply the training job manifest via /apply
+            apply_response = self.controller_client.apply(
+                service_name=service_name,
                 namespace=self.namespace,
-                annotations=annotations,
-                labels=service_labels,
-                deployment_name=service_name,
-                module_name=clean_module_name,
-                distributed=False,  # Regular service for client access
-                server_port=server_port,
+                resource_type=resource_type,
+                resource_manifest=manifest,
             )
 
-            service["spec"]["selector"][provisioning_constants.KT_SERVICE_LABEL] = service_name
+            if apply_response.get("status") == "error":
+                raise Exception(f"Apply failed: {apply_response.get('message')}")
 
-            is_distributed = self.is_distributed(manifest)
-            if is_distributed:
-                service["spec"]["selector"]["training.kubeflow.org/replica-type"] = self.primary_replica.lower()
+            logger.info(f"Applied {manifest.get('kind', 'resource')} {service_name} in namespace {self.namespace}")
 
-            try:
-                self.controller_client.create_service(
-                    namespace=self.namespace,
-                    body=service,
-                    params=kwargs,
-                )
-                if not kwargs.get("dry_run"):
-                    logger.info(f"Created service {service_name} in namespace {self.namespace}")
-            except Exception as e:
-                if http_conflict(e):
-                    logger.info(f"Service {service_name} already exists")
+            # Step 2: Register pool via /pool (creates K8s Services)
+            if not dryrun:
+                # Pool selector tracks all training job pods
+                pool_selector = {
+                    serving_constants.KT_SERVICE_LABEL: service_name,
+                    serving_constants.KT_MODULE_LABEL: clean_module_name,
+                }
+                specifier = {
+                    "type": "label_selector",
+                    "selector": pool_selector,
+                }
+
+                # Service selector routes only to primary replica (Master/Chief/Scheduler)
+                is_distributed = self.is_distributed(manifest)
+                if is_distributed:
+                    service_selector = {
+                        **pool_selector,
+                        "training.kubeflow.org/replica-type": self.primary_replica.lower(),
+                    }
+                    service_config = {"type": "selector", "selector": service_selector}
                 else:
-                    raise
+                    service_config = None  # Auto-create service using pool selector
 
-            if is_distributed:
-                # Create headless service for distributed pod discovery
-                headless_service = load_template(
-                    template_file=provisioning_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
-                    template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
-                    name=f"{service_name}-headless",
+                pool_response = self.controller_client.register_pool(
+                    name=service_name,
                     namespace=self.namespace,
-                    annotations=annotations,
-                    labels=service_labels,
-                    deployment_name=service_name,
-                    module_name=clean_module_name,
-                    distributed=True,  # Headless service for pod discovery
+                    specifier=specifier,
+                    service=service_config,
                     server_port=server_port,
+                    labels=service_labels,
+                    annotations=annotations,
+                    pool_metadata={
+                        "username": self.username,
+                    },
+                    dockerfile=dockerfile,
+                    module=module,
+                    resource_kind=manifest.get("kind"),
+                    resource_name=service_name,
+                    create_headless_service=create_headless_service,
                 )
+                if pool_response.get("status") != "success":
+                    raise Exception(f"Service registration failed: {pool_response.get('message')}")
+                logger.info(f"Registered {service_name} in namespace {self.namespace}")
 
-                headless_service["spec"]["selector"].pop("training.kubeflow.org/replica-type", None)
+            # Return the created resource from apply response
+            return apply_response.get("resource", manifest)
 
-                try:
-                    self.controller_client.create_service(
-                        namespace=self.namespace,
-                        body=headless_service,
-                        params=kwargs,
-                    )
-                    if not kwargs.get("dry_run"):
-                        logger.info(f"Created headless service {service_name}-headless in namespace {self.namespace}")
-                except Exception as e:
-                    if http_conflict(e):
-                        logger.info(f"Headless service {service_name}-headless already exists")
-                    else:
-                        raise
-
-            # Create the training job resource (always, not just for distributed)
-            try:
-                created_resource = self._create_resource(manifest, **kwargs)
-            except Exception as e:
-                if http_not_found(e):
-                    logger.error(
-                        "Kubeflow Custom Resource Definition (CRD) not found, please install the Kubeflow Training Operator"
-                    )
-                raise e
-
-            logger.info(f"Created {manifest.get('kind', 'resource')} {service_name} in namespace {self.namespace}")
-            return created_resource
         except Exception as e:
             if http_conflict(e):
                 logger.info(f"{manifest.get('kind', 'resource')} {service_name} already exists, updating")
-                patch_body = {"spec": manifest["spec"]}
-                updated_resource = self._patch_resource(service_name, patch_body, **kwargs)
-                logger.info(f"Updated {manifest.get('kind', 'resource')} {service_name}")
-                return updated_resource
+                existing = self.get_resource(service_name)
+                return existing
             raise e
 
     def check_service_ready(self, service_name: str, launch_timeout: int, **kwargs) -> bool:
@@ -450,12 +439,12 @@ class TrainJobServiceManager(BaseServiceManager):
         return f"http://{service_name}.{self.namespace}.svc.cluster.local:80"
 
     def _teardown_associated_resources(self, service_name: str, console=None) -> bool:
-        """Delete associated Kubernetes Services."""
+        """Teardown associated pool and Kubernetes Services for training job."""
         success = True
 
-        # Delete regular service
+        # Delete pool (this also deletes associated K8s services)
         try:
-            self.controller_client.delete_service(name=service_name, namespace=self.namespace)
+            self.controller_client.delete_pool(namespace=self.namespace, name=service_name)
             if console:
                 console.print(f"✓ Deleted service [blue]{service_name}[/blue]")
             else:
@@ -463,7 +452,7 @@ class TrainJobServiceManager(BaseServiceManager):
         except Exception as e:
             if http_not_found(e):
                 if console:
-                    console.print(f"[yellow]Note:[/yellow] Service {service_name} not found or already deleted")
+                    console.print(f"[yellow]Note:[/yellow] service {service_name} not found or already deleted")
                 else:
                     logger.info(f"Service {service_name} not found or already deleted")
             else:
@@ -471,25 +460,6 @@ class TrainJobServiceManager(BaseServiceManager):
                     console.print(f"[red]Error:[/red] Failed to delete service {service_name}: {e}")
                 else:
                     logger.error(f"Failed to delete service {service_name}: {e}")
-                success = False
-
-        # Delete headless service if it exists
-        headless_service_name = f"{service_name}-headless"
-        try:
-            self.controller_client.delete_service(name=headless_service_name, namespace=self.namespace)
-            if console:
-                console.print(f"✓ Deleted service [blue]{headless_service_name}[/blue]")
-            else:
-                logger.info(f"Deleted service {headless_service_name}")
-        except Exception as e:
-            if http_not_found(e):
-                # Headless service might not exist (non-distributed job), which is fine
-                pass
-            else:
-                if console:
-                    console.print(f"[red]Error:[/red] Failed to delete service {headless_service_name}: {e}")
-                else:
-                    logger.error(f"Failed to delete service {headless_service_name}: {e}")
                 success = False
 
         return success

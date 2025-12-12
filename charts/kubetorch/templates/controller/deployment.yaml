@@ -6,10 +6,12 @@ metadata:
   labels:
     app: kubetorch-controller
 spec:
-  replicas: {{ .Values.kubetorchController.replicas }}
+  replicas: 1
   selector:
     matchLabels:
       app: kubetorch-controller
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
@@ -72,6 +74,8 @@ spec:
               value: {{ .Values.kubetorchController.workers | quote }}
             - name: CONNECTION_POOL_SIZE
               value: {{ .Values.kubetorchController.connectionPoolSize | quote }}
+            - name: KUBETORCH_DB_PATH
+              value: "/data/kubetorch.db"
             # Event watcher configuration
             - name: EVENT_WATCH_ENABLED
               value: {{ .Values.kubetorchController.eventWatcher.enabled | quote }}
@@ -82,6 +86,9 @@ spec:
           ports:
             - containerPort: {{ .Values.kubetorchController.port }}
               name: controller
+          volumeMounts:
+            - name: controller-data
+              mountPath: /data
           # Startup probe allows arbitrary startup time (up to 5 minutes)
           # Checks every 5s, allows up to 60 failures before giving up
           startupProbe:
@@ -121,3 +128,6 @@ spec:
         - name: nginx-config
           configMap:
             name: kubetorch-controller-config
+        - name: controller-data
+          persistentVolumeClaim:
+            claimName: kubetorch-controller-data

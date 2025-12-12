@@ -437,7 +437,7 @@ def cached_image_setup():
 
 
 def run_image_setup(deployed_time: Optional[float] = None):
-    if os.environ["KT_FREEZE"] == "True" or not is_running_in_kubernetes():
+    if os.environ.get("KT_FREEZE", "False") == "True" or not is_running_in_kubernetes():
         return
 
     rsync_file_updates()
