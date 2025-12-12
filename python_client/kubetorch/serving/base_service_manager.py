@@ -16,6 +16,8 @@ logger = get_logger(__name__)
 class BaseServiceManager:
     """Base service manager with common functionality for all service types."""
 
+    RESOURCE_TYPE = None
+
     def __init__(
         self,
         namespace: str,
@@ -544,13 +546,90 @@ class BaseServiceManager:
             with services_lock:
                 services.extend(local_services)
 
+        def fetch_self_registered_pools():
+            """Fetch self-registered pools from controller database."""
+            try:
+                resp = controller_client.list_pools(namespace=namespace)
+                pools = resp.get("pools", [])
+
+                local_services = []
+                for pool in pools:
+                    # Only include self-register pools (others are already discovered via K8s resources)
+                    specifier = pool.get("specifier") or {}
+                    if specifier.get("type") != "self_register":
+                        continue
+
+                    pool_name = pool.get("name")
+                    if name_filter and name_filter not in pool_name:
+                        continue
+
+                    # Get pods using selector from specifier (if available)
+                    pods_for_pool = []
+                    selector = specifier.get("selector")
+                    if selector:
+                        # Build label selector string from dict
+                        label_selector = ",".join(f"{k}={v}" for k, v in selector.items())
+                        try:
+                            pods_result = controller_client.list_pods(
+                                namespace=namespace, label_selector=label_selector
+                            )
+                            pods_for_pool = pods_result.get("items", [])
+                        except Exception as e:
+                            logger.warning(f"Failed to list pods for pool {pool_name}: {e}")
+
+                    # Create a synthetic resource dict for display compatibility
+                    pool_metadata = pool.get("pool_metadata") or {}
+                    labels = (pool.get("labels") or {}).copy()
+                    username = pool_metadata.get("username", "")
+                    if username:
+                        labels[serving_constants.KT_USERNAME_LABEL] = username
+
+                    num_pods = len(pods_for_pool)
+                    synthetic_resource = {
+                        "metadata": {
+                            "name": pool_name,
+                            "namespace": namespace,
+                            "creationTimestamp": pool.get("created_at", ""),
+                            "labels": labels,
+                            "annotations": pool.get("annotations") or {},
+                        },
+                        "spec": {
+                            "replicas": num_pods,  # For status calculation
+                        },
+                        "status": {
+                            "readyReplicas": num_pods,  # Assume pods are ready
+                            "replicas": num_pods,
+                        },
+                        # Extra fields for self-registered pools
+                        "_pods": pods_for_pool,  # Actual pod objects from K8s
+                        "_pool_metadata": pool_metadata,
+                        "_selector": selector,
+                    }
+
+                    local_services.append(
+                        {
+                            "name": pool_name,
+                            "template_type": "self-register",
+                            "resource": synthetic_resource,
+                            "namespace": namespace,
+                            "creation_timestamp": pool.get("created_at", ""),
+                        }
+                    )
+
+                with services_lock:
+                    services.extend(local_services)
+
+            except Exception as e:
+                logger.warning(f"Failed to list self-register pools: {e}")
+
         # Execute all API calls in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             futures = [
                 executor.submit(fetch_knative_services),
                 executor.submit(fetch_deployments),
                 executor.submit(fetch_rayclusters),
                 executor.submit(fetch_custom_resources),
+                executor.submit(fetch_self_registered_pools),
             ]
 
             # Wait for all to complete
@@ -586,6 +665,10 @@ class BaseServiceManager:
         manifest: dict = None,
         deployment_timestamp: str = None,
         dryrun: bool = False,
+        dockerfile: str = None,
+        module: dict = None,
+        pod_selector: dict = None,
+        create_headless_service: bool = False,
     ):
         """Create or update service."""
         logger.info(f"Deploying {service_name}")
@@ -600,6 +683,10 @@ class BaseServiceManager:
 
         # Create or update the resource
         kwargs = {"dry_run": "All"} if dryrun else {}
+        kwargs["dockerfile"] = dockerfile
+        kwargs["module"] = module
+        kwargs["pod_selector"] = pod_selector
+        kwargs["create_headless_service"] = create_headless_service
         created_service = self._create_or_update_resource(updated_manifest, service_name, clean_module_name, **kwargs)
         return created_service, updated_manifest
 
