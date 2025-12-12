@@ -133,4 +133,3 @@ class WebSocketRsyncTunnel:
                         conn.close()
                     except:
                         pass
-
