@@ -895,6 +895,34 @@ class DataStoreClient:
             logger.error(f"Failed to list key '{key}': {e}")
             return []
 
+    def mkdir(self, key: str, verbose: bool = False) -> bool:
+        """
+        Create a directory at the given key path in the store.
+
+        Args:
+            key: Storage key path to create.
+            verbose: Show detailed progress
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        parsed = parse_key(key)
+
+        if verbose:
+            logger.info(f"Creating directory for key '{key}'")
+
+        try:
+            result = self.metadata_client.mkdir(parsed.full_key)
+            success = result.get("success", False)
+
+            if verbose and success:
+                logger.info(f"Created directory for key '{key}'")
+
+            return success
+        except Exception as e:
+            logger.error(f"Failed to create directory for key '{key}': {e}")
+            return False
+
     def rm(
         self,
         key: str,

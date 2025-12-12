@@ -20,7 +20,6 @@ from typing import List, Optional
 import httpx
 import typer
 import yaml
-from kubernetes import client
 from pydantic import BaseModel
 from rich import box
 from rich.console import Console
@@ -37,7 +36,7 @@ from kubetorch.constants import MAX_PORT_TRIES
 from kubetorch.resources.compute.utils import is_port_available
 from kubetorch.servers.http.utils import stream_logs_websocket_helper, StreamType
 from kubetorch.serving.utils import wait_for_port_forward
-from kubetorch.utils import get_container_name, hours_to_ns, http_not_found, load_kubeconfig
+from kubetorch.utils import get_container_name, hours_to_ns, http_not_found
 
 from .constants import BULLET_UNICODE, CPU_RATE, DOUBLE_SPACE_UNICODE, GPU_RATE
 
@@ -180,8 +179,6 @@ def port_forward_to_pod(
     remote_port: int = serving_constants.DEFAULT_NGINX_PORT,
     health_endpoint: str = None,
 ):
-
-    load_kubeconfig()
     for attempt in range(MAX_PORT_TRIES):
         candidate_port = local_port + attempt
         if not is_port_available(candidate_port):
@@ -562,26 +559,24 @@ def get_service_metrics(prom, pod_name: str, pod_node: str, running_on_gpu: bool
 
 
 def get_current_cluster_name():
-    try:
-        from kubernetes import config as k8s_config
-
-        k8s_config.load_incluster_config()
-        # In-cluster: return a generic name or the service host
+    # Check if running in-cluster
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
         return os.environ.get("CLUSTER_NAME", "in-cluster")
-    except Exception:
-        pass
 
     # Fallback to kubeconfig file
     kubeconfig_path = os.getenv("KUBECONFIG") or str(Path.home() / ".kube" / "config")
     if not os.path.exists(kubeconfig_path):
         return None
 
-    with open(kubeconfig_path, "r") as f:
-        kubeconfig = yaml.safe_load(f)
-    current_context = kubeconfig.get("current-context")
-    for context in kubeconfig.get("contexts", []):
-        if context["name"] == current_context:
-            return context["context"]["cluster"]
+    try:
+        with open(kubeconfig_path, "r") as f:
+            kubeconfig = yaml.safe_load(f)
+        current_context = kubeconfig.get("current-context")
+        for context in kubeconfig.get("contexts", []):
+            if context["name"] == current_context:
+                return context["context"]["cluster"]
+    except Exception:
+        pass
     return None
 
 
@@ -958,16 +953,18 @@ def load_selected_pod(service_name, provided_pod, service_pods):
 
 
 def load_kubetorch_volumes_from_pods(pods: list) -> List[str]:
-    """Extract volume information from service definition"""
+    """Extract volume information from service definition.
+
+    Note: pods should be dicts from controller_client.list_pods().
+    """
     volumes = set()
 
     if not pods:
         return []
 
     for pod in pods:
-        # Normalize each pod into dict
         if not isinstance(pod, dict):
-            pod = client.ApiClient().sanitize_for_serialization(pod)
+            raise TypeError(f"Expected pod to be a dict, got {type(pod)}")
 
         for vol in pod.get("spec", {}).get("volumes", []) or []:
             pvc = vol.get("persistentVolumeClaim")

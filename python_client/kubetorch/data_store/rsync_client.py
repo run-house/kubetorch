@@ -15,8 +15,6 @@ from pathlib import Path
 from typing import List, Optional, Union
 from urllib.parse import urlparse
 
-from kubernetes import client, config
-
 import kubetorch.serving.constants as serving_constants
 
 from kubetorch import globals
@@ -47,18 +45,6 @@ class RsyncClient:
         """
         self.namespace = namespace  # Namespace for both service and data paths
         self.service_name = service_name or "store"
-        self._core_api = None
-
-    @property
-    def core_api(self):
-        """Lazy load Kubernetes core API client."""
-        if self._core_api is None:
-            try:
-                config.load_incluster_config()
-            except config.ConfigException:
-                config.load_kube_config()
-            self._core_api = client.CoreV1Api()
-        return self._core_api
 
     def get_rsync_pod_url(self) -> str:
         """Get the data store pod service URL."""
@@ -83,19 +69,16 @@ class RsyncClient:
         return websocket_port, ws_url
 
     def create_rsync_target_dir(self):
-        """Create the subdirectory for this particular service in the rsync pod."""
-        subdir = f"/data/{self.namespace}/{self.service_name}"
+        """Create the subdirectory for this particular service in the data store."""
+        # Use the service_name as the key - the data store will create the directory
+        # at the appropriate filesystem path
+        key = self.service_name
 
-        label_selector = f"app={serving_constants.DATA_STORE_SERVICE_NAME}"
-        # Pod is in the same namespace
-        pod_name = (
-            self.core_api.list_namespaced_pod(namespace=self.namespace, label_selector=label_selector)
-            .items[0]
-            .metadata.name
-        )
-        subdir_cmd = f"kubectl exec {pod_name} -n {self.namespace} -- mkdir -p {subdir}"
-        logger.info(f"Creating directory on rsync pod with cmd: {subdir_cmd}")
-        subprocess.run(subdir_cmd, shell=True, check=True)
+        logger.info(f"Creating directory for key '{key}' via data store API")
+        from kubetorch.data_store import DataStoreClient
+
+        client = DataStoreClient(namespace=self.namespace)
+        client.mkdir(key)
 
     def build_rsync_command(
         self,

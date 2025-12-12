@@ -282,6 +282,26 @@ class MetadataClient:
             logger.warning(f"Failed to delete key '{key}': {e}")
             return {"success": False, "error": str(e)}
 
+    def mkdir(self, key: str) -> dict:
+        """
+        Create a directory at the given key path.
+
+        Args:
+            key: Storage key path to create
+
+        Returns:
+            dict with success status and created path
+        """
+        try:
+            encoded_key = quote(key, safe="")
+            url = f"{self.base_url}/api/v1/keys/{encoded_key}/mkdir"
+            response = requests.post(url, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            logger.warning(f"Failed to create directory for key '{key}': {e}")
+            return {"success": False, "error": str(e)}
+
     def list_keys(self, prefix: str = "") -> dict:
         """
         List all keys matching a prefix, combining virtual keys and filesystem contents.

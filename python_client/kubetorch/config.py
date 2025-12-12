@@ -47,6 +47,7 @@ class KubetorchConfig:
 
     @cached_property
     def current_context(self):
+        """Get the namespace from the current kubernetes context."""
         try:
             from kubetorch.servers.http.utils import is_running_in_kubernetes
 
@@ -56,15 +57,18 @@ class KubetorchConfig:
                         return f.read().strip()
                 except FileNotFoundError:
                     return "default"
-
             else:
-                from kubernetes import config
+                # Use kubectl to get namespace from current context
+                import subprocess
 
-                from kubetorch.utils import load_kubeconfig
-
-                load_kubeconfig()
-                _, active_context = config.list_kube_config_contexts()
-                return active_context.get("context", {}).get("namespace", "default")
+                result = subprocess.run(
+                    ["kubectl", "config", "view", "--minify", "-o", "jsonpath={..namespace}"],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip()
+                return "default"
 
         except Exception:
             return "default"

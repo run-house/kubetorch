@@ -237,25 +237,13 @@ class KnativeServiceManager(BaseServiceManager):
             if latest_ready_revision:
                 # Look for pods with the revision label
                 label_selector = f"serving.knative.dev/revision={latest_ready_revision}"
-
-                resp = self.controller_client.list_pods(
-                    namespace=self.namespace,
-                    label_selector=label_selector,
-                )
-
-                pods = resp.get("items", [])
-                return [self.normalize_pod(p) for p in pods]
+                return super().get_pods_for_service(service_name, label_selector=label_selector, **kwargs)
 
         except Exception as e:
             logger.warning(f"Knative pod lookup failed for {service_name}: {e}")
 
         # Fallback: use normal KT service label lookup
-        try:
-            return super().get_pods_for_service(service_name, **kwargs)
-
-        except Exception as e:
-            logger.warning(f"Fallback pod lookup failed for {service_name}: {e}")
-            return []
+        return super().get_pods_for_service(service_name, **kwargs)
 
     def _status_condition_ready(self, status: dict) -> bool:
         """Check if service status conditions indicate ready state."""
