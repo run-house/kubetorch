@@ -9,9 +9,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-from kubernetes import config
-
-from kubetorch.constants import DEFAULT_KUBECONFIG_PATH, MAX_USERNAME_LENGTH
+from kubetorch.constants import MAX_USERNAME_LENGTH
 from kubetorch.globals import config as kt_config
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.utils import get_local_install_path
@@ -57,17 +55,6 @@ def validate_username(username):
     if not re.match(r"^[a-z]([-a-z0-9]*[a-z0-9])?$", username):
         raise ValueError(f"{original_username} must be a valid k8s name")
     return username
-
-
-def load_kubeconfig():
-    try:
-        config.load_incluster_config()
-    except config.config_exception.ConfigException:
-        kubeconfig_path = os.getenv("KUBECONFIG") or DEFAULT_KUBECONFIG_PATH
-        abs_path = Path(kubeconfig_path).expanduser()
-        if not abs_path.exists():
-            raise FileNotFoundError(f"Kubeconfig file not found in path: {abs_path}")
-        config.load_kube_config(str(abs_path))
 
 
 def current_git_branch():

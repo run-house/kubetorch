@@ -9,9 +9,6 @@ from typing import Dict, List, Optional, Union
 
 import yaml
 
-from kubernetes import config
-from kubernetes.client import V1ResourceRequirements
-
 import kubetorch.constants as constants
 import kubetorch.serving.constants as serving_constants
 
@@ -559,8 +556,6 @@ class Compute:
     @property
     def service_manager(self):
         if self._service_manager is None:
-            self._load_kube_config()
-
             from kubetorch.serving.deployment_service_manager import DeploymentServiceManager
             from kubetorch.serving.knative_service_manager import KnativeServiceManager
             from kubetorch.serving.raycluster_service_manager import RayClusterServiceManager
@@ -1689,7 +1684,7 @@ class Compute:
         if limits:
             resources["limits"] = limits
 
-        return V1ResourceRequirements(**resources).to_dict()
+        return resources
 
     def _get_launch_timeout(self, launch_timeout):
         if launch_timeout:
@@ -1761,15 +1756,6 @@ class Compute:
         return user_tolerations if user_tolerations else None
 
     # ----------------- Generic Helpers ----------------- #
-    def _load_kube_config(self):
-        try:
-            config.load_incluster_config()
-        except config.config_exception.ConfigException:
-            # Fall back to a local kubeconfig file
-            if not Path(self.kubeconfig_path).exists():
-                raise FileNotFoundError(f"Kubeconfig file not found: {self.kubeconfig_path}")
-            config.load_kube_config(config_file=self.kubeconfig_path)
-
     def _load_kubetorch_global_config(self):
         global_config = {}
         kubetorch_config = self.service_manager.fetch_kubetorch_config()
@@ -2223,8 +2209,6 @@ class Compute:
         container: Optional[str] = None,
     ):
         """Run bash commands on the pod(s)."""
-        self._load_kube_config()
-
         pod_names = self.pod_names() if node in ["all", None] else [node] if isinstance(node, str) else node
 
         return _run_bash(

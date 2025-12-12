@@ -4,11 +4,6 @@ from abc import abstractmethod
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Type
 
-import yaml
-from jinja2 import Template
-
-from kubernetes import client, utils
-
 import kubetorch.serving.constants as serving_constants
 from kubetorch import globals
 
@@ -275,29 +270,6 @@ class BaseServiceManager:
     def _clean_module_name(self, module_name: str) -> str:
         """Clean module name to remove invalid characters for Kubernetes labels."""
         return re.sub(r"[^A-Za-z0-9.-]|^[-.]|[-.]$", "", module_name)
-
-    def _apply_yaml_template(self, yaml_file, replace_existing=False, **kwargs):
-        import importlib.resources
-
-        with importlib.resources.files("kubetorch.serving.templates").joinpath(yaml_file).open("r") as f:
-            template = Template(f.read())
-
-        yaml_content = template.render(**kwargs)
-        yaml_objects = list(yaml.safe_load_all(yaml_content))
-        k8s_client = client.ApiClient()
-
-        for obj in yaml_objects:
-            try:
-                if replace_existing:
-                    try:
-                        utils.delete_from_dict(k8s_client, obj)
-                    except Exception as e:
-                        if not http_not_found(e):
-                            raise
-                utils.create_from_dict(k8s_client, obj)
-            except utils.FailToCreateError as e:
-                if "already exists" not in str(e):
-                    raise
 
     def get_deployment_timestamp_annotation(self, service_name: str) -> Optional[str]:
         """Get deployment timestamp annotation for any service type."""
@@ -599,29 +571,13 @@ class BaseServiceManager:
         """
         return self.discover_services_static(namespace=namespace or self.namespace)
 
-    # ----------------------------------------------------------------------
-    # PODS (ControllerClient)
-    # ----------------------------------------------------------------------
-    def normalize_pod(self, pod):
-        """Convert pod to dict if needed."""
-        if isinstance(pod, dict):
-            return pod
-        else:
-            return client.ApiClient().sanitize_for_serialization(pod)
-
-    def get_pods_for_service(self, service_name: str, **kwargs) -> List[dict]:
+    def get_pods_for_service(self, service_name: str, label_selector: str = None, **kwargs) -> List[dict]:
         """Get all pods associated with this service."""
-        label_selector = f"{serving_constants.KT_SERVICE_LABEL}={service_name}"
+        label_selector = label_selector or f"{serving_constants.KT_SERVICE_LABEL}={service_name}"
 
-        try:
-            raw = self.controller_client.list_pods(self.namespace, label_selector=label_selector)
-            items = raw.get("items", [])
-            normalized = [self.normalize_pod(pod) for pod in items]
-            return normalized
-
-        except Exception as e:
-            logger.warning(f"Failed to list pods: {e}")
-            return []
+        raw = self.controller_client.list_pods(self.namespace, label_selector=label_selector)
+        pods = raw.get("items", [])
+        return pods
 
     def create_or_update_service(
         self,
