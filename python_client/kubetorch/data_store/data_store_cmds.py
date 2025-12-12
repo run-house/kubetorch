@@ -24,7 +24,8 @@ _default_client = None
 
 def put(
     key: Union[str, List[str]],
-    src: Union[str, Path, List[Union[str, Path]]],
+    src: Optional[Union[str, Path, List[Union[str, Path]]]] = None,
+    data: Optional[Union["torch.Tensor", dict]] = None,
     locale: Locale = "store",
     lifespan: Lifespan = "cluster",
     broadcast: Optional[BroadcastWindow] = None,
@@ -37,17 +38,27 @@ def put(
     # Parameters for locale="local" (zero-copy mode)
     start_rsyncd: bool = True,
     base_path: str = "/",
+    nccl_port: int = 29500,
 ) -> None:
     """
-    Upload files or directories to the cluster using a key-value store interface.
+    Upload data to the cluster using a key-value store interface.
+
+    Supports two data types:
+    - **Filesystem data**: Files/directories uploaded via rsync (use `src` parameter)
+    - **GPU data**: GPU tensors or state dicts broadcast via NCCL (use `data` parameter)
+
+    The data type is auto-detected based on which parameter is provided.
 
     Args:
         key: Storage key(s). Keys should be explicit paths like "my-service/models/v1".
             Can be a single key or list of keys for batch operations.
-        src: Local file(s) or directory(s) to upload.
+        src: For filesystem data: Local file(s) or directory(s) to upload.
+        data: For GPU data: GPU tensor or dict of GPU tensors (state dict).
+            The GPU data will be broadcast to other pods via NCCL when they call get().
+            Implies locale="local" (GPU data is never copied to the store pod).
         locale: Where data is stored:
             - "store" (default): Copy to central store pod. Data is persisted and
-              accessible from any pod.
+              accessible from any pod. (Filesystem only)
             - "local": Zero-copy mode. Data stays on the local pod and is only
               registered with the metadata server. Other pods rsync directly from
               this pod. Only works when running inside a Kubernetes pod.
@@ -57,15 +68,16 @@ def put(
               automatically cleaned up when the service is torn down.
         broadcast: Optional BroadcastWindow for coordinated multi-party transfers.
             When specified, this put() joins as a "putter" and waits for other
-            participants before transferring data.
-        contents: If True, copy directory contents (adds trailing slashes for rsync).
-        filter_options: Additional rsync filter options.
-        force: Force overwrite of existing files.
+            participants before transferring data. (Filesystem only)
+        contents: If True, copy directory contents (adds trailing slashes for rsync). (Filesystem only)
+        filter_options: Additional rsync filter options. (Filesystem only)
+        force: Force overwrite of existing files. (Filesystem only)
         verbose: Show detailed progress.
         namespace: Kubernetes namespace.
         kubeconfig_path: Path to kubeconfig file (for compatibility).
-        start_rsyncd: For locale="local": Start rsync daemon to serve data (default: True).
-        base_path: For locale="local": Root path for rsync daemon (default: "/").
+        start_rsyncd: For locale="local": Start rsync daemon to serve data (default: True). (Filesystem only)
+        base_path: For locale="local": Root path for rsync daemon (default: "/"). (Filesystem only)
+        nccl_port: Port for NCCL communication (default: 29500). (GPU only)
 
     Examples:
         # Upload to central store
@@ -85,7 +97,34 @@ def put(
         ...     locale="local",
         ...     broadcast=kt.BroadcastWindow(timeout=10.0)
         ... )
+
+        # GPU tensor - other pods receive via NCCL broadcast
+        >>> import torch
+        >>> tensor = torch.randn(1000, 1000, device="cuda")
+        >>> kt.put(key="model/layer1", data=tensor)
+
+        # GPU state dict - all tensors broadcast over single NCCL process group
+        >>> state_dict = model.state_dict()  # Contains CUDA tensors
+        >>> kt.put(key="model/weights", data=state_dict)
     """
+    from .gpu_transfer import _is_gpu_data
+
+    # Check if this is GPU data
+    if data is not None and _is_gpu_data(data):
+        # GPU data transfer via NCCL
+        from .gpu_transfer import _get_gpu_manager
+
+        # Handle single key only for GPU data
+        if isinstance(key, list):
+            raise ValueError("GPU data transfer only supports a single key, not a list of keys.")
+
+        manager = _get_gpu_manager()
+        return manager.publish(key=key, data=data, nccl_port=nccl_port, broadcast=broadcast, verbose=verbose)
+
+    # Filesystem data transfer
+    if src is None:
+        raise ValueError("src is required for filesystem data. For GPU data, use the data parameter.")
+
     global _default_client
 
     if _default_client is None or namespace or kubeconfig_path:
@@ -108,28 +147,41 @@ def put(
 
 def get(
     key: Union[str, List[str]],
-    dest: Optional[Union[str, Path]] = None,
+    dest: Optional[Union[str, Path, "torch.Tensor", dict]] = None,
     broadcast: Optional[BroadcastWindow] = None,
     contents: bool = False,
     filter_options: Optional[str] = None,
     force: bool = False,
+    quorum_timeout: float = 0.0,
     verbose: bool = False,
     namespace: Optional[str] = None,
     kubeconfig_path: Optional[str] = None,
 ) -> None:
     """
-    Download files or directories from the cluster using a key-value store interface.
+    Download data from the cluster using a key-value store interface.
+
+    Supports two data types:
+    - **Filesystem data**: Files/directories downloaded via rsync
+    - **GPU data**: GPU tensors or state dicts received via NCCL broadcast
+
+    The data type is auto-detected from the `dest` parameter:
+    - If dest is a path (str/Path): filesystem data
+    - If dest is a GPU tensor or dict of GPU tensors: GPU data
 
     Args:
         key: Storage key(s) to retrieve. Keys should be explicit paths like
             "my-service/models/v1". Can be a single key or list of keys.
-        dest: Local destination path (defaults to current working directory).
+        dest: Destination for the data:
+            - For filesystem: Local path (defaults to current working directory)
+            - For GPU: Pre-allocated tensor or state_dict (dict of tensors) to receive into
         broadcast: Optional BroadcastWindow for coordinated multi-party transfers.
             When specified, this get() joins as a "getter" and waits for putters
-            before receiving data.
-        contents: If True, copy directory contents (adds trailing slashes).
-        filter_options: Additional rsync filter options.
-        force: Force overwrite of existing files.
+            before receiving data. (Filesystem only)
+        contents: If True, copy directory contents (adds trailing slashes). (Filesystem only)
+        filter_options: Additional rsync filter options. (Filesystem only)
+        force: Force overwrite of existing files. (Filesystem only)
+        quorum_timeout: How long to wait for other consumers before starting NCCL broadcast.
+            Default is 0 (start immediately). Set higher to batch multiple consumers. (GPU only)
         verbose: Show detailed progress.
         namespace: Kubernetes namespace.
         kubeconfig_path: Path to kubeconfig file (for compatibility).
@@ -137,18 +189,38 @@ def get(
     Examples:
         # Download from store
         >>> import kubetorch as kt
-        >>> kt.get(key="my-service/weights")
-
-        # Download to specific location
-        >>> kt.get(key="my-service/weights", dest="./local_model/")
-
-        # Coordinated broadcast (wait for putter)
+        >>> import torch
+        >>>
+        >>> # Filesystem data
+        >>> kt.get(key="my-service/weights")  # Downloads to current directory
+        >>> kt.get(key="my-service/weights", dest="./local_model/")  # Downloads to local_model/
+        >>>
+        >>> # Coordinated broadcast (wait for putter)
         >>> kt.get(
         ...     key="my-service/weights",
         ...     dest="./weights/",
         ...     broadcast=kt.BroadcastWindow(timeout=10.0)
         ... )
+        >>>
+        >>> # GPU tensor - provide pre-allocated destination
+        >>> tensor = torch.empty(1000, 1000, device="cuda:0")
+        >>> kt.get(key="model/layer1", dest=tensor)
+        >>>
+        >>> # GPU state dict - provide model's state_dict as destination
+        >>> model = MyModel().cuda()
+        >>> kt.get(key="model/weights", dest=model.state_dict())
+        >>> model.load_state_dict(model.state_dict())  # Already updated in-place
     """
+    from .gpu_transfer import _is_gpu_data
+
+    # Check if dest is GPU data (tensor or dict of tensors)
+    if dest is not None and _is_gpu_data(dest):
+        from .gpu_transfer import _get_gpu_manager
+
+        manager = _get_gpu_manager()
+        return manager.retrieve(key=key, dest=dest, quorum_timeout=quorum_timeout, broadcast=broadcast, verbose=verbose)
+
+    # Filesystem data retrieval
     global _default_client
 
     if _default_client is None or namespace or kubeconfig_path:
