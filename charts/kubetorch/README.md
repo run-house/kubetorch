@@ -36,7 +36,7 @@ A Helm chart for kubetorch
 | dataStore.ephemeralStorage.limit | string | `"10Gi"` |  |
 | dataStore.ephemeralStorage.request | string | `"5Gi"` |  |
 | dataStore.image | string | `"ghcr.io/run-house/kubetorch-data-store:v1"` |  |
-| dataStore.imagePullPolicy | string | `"IfNotPresent"` |  |
+| dataStore.imagePullPolicy | string | `"Always"` |  |
 | dataStore.maxConnections | int | `500` |  |
 | dataStore.maxConnectionsPerModule | int | `0` |  |
 | dataStore.maxVerbosity | int | `0` |  |
