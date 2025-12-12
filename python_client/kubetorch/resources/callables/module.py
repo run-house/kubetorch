@@ -644,16 +644,38 @@ class Module:
         try:
             startup_rsync_command = self._startup_rsync_command(use_editable, install_url, dryrun)
 
+            # Generate dockerfile and module spec for pool registration
+            pointer_env_vars = self._get_pointer_env_vars(self.remote_pointers)
+            metadata_env_vars = self._get_metadata_env_vars(init_args)
+            dockerfile = self._get_service_dockerfile({**pointer_env_vars, **metadata_env_vars})
+
+            # Build module spec for pool registration
+            dispatch = self.compute.dispatch_method
+
+            module_metadata = {
+                "type": self.MODULE_TYPE,
+                "pointers": {
+                    "file_path": self.remote_pointers[0],
+                    "module_name": self.remote_pointers[1],
+                    "cls_or_fn_name": self.remote_pointers[2],
+                    "init_args": init_args,
+                },
+                "dispatch": dispatch,
+                "procs": 1,
+            }
+
             # Launch the compute in the form of a service with the requested resources
             service_config = self.compute._launch(
                 service_name=self.compute.service_name,
                 install_url=install_url if not use_editable else None,
-                pointer_env_vars=self._get_pointer_env_vars(self.remote_pointers),
-                metadata_env_vars=self._get_metadata_env_vars(init_args),
+                pointer_env_vars=pointer_env_vars,
+                metadata_env_vars=metadata_env_vars,
                 startup_rsync_command=startup_rsync_command,
                 launch_id=launch_request_id,
                 deployment_timestamp=deployment_timestamp,
                 dryrun=dryrun,
+                dockerfile=dockerfile,
+                module=module_metadata,
             )
             self.service_config = service_config
 
@@ -702,17 +724,39 @@ class Module:
         try:
             startup_rsync_command = self._startup_rsync_command(use_editable, install_url, dryrun)
 
+            # Generate dockerfile and module spec for pool registration
+            pointer_env_vars = self._get_pointer_env_vars(self.remote_pointers)
+            metadata_env_vars = self._get_metadata_env_vars(init_args)
+            dockerfile = self._get_service_dockerfile({**pointer_env_vars, **metadata_env_vars})
+
+            # Build module spec for pool registration
+            dispatch = self.compute.dispatch_method
+
+            module_metadata = {
+                "type": self.MODULE_TYPE,
+                "pointers": {
+                    "file_path": self.remote_pointers[0],
+                    "module_name": self.remote_pointers[1],
+                    "cls_or_fn_name": self.remote_pointers[2],
+                    "init_args": init_args,
+                },
+                "dispatch": dispatch,
+                "procs": 1,
+            }
+
             # Launch the compute in the form of a service with the requested resources
             # Use the async version of _launch
             service_config = await self.compute._launch_async(
                 service_name=self.compute.service_name,
                 install_url=install_url if not use_editable else None,
-                pointer_env_vars=self._get_pointer_env_vars(self.remote_pointers),
-                metadata_env_vars=self._get_metadata_env_vars(init_args),
+                pointer_env_vars=pointer_env_vars,
+                metadata_env_vars=metadata_env_vars,
                 startup_rsync_command=startup_rsync_command,
                 launch_id=launch_request_id,
                 deployment_timestamp=deployment_timestamp,
                 dryrun=dryrun,
+                dockerfile=dockerfile,
+                module=module_metadata,
             )
             self.service_config = service_config
 

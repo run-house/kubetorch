@@ -88,13 +88,15 @@ rules:
     resources: ["ingresses"]
     verbs: ["get", "list", "watch"]
 
-  # Deployments & ReplicaSets
+  # Deployments, ReplicaSets, StatefulSets
   - apiGroups: ["apps"]
     resources:
       - deployments
       - deployments/status
       - replicasets
       - replicasets/status
+      - statefulsets
+      - statefulsets/status
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
   # Queues CRD
