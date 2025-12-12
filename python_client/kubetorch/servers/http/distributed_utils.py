@@ -1073,13 +1073,24 @@ class DistributedProcess(multiprocessing.Process):
         # Store any additional framework-specific settings
         self._settings = kwargs
 
+    def framework_cleanup(self):
+        """Override this method to provide framework-specific cleanup for reloads.
+
+        This is called during hot reloads to clean up framework state (e.g., Ray, PyTorch process groups)
+        without shutting down the executor, which is still needed for handling requests.
+        """
+        pass
+
     def proc_cleanup(self):
-        """Override this method to provide framework-specific cleanup."""
+        """Full process cleanup called on shutdown. Cleans up framework state, debugging sessions, and executor."""
+        # Call framework cleanup first
+        self.framework_cleanup()
+
         logger.info("Cleaning up debugging sessions...")
         clear_debugging_sessions()
         logger.info("Debugging sessions cleaned up.")
 
-        # Cleanup thread pool
+        # Cleanup thread pool (only on full shutdown, not during reload)
         if self._executor:
             self._executor.shutdown(wait=False)
             self._executor = None
@@ -1138,7 +1149,7 @@ class DistributedProcess(multiprocessing.Process):
                 callable_obj = load_callable(
                     deployed_as_of=deployed_as_of,
                     distributed_subprocess=True,
-                    reload_cleanup_fn=self.proc_cleanup,
+                    reload_cleanup_fn=self.framework_cleanup,
                 )
 
                 result = run_callable_internal_sync(
@@ -1225,17 +1236,15 @@ class DistributedProcess(multiprocessing.Process):
 class PyTorchProcess(DistributedProcess):
     """PyTorch-specific distributed process."""
 
-    def proc_cleanup(self):
+    def framework_cleanup(self):
+        """Clean up PyTorch process group for reloads."""
         import torch.distributed as dist
 
         try:
             dist.destroy_process_group()
             logger.info("Destroyed PyTorch process group.")
-        except Exception:
-            logger.info(f"Failed to destroy PyTorch process group, it may not have been initialized: {e}")
-            pass
-        # Call parent cleanup for debugging sessions
-        super().proc_cleanup()
+        except Exception as e:
+            logger.debug(f"Failed to destroy PyTorch process group, it may not have been initialized: {e}")
 
     @classmethod
     def get_distributed_env_vars(cls, worker_ips, node_rank, local_rank, num_local_procs, **settings):
@@ -1266,7 +1275,8 @@ class PyTorchProcess(DistributedProcess):
 class RayProcess(DistributedProcess):
     """Ray-specific distributed process."""
 
-    def proc_cleanup(self):
+    def framework_cleanup(self):
+        """Clean up Ray state for reloads."""
         try:
             import ray
 
@@ -1274,11 +1284,9 @@ class RayProcess(DistributedProcess):
                 ray.shutdown()
                 logger.info("Ray shutdown completed.")
         except ImportError:
-            logger.info("Ray not available for cleanup")
+            logger.debug("Ray not available for cleanup")
         except Exception as e:
-            logger.info(f"Failed to shutdown Ray: {e}")
-        # Call parent cleanup for debugging sessions
-        super().proc_cleanup()
+            logger.debug(f"Failed to shutdown Ray: {e}")
 
 
 class SPMDDistributedSupervisor(DistributedSupervisor):
@@ -1963,8 +1971,8 @@ class JaxProcess(DistributedProcess):
 class TensorflowProcess(DistributedProcess):
     """TensorFlow-specific distributed process."""
 
-    def proc_cleanup(self):
-        """TensorFlow-specific cleanup."""
+    def framework_cleanup(self):
+        """TensorFlow-specific cleanup for reloads."""
         try:
             import tensorflow as tf
 
@@ -1972,11 +1980,9 @@ class TensorflowProcess(DistributedProcess):
             tf.keras.backend.clear_session()
             logger.info("TensorFlow process cleanup completed.")
         except ImportError:
-            logger.info("TensorFlow not available for cleanup")
+            logger.debug("TensorFlow not available for cleanup")
         except Exception as e:
-            logger.info(f"Failed during TensorFlow cleanup: {e}")
-        # Call parent cleanup for debugging sessions
-        super().proc_cleanup()
+            logger.debug(f"Failed during TensorFlow cleanup: {e}")
 
     @classmethod
     def get_distributed_env_vars(cls, worker_ips, node_rank, local_rank, num_local_procs, **settings):
@@ -2274,7 +2280,7 @@ class MonarchProcess(DistributedProcess):
                 callable_obj = load_callable(
                     deployed_as_of=deployed_as_of,
                     distributed_subprocess=True,
-                    reload_cleanup_fn=self.proc_cleanup,
+                    reload_cleanup_fn=self.framework_cleanup,
                 )
 
                 # Run with our simplified Monarch logic
@@ -2304,8 +2310,8 @@ class MonarchProcess(DistributedProcess):
                 }
             )
 
-    def proc_cleanup(self):
-        """Monarch-specific cleanup."""
+    def framework_cleanup(self):
+        """Monarch-specific cleanup for reloads."""
         try:
             # Stop allocator service
             if self.allocator_proc:
@@ -2323,9 +2329,6 @@ class MonarchProcess(DistributedProcess):
 
         except Exception as e:
             logger.error(f"Error during Monarch cleanup: {e}")
-
-        # Call parent cleanup
-        super().proc_cleanup()
 
     @classmethod
     def get_distributed_env_vars(cls, worker_ips, node_rank, local_rank, num_local_procs, **settings):
