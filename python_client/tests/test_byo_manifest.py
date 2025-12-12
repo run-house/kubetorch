@@ -439,3 +439,81 @@ def test_from_manifest_getters_setters():
     dist_config = compute.distributed_config
     assert dist_config["distribution_type"] == "spmd"
     assert dist_config["quorum_workers"] == 2
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_byo_manifest_with_selector():
+    """Test BYO manifest flow: user provides manifest, KT applies it with custom selector.
+
+    Use Case #2: User constructs manifest, applies via KT.
+
+    The user provides their own K8s deployment manifest and a label selector.
+    When kt.fn().to(compute) is called:
+    1. KT applies the manifest via /apply (creates the deployment)
+    2. KT registers the pool via /pool with the user's selector
+    3. KT creates a K8s Service that routes to pods matching the selector
+
+    The selector tells KT which pods belong to this compute, allowing proper
+    tracking and routing even when the user's manifest uses custom labels.
+    """
+    import kubetorch as kt
+
+    pool_name = f"{kt.config.username}-byo-manifest"
+    namespace = kt.globals.config.namespace
+
+    # User's raw deployment manifest with custom labels
+    # Key requirement: pods have labels matching the selector we'll provide
+    byo_manifest = {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": pool_name,
+            "namespace": namespace,
+        },
+        "spec": {
+            "replicas": 1,
+            "selector": {"matchLabels": {"app": pool_name}},
+            "template": {
+                "metadata": {"labels": {"app": pool_name}},
+                "spec": {
+                    "containers": [
+                        {
+                            "name": "worker",
+                            "image": "ghcr.io/run-house/kubetorch:apply-and-pool-endpoints",  # image with kubetorch installed
+                            "imagePullPolicy": "Always",
+                            "resources": {"requests": {"cpu": "100m", "memory": "256Mi"}},
+                        }
+                    ],
+                    "affinity": {
+                        "nodeAffinity": {
+                            "requiredDuringSchedulingIgnoredDuringExecution": {
+                                "nodeSelectorTerms": [
+                                    {"matchExpressions": [{"key": "nvidia.com/gpu.count", "operator": "DoesNotExist"}]}
+                                ]
+                            }
+                        }
+                    },
+                },
+            },
+        },
+    }
+
+    # 1. Create Compute from manifest with selector
+    # The selector tells kubetorch which pods belong to this compute
+    compute = kt.Compute.from_manifest(
+        manifest=byo_manifest,
+        selector={"app": pool_name},
+    )
+
+    # 2. Deploy a function using the standard kt.fn().to() pattern
+    # This will:
+    # - Apply the manifest (creates/updates the deployment)
+    # - Register the pool with the user's selector
+    # - Wait for pods to be ready
+    # - Deploy the function
+    remote_fn = kt.fn(summer).to(compute)
+
+    # 3. Call the function and verify it works
+    result = remote_fn(5, 10)
+    assert result == 15, f"Expected 15, got {result}"

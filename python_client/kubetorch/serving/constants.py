@@ -48,9 +48,7 @@ KNATIVE_SERVICE_TEMPLATE_FILE = "knative_service_template.yaml"
 POD_TEMPLATE_FILE = "pod_template.yaml"
 KT_SETUP_TEMPLATE_FILE = "kt_setup_template.sh.j2"
 DEPLOYMENT_TEMPLATE_FILE = "deployment_template.yaml"
-DEPLOYMENT_SERVICE_TEMPLATE_FILE = "service_template.yaml"
 RAYCLUSTER_TEMPLATE_FILE = "raycluster_template.yaml"
-RAYCLUSTER_SERVICE_TEMPLATE_FILE = "raycluster_service_template.yaml"
 
 # Loki
 LOKI_GATEWAY_SERVICE_NAME = "loki-gateway"

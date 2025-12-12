@@ -15,12 +15,14 @@ logger = get_logger(__name__)
 class RayClusterServiceManager(BaseServiceManager):
     """Service manager for Ray clusters with distributed Ray workload support."""
 
+    RESOURCE_TYPE = "raycluster"
+
     def __init__(
         self,
         namespace: str,
-        template_label: str = "raycluster",
+        template_label: str = RESOURCE_TYPE,
         api_group: str = "ray.io",
-        api_plural: str = "rayclusters",
+        api_plural: str = f"{RESOURCE_TYPE}s",
         api_version: str = "v1",
         service_annotations: dict = None,
     ):
@@ -47,7 +49,7 @@ class RayClusterServiceManager(BaseServiceManager):
                 group="ray.io",
                 version="v1",
                 namespace=self.namespace,
-                plural="rayclusters",
+                plural=f"{self.RESOURCE_TYPE}s",
                 name=service_name,
             )
             return raycluster
@@ -66,7 +68,7 @@ class RayClusterServiceManager(BaseServiceManager):
                 group="ray.io",
                 version="v1",
                 namespace=self.namespace,
-                plural="rayclusters",
+                plural=f"{self.RESOURCE_TYPE}s",
                 name=service_name,
                 body=patch_body,
             )
@@ -135,7 +137,7 @@ class RayClusterServiceManager(BaseServiceManager):
         deployment_annotations = deployment_manifest["metadata"]["annotations"]
 
         labels = deployment_labels.copy()
-        labels[serving_constants.KT_TEMPLATE_LABEL] = "raycluster"
+        labels[serving_constants.KT_TEMPLATE_LABEL] = cls.RESOURCE_TYPE
 
         # Template labels (exclude template label - that's only for the top-level resource)
         template_labels = labels.copy()
@@ -248,6 +250,10 @@ class RayClusterServiceManager(BaseServiceManager):
 
     def _create_or_update_resource(self, manifest: dict, service_name: str, clean_module_name: str, **kwargs) -> dict:
         raycluster = manifest
+        dryrun = kwargs.get("dry_run")
+        dockerfile = kwargs.get("dockerfile")
+        module = kwargs.get("module")
+        create_headless_service = kwargs.get("create_headless_service", False)
 
         pod_spec = self.pod_spec(raycluster)
         server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
@@ -260,103 +266,66 @@ class RayClusterServiceManager(BaseServiceManager):
         service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
 
         try:
-            # Create regular service for client access (head node only)
-            service = load_template(
-                template_file=serving_constants.RAYCLUSTER_SERVICE_TEMPLATE_FILE,
-                template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
-                name=service_name,
+            # Step 1: Apply the RayCluster manifest via /apply
+            apply_response = self.controller_client.apply(
+                service_name=service_name,
                 namespace=self.namespace,
-                annotations=annotations,
-                labels=service_labels,
-                deployment_name=service_name,
-                module_name=clean_module_name,
-                distributed=False,  # Keep regular service for client access
-                server_port=server_port,
+                resource_type=self.RESOURCE_TYPE,
+                resource_manifest=raycluster,
             )
 
-            # For regular service, only select head nodes
-            service["spec"]["selector"]["ray.io/node-type"] = "head"
+            if apply_response.get("status") == "error":
+                raise Exception(f"Apply failed: {apply_response.get('message')}")
 
-            try:
-                self.controller_client.create_service(namespace=self.namespace, body=service, params=kwargs)
-                if not kwargs.get("dry_run"):
-                    logger.info(f"Created service {service_name} in namespace {self.namespace}")
-            except Exception as e:
-                if http_conflict(e):
-                    logger.info(f"Service {service_name} already exists")
-                else:
-                    raise
+            logger.info(f"Applied RayCluster {service_name} in namespace {self.namespace}")
 
-            # Create headless service for Ray pod discovery (all nodes)
-            headless_service = load_template(
-                template_file=serving_constants.RAYCLUSTER_SERVICE_TEMPLATE_FILE,
-                template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
-                name=f"{service_name}-headless",
-                namespace=self.namespace,
-                annotations=annotations,
-                labels=service_labels,
-                deployment_name=service_name,
-                module_name=clean_module_name,
-                distributed=True,  # Make headless for pod discovery
-                server_port=server_port,
-            )
+            # Step 2: Register pool via /pool (creates K8s Services)
+            if not dryrun:
+                # Pool selector tracks all Ray pods (head + workers)
+                pool_selector = {
+                    serving_constants.KT_SERVICE_LABEL: service_name,
+                    serving_constants.KT_MODULE_LABEL: clean_module_name,
+                }
+                specifier = {
+                    "type": "label_selector",
+                    "selector": pool_selector,
+                }
 
-            # For headless service, select all Ray nodes (not just head)
-            headless_service["spec"]["selector"].pop("ray.io/node-type", None)
+                # Service selector routes only to head node
+                service_selector = {
+                    **pool_selector,
+                    "ray.io/node-type": "head",
+                }
 
-            dryrun = kwargs.get("dry_run")
-            try:
-                self.controller_client.create_service(
+                pool_response = self.controller_client.register_pool(
+                    name=service_name,
                     namespace=self.namespace,
-                    body=headless_service,
+                    specifier=specifier,
+                    service={"type": "selector", "selector": service_selector},
+                    server_port=server_port,
+                    labels=service_labels,
+                    annotations=annotations,
+                    pool_metadata={
+                        "username": self.username,
+                    },
+                    dockerfile=dockerfile,
+                    module=module,
+                    resource_kind="RayCluster",
+                    resource_name=service_name,
+                    create_headless_service=create_headless_service,
                 )
-                if not dryrun:
-                    logger.info(f"Created headless service {service_name}-headless in namespace {self.namespace}")
-            except Exception as e:
-                if http_conflict(e):
-                    logger.info(f"Headless service {service_name}-headless already exists")
-                else:
-                    raise
+                if pool_response.get("status") != "success":
+                    raise Exception(f"RayCluster registration failed: {pool_response.get('message')}")
+                logger.info(f"Registered RayCluster {service_name} in namespace {self.namespace}")
 
-            # Create RayCluster
-            try:
-                created_raycluster = self.controller_client.create_namespaced_custom_object(
-                    group="ray.io",
-                    version="v1",
-                    namespace=self.namespace,
-                    plural="rayclusters",
-                    body=raycluster,
-                    params=kwargs,
-                )
-            except Exception as e:
-                if http_not_found(e):
-                    logger.error(
-                        "RayCluster Custom Resource Definition (CRD) not found, please install the KubeRay operator"
-                    )
-                raise
-
-            logger.info(f"Created RayCluster {service_name} in namespace {self.namespace}")
-            return created_raycluster
+            # Return the created resource from apply response
+            return apply_response.get("resource", raycluster)
 
         except Exception as e:
             if http_conflict(e):
                 logger.info(f"RayCluster {service_name} already exists, updating")
-                try:
-                    # For RayCluster, we can patch the spec
-                    patch_body = {"spec": raycluster["spec"]}
-                    updated_raycluster = self.controller_client.patch_namespaced_custom_object(
-                        group="ray.io",
-                        version="v1",
-                        namespace=self.namespace,
-                        plural="rayclusters",
-                        name=service_name,
-                        body=patch_body,
-                    )
-                    logger.info(f"Updated RayCluster {service_name}")
-                    return updated_raycluster
-                except Exception as patch_error:
-                    logger.error(f"Failed to patch RayCluster {service_name}: {patch_error}")
-                    raise patch_error
+                existing = self.get_resource(service_name)
+                return existing
 
             raise e
 
@@ -469,27 +438,20 @@ class RayClusterServiceManager(BaseServiceManager):
         raise TimeoutError(f"RayCluster {service_name} did not become ready within {launch_timeout} seconds")
 
     def _teardown_associated_resources(self, service_name: str, console=None) -> bool:
-        """Delete associated Kubernetes Services for RayCluster."""
+        """Teardown associated RayCluster and Kubernetes Services for RayCluster."""
         success = True
 
+        # Delete pool (this also deletes associated K8s services)
         try:
-            # Delete the RayCluster
-            self.controller_client.delete_namespaced_custom_object(
-                group="ray.io",
-                version="v1",
-                namespace=self.namespace,
-                plural="rayclusters",
-                name=service_name,
-            )
+            self.controller_client.delete_pool(namespace=self.namespace, name=service_name)
             if console:
                 console.print(f"✓ Deleted RayCluster [blue]{service_name}[/blue]")
             else:
                 logger.info(f"Deleted RayCluster {service_name}")
-
         except Exception as e:
             if http_not_found(e):
                 if console:
-                    console.print(f"[yellow]Note:[/yellow] RayCluster {service_name} not found or already deleted")
+                    console.print(f"[yellow]Note:[/yellow] Pool {service_name} not found or already deleted")
                 else:
                     logger.info(f"RayCluster {service_name} not found or already deleted")
             else:
@@ -498,30 +460,6 @@ class RayClusterServiceManager(BaseServiceManager):
                 else:
                     logger.error(f"Failed to delete RayCluster {service_name}: {e}")
                 success = False
-
-        # Delete both regular and headless services
-        for service_name_to_delete in [service_name, f"{service_name}-headless"]:
-            try:
-                self.controller_client.delete_service(name=service_name_to_delete, namespace=self.namespace)
-                if console:
-                    console.print(f"✓ Deleted service [blue]{service_name_to_delete}[/blue]")
-                else:
-                    logger.info(f"Deleted service {service_name_to_delete}")
-
-            except Exception as e:
-                if http_not_found(e):
-                    if console:
-                        console.print(
-                            f"[yellow]Note:[/yellow] Service {service_name_to_delete} not found or already deleted"
-                        )
-                    else:
-                        logger.info(f"Service {service_name_to_delete} not found or already deleted")
-                else:
-                    if console:
-                        console.print(f"[red]Error:[/red] Failed to delete service {service_name_to_delete}: {e}")
-                    else:
-                        logger.error(f"Failed to delete service {service_name_to_delete}: {e}")
-                    success = False
 
         return success
 

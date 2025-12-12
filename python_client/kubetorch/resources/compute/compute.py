@@ -63,6 +63,7 @@ class Compute:
         replicas: int = None,
         logging_config: LoggingConfig = None,
         queue_name: str = None,
+        selector: Dict[str, str] = None,
         _skip_template_init: bool = False,
     ):
         """Initialize the compute requirements for a Kubetorch service.
@@ -121,6 +122,9 @@ class Compute:
                 ``kueue.x-k8s.io/queue-name`` label to the pod template metadata. For training jobs
                 (PyTorchJob, TFJob, etc.), also sets ``spec.runPolicy.suspend: true`` so Kueue can
                 manage admission. Requires Kueue to be installed in the cluster.
+            selector (Dict[str, str], optional): Label selector to identify pods that belong to this compute.
+                Use this when you've already applied your own K8s manifest (e.g., via kubectl) and want to
+                deploy functions to those pods. Example: ``{"app": "workers", "team": "ml"}``.
 
         Note:
 
@@ -162,6 +166,7 @@ class Compute:
         self.default_config = {}
 
         self._endpoint = None
+        self._pod_selector = None
         self._service_manager = None
         self._autoscaling_config = None
         self._kubeconfig_path = kubeconfig_path
@@ -242,16 +247,22 @@ class Compute:
         return compute
 
     @classmethod
-    def from_manifest(cls, manifest: Union[Dict, str]):
+    def from_manifest(
+        cls,
+        manifest: Union[Dict, str],
+        selector: Optional[Dict[str, str]] = None,
+    ):
         """Create a Compute instance from a user-provided Kubernetes manifest.
 
-        The user manifest is used as the baseline, and kubetorch-specific default
-        configurations (env vars, labels, annotations, setup script) are merged in
-        if missing from the user manifest.
+        Use this when you have an existing K8s deployment and want to deploy
+        kubetorch functions to it. The manifest can be one you've already applied
+        via kubectl, or one you want kubetorch to apply for you.
 
         Args:
             manifest: Kubernetes manifest dict or path to YAML file
-
+            selector: Label selector to identify pods belonging to this compute.
+                     If not provided, uses the manifest's spec.selector.matchLabels.
+                     Example: {"app": "my-workers", "team": "ml"}
         Returns:
             Compute instance
 
@@ -261,11 +272,22 @@ class Compute:
 
             import kubetorch as kt
 
-            compute = kt.Compute.from_manifest(user_manifest)
+            # Basic usage - manifest already applied via kubectl
+            compute = kt.Compute.from_manifest(
+                manifest=my_manifest,
+                selector={"app": "my-workers"}
+            )
 
-            # Override properties after creation
-            compute.cpus = "2"
-            compute.image = kt.images.Debian().pip_install(["numpy"])
+            # Deploy a function to the existing pods
+            remote_fn = kt.fn(my_func).to(compute)
+            result = remote_fn(1, 2)
+
+            # With custom endpoint URL (user-created service)
+            compute = kt.Compute.from_manifest(
+                manifest=my_manifest,
+                selector={"app": "my-workers"},
+                endpoint=kt.Endpoint(url="my-svc.my-ns.svc.cluster.local:8080")
+            )
         """
         # Load manifest from file if provided as a string
         if isinstance(manifest, str):
@@ -281,6 +303,10 @@ class Compute:
         compute._manifest = copy.deepcopy(manifest)
         compute._manifest.setdefault("metadata", {})
         compute._manifest.setdefault("spec", {})
+
+        # Store selector - use provided or extract from manifest
+        if selector:
+            compute._pod_selector = selector
 
         # Extract kubeconfig_path from manifest annotations if present
         user_annotations = compute._manifest["metadata"].get("annotations", {})
@@ -1509,6 +1535,13 @@ class Compute:
             self._set_env_vars_in_container(container, env_vars_to_set)
 
     @property
+    def dispatch_method(self):
+        dispatch = "regular"
+        if self.distributed_config:
+            dispatch = self.distributed_config.get("dispatch")
+        return dispatch
+
+    @property
     def deployment_mode(self):
         if self.kind == "Service":
             return "knative"
@@ -1879,6 +1912,8 @@ class Compute:
         launch_id: str = None,
         deployment_timestamp: str = None,
         dryrun: bool = False,
+        dockerfile: str = None,
+        module: dict = None,
     ):
         """Creates a new service on the compute for the provided service. If the service already exists,
         it will update the service with the latest copy of the code."""
@@ -1895,12 +1930,17 @@ class Compute:
             container["args"] = [setup_script]
 
         # Create service using the appropriate service manager
+        # Create headless service only when distributed config is set (for SPMD/distributed pod discovery)
         (created_service, updated_manifest,) = self.service_manager.create_or_update_service(
             service_name=service_name,
             module_name=pointer_env_vars["KT_MODULE_NAME"],
             manifest=self._manifest,
             deployment_timestamp=deployment_timestamp,
             dryrun=dryrun,
+            dockerfile=dockerfile,
+            module=module,
+            pod_selector=getattr(self, "_pod_selector", None),
+            create_headless_service=bool(self.distributed_config),
         )
         self._manifest = updated_manifest
 
@@ -1928,6 +1968,8 @@ class Compute:
         launch_id: str = None,
         deployment_timestamp: str = None,
         dryrun: bool = False,
+        dockerfile: str = None,
+        module: dict = None,
     ):
         """Async version of _launch. Creates a new service on the compute for the provided service.
         If the service already exists, it will update the service with the latest copy of the code."""
@@ -1947,6 +1989,8 @@ class Compute:
             launch_id,
             deployment_timestamp,
             dryrun,
+            dockerfile,
+            module,
         )
 
         return service_template
