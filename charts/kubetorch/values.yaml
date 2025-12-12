@@ -29,6 +29,9 @@ nvidia-device-plugin:
       value: "gpu"
       effect: "NoSchedule"
 
+dataStore:
+  image: ghcr.io/run-house/kubetorch-data-store:v1
+  imagePullPolicy: IfNotPresent
 rsync:
   image: ghcr.io/run-house/kubetorch-rsync:v5
   maxConnections: 500  # Maximum concurrent rsync connections (increase for many worker pods)
@@ -89,6 +92,8 @@ dataSync:
   storage:
     size: 100Gi  # Size of persistent volume
     storageClassName: ""  # Leave empty to use default storage class
+  cleanupCron:
+    enabled: false # set to true to enable pod cleanup
   tolerations: []
   affinity: {}
 

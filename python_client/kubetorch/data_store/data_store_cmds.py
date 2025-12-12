@@ -1,5 +1,5 @@
 """
-Module-level convenience functions for data sync operations.
+Module-level convenience functions for data store operations.
 
 This module provides the top-level API functions (put, get, ls, rm) that users
 call directly, as well as the sync_workdir_from_store function used internally.
@@ -13,7 +13,7 @@ from typing import List, Optional, Union
 from kubetorch.logger import get_logger
 from kubetorch.resources.compute.utils import RsyncError
 
-from .data_sync_client import DataSyncClient, DataSyncError
+from .data_store_client import DataStoreClient, DataStoreError
 
 logger = get_logger(__name__)
 
@@ -53,7 +53,7 @@ def put(
     global _default_client
 
     if _default_client is None or namespace or kubeconfig_path:
-        _default_client = DataSyncClient(namespace=namespace, kubeconfig_path=kubeconfig_path)
+        _default_client = DataStoreClient(namespace=namespace, kubeconfig_path=kubeconfig_path)
 
     _default_client.put(
         key=key, src=src, contents=contents, filter_options=filter_options, force=force, verbose=verbose
@@ -96,7 +96,7 @@ def get(
     global _default_client
 
     if _default_client is None or namespace or kubeconfig_path:
-        _default_client = DataSyncClient(namespace=namespace, kubeconfig_path=kubeconfig_path)
+        _default_client = DataStoreClient(namespace=namespace, kubeconfig_path=kubeconfig_path)
 
     _default_client.get(
         key=key,
@@ -133,7 +133,7 @@ def ls(
     global _default_client
 
     if _default_client is None or namespace or kubeconfig_path:
-        _default_client = DataSyncClient(namespace=namespace, kubeconfig_path=kubeconfig_path)
+        _default_client = DataStoreClient(namespace=namespace, kubeconfig_path=kubeconfig_path)
 
     return _default_client.ls(key=key, verbose=verbose)
 
@@ -163,7 +163,7 @@ def rm(
     global _default_client
 
     if _default_client is None or namespace or kubeconfig_path:
-        _default_client = DataSyncClient(namespace=namespace, kubeconfig_path=kubeconfig_path)
+        _default_client = DataStoreClient(namespace=namespace, kubeconfig_path=kubeconfig_path)
 
     _default_client.rm(key=key, recursive=recursive, verbose=verbose)
 
@@ -207,7 +207,7 @@ def vput(
     global _default_client
 
     if _default_client is None or namespace or kubeconfig_path:
-        _default_client = DataSyncClient(namespace=namespace, kubeconfig_path=kubeconfig_path)
+        _default_client = DataStoreClient(namespace=namespace, kubeconfig_path=kubeconfig_path)
 
     _default_client.vput(key=key, src=src, start_rsyncd=start_rsyncd, verbose=verbose)
 
@@ -217,20 +217,20 @@ def sync_workdir_from_store(namespace: str, service_name: str):
     Sync files from the rsync pod into the current working directory inside the server pod.
 
     This function is called by http_server.py during pod startup to sync files that were
-    uploaded via the KV interface (kt.put or DataSyncClient.put) into the server pod's working directory.
+    uploaded via the KV interface (kt.put or DataStoreClient.put) into the server pod's working directory.
 
     Performs two download operations (potentially in parallel):
     - Regular files (excluding __absolute__*) into the working directory
     - Absolute path files (under __absolute__/...) into their absolute destinations
 
-    Uses the DataSyncClient KV interface, which allows future scalability with peer-to-peer
+    Uses the DataStoreClient KV interface, which allows future scalability with peer-to-peer
     transfer via a central metadata store. When called from inside a pod, empty key "" auto-prepends
     the service name to download from the service's storage area.
     """
     import os
 
-    # Use DataSyncClient KV interface for future scalability
-    dt_client = DataSyncClient(namespace=namespace)
+    # Use DataStoreClient KV interface for future scalability
+    dt_client = DataStoreClient(namespace=namespace)
 
     def sync_regular_files():
         """Sync regular files (excluding __absolute__*) to current directory."""
@@ -244,7 +244,7 @@ def sync_workdir_from_store(namespace: str, service_name: str):
                 contents=True,
                 filter_options="--exclude='__absolute__*'",
             )
-        except (RsyncError, DataSyncError) as e:
+        except (RsyncError, DataStoreError) as e:
             # If the service storage area doesn't exist yet, that's okay
             error_msg = str(e).lower()
             if "no such file or directory" in error_msg or "not found" in error_msg:
@@ -278,7 +278,7 @@ def sync_workdir_from_store(namespace: str, service_name: str):
                 raise
 
     # KT_SERVICE_NAME should already be set by http_server.py, but verify it matches
-    # This ensures DataSyncClient.get() with empty key will use the correct service name
+    # This ensures DataStoreClient.get() with empty key will use the correct service name
     if os.environ.get("KT_SERVICE_NAME") != service_name:
         logger.warning(
             f"KT_SERVICE_NAME environment variable ({os.environ.get('KT_SERVICE_NAME')}) "

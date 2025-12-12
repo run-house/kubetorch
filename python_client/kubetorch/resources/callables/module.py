@@ -767,12 +767,12 @@ class Module:
             all_dirs = rsync_dirs + [source_dir]
 
             logger.debug(f"Rsyncing directories: {all_dirs}")
-            # Use DataSyncClient KV interface - files go to rsync pod, then sync to service pods at startup
+            # Use DataStoreClient KV interface - files go to rsync pod, then sync to service pods at startup
             # Using contents=False preserves directory structure - each directory becomes a subdirectory
             # This matches the old behavior where python_client/ and .kt/ were both preserved as subdirectories
-            from kubetorch import data_sync
+            from kubetorch import data_store
 
-            dt_client = data_sync.DataSyncClient(namespace=self.compute.namespace)
+            dt_client = data_store.DataStoreClient(namespace=self.compute.namespace)
             # Key is service name, which puts files at /data/{namespace}/{service_name}/
             # With contents=False, directories are preserved: /data/{namespace}/{service_name}/python_client/, .kt/, etc.
             dt_client.put(key=self.compute.service_name, src=all_dirs, contents=False)
@@ -788,12 +788,12 @@ class Module:
             all_dirs = rsync_dirs + [source_dir]
 
             logger.debug(f"Rsyncing directories: {all_dirs}")
-            # Use DataSyncClient KV interface - files go to rsync pod, then sync to service pods at startup
+            # Use DataStoreClient KV interface - files go to rsync pod, then sync to service pods at startup
             # Using contents=False preserves directory structure - each directory becomes a subdirectory
             # This matches the old behavior where python_client/ and .kt/ were both preserved as subdirectories
-            from kubetorch import data_sync
+            from kubetorch import data_store
 
-            dt_client = data_sync.DataSyncClient(namespace=self.compute.namespace)
+            dt_client = data_store.DataStoreClient(namespace=self.compute.namespace)
             # Key is service name, which puts files at /data/{namespace}/{service_name}/
             # With contents=False, directories are preserved: /data/{namespace}/{service_name}/python_client/, .kt/, etc.
             # Note: put() is synchronous, but that's fine - we're already in an async context
