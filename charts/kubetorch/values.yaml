@@ -31,9 +31,8 @@ nvidia-device-plugin:
 
 dataStore:
   image: ghcr.io/run-house/kubetorch-data-store:v1
-  imagePullPolicy: IfNotPresent
-rsync:
-  image: ghcr.io/run-house/kubetorch-rsync:v5
+  imagePullPolicy: Always
+  # serviceAccount: kubetorch-service-account  # Optional: use specific service account for Workload Identity
   maxConnections: 500  # Maximum concurrent rsync connections (increase for many worker pods)
   timeout: 600  # Connection timeout in seconds
   maxVerbosity: 0  # Log verbosity (0-4, use 0 for production, higher for debugging)
@@ -47,6 +46,9 @@ rsync:
   ephemeralStorage: # adjust based on expected node disk size
     request: 5Gi
     limit: 10Gi
+  storage:
+    size: 100Gi  # Size of persistent volume
+    storageClassName: ""  # Leave empty to use default storage class
   cleanupCron:
     enabled: false # set to true to enable pod cleanup
   tolerations: []
@@ -70,30 +72,6 @@ controller:
       request: "1Gi"    # Minimum guaranteed memory
       limit: "2Gi"      # Maximum memory for 8 workers + connection pools + headroom
 
-  tolerations: []
-  affinity: {}
-
-dataSync:
-  image: ghcr.io/run-house/kubetorch-data-sync:v1  # New image with metadata server
-  # serviceAccount: kubetorch-service-account  # Optional: use specific service account for Workload Identity
-  maxConnections: 500  # Maximum concurrent rsync connections (increase for many worker pods)
-  timeout: 600  # Connection timeout in seconds
-  maxVerbosity: 0  # Log verbosity (0-4, use 0 for production, higher for debugging)
-  maxConnectionsPerModule: 0  # Per-module limit (0 = unlimited, inherits global limit)
-  cpu:
-    request: 2
-    limit: 4
-  memory:
-    request: 4Gi
-    limit: 8Gi
-  ephemeralStorage: # adjust based on expected node disk size
-    request: 5Gi
-    limit: 10Gi
-  storage:
-    size: 100Gi  # Size of persistent volume
-    storageClassName: ""  # Leave empty to use default storage class
-  cleanupCron:
-    enabled: false # set to true to enable pod cleanup
   tolerations: []
   affinity: {}
 

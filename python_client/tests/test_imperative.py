@@ -85,10 +85,7 @@ def test_default_images():
 @pytest.mark.level("minimal")
 def test_working_dir_for_custom_image():
     import kubetorch as kt
-    from kubernetes.config import load_kube_config
     from kubetorch.cli_utils import get_pods_for_service_cli
-
-    load_kube_config()
 
     # Note: working dir will be: /usr/src/app
     remote_fn = kt.fn(summer, name="summer-working-dir").to(
