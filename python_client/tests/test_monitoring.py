@@ -2,6 +2,8 @@ import asyncio
 import re
 import time
 
+import kubetorch
+
 import pytest
 from kubetorch.globals import service_url
 
@@ -13,10 +15,10 @@ from .utils import create_random_name_prefix, service_deployer_with_logs, summer
 @pytest.mark.level("minimal")
 @pytest.mark.asyncio
 async def test_monitoring_default_log_streaming(remote_monitoring_fn):
-    size = 3
+    size = 10
     out = ""
     with capture_stdout() as stdout:
-        results = remote_monitoring_fn(size)
+        results = remote_monitoring_fn(size, profiler=kubetorch.PyspyProfilerConfig())
         await asyncio.sleep(4)  # wait for the logs to finish streaming
         out = out + str(stdout)
 

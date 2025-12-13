@@ -1,6 +1,6 @@
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.module import Module
-from kubetorch.resources.callables.utils import extract_pointers, prepare_notebook_fn
+from kubetorch.resources.callables.utils import extract_pointers, prepare_notebook_fn, update_http_call_body
 
 logger = get_logger(__name__)
 
@@ -42,6 +42,8 @@ class Fn(Module):
         stream_metrics = kwargs.pop("stream_metrics", None)
         debug = kwargs.pop("debug", None)
         pdb = kwargs.pop("pdb", None)  # Keep for backward compatibility
+        profiler = kwargs.pop("profiler", None)
+        serialization = kwargs.pop("serialization", self.serialization)
 
         # debug takes precedence over pdb
         if debug is None and pdb is not None:
@@ -55,16 +57,18 @@ class Fn(Module):
         elif stream_logs:
             logger.info(f"Calling remote function {self.name}")
 
+        body = update_http_call_body(*args, **kwargs, profiler=profiler)
+
         response = client.call_method(
             self.endpoint(),
             stream_logs,
             self.logging_config,
             stream_metrics=stream_metrics,
             headers=self.request_headers,
-            body={"args": list(args), "kwargs": kwargs},
+            body=body,
             debug=debug,
             pdb=pdb,  # Keep for backward compatibility
-            serialization=kwargs.pop("serialization", self.serialization),
+            serialization=serialization,
         )
         return response
 
@@ -75,6 +79,8 @@ class Fn(Module):
         stream_metrics = kwargs.pop("stream_metrics", None)
         debug = kwargs.pop("debug", None)
         pdb = kwargs.pop("pdb", None)  # Keep for backward compatibility
+        profiler = kwargs.pop("profiler", None)
+        serialization = kwargs.pop("serialization", self.serialization)
 
         # debug takes precedence over pdb
         if debug is None and pdb is not None:
@@ -88,16 +94,18 @@ class Fn(Module):
         elif stream_logs:
             logger.info(f"Calling remote function {self.name}")
 
+        body = update_http_call_body(*args, **kwargs, profiler=profiler)
+
         response = await client.call_method_async(
             self.endpoint(),
             stream_logs,
             self.logging_config,
             stream_metrics=stream_metrics,
             headers=self.request_headers,
-            body={"args": list(args), "kwargs": kwargs},
+            body=body,
             debug=debug,
             pdb=pdb,  # Keep for backward compatibility
-            serialization=kwargs.pop("serialization", self.serialization),
+            serialization=serialization,
         )
         return response
 
