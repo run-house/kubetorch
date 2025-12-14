@@ -1031,6 +1031,9 @@ class HTTPClient:
                     profiler=profiler,
                     service_name=self.service_name,
                     request_id=request_id,
+                    distribution_type=self.compute.distributed_config.get("distribution_type")
+                    if self.compute.distributed_config
+                    else None,
                 )
                 return fn_output
 
