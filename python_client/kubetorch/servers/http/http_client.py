@@ -24,7 +24,7 @@ from kubetorch.servers.http.utils import (
 )
 
 from kubetorch.serving.constants import DEFAULT_DEBUG_PORT, DEFAULT_NGINX_PORT
-from kubetorch.utils import extract_host_port, get_container_name, ServerLogsFormatter
+from kubetorch.utils import ColoredFormatter, extract_host_port, get_container_name, ServerLogsFormatter
 
 logger = get_logger(__name__)
 
@@ -784,12 +784,15 @@ class HTTPClient:
                         gpumem = vals.get("GPUMiB", 0.0)
                         now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                        pod_info = f"| pod: {pod} " if metrics_config.scope == "pod" else ""
-                        line = f"[METRICS] {now_ts} {pod_info}| " f"CPU: {cpu_cores:.2f} | Memory: {mem:.3f}MiB"
+                        service_or_pod_info = (
+                            f"({pod} metrics) " if metrics_config.scope == "pod" else f"({self.service_name} metrics) "
+                        )
+                        line = f"{service_or_pod_info}{now_ts} | " f"CPU: {cpu_cores:.2f} | Memory: {mem:.3f}MiB"
                         if show_gpu:
                             line += f" | GPU SM: {gpu:.2f}% | GPU Memory: {gpumem:.3f}MiB"
-
-                        print(f"{line}", flush=True)
+                        metrics_color = ColoredFormatter.get_color("blue")
+                        reset_color = ColoredFormatter.get_color("reset")
+                        print(f"{metrics_color}{line}{reset_color}", flush=True)
 
                 elapsed = time.time() - start_time
                 sleep_interval = max(interval, int(min(60, 1 + elapsed / 30)))
