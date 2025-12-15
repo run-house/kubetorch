@@ -198,7 +198,7 @@ async def test_monitoring_with_custom_structlog():
     assert "Process completed successfully" in error_out
 
 
-def test_metrics_config_helper(service_name, metrics_config, a, b, expected_result):
+def test_metrics_config_helper(service_name, metrics_config, a, b, expected_result, pod_name=None):
     import kubetorch as kt
 
     reloaded_fn = kt.fn(summer, name=service_name, get_if_exists=True)
@@ -213,25 +213,24 @@ def test_metrics_config_helper(service_name, metrics_config, a, b, expected_resu
 
     # if stream_metrics == false, make sure we don't stream metrics
     if isinstance(metrics_config, bool) and not metrics_config:
-        assert "[METRICS]" not in out
+        assert "CPU: " not in out
+        assert "Memory: " not in out
     else:
         # test the following use-cases:
         # 1. No metrics_config is provided: use the default metrics_config, where metrics_config.scope = resource
         # 2. metrics_config is provided as bool, it's value == True
         # 3. metrics_config is provided as MetricsConfig() instance, with metrics_config.scope == "resource"
+
+        ansi_escape = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+        clean_out = ansi_escape.sub("", out)
+
         if metrics_config is None or isinstance(metrics_config, bool) or metrics_config.scope == "resource":
-            pattern = re.compile(
-                r"^\[METRICS\]\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*\|\s*CPU:\s*[\d.]+.\s*\|\s*Memory:\s*[\d.]+MiB\s*$",
-                re.MULTILINE,
-            )
+            pattern = re.compile(rf"\({re.escape(service_name)} metrics\).*CPU:\s*[\d.]+.*Memory:\s*[\d.]+MiB")
         # 4. metrics_config is provided as MetricsConfig() instance, with metrics_config.scope == "pod"
         else:
-            pattern = re.compile(
-                r"^\[METRICS\]\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*\|\s*pod:\s*\S+\s*\|\s*CPU:\s*[\d.]+.\s*\|\s*Memory:\s*[\d.]+MiB\s*$",
-                re.MULTILINE,
-            )
+            pattern = re.compile(rf"\({re.escape(pod_name)} metrics\).*CPU:\s*[\d.]+.*Memory:\s*[\d.]+MiB")
 
-        assert re.search(pattern, out)
+        assert re.search(pattern, clean_out)
 
 
 @pytest.mark.level("minimal")
@@ -239,6 +238,7 @@ def test_metrics_config(remote_fn):
     import kubetorch as kt
 
     service_name = remote_fn.service_name
+    pod_name = remote_fn.compute.pod_names()[0]
 
     test_args = [
         (1, 2, 3, kt.MetricsConfig(interval=35)),  # new interval + a=1, b=2, expected_result=3
@@ -253,13 +253,24 @@ def test_metrics_config(remote_fn):
 
     for a, b, expected_result, metrics_config in test_args:
         test_metrics_config_helper(
-            service_name=service_name, metrics_config=metrics_config, a=a, b=b, expected_result=expected_result
+            service_name=service_name,
+            metrics_config=metrics_config,
+            a=a,
+            b=b,
+            expected_result=expected_result,
+            pod_name=pod_name,
         )
 
     # passing stream_metrics as bool
-    test_metrics_config_helper(service_name=service_name, metrics_config=True, a=2, b=2, expected_result=4)
+    test_metrics_config_helper(
+        service_name=service_name, metrics_config=True, a=2, b=2, expected_result=4, pod_name=pod_name
+    )
 
-    test_metrics_config_helper(service_name=service_name, metrics_config=False, a=5, b=3, expected_result=8)
+    test_metrics_config_helper(
+        service_name=service_name, metrics_config=False, a=5, b=3, expected_result=8, pod_name=pod_name
+    )
 
     # passing stream_metrics as None
-    test_metrics_config_helper(service_name=service_name, metrics_config=None, a=3, b=2, expected_result=5)
+    test_metrics_config_helper(
+        service_name=service_name, metrics_config=None, a=3, b=2, expected_result=5, pod_name=pod_name
+    )
