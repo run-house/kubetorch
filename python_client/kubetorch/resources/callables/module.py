@@ -246,12 +246,22 @@ class Module:
         all_services = BaseServiceManager.discover_services_static(namespace=namespace)
 
         # Create name-to-service lookup for efficient searching
-        service_dict = {svc["name"]: svc for svc in all_services}
+        # Prefer non-selector services over selector pools (which don't have env vars)
+        service_dict = {}
+        for svc in all_services:
+            name = svc["name"]
+            if name not in service_dict or service_dict[name].get("template_type") == "selector":
+                # Add if new, or replace selector pool with actual K8s resource
+                service_dict[name] = svc
 
         # Try to find the first matching service across all service types
         for candidate in potential_names:
             service_info = service_dict.get(candidate)
             if service_info is None:
+                continue
+
+            # Skip selector-based pools - they don't have template for reload
+            if service_info.get("template_type") == "selector":
                 continue
 
             compute = kt.Compute.from_template(service_info)
