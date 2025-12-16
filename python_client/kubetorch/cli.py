@@ -72,6 +72,8 @@ except ImportError:
 from .logger import get_logger
 
 app = typer.Typer(add_completion=False)
+server_app = typer.Typer(help="Kubetorch server commands.")
+app.add_typer(server_app, name="server")
 console = Console()
 
 # Register internal CLI commands if available
@@ -790,11 +792,11 @@ def kt_list(
             logger.warning(f"Failed to list pods for all services in namespace {namespace}: {e}")
             return
 
-        # Build pod map - for self-register pools, use _pods from the resource (found via selector)
+        # Build pod map - for selector-based pools, use _pods from the resource (found via selector)
         pod_map = {}
         for svc in unified_services:
-            if svc["template_type"] == "self-register":
-                # For self-register pools, use actual pods from K8s (found via selector)
+            if svc["template_type"] == "selector":
+                # For selector-based pools, use actual pods from K8s (found via selector)
                 pod_map[svc["name"]] = svc["resource"].get("_pods", [])
             else:
                 pod_map[svc["name"]] = [
@@ -805,7 +807,7 @@ def kt_list(
 
         # Create table
         table_columns = [
-            ("RESOURCE", "cyan"),
+            ("SERVICE", "cyan"),
             ("TYPE", "magenta"),
             ("STATUS", "green"),
             ("# OF PODS", "yellow"),
@@ -873,8 +875,8 @@ def kt_list(
                         gpu = reqs.get("nvidia.com/gpu") or reqs.get("gpu")
                     except Exception as e:
                         logger.warning(f"Could not get revision for {name}: {e}")
-            elif kind == "self-register":
-                # Self-register pools: status based on actual pods found via selector
+            elif kind == "selector":
+                # Selector-based pools: status based on actual pods found via selector
                 num_pods = len(pods)
                 has_selector = bool(res.get("_selector"))
                 if num_pods > 0:
@@ -887,6 +889,19 @@ def kt_list(
                     else:
                         display_status = "[yellow]Pending[/yellow]"
 
+                    # Infer resource type from pod's ownerReferences
+                    try:
+                        owner_refs = pods[0].get("metadata", {}).get("ownerReferences", [])
+                        if owner_refs:
+                            owner_kind = owner_refs[0].get("kind", "").lower()
+                            # ReplicaSet is owned by Deployment, so show "deployment"
+                            if owner_kind == "replicaset":
+                                kind = "deployment"
+                            elif owner_kind:
+                                kind = owner_kind
+                    except Exception:
+                        pass  # Keep "selector" if we can't infer
+
                     # Extract resources from first pod's container
                     try:
                         container = pods[0].get("spec", {}).get("containers", [{}])[0]
@@ -895,7 +910,7 @@ def kt_list(
                         memory = reqs.get("memory")
                         gpu = reqs.get("nvidia.com/gpu") or reqs.get("gpu")
                     except Exception as e:
-                        logger.warning(f"Failed to get resources for self-register pool {name}: {e}")
+                        logger.warning(f"Failed to get resources for selector pool {name}: {e}")
                 elif has_selector:
                     display_status = "[yellow]No pods[/yellow]"
                 else:
@@ -2431,7 +2446,7 @@ def kt_pool(
     console.print(table)
 
 
-@app.command("start", hidden=True)
+@server_app.command("start")
 def kt_server_start(
     port: int = typer.Option(
         int(os.getenv("KT_SERVER_PORT", 32300)),
@@ -2456,13 +2471,11 @@ def kt_server_start(
         help="Controller URL",
     ),
 ):
-    """Start the kubetorch HTTP server.
+    """Start the Kubetorch server.
 
-    This command starts the kubetorch HTTP server, which handles remote function
-    calls and manages the pod lifecycle. To be used in a Dockerfile or a pod spec.
-
-    For self-registration with the controller, set KT_POOL_NAME and KT_CONTROLLER_URL
-    environment variables, or pass them as options.
+    Used in BYO-compute deployments where the server must be launched inside
+    a user-provided pod. Handles remote execution and optional self-registration
+    with the Kubetorch controller.
 
     Examples:
 
@@ -2479,7 +2492,14 @@ def kt_server_start(
     try:
         import uvicorn
     except ImportError:
-        raise ImportError("uvicorn not found. Make sure `kubetorch[server]` is installed.")
+        console.print(r'[red]uvicorn is not installed. Install with: `pip install "kubetorch\[server]"`[/red]')
+        raise typer.Exit(1)
+
+    if not is_running_in_kubernetes():
+        console.print(
+            "[yellow]`kubetorch server start` is typically used inside Kubernetes pods. "
+            "It's not recommended to run this command directly on your local machine.[/yellow]"
+        )
 
     if pool_name:
         os.environ["KT_POOL_NAME"] = pool_name

@@ -616,14 +616,11 @@ def fetch_resources_for_teardown(
                 if http_not_found(e):  # Ignore if Kubeflow Training Operator is not installed
                     logger.warning(f"Failed to list {job_kind}s: {e}")
 
-        # Search self-register pools from controller database
+        # Search pools from controller database
         try:
             pools_resp = controller_client.list_pools(namespace=namespace)
             pools = pools_resp.get("pools", []) if pools_resp else []
             for pool in pools:
-                specifier = pool.get("specifier") or {}
-                if specifier.get("type") != "self_register":
-                    continue
                 pool_name = pool.get("name")
                 pool_metadata = pool.get("pool_metadata") or {}
                 pool_username = pool_metadata.get("username")
@@ -633,7 +630,7 @@ def fetch_resources_for_teardown(
                 elif prefix and pool_name.startswith(prefix):
                     services.append(pool_name)
         except Exception as e:
-            logger.warning(f"Failed to list self-register pools: {e}")
+            logger.warning(f"Failed to list pools: {e}")
 
     else:
         if not target:
@@ -656,16 +653,14 @@ def fetch_resources_for_teardown(
         service_group = None
         pool_selector = None
 
-        # Check if it's a self-register pool FIRST
-        # Self-register pools take priority - we only delete the pool from DB, not the K8s resources
+        # Pools are handled via controller - we delete the pool from DB, controller handles K8s cleanup
         try:
             pool_info = controller_client.get_pool(namespace=namespace, name=service_name)
             if pool_info:
                 specifier = pool_info.get("specifier") or {}
-                if specifier.get("type") == "self_register":
-                    service_type = "self-register"
-                    service_found = True
-                    pool_selector = specifier.get("selector")
+                service_type = "selector"  # All pools use the selector deletion path
+                service_found = True
+                pool_selector = specifier.get("selector")
         except Exception as e:
             logger.debug(f"Pool lookup for {service_name} failed: {e}")
 
@@ -751,7 +746,7 @@ def fetch_resources_for_teardown(
         configmaps = load_configmaps(service_name, namespace)
         pods = []
         try:
-            # For self-register pools, use the pool selector to find pods
+            # For selector-based pools, use the pool selector to find pods
             if pool_selector:
                 label_selector = ",".join(f"{k}={v}" for k, v in pool_selector.items())
             else:

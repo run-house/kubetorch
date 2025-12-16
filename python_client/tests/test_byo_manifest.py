@@ -1,5 +1,6 @@
 import copy
 import os
+import time
 
 import kubetorch as kt
 
@@ -544,6 +545,113 @@ async def test_byo_manifest_with_selector():
     remote_fn = kt.fn(summer).to(compute)
 
     # 3. Call the function and verify it works
+    result = remote_fn(5, 10)
+    assert result == 15, f"Expected 15, got {result}"
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_selector_only():
+    """Test selector-only flow: user deploys pods separately, KT just registers pool.
+
+    Use Case #3: User applies manifest themselves, then uses selector to track pods.
+
+    The user has already deployed their own K8s resources (with kubetorch server running).
+    They just provide a selector to identify those pods:
+    1. User deploys pods via kubectl/k8s API (with kubetorch server image)
+    2. User creates kt.Compute(selector={"app": "workers"})
+    3. kt.fn().to(compute) just calls /pool (no /apply)
+    4. K8s Service is created, function calls work
+    """
+    import kubetorch as kt
+    from kubernetes import client, config
+
+    # Load k8s config
+    try:
+        config.load_incluster_config()
+    except config.ConfigException:
+        config.load_kube_config()
+
+    apps_v1 = client.AppsV1Api()
+    core_v1 = client.CoreV1Api()
+
+    pool_name = f"{kt.config.username}-selector-only"
+    namespace = kt.globals.config.namespace
+    selector_labels = {"app": pool_name}
+
+    # 1. User deploys their own pods via k8s API (NOT through kubetorch controller)
+    # These pods must have the kubetorch server running
+    user_deployment = client.V1Deployment(
+        api_version="apps/v1",
+        kind="Deployment",
+        metadata=client.V1ObjectMeta(name=pool_name, namespace=namespace, labels=selector_labels),
+        spec=client.V1DeploymentSpec(
+            replicas=1,
+            selector=client.V1LabelSelector(match_labels=selector_labels),
+            template=client.V1PodTemplateSpec(
+                metadata=client.V1ObjectMeta(labels=selector_labels),
+                spec=client.V1PodSpec(
+                    containers=[
+                        client.V1Container(
+                            name="worker",
+                            image="ghcr.io/run-house/kubetorch:compute-by-selector",  # image with kt installed
+                            image_pull_policy="Always",
+                            command=["kubetorch", "server", "start"],
+                            resources=client.V1ResourceRequirements(requests={"cpu": "100m", "memory": "256Mi"}),
+                        )
+                    ],
+                    affinity=client.V1Affinity(
+                        node_affinity=client.V1NodeAffinity(
+                            required_during_scheduling_ignored_during_execution=client.V1NodeSelector(
+                                node_selector_terms=[
+                                    client.V1NodeSelectorTerm(
+                                        match_expressions=[
+                                            client.V1NodeSelectorRequirement(
+                                                key="nvidia.com/gpu.count",
+                                                operator="DoesNotExist",
+                                            )
+                                        ]
+                                    )
+                                ]
+                            )
+                        )
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    # Apply the deployment via k8s API directly
+    try:
+        apps_v1.create_namespaced_deployment(namespace=namespace, body=user_deployment)
+    except client.ApiException as e:
+        if e.status == 409:  # Already exists
+            apps_v1.replace_namespaced_deployment(name=pool_name, namespace=namespace, body=user_deployment)
+        else:
+            raise
+
+    # Wait for pods to be ready
+    label_selector = ",".join(f"{k}={v}" for k, v in selector_labels.items())
+    for _ in range(60):
+        pods = core_v1.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
+        ready_pods = [
+            p
+            for p in pods.items
+            if p.status.phase == "Running" and all(c.ready for c in (p.status.container_statuses or []))
+        ]
+        if ready_pods:
+            break
+        time.sleep(2)
+    else:
+        raise TimeoutError(f"Pods with selector {selector_labels} not ready after 120s")
+
+    # 2. Create Compute with just a selector (no manifest, no cpus, etc.)
+    compute = kt.Compute(selector=selector_labels)
+
+    # 3. Deploy function - should only call /pool, not /apply
+    remote_fn = kt.fn(summer).to(compute)
+
+    # 4. Call the function and verify it works
     result = remote_fn(5, 10)
     assert result == 15, f"Expected 15, got {result}"
 
