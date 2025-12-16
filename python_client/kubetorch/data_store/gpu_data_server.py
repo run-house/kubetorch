@@ -21,6 +21,7 @@ Usage:
 """
 
 import base64
+import ctypes
 import json
 import os
 import signal
@@ -35,6 +36,39 @@ from typing import Any, Dict, List, Optional, Tuple
 from kubetorch.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _setup_cuda_ipc_permissions():
+    """
+    Enable ptrace permissions for CUDA IPC with expandable segments.
+
+    PyTorch 2.5+ enables expandable_segments by default for CUDA memory allocation.
+    When using CUDA IPC handles between processes, this requires the pidfd_getfd
+    syscall which needs ptrace permission. Without this, IPC reconstruction may
+    segfault with "address not mapped to object at address (nil)".
+
+    This function calls prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) to allow any
+    process to access this process's file descriptors via pidfd_getfd.
+
+    See: https://github.com/pytorch/pytorch/issues/165419
+    """
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        PR_SET_PTRACER = 0x59616D61  # 'Yama' in hex
+        PR_SET_PTRACER_ANY = ctypes.c_ulong(-1).value  # -1 as unsigned long
+
+        result = libc.prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0)
+        if result == 0:
+            logger.debug("Enabled ptrace permissions for CUDA IPC")
+        else:
+            errno = ctypes.get_errno()
+            # EINVAL (22) means the kernel doesn't have Yama LSM, which is fine
+            if errno != 22:
+                logger.debug(f"prctl(PR_SET_PTRACER) returned {result}, errno={errno}")
+    except Exception as e:
+        # Not critical - may work without this on some systems
+        logger.debug(f"Could not set ptrace permissions: {e}")
+
 
 # Constants
 DEFAULT_SOCKET_PATH = "/tmp/kt-gpu-data-server.sock"
@@ -122,9 +156,16 @@ def _get_ipc_handle(tensor) -> Tuple:
     """
     Get CUDA IPC handle from a tensor in a version-compatible way.
 
+    This also sets up ptrace permissions to allow the receiving process
+    to access the shared memory when using expandable segments (PyTorch 2.5+).
+
     Returns:
         Tuple with IPC handle info
     """
+    # Set up ptrace permissions so receiver can access our file descriptors
+    # This is required for CUDA IPC with expandable segments in PyTorch 2.5+
+    _setup_cuda_ipc_permissions()
+
     # Prefer untyped_storage() for PyTorch 2.0+, fall back to storage()
     if hasattr(tensor, "untyped_storage"):
         storage = tensor.untyped_storage()
@@ -169,9 +210,14 @@ def _reconstruct_tensor_from_ipc(
     }
     dtype = dtype_map.get(dtype_str, torch.float32)
 
+    # Ensure CUDA is initialized before IPC operations
+    torch.cuda._lazy_init()
+
+    # Set up ptrace permissions (required for CUDA IPC with expandable segments in PyTorch 2.5+)
+    _setup_cuda_ipc_permissions()
+
     # Reconstruct storage from IPC handle
     # ipc_handle is: (device, handle, size, offset, ref_counter_handle, ref_counter_offset, event_handle, event_sync_required)
-    # Try different storage classes for PyTorch version compatibility
     if hasattr(torch, "UntypedStorage"):
         # PyTorch 2.0+
         storage = torch.UntypedStorage._new_shared_cuda(
@@ -198,7 +244,6 @@ def _reconstruct_tensor_from_ipc(
         )
     else:
         # Older PyTorch - use typed storage approach
-        # For older versions, reconstruct via torch.multiprocessing shared tensor
         storage = torch.cuda.ByteStorage._new_shared_cuda(
             ipc_handle[0],  # device
             ipc_handle[1],  # handle
@@ -210,12 +255,7 @@ def _reconstruct_tensor_from_ipc(
             ipc_handle[7],  # event_sync_required
         )
 
-    # Create tensor from storage
-    numel = 1
-    for dim in shape:
-        numel *= dim
-
-    # Create typed storage and tensor
+    # Create typed tensor from storage
     tensor = torch.empty(shape, dtype=dtype, device=f"cuda:{device}")
     tensor.set_(storage, storage_offset=0, size=shape)
 
@@ -1467,6 +1507,9 @@ def start_server_if_needed(socket_path: str = DEFAULT_SOCKET_PATH) -> int:
 def main():
     """Main entry point for running the server."""
     import argparse
+
+    # Set up CUDA IPC permissions early, before any CUDA operations
+    _setup_cuda_ipc_permissions()
 
     parser = argparse.ArgumentParser(description="GPU Data Server for kubetorch")
     parser.add_argument(
