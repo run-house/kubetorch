@@ -325,6 +325,20 @@ class GPUDataServer:
         # Cache version info at startup
         self._versions = _get_nccl_cuda_versions()
 
+        # MDS client (lazy initialization)
+        self._mds_base_url: Optional[str] = None
+
+        # Pod info from environment
+        self._pod_ip = os.getenv("POD_IP")
+        self._pod_name = os.getenv("POD_NAME")
+        self._namespace = os.getenv("KT_NAMESPACE")
+
+        # Internal NCCL execution coordination per broadcast group
+        # Ensures NCCL runs exactly once per pod, even with multiple participants
+        # group_id -> {"executing": bool, "result": dict, "event": threading.Event}
+        self._broadcast_execution: Dict[str, Dict] = {}
+        self._broadcast_execution_lock = threading.Lock()
+
     def _record_nccl_success(self):
         """Record a successful NCCL operation, resetting failure counter."""
         with self._nccl_failure_lock:
@@ -548,6 +562,12 @@ class GPUDataServer:
                 response = self._handle_list_keys(message)
             elif command == "execute_broadcast_group":
                 response = self._handle_execute_broadcast_group(message)
+            elif command == "put_tensor":
+                # High-level: register + MDS publish
+                response = self._handle_put_tensor(message)
+            elif command == "get_tensor":
+                # High-level: MDS lookup + NCCL receive
+                response = self._handle_get_tensor(message)
             elif command == "ping":
                 response = {"status": "ok", "pid": os.getpid(), "tcp_port": self.tcp_port}
             else:
@@ -1320,6 +1340,479 @@ class GPUDataServer:
         except OSError:
             return False
 
+    # ==================== MDS Client Methods ====================
+
+    def _get_mds_base_url(self) -> str:
+        """Get or initialize the MDS base URL."""
+        if self._mds_base_url is None:
+            if not self._namespace:
+                raise RuntimeError("KT_NAMESPACE environment variable not set")
+            from kubetorch.serving.constants import DATA_STORE_METADATA_PORT
+
+            service_name = "kubetorch-data-store"
+            self._mds_base_url = f"http://{service_name}.{self._namespace}.svc.cluster.local:{DATA_STORE_METADATA_PORT}"
+        return self._mds_base_url
+
+    def _mds_publish_gpu(
+        self,
+        key: str,
+        is_state_dict: bool = False,
+        tensor_keys: Optional[List[str]] = None,
+    ) -> bool:
+        """Publish GPU data key to metadata server."""
+        from urllib.parse import quote
+
+        import requests
+
+        if not self._pod_ip or not self._pod_name or not self._namespace:
+            logger.error("Missing POD_IP, POD_NAME, or KT_NAMESPACE environment variables")
+            return False
+
+        encoded_key = quote(key, safe="")
+        url = f"{self._get_mds_base_url()}/api/v1/keys/{encoded_key}/gpu/publish"
+
+        try:
+            payload = {
+                "ip": self._pod_ip,
+                "pod_name": self._pod_name,
+                "namespace": self._namespace,
+                "nccl_port": self.nccl_port_start,
+                "gpu_server_port": self.tcp_port,
+                "gpu_server_socket": self.socket_path,
+                "is_state_dict": is_state_dict,
+            }
+            if tensor_keys:
+                payload["tensor_keys"] = tensor_keys
+
+            response = requests.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+            return True
+        except requests.RequestException as e:
+            logger.error(f"Failed to publish GPU key '{key}' to MDS: {e}")
+            return False
+
+    def _mds_get_gpu_source(self, key: str) -> Optional[dict]:
+        """Get GPU data source info from metadata server."""
+        from urllib.parse import quote
+
+        import requests
+
+        encoded_key = quote(key, safe="")
+        url = f"{self._get_mds_base_url()}/api/v1/keys/{encoded_key}/gpu/source"
+
+        try:
+            response = requests.get(url, timeout=10)
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            data = response.json()
+            if data.get("found") is False:
+                return None
+            return data
+        except requests.RequestException as e:
+            logger.error(f"Failed to get GPU source for key '{key}': {e}")
+            return None
+
+    # ==================== Broadcast WebSocket Support ====================
+
+    def _join_broadcast_via_websocket(
+        self,
+        key: str,
+        role: str,  # "putter" or "getter"
+        tensor_shape: List[int],
+        tensor_dtype: str,
+        broadcast_group_id: str,
+        broadcast_timeout: float,
+        broadcast_world_size: Optional[int],
+        dest_ipc_handle: Optional[dict] = None,  # For getters
+    ) -> dict:
+        """
+        Join a broadcast group via MDS WebSocket.
+
+        Each client request creates its own WebSocket connection to MDS. The MDS
+        aggregates participants from the same pod and assigns one coordinator per pod.
+        The coordinator gets the full manifest and executes NCCL. All participants
+        wait for MDS "completed" signal before returning.
+        """
+        import asyncio
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(
+                        asyncio.run,
+                        self._join_broadcast_via_websocket_async(
+                            key,
+                            role,
+                            tensor_shape,
+                            tensor_dtype,
+                            broadcast_group_id,
+                            broadcast_timeout,
+                            broadcast_world_size,
+                            dest_ipc_handle,
+                        ),
+                    )
+                    return future.result()
+            else:
+                return loop.run_until_complete(
+                    self._join_broadcast_via_websocket_async(
+                        key,
+                        role,
+                        tensor_shape,
+                        tensor_dtype,
+                        broadcast_group_id,
+                        broadcast_timeout,
+                        broadcast_world_size,
+                        dest_ipc_handle,
+                    )
+                )
+        except RuntimeError:
+            return asyncio.run(
+                self._join_broadcast_via_websocket_async(
+                    key,
+                    role,
+                    tensor_shape,
+                    tensor_dtype,
+                    broadcast_group_id,
+                    broadcast_timeout,
+                    broadcast_world_size,
+                    dest_ipc_handle,
+                )
+            )
+
+    async def _join_broadcast_via_websocket_async(
+        self,
+        key: str,
+        role: str,
+        tensor_shape: List[int],
+        tensor_dtype: str,
+        broadcast_group_id: str,
+        broadcast_timeout: float,
+        broadcast_world_size: Optional[int],
+        dest_ipc_handle: Optional[dict] = None,
+    ) -> dict:
+        """Async implementation of broadcast group join."""
+        import asyncio
+
+        try:
+            from websockets.asyncio.client import connect as ws_connect
+        except ImportError:
+            from websockets import connect as ws_connect
+
+        from urllib.parse import quote
+
+        pod_ip = self._pod_ip or os.getenv("POD_IP")
+        pod_name = self._pod_name or os.getenv("POD_NAME")
+
+        if not pod_ip:
+            return {"status": "error", "error": "POD_IP not set"}
+
+        # Build WebSocket URL
+        encoded_group_id = quote(broadcast_group_id, safe="")
+        base_url = self._get_mds_base_url()
+        if base_url.startswith("https://"):
+            ws_url = f"wss://{base_url[8:]}/ws/broadcast/{encoded_group_id}"
+        elif base_url.startswith("http://"):
+            ws_url = f"ws://{base_url[7:]}/ws/broadcast/{encoded_group_id}"
+        else:
+            ws_url = f"ws://{base_url}/ws/broadcast/{encoded_group_id}"
+
+        logger.info(f"Joining broadcast group '{broadcast_group_id}' as {role} for key '{key}'")
+
+        try:
+            async with ws_connect(ws_url) as websocket:
+                # Build join message
+                join_msg = {
+                    "action": "join",
+                    "key": key,
+                    "role": role,
+                    "pod_ip": pod_ip,
+                    "pod_name": pod_name,
+                    "timeout": broadcast_timeout,
+                    "world_size": broadcast_world_size,
+                    "tensor_shape": tensor_shape,
+                    "tensor_dtype": tensor_dtype,
+                }
+
+                # For getters, include destination IPC handle
+                if role == "getter" and dest_ipc_handle is not None:
+                    join_msg["dest_ipc_handle"] = dest_ipc_handle
+
+                await websocket.send(json.dumps(join_msg))
+
+                # Wait for queued confirmation
+                response = json.loads(await asyncio.wait_for(websocket.recv(), timeout=30.0))
+                if response.get("event") == "error":
+                    return {"status": "error", "error": f"Failed to join: {response.get('message')}"}
+                if response.get("event") != "queued":
+                    return {"status": "error", "error": f"Unexpected response: {response}"}
+
+                logger.info(f"Queued in broadcast group (position: {response.get('position')})")
+
+                # Wait for ready notification
+                ready_data = None
+                start_time = asyncio.get_event_loop().time()
+
+                while ready_data is None:
+                    try:
+                        msg = json.loads(await asyncio.wait_for(websocket.recv(), timeout=35.0))
+
+                        if msg.get("event") == "ready":
+                            ready_data = msg
+                        elif msg.get("event") == "heartbeat":
+                            await websocket.send(json.dumps({"action": "heartbeat"}))
+                        elif msg.get("event") == "error":
+                            return {"status": "error", "error": f"Broadcast error: {msg.get('message')}"}
+
+                    except asyncio.TimeoutError:
+                        elapsed = asyncio.get_event_loop().time() - start_time
+                        if elapsed > broadcast_timeout:
+                            return {
+                                "status": "error",
+                                "error": f"Timeout waiting for broadcast group ({broadcast_timeout}s)",
+                            }
+                        await websocket.send(json.dumps({"action": "heartbeat"}))
+
+                # Extract transfer info - all participants get the full manifest
+                rank = ready_data["rank"]
+                world_size = ready_data["world_size"]
+                master_addr = ready_data["master_addr"]
+                master_port = ready_data["master_port"]
+                sends = ready_data.get("sends", [])
+                receives = ready_data.get("receives", [])
+                local_transfers = ready_data.get("local_transfers", [])
+
+                logger.info(
+                    f"Broadcast group ready: rank={rank}, world_size={world_size}, "
+                    f"master={master_addr}:{master_port}, "
+                    f"sends={len(sends)}, receives={len(receives)}, local={len(local_transfers)}"
+                )
+
+                # Internal coordination: ensure NCCL runs exactly once per pod
+                # First participant to reach here executes, others wait for result
+                should_execute = False
+                execution_state = None
+
+                with self._broadcast_execution_lock:
+                    if broadcast_group_id not in self._broadcast_execution:
+                        # First participant - we execute NCCL
+                        self._broadcast_execution[broadcast_group_id] = {
+                            "executing": True,
+                            "result": None,
+                            "event": threading.Event(),
+                        }
+                        should_execute = True
+                    execution_state = self._broadcast_execution[broadcast_group_id]
+
+                if should_execute:
+                    # Execute NCCL transfer
+                    transfer_result = self._handle_execute_broadcast_group(
+                        {
+                            "group_id": broadcast_group_id,
+                            "rank": rank,
+                            "world_size": world_size,
+                            "master_addr": master_addr,
+                            "master_port": master_port,
+                            "sends": sends,
+                            "receives": receives,
+                            "local_transfers": local_transfers,
+                        }
+                    )
+
+                    # Store result and signal other waiters
+                    with self._broadcast_execution_lock:
+                        execution_state["result"] = transfer_result
+                        execution_state["executing"] = False
+                        execution_state["event"].set()
+                else:
+                    # Wait for the executing participant to finish
+                    logger.info(f"Waiting for NCCL execution to complete for group '{broadcast_group_id}'")
+                    execution_state["event"].wait(timeout=broadcast_timeout)
+
+                # Get the result (same for all participants)
+                transfer_result = execution_state["result"]
+                transfer_success = transfer_result and transfer_result.get("status") == "ok"
+                transfer_error = transfer_result.get("error") if transfer_result else "Execution failed"
+
+                # Send completion to MDS
+                await websocket.send(json.dumps({"action": "complete", "success": transfer_success}))
+
+                # Wait for "completed" acknowledgment from MDS
+                try:
+                    while True:
+                        completed_msg = json.loads(await asyncio.wait_for(websocket.recv(), timeout=broadcast_timeout))
+                        if completed_msg.get("event") == "completed":
+                            break
+                        elif completed_msg.get("event") == "error":
+                            return {"status": "error", "error": f"Broadcast failed: {completed_msg.get('message')}"}
+                        elif completed_msg.get("event") == "heartbeat":
+                            await websocket.send(json.dumps({"action": "heartbeat"}))
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout waiting for broadcast completion ack")
+
+                # Clean up execution state
+                with self._broadcast_execution_lock:
+                    if broadcast_group_id in self._broadcast_execution:
+                        del self._broadcast_execution[broadcast_group_id]
+
+                if not transfer_success:
+                    return {"status": "error", "error": f"Transfer failed: {transfer_error}"}
+
+                logger.info(f"Broadcast group '{broadcast_group_id}' transfer complete")
+
+                return {
+                    "status": "ok",
+                    "rank": rank,
+                    "world_size": world_size,
+                    "group_id": broadcast_group_id,
+                }
+
+        except Exception as e:
+            logger.error(f"Broadcast WebSocket error: {e}")
+            return {"status": "error", "error": str(e)}
+
+    # ==================== High-Level Command Handlers ====================
+
+    def _handle_put_tensor(self, message: dict) -> dict:
+        """
+        Handle put_tensor command - register tensor locally + publish to MDS.
+
+        If broadcast config is provided, joins the broadcast group via WebSocket.
+        GPU Data Server is always the coordinator for its pod.
+        """
+        key = message["key"]
+        ipc_handle = _deserialize_ipc_handle(message["ipc_handle"])
+        shape = tuple(message["shape"])
+        dtype = message["dtype"]
+        device = message["device"]
+        pid = message.get("pid", 0)
+        is_state_dict = message.get("is_state_dict", False)
+        tensor_keys = message.get("tensor_keys")
+        broadcast = message.get("broadcast")  # Optional broadcast config
+
+        # Step 1: Register tensor locally
+        with self._lock:
+            self._registered[key] = RegisteredTensor(
+                key=key,
+                ipc_handle=ipc_handle,
+                shape=shape,
+                dtype=dtype,
+                device=device,
+                pid=pid,
+            )
+
+            # Track PID for cleanup
+            if pid not in self._pid_keys:
+                self._pid_keys[pid] = []
+            if key not in self._pid_keys[pid]:
+                self._pid_keys[pid].append(key)
+
+        # Step 2: If broadcast, join via WebSocket; otherwise publish to MDS
+        if broadcast:
+            return self._join_broadcast_via_websocket(
+                key=key,
+                role="putter",
+                tensor_shape=list(shape),
+                tensor_dtype=dtype,
+                broadcast_group_id=broadcast["group_id"],
+                broadcast_timeout=broadcast.get("timeout", 600.0),
+                broadcast_world_size=broadcast.get("world_size"),
+            )
+        else:
+            # Point-to-point: just publish to MDS
+            if not self._mds_publish_gpu(key, is_state_dict=is_state_dict, tensor_keys=tensor_keys):
+                return {"status": "error", "error": "Failed to publish to MDS"}
+
+            logger.info(f"put_tensor: registered and published '{key}'")
+            return {"status": "ok", "key": key}
+
+    def _handle_get_tensor(self, message: dict) -> dict:
+        """
+        Handle get_tensor command - lookup from MDS + receive via NCCL.
+
+        If broadcast config is provided, joins the broadcast group via WebSocket.
+        GPU Data Server is always the coordinator for its pod.
+        """
+        key = message["key"]
+        dest_ipc_handle_serialized = message["dest_ipc_handle"]
+        dest_ipc_handle = _deserialize_ipc_handle(dest_ipc_handle_serialized)
+        shape = tuple(message["shape"])
+        dtype = message["dtype"]
+        device = message["device"]
+        nccl_timeout = message.get("nccl_timeout")
+        broadcast = message.get("broadcast")  # Optional broadcast config
+
+        # If broadcast, join via WebSocket
+        if broadcast:
+            return self._join_broadcast_via_websocket(
+                key=key,
+                role="getter",
+                tensor_shape=list(shape),
+                tensor_dtype=dtype,
+                broadcast_group_id=broadcast["group_id"],
+                broadcast_timeout=broadcast.get("timeout", 600.0),
+                broadcast_world_size=broadcast.get("world_size"),
+                dest_ipc_handle=dest_ipc_handle_serialized,  # Pass serialized for WebSocket
+            )
+
+        # Point-to-point: Lookup source from MDS
+        source_info = self._mds_get_gpu_source(key)
+        if source_info is None:
+            return {"status": "error", "error": f"No GPU source found for key '{key}'"}
+
+        source_ip = source_info["ip"]
+        source_gpu_port = source_info.get("gpu_server_port", DEFAULT_TCP_PORT)
+
+        logger.info(f"get_tensor: found source for '{key}' at {source_ip}:{source_gpu_port}")
+
+        # Reconstruct destination tensor from IPC handle
+        dest_tensor = _reconstruct_tensor_from_ipc(dest_ipc_handle, shape, dtype, device)
+
+        # Request broadcast from source and receive via NCCL
+        try:
+            broadcast_id = f"get-{key}-{time.time()}"
+            request_msg = {
+                "command": "request_broadcast",
+                "key": key,
+                "broadcast_id": broadcast_id,
+                "getter_ip": self._pod_ip or "127.0.0.1",
+                "getter_port": self.tcp_port,
+                "shape": list(shape),
+                "dtype": dtype,
+                "versions": self._versions,
+            }
+
+            response = self._send_tcp_message(source_ip, source_gpu_port, request_msg, timeout=30.0)
+
+            if response.get("status") != "ok":
+                return {"status": "error", "error": f"Source rejected request: {response.get('error')}"}
+
+            master_addr = response["master_addr"]
+            master_port = response["master_port"]
+            world_size = response["world_size"]
+            rank = response["rank"]
+
+            timeout_seconds = nccl_timeout if nccl_timeout is not None else KT_NCCL_TIMEOUT_SECONDS
+            self._join_nccl_broadcast(
+                dest_tensor=dest_tensor,
+                broadcast_id=broadcast_id,
+                master_addr=master_addr,
+                master_port=master_port,
+                rank=rank,
+                world_size=world_size,
+                nccl_timeout=timeout_seconds,
+            )
+
+            logger.info(f"get_tensor: received '{key}' successfully")
+            return {"status": "ok", "key": key}
+
+        except Exception as e:
+            logger.error(f"get_tensor failed for '{key}': {e}")
+            return {"status": "error", "error": str(e)}
+
 
 class GPUDataServerClient:
     """Client for communicating with the GPU Data Server."""
@@ -1557,6 +2050,118 @@ class GPUDataServerClient:
 
         # Longer timeout for broadcast operations
         return self._send_message(message, timeout=300.0)
+
+    # ==================== High-Level API Methods ====================
+
+    def put_tensor(
+        self,
+        key: str,
+        tensor,
+        is_state_dict: bool = False,
+        tensor_keys: Optional[List[str]] = None,
+        pid: Optional[int] = None,
+        broadcast: Optional[dict] = None,
+    ) -> dict:
+        """
+        High-level put: Register tensor + publish to MDS (or join broadcast).
+
+        GPU Data Server handles everything - just pass the tensor.
+
+        Args:
+            key: Storage key
+            tensor: CUDA tensor to publish
+            is_state_dict: Whether this is part of a state dict
+            tensor_keys: List of tensor keys if state dict
+            pid: PID of the registering process (defaults to current)
+            broadcast: Optional broadcast config dict with:
+                - group_id: Broadcast group identifier (required)
+                - timeout: Timeout for quorum formation (default 600s)
+                - world_size: Expected number of participants (optional)
+
+        Returns:
+            Server response dict
+        """
+        _get_torch()  # Ensure torch is available
+
+        if not tensor.is_cuda:
+            raise ValueError("Tensor must be on a CUDA device")
+
+        # Get IPC handle
+        ipc_handle = _get_ipc_handle(tensor)
+        serializable_handle = _serialize_ipc_handle(ipc_handle)
+
+        message = {
+            "command": "put_tensor",
+            "key": key,
+            "ipc_handle": serializable_handle,
+            "shape": list(tensor.shape),
+            "dtype": str(tensor.dtype),
+            "device": tensor.device.index,
+            "pid": pid or os.getpid(),
+            "is_state_dict": is_state_dict,
+        }
+        if tensor_keys:
+            message["tensor_keys"] = tensor_keys
+        if broadcast:
+            message["broadcast"] = broadcast
+
+        # Longer timeout for broadcast operations
+        timeout = 300.0 if broadcast else 30.0
+        return self._send_message(message, timeout=timeout)
+
+    def get_tensor(
+        self,
+        key: str,
+        dest_tensor,
+        nccl_timeout: Optional[int] = None,
+        broadcast: Optional[dict] = None,
+    ) -> dict:
+        """
+        High-level get: MDS lookup + NCCL receive (or join broadcast).
+
+        GPU Data Server handles everything - just pass the destination tensor.
+
+        Args:
+            key: Storage key
+            dest_tensor: Pre-allocated CUDA tensor to receive into
+            nccl_timeout: Override NCCL timeout in seconds (for testing)
+            broadcast: Optional broadcast config dict with:
+                - group_id: Broadcast group identifier (required)
+                - timeout: Timeout for quorum formation (default 600s)
+                - world_size: Expected number of participants (optional)
+
+        Returns:
+            Server response dict
+        """
+        _get_torch()  # Ensure torch is available
+
+        if not dest_tensor.is_cuda:
+            raise ValueError("Destination tensor must be on a CUDA device")
+
+        # Get IPC handle for destination tensor
+        ipc_handle = _get_ipc_handle(dest_tensor)
+        serializable_handle = _serialize_ipc_handle(ipc_handle)
+
+        message = {
+            "command": "get_tensor",
+            "key": key,
+            "dest_ipc_handle": serializable_handle,
+            "shape": list(dest_tensor.shape),
+            "dtype": str(dest_tensor.dtype),
+            "device": dest_tensor.device.index,
+        }
+
+        if nccl_timeout is not None:
+            message["nccl_timeout"] = nccl_timeout
+        if broadcast:
+            message["broadcast"] = broadcast
+
+        # Longer timeout for broadcast operations
+        if broadcast:
+            client_timeout = broadcast.get("timeout", 600.0) + 60.0
+        else:
+            client_timeout = max(120.0, (nccl_timeout or 60) + 30)
+        return self._send_message(message, timeout=client_timeout)
 
 
 def is_server_running(socket_path: str = DEFAULT_SOCKET_PATH) -> bool:
