@@ -292,6 +292,7 @@ class TrainJobServiceManager(BaseServiceManager):
         dockerfile = kwargs.get("dockerfile")
         module = kwargs.get("module")
         create_headless_service = kwargs.get("create_headless_service", False)
+        endpoint = kwargs.get("endpoint")
 
         pod_spec = self.pod_spec(manifest)
         server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
@@ -331,16 +332,19 @@ class TrainJobServiceManager(BaseServiceManager):
                     "selector": pool_selector,
                 }
 
-                # Service selector routes only to primary replica (Master/Chief/Scheduler)
-                is_distributed = self.is_distributed(manifest)
-                if is_distributed:
-                    service_selector = {
-                        **pool_selector,
-                        "training.kubeflow.org/replica-type": self.primary_replica.lower(),
-                    }
-                    service_config = {"type": "selector", "selector": service_selector}
+                if endpoint:
+                    service_config = endpoint.to_service_config()
                 else:
-                    service_config = None  # Auto-create service using pool selector
+                    is_distributed = self.is_distributed(manifest)
+                    if is_distributed:
+                        # Service selector routes only to primary replica (Master/Chief/Scheduler)
+                        service_selector = {
+                            **pool_selector,
+                            "training.kubeflow.org/replica-type": self.primary_replica.lower(),
+                        }
+                        service_config = {"type": "selector", "selector": service_selector}
+                    else:
+                        service_config = None  # Auto-create service using pool selector
 
                 pool_response = self.controller_client.register_pool(
                     name=service_name,

@@ -6,6 +6,7 @@ from kubetorch.resources.callables.utils import NotebookError
 from kubetorch.resources.compute.app import App, app  # noqa: F401
 from kubetorch.resources.compute.compute import Compute  # noqa: F401
 from kubetorch.resources.compute.decorators import async_, autoscale, compute, distribute  # noqa: F401
+from kubetorch.resources.compute.endpoint import Endpoint  # noqa: F401
 from kubetorch.resources.compute.utils import (
     ControllerRequestError,
     ImagePullError,
