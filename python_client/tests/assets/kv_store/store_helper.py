@@ -258,12 +258,16 @@ class StoreTestHelper:
             return {"success": False, "error": str(e)}
 
     def check_metadata_server(self, key: str) -> dict:
-        """Check if a key is registered with the metadata server."""
+        """Check if a key is registered with the metadata server.
+
+        Note: This expects a full key (with service_name prefix) since publish_data_local
+        also expects a full key.
+        """
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
             try:
-                kt.get(key=self._key(key), dest=tmpdir, verbose=True)
+                kt.get(key=key, dest=tmpdir, verbose=True)
                 files = list(Path(tmpdir).rglob("*"))
                 return {
                     "registered": True,
