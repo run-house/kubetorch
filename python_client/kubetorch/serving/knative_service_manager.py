@@ -152,6 +152,7 @@ class KnativeServiceManager(BaseServiceManager):
         dockerfile = kwargs.get("dockerfile")
         module = kwargs.get("module")
         create_headless_service = kwargs.get("create_headless_service", False)
+        endpoint = kwargs.get("endpoint")
 
         labels = manifest.get("metadata", {}).get("labels", {})
         annotations = manifest.get("metadata", {}).get("annotations", {})
@@ -186,14 +187,18 @@ class KnativeServiceManager(BaseServiceManager):
                     "selector": selector,
                 }
 
-                # Knative provides its own URL - register it as a user-provided URL
-                knative_url = self.get_knative_service_endpoint(service_name)
+                if endpoint:
+                    service_config = endpoint.to_service_config()
+                else:
+                    # Knative provides its own URL - register it as a user-provided URL
+                    knative_url = self.get_knative_service_endpoint(service_name)
+                    service_config = {"type": "url", "url": knative_url}
 
                 pool_response = self.controller_client.register_pool(
                     name=service_name,
                     namespace=self.namespace,
                     specifier=specifier,
-                    service={"type": "url", "url": knative_url},
+                    service=service_config,
                     labels=service_labels,
                     annotations=annotations,
                     pool_metadata={

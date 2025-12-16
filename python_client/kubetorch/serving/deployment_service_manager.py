@@ -113,6 +113,7 @@ class DeploymentServiceManager(BaseServiceManager):
         module = kwargs.get("module")
         pod_selector = kwargs.get("pod_selector")
         create_headless_service = kwargs.get("create_headless_service", False)
+        endpoint = kwargs.get("endpoint")
 
         try:
             # Step 1: Apply the compute manifest (creates the pods)
@@ -145,10 +146,13 @@ class DeploymentServiceManager(BaseServiceManager):
                     "selector": selector,
                 }
 
+                service_config = endpoint.to_service_config() if endpoint else None
+
                 pool_response = self.controller_client.register_pool(
                     name=service_name,
                     namespace=self.namespace,
                     specifier=specifier,
+                    service=service_config,
                     server_port=server_port,
                     labels=service_labels,
                     annotations=annotations,

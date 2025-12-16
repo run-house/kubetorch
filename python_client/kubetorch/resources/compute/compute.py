@@ -63,6 +63,7 @@ class Compute:
         replicas: int = None,
         logging_config: LoggingConfig = None,
         selector: Dict[str, str] = None,
+        endpoint: "Endpoint" = None,
         _skip_template_init: bool = False,
     ):
         """Initialize the compute requirements for a Kubetorch service.
@@ -120,6 +121,9 @@ class Compute:
             selector (Dict[str, str], optional): Label selector to identify pods that belong to this compute.
                 Use this when you've already applied your own K8s manifest (e.g., via kubectl) and want to
                 deploy functions to those pods. Example: ``{"app": "workers", "team": "ml"}``.
+            endpoint (Endpoint, optional): Custom endpoint configuration for routing calls to pods.
+                Use this to specify your own URL (skip Service creation) or a custom selector
+                (route to subset of pool). See :class:`Endpoint` for details.
 
         Note:
 
@@ -160,8 +164,9 @@ class Compute:
         """
         self.default_config = {}
 
+        self._endpoint_config = endpoint
         self._endpoint = None
-        self._pod_selector = None
+        self._pod_selector = selector
         self._service_manager = None
         self._autoscaling_config = None
         self._kubeconfig_path = kubeconfig_path
@@ -241,6 +246,7 @@ class Compute:
         cls,
         manifest: Union[Dict, str],
         selector: Optional[Dict[str, str]] = None,
+        endpoint: Optional["Endpoint"] = None,
     ):
         """Create a Compute instance from a user-provided Kubernetes manifest.
 
@@ -253,6 +259,10 @@ class Compute:
             selector: Label selector to identify pods belonging to this compute.
                      If not provided, uses the manifest's spec.selector.matchLabels.
                      Example: {"app": "my-workers", "team": "ml"}
+            endpoint: Custom endpoint configuration for routing calls to pods.
+                     Use ``Endpoint(url="...")`` for your own Service/Ingress, or
+                     ``Endpoint(selector={...})`` to route to a subset of pool pods.
+
         Returns:
             Compute instance
 
@@ -278,6 +288,13 @@ class Compute:
                 selector={"app": "my-workers"},
                 endpoint=kt.Endpoint(url="my-svc.my-ns.svc.cluster.local:8080")
             )
+
+            # Route to subset of pool (e.g., head node only)
+            compute = kt.Compute.from_manifest(
+                manifest=ray_manifest,
+                selector={"app": "ray"},  # Pool: all ray pods
+                endpoint=kt.Endpoint(selector={"app": "ray", "role": "head"})  # Route: head only
+            )
         """
         # Load manifest from file if provided as a string
         if isinstance(manifest, str):
@@ -294,9 +311,11 @@ class Compute:
         compute._manifest.setdefault("metadata", {})
         compute._manifest.setdefault("spec", {})
 
-        # Store selector - use provided or extract from manifest
+        # Store selector and endpoint configuration
         if selector:
             compute._pod_selector = selector
+        if endpoint:
+            compute._endpoint_config = endpoint
 
         # Extract kubeconfig_path from manifest annotations if present
         user_annotations = compute._manifest["metadata"].get("annotations", {})
@@ -626,8 +645,11 @@ class Compute:
 
     @property
     def endpoint(self):
-        if self._endpoint is None and self.service_name:
-            self._endpoint = self.service_manager.get_endpoint(self.service_name)
+        if self._endpoint is None:
+            if self._endpoint_config and self._endpoint_config.url:
+                self._endpoint = self._endpoint_config.url
+            else:
+                self._endpoint = self.service_manager.get_endpoint(self.service_name)
         return self._endpoint
 
     @endpoint.setter
@@ -1871,6 +1893,7 @@ class Compute:
             module=module,
             pod_selector=getattr(self, "_pod_selector", None),
             create_headless_service=bool(self.distributed_config),
+            endpoint=getattr(self, "_endpoint_config", None),
         )
         self._manifest = updated_manifest
 

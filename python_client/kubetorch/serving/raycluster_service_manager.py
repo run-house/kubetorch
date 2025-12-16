@@ -254,6 +254,7 @@ class RayClusterServiceManager(BaseServiceManager):
         dockerfile = kwargs.get("dockerfile")
         module = kwargs.get("module")
         create_headless_service = kwargs.get("create_headless_service", False)
+        endpoint = kwargs.get("endpoint")
 
         pod_spec = self.pod_spec(raycluster)
         server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
@@ -291,17 +292,21 @@ class RayClusterServiceManager(BaseServiceManager):
                     "selector": pool_selector,
                 }
 
-                # Service selector routes only to head node
-                service_selector = {
-                    **pool_selector,
-                    "ray.io/node-type": "head",
-                }
+                if endpoint:
+                    service_config = endpoint.to_service_config()
+                else:
+                    # Service selector routes only to head node
+                    service_selector = {
+                        **pool_selector,
+                        "ray.io/node-type": "head",
+                    }
+                    service_config = {"type": "selector", "selector": service_selector}
 
                 pool_response = self.controller_client.register_pool(
                     name=service_name,
                     namespace=self.namespace,
                     specifier=specifier,
-                    service={"type": "selector", "selector": service_selector},
+                    service=service_config,
                     server_port=server_port,
                     labels=service_labels,
                     annotations=annotations,

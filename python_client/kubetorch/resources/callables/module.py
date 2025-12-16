@@ -161,6 +161,10 @@ class Module:
             if not self._compute.endpoint:
                 return self._compute._wait_for_endpoint()
             return self._compute.endpoint
+
+        if self._compute._endpoint_config and self._compute._endpoint_config.url:
+            return self._compute._endpoint_config.get_proxied_url(self._compute.client_port())
+
         # URL format when using the NGINX proxy
         return f"http://localhost:{self._compute.client_port()}/{self.namespace}/{self.service_name}"
 

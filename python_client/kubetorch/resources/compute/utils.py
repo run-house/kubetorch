@@ -365,19 +365,20 @@ def delete_deployment(
 
     # Delete the associated service (regular service, not headless)
     try:
-        controller_client.delete_service(
+        result = controller_client.delete_service(
             namespace=namespace,
             name=name,
+            ignore_not_found=True,
         )
-        if console:
-            console.print(f"✓ Deleted service [blue]{name}[/blue]")
-    except Exception as e:
-        if http_not_found(e):
+        if result is not None:
             if console:
-                console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
+                console.print(f"✓ Deleted service [blue]{name}[/blue]")
         else:
             if console:
-                console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
+                console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
+    except Exception as e:
+        if console:
+            console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
 
     try:
         headless = controller_client.get_service(namespace=namespace, name=f"{name}-headless", ignore_not_found=True)
@@ -386,14 +387,16 @@ def delete_deployment(
 
     if headless:
         try:
-            controller_client.delete_service(
+            result = controller_client.delete_service(
                 namespace=namespace,
                 name=f"{name}-headless",
+                ignore_not_found=True,
             )
-            if console:
-                console.print(f"✓ Deleted headless service [blue]{name}-headless[/blue]")
+            if result is not None:
+                if console:
+                    console.print(f"✓ Deleted headless service [blue]{name}-headless[/blue]")
         except Exception as e:
-            if not http_not_found(e) and console:
+            if console:
                 console.print(f"[red]Error:[/red] Failed to delete headless service {name}-headless: {e}")
 
 
@@ -433,35 +436,34 @@ def delete_raycluster(
 
     # Delete the associated service (created alongside RayCluster)
     try:
-        kubetorch.globals.controller_client().delete_service(
+        result = kubetorch.globals.controller_client().delete_service(
             namespace=namespace,
             name=name,
+            ignore_not_found=True,
         )
-        if console:
-            console.print(f"✓ Deleted service [blue]{name}[/blue]")
-    except Exception as e:
-        if http_not_found(e):
+        if result is not None:
             if console:
-                console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
+                console.print(f"✓ Deleted service [blue]{name}[/blue]")
         else:
             if console:
-                console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
+                console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
+    except Exception as e:
+        if console:
+            console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
 
     # Delete the headless service for Ray pod discovery
     try:
-        kubetorch.globals.controller_client().delete_service(
+        result = kubetorch.globals.controller_client().delete_service(
             namespace=namespace,
             name=f"{name}-headless",
+            ignore_not_found=True,
         )
-        if console:
-            console.print(f"✓ Deleted headless service [blue]{name}-headless[/blue]")
-    except Exception as e:
-        if http_not_found(e):
-            # This is normal for older Ray clusters without headless services
-            pass
-        else:
+        if result is not None:
             if console:
-                console.print(f"[red]Error:[/red] Failed to delete headless service {name}-headless: {e}")
+                console.print(f"✓ Deleted headless service [blue]{name}-headless[/blue]")
+    except Exception as e:
+        if console:
+            console.print(f"[red]Error:[/red] Failed to delete headless service {name}-headless: {e}")
 
 
 def delete_trainjob(
