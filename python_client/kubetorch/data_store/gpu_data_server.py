@@ -175,12 +175,41 @@ def _reconstruct_tensor_from_ipc(
     torch.cuda._lazy_init()
     _setup_cuda_ipc_permissions()
 
+    # IPC handle format: (device, handle, size, offset, ref_counter_handle,
+    #                     ref_counter_offset, event_handle, event_sync_required)
     if hasattr(torch, "UntypedStorage"):
-        storage = torch.UntypedStorage._new_shared_cuda(*ipc_handle)
+        storage = torch.UntypedStorage._new_shared_cuda(
+            ipc_handle[0],
+            ipc_handle[1],
+            ipc_handle[2],
+            ipc_handle[3],
+            ipc_handle[4],
+            ipc_handle[5],
+            ipc_handle[6],
+            ipc_handle[7],
+        )
     elif hasattr(torch.cuda, "UntypedStorage"):
-        storage = torch.cuda.UntypedStorage._new_shared_cuda(*ipc_handle)
+        storage = torch.cuda.UntypedStorage._new_shared_cuda(
+            ipc_handle[0],
+            ipc_handle[1],
+            ipc_handle[2],
+            ipc_handle[3],
+            ipc_handle[4],
+            ipc_handle[5],
+            ipc_handle[6],
+            ipc_handle[7],
+        )
     else:
-        storage = torch.cuda.ByteStorage._new_shared_cuda(*ipc_handle)
+        storage = torch.cuda.ByteStorage._new_shared_cuda(
+            ipc_handle[0],
+            ipc_handle[1],
+            ipc_handle[2],
+            ipc_handle[3],
+            ipc_handle[4],
+            ipc_handle[5],
+            ipc_handle[6],
+            ipc_handle[7],
+        )
 
     tensor = torch.empty(shape, dtype=dtype, device=f"cuda:{device}")
     tensor.set_(storage, storage_offset=0, size=shape)
