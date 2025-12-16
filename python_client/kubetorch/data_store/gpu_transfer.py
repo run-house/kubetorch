@@ -608,23 +608,15 @@ class GPUTransferManager:
                 if verbose:
                     logger.info("Waiting for coordinator to complete transfer...")
 
-            # Send completion message
-            await websocket.send(
-                json.dumps(
-                    {
-                        "action": "complete",
-                        "success": transfer_success,
-                    }
-                )
-            )
-
-            # Wait for completion acknowledgment
+            # Send completion and wait for acknowledgment
+            # This synchronization is necessary so non-coordinators wait for their
+            # pod's coordinator to finish the NCCL transfer before returning
+            await websocket.send(json.dumps({"action": "complete", "success": transfer_success}))
             try:
-                ack = json.loads(await asyncio.wait_for(websocket.recv(), timeout=10.0))
-                if ack.get("event") != "completed":
-                    logger.warning(f"Unexpected completion ack: {ack}")
+                await asyncio.wait_for(websocket.recv(), timeout=30.0)
             except asyncio.TimeoutError:
-                logger.warning("Timeout waiting for completion acknowledgment")
+                # Timeout waiting for ack - transfer already succeeded, just continue
+                pass
 
             if not transfer_success:
                 raise RuntimeError(f"Broadcast transfer failed: {transfer_result.get('error')}")

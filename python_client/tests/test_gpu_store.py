@@ -148,6 +148,73 @@ async def test_gpu_transfer_large_tensor(gpu_source, gpu_consumer):
     assert abs(consumer_result["sum"] - expected_sum) < expected_sum * 0.01  # 1% tolerance
 
 
+# ==================== GPU Server Resilience Tests ====================
+
+
+@pytest.mark.level("gpu")
+async def test_gpu_server_resilience_after_failure(gpu_source, gpu_consumer):
+    """
+    Test that the GPU Data Server remains usable after a failed transfer attempt.
+
+    This test verifies:
+    1. A successful transfer works (baseline)
+    2. A failed transfer (to non-existent IP) returns an error
+    3. The server can still handle valid requests after the failure
+    4. If the server crashes, it can be restarted and used again
+
+    This is important for production reliability - a single bad transfer
+    should not break the server for subsequent valid requests.
+    """
+    service_name = gpu_source.service_name
+
+    # Step 1: Baseline - verify normal transfer works
+    key = f"{service_name}/gpu-test/resilience-baseline"
+    shape = [256, 256]
+    fill_value = 1.5
+    expected_sum = fill_value * shape[0] * shape[1]
+
+    pub_result = gpu_source.publish_tensor(key=key, shape=shape, fill_value=fill_value)
+    assert pub_result["success"], f"Baseline put failed: {pub_result.get('error')}"
+
+    consumer_result = gpu_consumer.get_tensor(key=key, shape=shape)
+    assert consumer_result["success"], f"Baseline get failed: {consumer_result.get('error')}"
+    assert abs(consumer_result["sum"] - expected_sum) < 1.0, "Baseline tensor values incorrect"
+
+    # Step 2: Check server health before failure test
+    health_before = gpu_consumer.check_gpu_server_health()
+    assert health_before["healthy"], f"Server unhealthy before test: {health_before}"
+
+    # Step 3: Trigger a failure by attempting to connect to non-existent source
+    # Uses 2-second timeout for fast failure
+    failure_result = gpu_consumer.trigger_nccl_timeout(nccl_timeout=1)
+
+    # The request should fail (expected_failure=True means we expect it to fail)
+    assert failure_result.get("expected_failure"), "Failure test should have failed"
+    assert "error" in failure_result, "Failure should include error message"
+
+    # Step 4: Check if server is still healthy
+    health_after = gpu_consumer.check_gpu_server_health()
+
+    if not health_after["healthy"]:
+        # Server may have crashed due to NCCL corruption - restart it
+        restart_result = gpu_consumer.restart_gpu_server()
+        assert restart_result["success"], f"Failed to restart server: {restart_result.get('error')}"
+        assert restart_result["server_running"], "Server not running after restart"
+
+    # Step 5: Verify the server can still handle valid requests
+    # Publish a new tensor (source needs to re-publish after potential restart)
+    key2 = f"{service_name}/gpu-test/resilience-after"
+    fill_value2 = 2.5
+    expected_sum2 = fill_value2 * shape[0] * shape[1]
+
+    pub_result2 = gpu_source.publish_tensor(key=key2, shape=shape, fill_value=fill_value2)
+    assert pub_result2["success"], f"Post-failure put failed: {pub_result2.get('error')}"
+
+    consumer_result2 = gpu_consumer.get_tensor(key=key2, shape=shape)
+    assert consumer_result2["success"], f"Post-failure get failed: {consumer_result2.get('error')}"
+    assert abs(consumer_result2["sum"] - expected_sum2) < 1.0, "Post-failure tensor values incorrect"
+
+
 @pytest.mark.level("gpu")
 async def test_gpu_transfer_many_to_many(gpu_source, gpu_consumer):
     """
