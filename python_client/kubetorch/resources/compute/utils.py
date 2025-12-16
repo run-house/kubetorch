@@ -283,7 +283,7 @@ def delete_configmaps(
                     console.print(f"[red]Error:[/red] Failed to delete configmap {cm}: {e}")
 
 
-def delete_service(
+def delete_knative_service(
     name: str,
     namespace,
     console: "Console" = None,
@@ -441,6 +441,69 @@ def delete_raycluster(
                 console.print(f"[red]Error:[/red] Failed to delete headless service {name}-headless: {e}")
 
 
+def delete_trainjob(
+    name: str,
+    namespace: str,
+    group: str,
+    plural: str,
+    console: "Console" = None,
+    force: bool = False,
+):
+    """Delete a manifest and its associated service."""
+
+    grace_period_seconds, propagation_policy = None, None
+    if force:
+        grace_period_seconds = 0
+        propagation_policy = "Foreground"
+
+    manifest_type = plural[:-1]
+
+    try:
+        # Delete the manifest
+        kubetorch.globals.controller_client().delete_namespaced_custom_object(
+            group=group,
+            version="v1",
+            namespace=namespace,
+            plural=plural,
+            name=name,
+            grace_period_seconds=grace_period_seconds,
+            propagation_policy=propagation_policy,
+        )
+        if console:
+            console.print(f"✓ Deleted {manifest_type} [blue]{name}[/blue]")
+    except Exception as e:
+        if http_not_found(e):
+            if console:
+                console.print(f"[yellow]Note:[/yellow] {manifest_type} {name} not found or already deleted")
+        else:
+            if console:
+                console.print(f"[red]Error:[/red] Failed to delete {manifest_type} {name}: {e}")
+
+    # Delete the associated services (created alongside the trainjob)
+    associated_services = kubetorch.globals.controller_client().list_services(
+        namespace=namespace, label_selector=f"kubetorch.com/service={name}"
+    )
+    associated_services = associated_services.get("items", [])
+    if len(associated_services) > 0:
+        if console:
+            console.print(f"Deleting services associated with [reset]{name}")
+        for service in associated_services:
+            associated_service_name = service["metadata"]["name"]
+            try:
+                kubetorch.globals.controller_client().delete_service(
+                    namespace=namespace,
+                    name=associated_service_name,
+                )
+                if console:
+                    console.print(f"✓ Deleted service [blue]{associated_service_name}[/blue]")
+            except Exception as e:
+                if http_not_found(e):
+                    pass
+                else:
+                    if console:
+                        console.print(f"[red]Error:[/red] Failed to delete {associated_service_name}: {e}")
+
+
 def delete_resources_for_service(
     configmaps: List[str],
     name: str,
@@ -448,6 +511,7 @@ def delete_resources_for_service(
     namespace: str = None,
     console: "Console" = None,
     force: bool = False,
+    group: str = None,
 ):
     """Delete service resources based on service type."""
     # Delete the main service (Knative, Deployment, or RayCluster)
@@ -464,12 +528,16 @@ def delete_resources_for_service(
             console=console,
             force=force,
         )
-    else:  # knative or unknown - try deleting as Knative service
-        delete_service(
+    elif service_type == "knative":
+        delete_knative_service(
             name=name,
             namespace=namespace,
             console=console,
             force=force,
+        )
+    elif group:  # service is a training job
+        delete_trainjob(
+            name=name, namespace=namespace, console=console, force=force, group=group, plural=f"{service_type}s"
         )
 
     # Delete configmaps
@@ -762,6 +830,7 @@ def fetch_resources_for_teardown(
     for service_name in services:
         service_type = None
         service_found = False
+        service_group = None
 
         # Check if it's a Knative service
         try:
@@ -835,6 +904,7 @@ def fetch_resources_for_teardown(
                     if job_resource:
                         service_type = job_kind.lower()
                         service_found = True
+                        service_group = "kubeflow.org"
                         break
                 except Exception:
                     continue
@@ -858,6 +928,7 @@ def fetch_resources_for_teardown(
                 "configmaps": configmaps,
                 "pods": pods,
                 "type": service_type or "unknown",
+                "group": service_group,
             }
 
     return resources
