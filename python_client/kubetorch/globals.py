@@ -893,6 +893,35 @@ class ControllerClient:
         """List all compute pools."""
         return self.get(f"/controller/pools/{namespace}")
 
+    def reload_pool(
+        self,
+        pool_name: str,
+        namespace: str,
+        service_name: str = None,
+        deployed_as_of: str = None,
+    ) -> Dict[str, Any]:
+        """Broadcast _reload_image to all pods in a pool.
+
+        This is used for selector-only mode (BYO pods) where the controller needs to
+        notify all pods to sync code and reload the callable after deployment.
+
+        Args:
+            pool_name (str): Name of the pool
+            namespace (str): Kubernetes namespace
+            service_name (str, optional): Service name for rsync (passed to pods via X-Service-Name header)
+            deployed_as_of (str, optional): Deployment timestamp (passed to pods via X-Deployed-As-Of header)
+
+        Returns:
+            Reload response with status, message, and count of reloaded pods
+        """
+        params = {}
+        if service_name:
+            params["service_name"] = service_name
+        if deployed_as_of:
+            params["deployed_as_of"] = deployed_as_of
+
+        return self.post(f"/controller/pool/{namespace}/{pool_name}/reload", json={}, params=params)
+
 
 @cache
 def controller_client() -> ControllerClient:

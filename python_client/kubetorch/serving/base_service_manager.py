@@ -546,17 +546,17 @@ class BaseServiceManager:
             with services_lock:
                 services.extend(local_services)
 
-        def fetch_self_registered_pools():
-            """Fetch self-registered pools from controller database."""
+        def fetch_selector_pools():
+            """Fetch selector-based pools from controller database."""
             try:
                 resp = controller_client.list_pools(namespace=namespace)
                 pools = resp.get("pools", [])
 
                 local_services = []
                 for pool in pools:
-                    # Only include self-register pools (others are already discovered via K8s resources)
+                    # Only include selector-based pools (others are already discovered via K8s resources)
                     specifier = pool.get("specifier") or {}
-                    if specifier.get("type") != "self_register":
+                    if specifier.get("type") != "label_selector":
                         continue
 
                     pool_name = pool.get("name")
@@ -600,7 +600,7 @@ class BaseServiceManager:
                             "readyReplicas": num_pods,  # Assume pods are ready
                             "replicas": num_pods,
                         },
-                        # Extra fields for self-registered pools
+                        # Extra fields for selector-based pools
                         "_pods": pods_for_pool,  # Actual pod objects from K8s
                         "_pool_metadata": pool_metadata,
                         "_selector": selector,
@@ -609,7 +609,7 @@ class BaseServiceManager:
                     local_services.append(
                         {
                             "name": pool_name,
-                            "template_type": "self-register",
+                            "template_type": "selector",
                             "resource": synthetic_resource,
                             "namespace": namespace,
                             "creation_timestamp": pool.get("created_at", ""),
@@ -620,7 +620,7 @@ class BaseServiceManager:
                     services.extend(local_services)
 
             except Exception as e:
-                logger.warning(f"Failed to list self-register pools: {e}")
+                logger.warning(f"Failed to list selector pools: {e}")
 
         # Execute all API calls in parallel
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
@@ -629,7 +629,7 @@ class BaseServiceManager:
                 executor.submit(fetch_deployments),
                 executor.submit(fetch_rayclusters),
                 executor.submit(fetch_custom_resources),
-                executor.submit(fetch_self_registered_pools),
+                executor.submit(fetch_selector_pools),
             ]
 
             # Wait for all to complete

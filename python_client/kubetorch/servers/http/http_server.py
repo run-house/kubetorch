@@ -1085,8 +1085,12 @@ async def lifespan(app: FastAPI):
     try:
         if os.getenv("KT_CALLABLE_TYPE") == "app":
             run_image_setup()
-        else:
+        elif os.getenv("KT_CLS_OR_FN_NAME"):
+            # Only load callable if one is configured (not in selector-only mode)
             load_callable()
+        else:
+            # Selector-only mode: server starts without a callable, waiting for deployment
+            logger.info("Starting in selector-only mode (no callable configured)")
 
         logger.info("Kubetorch Server started.")
         request_id_ctx_var.set("-")  # Reset request_id after launch sequence
@@ -1168,7 +1172,7 @@ class ErrorResponse(BaseModel):
     error_type: str
     message: str
     traceback: str
-    pod_name: str
+    pod_name: str = "unknown"  # Default for pods deployed outside kubetorch
     state: Optional[dict] = None  # Optional serialized exception state
 
 
@@ -1216,7 +1220,7 @@ def package_exception(exc: Exception):
         error_type=error_type,
         message=str(exc),
         traceback=trace,
-        pod_name=os.getenv("POD_NAME"),
+        pod_name=os.getenv("POD_NAME", "unknown"),
         state=state,
     )
 
@@ -1232,13 +1236,28 @@ async def generic_exception_handler(request: Request, exc: Exception):
 def _reload_image(
     request: Request,
     deployed_as_of: Optional[str] = Header(None, alias="X-Deployed-As-Of"),
+    service_name: Optional[str] = Header(None, alias="X-Service-Name"),
+    namespace: Optional[str] = Header(None, alias="X-Namespace"),
 ):
     """
     Endpoint to reload the image and metadata configuration.
     This is used to reload the image in cases where we're not calling the callable directly,
     e.g. kt.app and Ray workers.
+
+    For selector-only mode (BYO pods), the service_name and namespace headers can be provided
+    to set up the rsync path, since these pods don't have the env vars pre-configured.
     """
     global _LAST_DEPLOYED
+
+    # For selector-only mode, set up rsync env vars if provided
+    if service_name and not os.getenv("KT_SERVICE_NAME"):
+        os.environ["KT_SERVICE_NAME"] = service_name
+        logger.info(f"Set KT_SERVICE_NAME to {service_name} for selector-only mode")
+
+    if namespace and not os.getenv("POD_NAMESPACE"):
+        os.environ["POD_NAMESPACE"] = namespace
+        logger.info(f"Set POD_NAMESPACE to {namespace} for selector-only mode")
+
     deployed_time = (
         datetime.fromisoformat(deployed_as_of).timestamp() if deployed_as_of else datetime.now(timezone.utc).timestamp()
     )
@@ -1263,10 +1282,16 @@ async def run_callable(
     deployed_as_of: Optional[str] = Header(None, alias="X-Deployed-As-Of"),
     serialization: str = Header("json", alias="X-Serialization"),
 ):
-    if cls_or_fn_name != os.environ["KT_CLS_OR_FN_NAME"]:
+    configured_callable = os.getenv("KT_CLS_OR_FN_NAME")
+    if not configured_callable:
+        raise HTTPException(
+            status_code=503,
+            detail="Server is starting up or no callable has been deployed yet. Please ensure the function is deployed before calling.",
+        )
+    if cls_or_fn_name != configured_callable:
         raise HTTPException(
             status_code=404,
-            detail=f"Callable '{cls_or_fn_name}' not found in metadata configuration. Found '{os.environ['KT_CLS_OR_FN_NAME']}' instead",
+            detail=f"Callable '{cls_or_fn_name}' not found in metadata configuration. Found '{configured_callable}' instead",
         )
 
     # NOTE: The distributed replica processes (e.g. PyTorchProcess:run) rely on this running here even though

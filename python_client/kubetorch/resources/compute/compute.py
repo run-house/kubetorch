@@ -161,7 +161,7 @@ class Compute:
         self.default_config = {}
 
         self._endpoint = None
-        self._pod_selector = None
+        self._pod_selector = selector  # For selector-only or BYO manifest modes
         self._service_manager = None
         self._autoscaling_config = None
         self._kubeconfig_path = kubeconfig_path
@@ -175,6 +175,12 @@ class Compute:
 
         # Skip template initialization if loading from existing service
         if _skip_template_init:
+            return
+
+        if selector and not any([cpus, memory, disk_size, gpus, gpu_type, gpu_memory, image]):
+            # Selector-only mode: user provides only a selector for existing pods
+            # No manifest is built - just register pool and create service
+            self._namespace = namespace or globals.config.namespace
             return
 
         template_vars = {
@@ -534,6 +540,16 @@ class Compute:
         return self._manifest
 
     @property
+    def selector_only(self) -> bool:
+        """Check if this compute is in selector-only mode.
+
+        Selector-only mode is when the user provides a pod selector to identify
+        existing running pods, without providing a manifest or resource requirements.
+        In this mode, Kubetorch just registers the pool and routes calls to the pods.
+        """
+        return self._pod_selector is not None and self._manifest is None
+
+    @property
     def logging_config(self) -> LoggingConfig:
         """Get the logging configuration for this compute."""
         return self._logging_config
@@ -636,6 +652,9 @@ class Compute:
 
     def _container(self):
         """Get the container from the pod spec."""
+        if self.pod_spec is None:
+            # manifest applied separately
+            return None
         if "containers" not in self.pod_spec:
             raise ValueError("pod_spec missing 'containers' field.")
 
@@ -653,6 +672,9 @@ class Compute:
 
     def _container_env(self):
         container = self._container()
+        if container is None:
+            # manifest applied separately,
+            return []
         if "env" not in container:
             return []
         return container["env"]
@@ -1062,10 +1084,17 @@ class Compute:
 
     @property
     def namespace(self):
-        return self._manifest.get("metadata", {}).get("namespace") if self._manifest else globals.config.namespace
+        if self._manifest is None:
+            # manifest applied separately, use stored namespace
+            return getattr(self, "_namespace", None) or globals.config.namespace
+        return self._manifest.get("metadata", {}).get("namespace") or globals.config.namespace
 
     @namespace.setter
     def namespace(self, value: str):
+        if self._manifest is None:
+            # manifest applied separately, store namespace directly
+            self._namespace = value
+            return
         self._manifest.setdefault("metadata", {})
         self._manifest["metadata"]["namespace"] = value
 
@@ -1084,6 +1113,9 @@ class Compute:
     @property
     def freeze(self):
         container = self._container()
+        if container is None:
+            # manifest applied separately, default to False
+            return False
         if "env" in container:
             for env_var in container["env"]:
                 if env_var["name"] == "KT_FREEZE" and "value" in env_var:
@@ -1312,7 +1344,11 @@ class Compute:
 
     @property
     def working_dir(self):
-        return self._container().get("workingDir")
+        container = self._container()
+        if container is None:
+            # manifest applied separately
+            return None
+        return container.get("workingDir")
 
     @working_dir.setter
     def working_dir(self, value: str):
@@ -1331,6 +1367,9 @@ class Compute:
     @property
     def otel_enabled(self):
         container = self._container()
+        if container is None:
+            # manifest applied separately, default to False
+            return False
         if "env" in container:
             for env_var in container["env"]:
                 if env_var["name"] == "KT_OTEL_ENABLED" and "value" in env_var:
@@ -1340,12 +1379,13 @@ class Compute:
     @property
     def launch_timeout(self):
         container = self._container()
-        if "startupProbe" in container:
+        if container is not None and "startupProbe" in container:
             startup_probe = container["startupProbe"]
             if "failureThreshold" in startup_probe:
                 # Convert back from failure threshold (launch_timeout // 5)
                 return startup_probe["failureThreshold"] * 5
-        return None
+        # Use default from config/env when not set in manifest or pool-only mode
+        return self._get_launch_timeout()
 
     @launch_timeout.setter
     def launch_timeout(self, value: int):
@@ -1357,6 +1397,9 @@ class Compute:
     @property
     def inactivity_ttl(self):
         container = self._container()
+        if container is None:
+            # manifest applied separately, default to None
+            return None
         if "env" in container:
             for env_var in container["env"]:
                 if env_var["name"] == "KT_INACTIVITY_TTL" and "value" in env_var:
@@ -1432,6 +1475,9 @@ class Compute:
         # First try to get from pod spec
         template_config = {}
         container = self._container()
+        if container is None:
+            # manifest applied separately
+            return template_config
         if "env" in container:
             for env_var in container["env"]:
                 if env_var["name"] == "KT_DISTRIBUTED_CONFIG" and "value" in env_var and env_var["value"]:
@@ -1539,10 +1585,17 @@ class Compute:
 
     @property
     def service_name(self):
+        if self._manifest is None:
+            # manifest applied separately, use stored name
+            return getattr(self, "_service_name", None)
         return self._manifest.get("metadata", {}).get("name")
 
     @service_name.setter
     def service_name(self, value: str):
+        if self._manifest is None:
+            # manifest applied separately, store name directly
+            self._service_name = value
+            return
         current_name = self._manifest.get("metadata", {}).get("name")
         if current_name and not current_name == value:
             raise ValueError("Service name cannot be changed after it has been set")
@@ -1719,7 +1772,7 @@ class Compute:
 
         return resources
 
-    def _get_launch_timeout(self, launch_timeout):
+    def _get_launch_timeout(self, launch_timeout=None):
         if launch_timeout:
             return int(launch_timeout)
         default_launch_timeout = (
@@ -1847,6 +1900,26 @@ class Compute:
     ):
         """Creates a new service on the compute for the provided service. If the service already exists,
         it will update the service with the latest copy of the code."""
+        if self.selector_only:
+            if not dryrun:
+                # Selector-only mode: just register pool, no manifest to apply
+                specifier = {"type": "label_selector", "selector": self._pod_selector}
+                pool_response = globals.controller_client().register_pool(
+                    name=service_name,
+                    namespace=self.namespace,
+                    specifier=specifier,
+                    pool_metadata={"username": globals.config.username},
+                    module=module,
+                )
+                if pool_response.get("status") != "success":
+                    raise Exception(f"Pool registration failed: {pool_response.get('message')}")
+                logger.info(f"Registered pool {service_name} with selector {self._pod_selector}")
+
+                # Notify pods to reload - sync code and set up the callable
+                self._reload_selector_pods(service_name, deployment_timestamp)
+
+            return {"metadata": {"name": service_name, "namespace": self.namespace}, "spec": {"template": {}}}
+
         # Finalize pod spec with launch time env vars
         self._update_launch_env_vars(service_name, pointer_env_vars, metadata_env_vars, launch_id)
         self._upload_secrets_list()
@@ -1861,7 +1934,7 @@ class Compute:
 
         # Create service using the appropriate service manager
         # Create headless service only when distributed config is set (for SPMD/distributed pod discovery)
-        (created_service, updated_manifest,) = self.service_manager.create_or_update_service(
+        created_service, updated_manifest = self.service_manager.create_or_update_service(
             service_name=service_name,
             module_name=pointer_env_vars["KT_MODULE_NAME"],
             manifest=self._manifest,
@@ -2129,10 +2202,75 @@ class Compute:
         """Checks if the service is ready to start serving requests.
 
         Delegates to the appropriate service manager's check_service_ready method.
+        For selector-only mode, checks that pods matching the selector are running.
         """
+        if self.selector_only:
+            # Selector-only mode: check for pods matching the selector
+            return self._check_selector_pods_ready()
+
         return self.service_manager.check_service_ready(
             service_name=self.service_name, launch_timeout=self.launch_timeout
         )
+
+    def _check_selector_pods_ready(self):
+        """Check that pods matching the selector are running (for selector-only mode)."""
+        # Convert selector dict to label selector string
+        label_selector = ",".join(f"{k}={v}" for k, v in self._pod_selector.items())
+
+        sleep_interval = 2
+        start_time = time.time()
+        launch_timeout = self.launch_timeout
+
+        logger.info(f"Checking for pods with selector {label_selector} (timeout: {launch_timeout} seconds)")
+
+        while (time.time() - start_time) < launch_timeout:
+            result = globals.controller_client().list_pods(namespace=self.namespace, label_selector=label_selector)
+            pods = result.get("items", [])
+
+            if pods:
+                running_pods = [pod for pod in pods if pod_is_running(pod)]
+                if running_pods:
+                    logger.info(f"Found {len(running_pods)} running pod(s) matching selector {label_selector}")
+                    return True
+                else:
+                    logger.debug(f"Found {len(pods)} pod(s) but none are running yet")
+            else:
+                logger.debug(f"No pods found matching selector {label_selector}")
+
+            time.sleep(sleep_interval)
+
+        raise TimeoutError(f"Timeout waiting for pods with selector {label_selector} after {launch_timeout} seconds")
+
+    def _reload_selector_pods(self, service_name: str, deployment_timestamp: str = None):
+        """Notify pods matching the selector to reload code and callable (for selector-only mode).
+
+        This is called after registering the pool to sync code to the BYO pods and have them
+        load the callable. Uses the controller's reload endpoint to broadcast to all pods.
+        """
+        logger.debug(f"Pinging controller to reload pods for {service_name}")
+
+        result = globals.controller_client().reload_pool(
+            pool_name=service_name,
+            namespace=self.namespace,
+            service_name=service_name,
+            deployed_as_of=deployment_timestamp,
+        )
+
+        status = result.get("status", "unknown")
+        message = result.get("message", "")
+        reloaded = result.get("reloaded", 0)
+
+        if status == "warning":
+            logger.warning(f"Service reload warning: {message}")
+        elif status == "partial":
+            logger.warning(f"Service reload partial success: {message}")
+            errors = result.get("errors", [])
+            for error in errors:
+                logger.warning(f"  - {error}")
+        elif status == "success":
+            logger.info(f"Successfully reloaded {reloaded} pod(s) for {service_name}")
+        else:
+            raise RuntimeError(f"Failed to reload pods for {service_name}: {message}")
 
     async def _check_service_ready_async(self):
         """Async version of _check_service_ready. Checks if the service is ready to start serving requests.
