@@ -477,3 +477,131 @@ class GPUTestHelper:
             "expected_sum": expected_sum,
             "all_correct": shape_matches and sum_matches,
         }
+
+    def trigger_nccl_timeout(
+        self,
+        fake_source_ip: str = "192.0.2.1",  # TEST-NET-1, guaranteed unreachable
+        fake_source_port: int = 29400,
+        shape: List[int] = None,
+        nccl_timeout: int = 1,
+    ) -> Dict:
+        """
+        Trigger an NCCL timeout by attempting to connect to a non-existent source.
+
+        This is used to test GPU Data Server resilience - the server should:
+        1. Fail with a timeout error
+        2. Record the failure
+        3. Still be usable for subsequent valid requests
+
+        Args:
+            fake_source_ip: IP that doesn't exist (default: TEST-NET-1 range)
+            fake_source_port: Port for fake source
+            shape: Shape of tensor to allocate for receive (default: [64, 64])
+            nccl_timeout: Timeout in seconds (default: 1 for fast test)
+
+        Returns:
+            Dict with success=False and error message on expected failure
+        """
+        import torch
+
+        from kubetorch.data_store.gpu_data_server import GPUDataServerClient, start_server_if_needed
+
+        if shape is None:
+            shape = [64, 64]
+
+        try:
+            # Ensure GPU data server is running
+            start_server_if_needed()
+
+            # Create a dummy destination tensor
+            dest_tensor = torch.empty(shape, dtype=torch.float32, device="cuda:0")
+
+            # Try to receive from non-existent source - this should timeout
+            client = GPUDataServerClient()
+            result = client.receive_broadcast(
+                key="test/fake-source",
+                source_ip=fake_source_ip,
+                source_gpu_port=fake_source_port,
+                dest_tensor=dest_tensor,
+                nccl_timeout=nccl_timeout,
+            )
+
+            # If we get here, the request completed (likely with an error status)
+            return {
+                "success": False,  # We expect failure
+                "expected_failure": True,
+                "result": result,
+                "error": result.get("error", "No error returned"),
+            }
+
+        except Exception as e:
+            # Expected - the request should fail
+            return {
+                "success": False,  # We expect failure
+                "expected_failure": True,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            }
+
+    def check_gpu_server_health(self) -> Dict:
+        """
+        Check if the GPU Data Server is running and responsive.
+
+        Returns:
+            Dict with server status information
+        """
+        from kubetorch.data_store.gpu_data_server import GPUDataServerClient, is_server_running
+
+        try:
+            if not is_server_running():
+                return {"healthy": False, "error": "Server not running"}
+
+            client = GPUDataServerClient()
+            response = client.ping()
+
+            return {
+                "healthy": response.get("status") == "ok",
+                "pid": response.get("pid"),
+                "tcp_port": response.get("tcp_port"),
+            }
+        except Exception as e:
+            return {"healthy": False, "error": str(e)}
+
+    def restart_gpu_server(self) -> Dict:
+        """
+        Restart the GPU Data Server (kill existing and start new).
+
+        Returns:
+            Dict with new server PID
+        """
+        import signal
+
+        from kubetorch.data_store.gpu_data_server import is_server_running, SERVER_PID_FILE, start_server_if_needed
+
+        try:
+            # Kill existing server if running
+            if os.path.exists(SERVER_PID_FILE):
+                with open(SERVER_PID_FILE) as f:
+                    old_pid = int(f.read().strip())
+                try:
+                    os.kill(old_pid, signal.SIGTERM)
+                    # Wait a bit for it to die
+                    import time
+
+                    for _ in range(10):
+                        time.sleep(0.1)
+                        if not is_server_running():
+                            break
+                except ProcessLookupError:
+                    pass  # Already dead
+
+            # Start new server
+            new_pid = start_server_if_needed()
+
+            return {
+                "success": True,
+                "new_pid": new_pid,
+                "server_running": is_server_running(),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}

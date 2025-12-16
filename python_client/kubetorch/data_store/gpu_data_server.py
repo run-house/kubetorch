@@ -784,6 +784,7 @@ class GPUDataServer:
                 "shape": tensor shape,
                 "dtype": tensor dtype,
                 "device": CUDA device index,
+                "nccl_timeout": optional timeout override in seconds,
             }
         """
         key = message["key"]
@@ -793,6 +794,7 @@ class GPUDataServer:
         shape = tuple(message["shape"])
         dtype = message["dtype"]
         device = message["device"]
+        nccl_timeout = message.get("nccl_timeout")  # Optional timeout override
 
         pod_ip = os.getenv("POD_IP", "127.0.0.1")
 
@@ -842,6 +844,7 @@ class GPUDataServer:
                 master_port=master_port,
                 rank=rank,
                 world_size=world_size,
+                nccl_timeout=nccl_timeout,
             )
 
             return {"status": "ok", "broadcast_id": broadcast_id}
@@ -1190,13 +1193,20 @@ class GPUDataServer:
         master_port: int,
         rank: int,
         world_size: int,
+        nccl_timeout: Optional[int] = None,
     ):
         """
         Join NCCL broadcast as a receiver (rank > 0).
+
+        Args:
+            nccl_timeout: Optional timeout override in seconds (for testing)
         """
         from datetime import timedelta
 
         dist = _get_torch_distributed()
+
+        # Use override timeout if provided, otherwise use global setting
+        timeout_seconds = nccl_timeout if nccl_timeout is not None else KT_NCCL_TIMEOUT_SECONDS
 
         # Set up NCCL environment
         os.environ["MASTER_ADDR"] = master_addr
@@ -1204,7 +1214,7 @@ class GPUDataServer:
 
         logger.info(
             f"Joining NCCL broadcast {broadcast_id}: rank={rank}, world_size={world_size}, "
-            f"MASTER_ADDR={master_addr}, MASTER_PORT={master_port}"
+            f"MASTER_ADDR={master_addr}, MASTER_PORT={master_port}, timeout={timeout_seconds}s"
         )
 
         process_group = None
@@ -1218,7 +1228,7 @@ class GPUDataServer:
                     backend="nccl",
                     rank=rank,
                     world_size=world_size,
-                    timeout=timedelta(seconds=KT_NCCL_TIMEOUT_SECONDS),
+                    timeout=timedelta(seconds=timeout_seconds),
                 )
                 process_group = dist.group.WORLD
 
@@ -1444,6 +1454,7 @@ class GPUDataServerClient:
         source_ip: str,
         source_gpu_port: int,
         dest_tensor,
+        nccl_timeout: Optional[int] = None,
     ) -> dict:
         """
         Request to receive a broadcast from a remote source.
@@ -1456,6 +1467,7 @@ class GPUDataServerClient:
             source_ip: IP of the source pod
             source_gpu_port: TCP port of the source's GPU server
             dest_tensor: Pre-allocated destination tensor to receive into
+            nccl_timeout: Override NCCL timeout in seconds (for testing)
 
         Returns:
             Server response dict
@@ -1482,7 +1494,12 @@ class GPUDataServerClient:
             "device": dest_tensor.device.index,
         }
 
-        return self._send_message(message, timeout=120.0)
+        if nccl_timeout is not None:
+            message["nccl_timeout"] = nccl_timeout
+
+        # Use longer client timeout to account for NCCL timeout
+        client_timeout = max(120.0, (nccl_timeout or 60) + 30)
+        return self._send_message(message, timeout=client_timeout)
 
     def execute_broadcast_group(
         self,
