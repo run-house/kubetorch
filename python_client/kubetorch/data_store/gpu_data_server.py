@@ -62,6 +62,64 @@ DEFAULT_NCCL_PORT_RANGE_START = 29500
 DEFAULT_NCCL_PORT_RANGE_END = 29600
 SERVER_PID_FILE = "/tmp/kt-gpu-data-server.pid"
 
+# Configurable via environment variables
+KT_NCCL_TIMEOUT_SECONDS = int(os.environ.get("KT_NCCL_TIMEOUT_SECONDS", "60"))
+KT_NCCL_MAX_FAILURES = int(os.environ.get("KT_NCCL_MAX_FAILURES", "3"))
+
+
+def _get_nccl_cuda_versions() -> dict:
+    """Get NCCL and CUDA version information for compatibility checking."""
+    try:
+        torch = _get_torch()
+        versions = {
+            "cuda_version": getattr(torch.version, "cuda", None),
+            "torch_version": torch.__version__,
+        }
+        # NCCL version is only available if CUDA is available
+        if torch.cuda.is_available():
+            try:
+                versions["nccl_version"] = torch.cuda.nccl.version()
+            except Exception:
+                versions["nccl_version"] = None
+        else:
+            versions["nccl_version"] = None
+        return versions
+    except Exception:
+        return {"cuda_version": None, "torch_version": None, "nccl_version": None}
+
+
+def _check_version_compatibility(local_versions: dict, remote_versions: dict) -> tuple[bool, str]:
+    """
+    Check if NCCL/CUDA versions are compatible between two nodes.
+
+    Returns:
+        (is_compatible, error_message)
+    """
+    # Check NCCL version (must match major.minor)
+    local_nccl = local_versions.get("nccl_version")
+    remote_nccl = remote_versions.get("nccl_version")
+
+    if local_nccl and remote_nccl:
+        # NCCL version is a tuple like (2, 19, 3)
+        if isinstance(local_nccl, (list, tuple)) and isinstance(remote_nccl, (list, tuple)):
+            if len(local_nccl) >= 2 and len(remote_nccl) >= 2:
+                if local_nccl[0] != remote_nccl[0] or local_nccl[1] != remote_nccl[1]:
+                    return False, (
+                        f"NCCL version mismatch: local={'.'.join(map(str, local_nccl))}, "
+                        f"remote={'.'.join(map(str, remote_nccl))}. "
+                        "NCCL requires matching major.minor versions for communication."
+                    )
+
+    # Check CUDA version (warn but don't fail on minor mismatch)
+    local_cuda = local_versions.get("cuda_version")
+    remote_cuda = remote_versions.get("cuda_version")
+
+    if local_cuda and remote_cuda and local_cuda != remote_cuda:
+        # Log warning but don't fail - CUDA minor version mismatches often work
+        logger.warning(f"CUDA version mismatch: local={local_cuda}, remote={remote_cuda}")
+
+    return True, ""
+
 
 def _serialize_ipc_handle(ipc_handle: Tuple) -> List:
     """
@@ -259,6 +317,39 @@ class GPUDataServer:
 
         # Pending receive requests: broadcast_id -> {dest_tensor, event}
         self._pending_receives: Dict[str, Dict] = {}
+
+        # NCCL failure tracking for auto-restart
+        self._consecutive_nccl_failures = 0
+        self._nccl_failure_lock = threading.Lock()
+
+        # Cache version info at startup
+        self._versions = _get_nccl_cuda_versions()
+
+    def _record_nccl_success(self):
+        """Record a successful NCCL operation, resetting failure counter."""
+        with self._nccl_failure_lock:
+            self._consecutive_nccl_failures = 0
+
+    def _record_nccl_failure(self, error: str):
+        """
+        Record an NCCL failure. If consecutive failures exceed threshold,
+        terminate the server to allow a clean restart.
+        """
+        with self._nccl_failure_lock:
+            self._consecutive_nccl_failures += 1
+            count = self._consecutive_nccl_failures
+
+        logger.error(f"NCCL failure #{count}/{KT_NCCL_MAX_FAILURES}: {error}")
+
+        if count >= KT_NCCL_MAX_FAILURES:
+            logger.critical(
+                f"GPU Data Server terminating after {count} consecutive NCCL failures. "
+                "NCCL state is likely corrupted. Server will auto-restart on next request. "
+                "Registered tensors will need to be re-published with kt.put()."
+            )
+            # Use os._exit to ensure immediate termination without cleanup
+            # that might hang on corrupted NCCL state
+            os._exit(1)
 
     def start(self):
         """Start the GPU data server."""
@@ -628,6 +719,8 @@ class GPUDataServer:
 
         The getter GPU servers will connect as ranks 1..N.
         """
+        from datetime import timedelta
+
         dist = _get_torch_distributed()
 
         pod_ip = os.getenv("POD_IP", "127.0.0.1")
@@ -643,7 +736,7 @@ class GPUDataServer:
 
         process_group = None
         try:
-            # Initialize process group as rank 0
+            # Initialize process group as rank 0 with timeout
             if dist.is_initialized():
                 # Create new group for this broadcast
                 ranks = list(range(world_size))
@@ -653,6 +746,7 @@ class GPUDataServer:
                     backend="nccl",
                     rank=0,
                     world_size=world_size,
+                    timeout=timedelta(seconds=KT_NCCL_TIMEOUT_SECONDS),
                 )
                 process_group = dist.group.WORLD
 
@@ -660,6 +754,12 @@ class GPUDataServer:
             dist.broadcast(tensor, src=0, group=process_group)
 
             logger.info(f"Broadcast {broadcast_id} complete")
+            self._record_nccl_success()
+
+        except Exception as e:
+            logger.error(f"Broadcast {broadcast_id} failed: {e}")
+            self._record_nccl_failure(str(e))
+            raise
 
         finally:
             # Cleanup process group
@@ -684,6 +784,7 @@ class GPUDataServer:
                 "shape": tensor shape,
                 "dtype": tensor dtype,
                 "device": CUDA device index,
+                "nccl_timeout": optional timeout override in seconds,
             }
         """
         key = message["key"]
@@ -693,6 +794,7 @@ class GPUDataServer:
         shape = tuple(message["shape"])
         dtype = message["dtype"]
         device = message["device"]
+        nccl_timeout = message.get("nccl_timeout")  # Optional timeout override
 
         pod_ip = os.getenv("POD_IP", "127.0.0.1")
 
@@ -710,6 +812,8 @@ class GPUDataServer:
                     "getter_port": self.tcp_port,
                     "shape": list(shape),
                     "dtype": dtype,
+                    # Include version info for compatibility checking
+                    "versions": self._versions,
                 },
                 timeout=30.0,
             )
@@ -740,6 +844,7 @@ class GPUDataServer:
                 master_port=master_port,
                 rank=rank,
                 world_size=world_size,
+                nccl_timeout=nccl_timeout,
             )
 
             return {"status": "ok", "broadcast_id": broadcast_id}
@@ -762,11 +867,20 @@ class GPUDataServer:
                 "getter_port": TCP port of getter's GPU server,
                 "shape": expected tensor shape,
                 "dtype": expected tensor dtype,
+                "versions": NCCL/CUDA version info from getter,
             }
         """
         key = message["key"]
         # getter_ip and getter_port available for future multi-getter support
         _ = message["getter_ip"], message["getter_port"]
+
+        # Check NCCL/CUDA version compatibility before attempting transfer
+        remote_versions = message.get("versions", {})
+        if remote_versions:
+            is_compatible, error_msg = _check_version_compatibility(self._versions, remote_versions)
+            if not is_compatible:
+                logger.error(f"Version incompatibility with getter: {error_msg}")
+                return {"status": "error", "error": error_msg}
 
         with self._lock:
             if key not in self._registered:
@@ -939,6 +1053,8 @@ class GPUDataServer:
                 )
 
             # Step 4: Set up NCCL and perform broadcasts
+            from datetime import timedelta
+
             os.environ["MASTER_ADDR"] = master_addr
             os.environ["MASTER_PORT"] = str(master_port)
 
@@ -951,6 +1067,7 @@ class GPUDataServer:
                     backend="nccl",
                     rank=rank,
                     world_size=world_size,
+                    timeout=timedelta(seconds=KT_NCCL_TIMEOUT_SECONDS),
                 )
                 process_group = dist.group.WORLD
 
@@ -991,6 +1108,7 @@ class GPUDataServer:
                     dist.broadcast(tensor, src=src_rank, group=process_group)
 
                 logger.info(f"Broadcast group {group_id} complete")
+                self._record_nccl_success()
                 return {"status": "ok", "group_id": group_id, "rank": rank}
 
             finally:
@@ -1002,6 +1120,7 @@ class GPUDataServer:
 
         except Exception as e:
             logger.error(f"Broadcast group {group_id} failed: {e}")
+            self._record_nccl_failure(str(e))
             import traceback
 
             logger.error(traceback.format_exc())
@@ -1017,6 +1136,8 @@ class GPUDataServer:
         """
         Serve NCCL broadcast as rank 0 (source) in a background thread.
         """
+        from datetime import timedelta
+
         dist = _get_torch_distributed()
         pod_ip = os.getenv("POD_IP", "127.0.0.1")
 
@@ -1031,7 +1152,7 @@ class GPUDataServer:
 
         process_group = None
         try:
-            # Initialize process group as rank 0
+            # Initialize process group as rank 0 with timeout
             if dist.is_initialized():
                 ranks = list(range(world_size))
                 process_group = dist.new_group(ranks)
@@ -1040,6 +1161,7 @@ class GPUDataServer:
                     backend="nccl",
                     rank=0,
                     world_size=world_size,
+                    timeout=timedelta(seconds=KT_NCCL_TIMEOUT_SECONDS),
                 )
                 process_group = dist.group.WORLD
 
@@ -1047,9 +1169,11 @@ class GPUDataServer:
             dist.broadcast(tensor, src=0, group=process_group)
 
             logger.info(f"NCCL broadcast {broadcast_id} complete")
+            self._record_nccl_success()
 
         except Exception as e:
             logger.error(f"NCCL broadcast {broadcast_id} failed: {e}")
+            self._record_nccl_failure(str(e))
 
         finally:
             if process_group is not None:
@@ -1069,11 +1193,20 @@ class GPUDataServer:
         master_port: int,
         rank: int,
         world_size: int,
+        nccl_timeout: Optional[int] = None,
     ):
         """
         Join NCCL broadcast as a receiver (rank > 0).
+
+        Args:
+            nccl_timeout: Optional timeout override in seconds (for testing)
         """
+        from datetime import timedelta
+
         dist = _get_torch_distributed()
+
+        # Use override timeout if provided, otherwise use global setting
+        timeout_seconds = nccl_timeout if nccl_timeout is not None else KT_NCCL_TIMEOUT_SECONDS
 
         # Set up NCCL environment
         os.environ["MASTER_ADDR"] = master_addr
@@ -1081,12 +1214,12 @@ class GPUDataServer:
 
         logger.info(
             f"Joining NCCL broadcast {broadcast_id}: rank={rank}, world_size={world_size}, "
-            f"MASTER_ADDR={master_addr}, MASTER_PORT={master_port}"
+            f"MASTER_ADDR={master_addr}, MASTER_PORT={master_port}, timeout={timeout_seconds}s"
         )
 
         process_group = None
         try:
-            # Initialize process group
+            # Initialize process group with timeout
             if dist.is_initialized():
                 ranks = list(range(world_size))
                 process_group = dist.new_group(ranks)
@@ -1095,6 +1228,7 @@ class GPUDataServer:
                     backend="nccl",
                     rank=rank,
                     world_size=world_size,
+                    timeout=timedelta(seconds=timeout_seconds),
                 )
                 process_group = dist.group.WORLD
 
@@ -1102,6 +1236,12 @@ class GPUDataServer:
             dist.broadcast(dest_tensor, src=0, group=process_group)
 
             logger.info(f"NCCL broadcast {broadcast_id} received successfully")
+            self._record_nccl_success()
+
+        except Exception as e:
+            logger.error(f"NCCL broadcast {broadcast_id} join failed: {e}")
+            self._record_nccl_failure(str(e))
+            raise
 
         finally:
             if process_group is not None:
@@ -1314,6 +1454,7 @@ class GPUDataServerClient:
         source_ip: str,
         source_gpu_port: int,
         dest_tensor,
+        nccl_timeout: Optional[int] = None,
     ) -> dict:
         """
         Request to receive a broadcast from a remote source.
@@ -1326,6 +1467,7 @@ class GPUDataServerClient:
             source_ip: IP of the source pod
             source_gpu_port: TCP port of the source's GPU server
             dest_tensor: Pre-allocated destination tensor to receive into
+            nccl_timeout: Override NCCL timeout in seconds (for testing)
 
         Returns:
             Server response dict
@@ -1352,7 +1494,12 @@ class GPUDataServerClient:
             "device": dest_tensor.device.index,
         }
 
-        return self._send_message(message, timeout=120.0)
+        if nccl_timeout is not None:
+            message["nccl_timeout"] = nccl_timeout
+
+        # Use longer client timeout to account for NCCL timeout
+        client_timeout = max(120.0, (nccl_timeout or 60) + 30)
+        return self._send_message(message, timeout=client_timeout)
 
     def execute_broadcast_group(
         self,
