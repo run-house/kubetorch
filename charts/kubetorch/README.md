@@ -31,8 +31,7 @@ A Helm chart for kubetorch
 | controller.workers | int | `8` |  |
 | dataStore.affinity | object | `{}` |  |
 | dataStore.cleanupCron.enabled | bool | `false` |  |
-| dataStore.cpu.limit | int | `4` |  |
-| dataStore.cpu.request | int | `2` |  |
+| dataStore.cpu.request | int | `1` |  |
 | dataStore.ephemeralStorage.limit | string | `"10Gi"` |  |
 | dataStore.ephemeralStorage.request | string | `"5Gi"` |  |
 | dataStore.image | string | `"ghcr.io/run-house/kubetorch-data-store:v1"` |  |

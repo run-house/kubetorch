@@ -38,8 +38,7 @@ dataStore:
   maxVerbosity: 0  # Log verbosity (0-4, use 0 for production, higher for debugging)
   maxConnectionsPerModule: 0  # Per-module limit (0 = unlimited, inherits global limit)
   cpu:
-    request: 2
-    limit: 4
+    request: 1
   memory:
     request: 4Gi
     limit: 8Gi
