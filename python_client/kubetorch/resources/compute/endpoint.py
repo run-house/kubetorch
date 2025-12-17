@@ -3,6 +3,8 @@
 import re
 from typing import Dict, Optional
 
+from kubetorch.serving.constants import DEFAULT_NGINX_PORT
+
 
 class Endpoint:
     """Configure how kubetorch routes calls to a compute pool.
@@ -99,9 +101,11 @@ class Endpoint:
 
         # Pattern to detect cluster-internal Kubernetes URLs
         # Matches: http(s)://service-name.namespace.svc[.cluster.local][:port][/path]
-        cluster_internal_pattern = re.compile(r"https?://([^.]+)\.([^.]+)\.svc(?:\.cluster\.local)?(?:[:/]|$)")
+        cluster_internal_pattern = re.compile(r"https?://([^.]+)\.([^.]+)\.svc(?:\.cluster\.local)?(?::(\d+))?(/.*)?$")
         match = cluster_internal_pattern.match(self.url)
         if match:
-            name, namespace = match.group(1), match.group(2)
-            return f"http://localhost:{proxy_port}/{namespace}/{name}"
+            name, namespace, port, path = match.groups()
+            port = port or DEFAULT_NGINX_PORT
+            path = path or ""
+            return f"http://localhost:{proxy_port}/{namespace}/{name}:{port}{path}"
         return self.url

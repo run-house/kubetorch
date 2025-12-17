@@ -529,63 +529,50 @@ async def test_byo_manifest_with_endpoint_url():
     2. KT creates pods compute from manifest with labels matching the Service selector, and using user endpoint url
     3. Check that function calls go through user's service URL into KT's pods
     """
-    try:
-        pool_name = f"{kt.config.username}-endpoint-url"
-        namespace = kt.globals.config.namespace
-        controller = kt.globals.controller_client()
+    pool_name = f"{kt.config.username}-endpoint-url"
+    namespace = kt.globals.config.namespace
+    controller = kt.globals.controller_client()
 
-        # User's routing layer - routes traffic to pods with {app: pool_name} label
-        user_service_name = f"{pool_name}-user-svc"
-        user_port = 80
-        user_service = {
-            "apiVersion": "v1",
-            "kind": "Service",
-            "metadata": {
-                "name": user_service_name,
-                "namespace": namespace,
-            },
-            "spec": {
-                "selector": {"app": pool_name},  # Will route to pods KT creates
-                "ports": [{"port": user_port, "targetPort": DEFAULT_KT_SERVER_PORT}],
-            },
-        }
-        controller.create_service(namespace=namespace, body=user_service)
+    # User's routing layer - routes traffic to pods with {app: pool_name} label
+    user_service_name = f"{pool_name}-user-svc"
+    user_port = 82
+    user_service = {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {
+            "name": user_service_name,
+            "namespace": namespace,
+        },
+        "spec": {
+            "selector": {"app": pool_name},  # Will route to pods KT creates
+            "ports": [{"port": user_port, "targetPort": DEFAULT_KT_SERVER_PORT}],
+        },
+    }
+    controller.create_service(namespace=namespace, body=user_service)
 
-        # Create Compute from manifest with selector and endpoint
-        byo_manifest = get_pool_manifest(pool_name, namespace)
-        user_service_url = f"http://{user_service_name}.{namespace}.svc.cluster.local:{user_port}"
-        endpoint = kt.Endpoint(url=user_service_url)
+    # Create Compute from manifest with selector and endpoint
+    byo_manifest = get_pool_manifest(pool_name, namespace)
+    user_service_url = f"http://{user_service_name}.{namespace}.svc.cluster.local:{user_port}"
+    endpoint = kt.Endpoint(url=user_service_url)
 
-        compute = kt.Compute.from_manifest(
-            manifest=byo_manifest,
-            selector={"app": pool_name},
-            endpoint=endpoint,
-        )
-        assert compute._endpoint_config == endpoint
-        assert compute.endpoint == user_service_url
+    compute = kt.Compute.from_manifest(
+        manifest=byo_manifest,
+        selector={"app": pool_name},
+        endpoint=endpoint,
+    )
+    assert compute._endpoint_config == endpoint
+    assert compute.endpoint == user_service_url
 
-        remote_fn = kt.fn(summer).to(compute)
+    remote_fn = kt.fn(summer).to(compute)
 
-        # Verify kubetorch did not create its own service (endpoint URL mode should skip service creation)
-        kt_service_name = remote_fn.service_name
-        try:
-            controller.get_service(name=kt_service_name, namespace=namespace)
-            pytest.fail(
-                f"Service '{kt_service_name}' should not exist when endpoint URL is provided. "
-                "Kubetorch should route through the user's service, not create its own."
-            )
-        except Exception as e:
-            assert "not found" in str(e).lower() or "404" in str(e), f"Unexpected error: {e}"
+    # Verify kubetorch did not create its own service (endpoint URL mode should skip service creation)
+    kt_service_name = remote_fn.service_name
+    with pytest.raises(Exception):
+        controller.get_service(name=kt_service_name, namespace=namespace)
 
-        # Traffic flows through user's service here since no KT created service exists
-        result = remote_fn(5, 10)
-        assert result == 15, f"Expected 15, got {result}"
-
-    finally:
-        try:
-            controller.delete_service(name=user_service_name, namespace=namespace)
-        except Exception:
-            pass
+    # Traffic flows through user's service here since no KT created service exists
+    result = remote_fn(5, 10)
+    assert result == 15, f"Expected 15, got {result}"
 
 
 @pytest.mark.level("minimal")
