@@ -1,3 +1,4 @@
+{{- if .Values.ttlController.enabled }}
 # TTL controller for Kubetorch
 ---
 apiVersion: v1
@@ -128,4 +129,6 @@ spec:
     - protocol: {{ .protocol }}
       port: {{ .port }}
     {{- end }}
+{{- end }}
+
 {{- end }}
