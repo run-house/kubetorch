@@ -504,20 +504,20 @@ class GPUTestHelper:
         """
         import torch
 
-        from kubetorch.data_store.gpu_data_server import GPUDataServerClient, start_server_if_needed
+        from kubetorch.data_store.pod_data_server import PodDataServerClient, start_server_if_needed
 
         if shape is None:
             shape = [64, 64]
 
         try:
-            # Ensure GPU data server is running
+            # Ensure pod data server is running
             start_server_if_needed()
 
             # Create a dummy destination tensor
             dest_tensor = torch.empty(shape, dtype=torch.float32, device="cuda:0")
 
             # Try to receive from non-existent source - this should timeout
-            client = GPUDataServerClient()
+            client = PodDataServerClient()
             result = client.receive_broadcast(
                 key="test/fake-source",
                 source_ip=fake_source_ip,
@@ -550,13 +550,13 @@ class GPUTestHelper:
         Returns:
             Dict with server status information
         """
-        from kubetorch.data_store.gpu_data_server import GPUDataServerClient, is_server_running
+        from kubetorch.data_store.pod_data_server import is_server_running, PodDataServerClient
 
         try:
             if not is_server_running():
                 return {"healthy": False, "error": "Server not running"}
 
-            client = GPUDataServerClient()
+            client = PodDataServerClient()
             response = client.ping()
 
             return {
@@ -576,7 +576,7 @@ class GPUTestHelper:
         """
         import signal
 
-        from kubetorch.data_store.gpu_data_server import is_server_running, SERVER_PID_FILE, start_server_if_needed
+        from kubetorch.data_store.pod_data_server import is_server_running, SERVER_PID_FILE, start_server_if_needed
 
         try:
             # Kill existing server if running

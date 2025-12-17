@@ -43,6 +43,17 @@ class BroadcastWindow:
     - get() calls join as "getters" (data destinations)
     - Once the quorum closes, putters send data to all getters
 
+    For GPU transfers:
+    - Both putters and getters join the broadcast group
+    - Quorum waits for all participants before starting NCCL
+    - Default fanout of 2 (binary tree)
+
+    For filesystem transfers:
+    - Only getters participate (original putter is discovered via metadata)
+    - Rolling participation - new joiners get assigned a parent immediately
+    - Tree-based propagation with configurable fanout (~50 for filesystem)
+    - Each getter rsyncs from its parent's rsync daemon
+
     Attributes:
         timeout: Maximum time in seconds to wait for participants. The quorum
             closes after this timeout even if other conditions aren't met.
@@ -53,6 +64,9 @@ class BroadcastWindow:
         group_id: Optional name for the broadcast group. If not provided, one
             is auto-generated from the keys being transferred. Use the same
             group_id across put/get calls to ensure they join the same quorum.
+        fanout: Number of children each node can have in the broadcast tree.
+            Defaults to 2 for GPU (binary tree), can be set higher for filesystem
+            transfers where rsync can handle many concurrent clients (~50).
 
     Examples:
         # Wait up to 10 seconds for participants
@@ -66,12 +80,16 @@ class BroadcastWindow:
 
         # Combined: wait for 4 participants OR 30 seconds, whichever first
         BroadcastWindow(world_size=4, timeout=30.0)
+
+        # Filesystem broadcast with high fanout
+        BroadcastWindow(world_size=100, fanout=50, timeout=60.0)
     """
 
     timeout: Optional[float] = None
     world_size: Optional[int] = None
     ips: Optional[List[str]] = None
     group_id: Optional[str] = None
+    fanout: Optional[int] = None  # Default: 2 for GPU, 50 for filesystem
 
     def __post_init__(self):
         """Validate that at least one condition is specified."""
@@ -85,4 +103,5 @@ class BroadcastWindow:
             "world_size": self.world_size,
             "ips": self.ips,
             "group_id": self.group_id,
+            "fanout": self.fanout,
         }

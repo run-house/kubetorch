@@ -26,7 +26,7 @@ from tests.assets.kv_store.store_helper import StoreTestHelper
 async def store_helper():
     """Fixture that provides a StoreTestHelper instance for store testing."""
     helper_cls = await kt.cls(StoreTestHelper, name="store-test-helper").to_async(
-        kt.Compute(cpus="0.1", memory="512Mi")
+        kt.Compute(cpus="0.1", memory="512Mi", logging_config=kt.LoggingConfig(level="debug"))
     )
     return helper_cls
 
@@ -34,7 +34,9 @@ async def store_helper():
 @pytest.fixture(scope="session")
 async def store_peer():
     """Fixture that provides a second StoreTestHelper instance for peer-to-peer testing."""
-    helper_cls = await kt.cls(StoreTestHelper, name="store-test-peer").to_async(kt.Compute(cpus="0.1", memory="512Mi"))
+    helper_cls = await kt.cls(StoreTestHelper, name="store-test-peer").to_async(
+        kt.Compute(cpus="0.1", memory="512Mi", logging_config=kt.LoggingConfig(level="debug"))
+    )
     return helper_cls
 
 
@@ -400,52 +402,112 @@ def _delete_from_store_filesystem(key: str, namespace: str = "default") -> dict:
     }
 
 
+# ==================== Filesystem Broadcast Operations ====================
+
+
 @pytest.mark.level("minimal")
-async def test_store_seeding_with_broadcast(store_helper, store_peer):
-    """
-    Test that broadcast window works correctly for coordinated data transfer.
+async def test_filesystem_broadcast_p2p(store_helper, store_peer):
+    """Test peer-to-peer filesystem broadcast: helper publishes, peer gets via broadcast.
 
-    Flow:
-    1. Upload data to the central store via kt.put
-    2. Pod B (store_peer) retrieves from store
-    3. Delete the data from the store filesystem (but keep metadata entries)
-    4. Pod A (store_helper) retrieves the same key - must get it from Pod B since store is empty
+    This tests p2p broadcast (locale="local") with a single getter:
+    1. store_helper publishes data locally (rank 0)
+    2. store_peer gets via broadcast (rank 1, parent = helper)
     """
+    import uuid
+
+    test_id = uuid.uuid4().hex[:8]
+    publisher_data_path = f"fs_broadcast_p2p_{test_id}/model.bin"
+    publisher_data_content = "Peer-to-peer broadcast test data\nVersion 1.0"
+    publish_key = f"/{store_helper.service_name}/fs-broadcast-p2p-{test_id}/model"
+    group_id = f"fs-broadcast-p2p-{test_id}"
+
+    # Step 1: Publisher puts data with locale="local" (starts rsync daemon)
+    pub_result = store_helper.publish_data_local(
+        key=publish_key, local_path=publisher_data_path, content=publisher_data_content
+    )
+    assert pub_result["success"], f"Publisher put with locale=local failed: {pub_result.get('error')}"
+    publisher_ip = pub_result["pod_ip"]
+    assert publisher_ip != "unknown", "Publisher should have POD_IP set"
+
+    # Step 2: Getter retrieves using filesystem broadcast
+    # With fanout=1, getter is rank 1 with parent = source (rank 0)
+    get_result = store_peer.get_with_fs_broadcast(
+        key=publish_key,
+        dest_path=f"fs_broadcast_p2p_download_{test_id}",
+        group_id=group_id,
+        fanout=1,
+        timeout=60.0,
+    )
+
+    assert get_result[
+        "success"
+    ], f"Filesystem broadcast get failed: {get_result.get('error')}\n{get_result.get('traceback', '')}"
+    assert get_result["file_count"] > 0, "Should have downloaded files via broadcast"
+    assert publisher_data_content in get_result.get("content", ""), "Content should match published data"
+
+
+@pytest.mark.level("minimal")
+async def test_filesystem_broadcast_chain(store_helper, store_peer):
+    """Test filesystem broadcast chain: store -> helper -> peer (fanout=1).
+
+    This tests the full 3-node chain:
+    1. Local client uploads to store pod (rank 0)
+    2. store_helper gets via broadcast (rank 1, parent = store)
+    3. store_peer gets via broadcast (rank 2, parent = helper)
+
+    With fanout=1, each node can only have 1 child, creating a linear chain.
+    """
+    import uuid
+
+    test_id = uuid.uuid4().hex[:8]
     service_name = store_helper.service_name
+    test_content = "Filesystem broadcast chain test data\nVersion 1.0\n" + ("x" * 1000)
 
-    # Step 1: Upload data to the central store
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
-        seed_test_file = tmpdir / "seed_test.txt"
-        seed_test_file.write_text("Seeding test data\nOriginal from central store")
 
-        seeding_key = f"/{service_name}/seeding-test/data.txt"
-        kt.put(key=seeding_key, src=str(seed_test_file))
+        # Create test file locally
+        test_file = tmpdir / "chain_test.bin"
+        test_file.write_text(test_content)
 
-    # Step 2: Pod B retrieves from store (uses locale="local" to seed)
-    get_result_b = store_peer.get_data_from_store(
-        key=seeding_key,
-        dest_path="seeding_test_download",
-    )
-    assert get_result_b["success"], f"Pod B get failed: {get_result_b.get('error')}"
-    assert get_result_b["file_count"] > 0, "Pod B should have downloaded files"
+        broadcast_key = f"{service_name}/fs-broadcast-chain-{test_id}/model"
+        group_id = f"fs-broadcast-chain-{test_id}"
 
-    # Pod B publishes the data locally so others can get it from Pod B
-    store_peer.publish_data_local(
-        key=seeding_key,
-        local_path="seeding_test_download/data.txt",
-    )
+        # Step 1: Upload from local client to store pod
+        kt.put(key=broadcast_key, src=str(test_file))
 
-    # Step 3: Delete the data directly from the store pod's filesystem
-    _delete_from_store_filesystem(seeding_key)  # Raises on failure
+        # Step 2: store_helper gets via broadcast (rank 1, parent = store at rank 0)
+        get_result_helper = store_helper.get_with_fs_broadcast(
+            key=broadcast_key,
+            dest_path=f"fs_chain_helper_{test_id}",
+            group_id=group_id,
+            fanout=1,
+            timeout=60.0,
+        )
 
-    # Step 4: Pod A retrieves the same key - must get it from Pod B since store is empty
-    get_result_a = store_helper.get_data_from_store(
-        key=seeding_key,
-        dest_path="seeding_from_peer",
-    )
-    assert get_result_a["success"], f"Pod A get failed (failover didn't work): {get_result_a.get('error')}"
-    assert get_result_a["file_count"] > 0, "Pod A should have downloaded from seeded Pod B"
+        assert get_result_helper["success"], (
+            f"Helper get failed: {get_result_helper.get('error')}\n" f"{get_result_helper.get('traceback', '')}"
+        )
+        assert get_result_helper["file_count"] > 0, "Helper should have downloaded files"
+        assert test_content in get_result_helper.get("content", ""), "Helper content should match"
+
+        # Step 3: store_peer gets via broadcast (rank 2, parent = helper at rank 1)
+        get_result_peer = store_peer.get_with_fs_broadcast(
+            key=broadcast_key,
+            dest_path=f"fs_chain_peer_{test_id}",
+            group_id=group_id,
+            fanout=1,
+            timeout=60.0,
+        )
+
+        assert get_result_peer["success"], (
+            f"Peer get failed: {get_result_peer.get('error')}\n" f"{get_result_peer.get('traceback', '')}"
+        )
+        assert get_result_peer["file_count"] > 0, "Peer should have downloaded files"
+        assert test_content in get_result_peer.get("content", ""), "Peer content should match"
+
+        # Verify the chain: peer should have gotten data from helper (rank 1), not store (rank 0)
+        # With fanout=1: rank 2's parent = (2-1) // 1 = 1 (helper)
 
 
 # ==================== Edge Cases ====================

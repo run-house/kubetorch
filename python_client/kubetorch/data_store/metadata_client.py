@@ -483,3 +483,186 @@ class MetadataClient:
         except requests.RequestException as e:
             logger.warning(f"Failed to cleanup keys for service '{service_name}': {e}")
             return {"success": False, "error": str(e), "deleted_count": 0}
+
+    # ==================== Filesystem Broadcast Methods ====================
+
+    def join_fs_broadcast(
+        self,
+        group_id: str,
+        key: str,
+        pod_ip: str,
+        pod_name: Optional[str] = None,
+        fanout: Optional[int] = None,
+    ) -> dict:
+        """
+        Join a filesystem broadcast group and get parent info.
+
+        Args:
+            group_id: Broadcast group identifier
+            key: Storage key to retrieve
+            pod_ip: IP address of this pod
+            pod_name: Name of this pod
+            fanout: Tree fanout (default: 50 for filesystem)
+
+        Returns:
+            dict with status, rank, parent_ip, parent_rank, source_path, etc.
+        """
+        return self.join_fs_broadcast_with_callback(
+            group_id=group_id,
+            key=key,
+            pod_ip=pod_ip,
+            pod_name=pod_name,
+            fanout=fanout,
+            transfer_callback=None,
+        )
+
+    def join_fs_broadcast_with_callback(
+        self,
+        group_id: str,
+        key: str,
+        pod_ip: str,
+        pod_name: Optional[str] = None,
+        fanout: Optional[int] = None,
+        transfer_callback=None,
+    ) -> dict:
+        """
+        Join a filesystem broadcast group via WebSocket and perform transfer.
+
+        This is a rolling participation system - the server returns immediately
+        with parent info, allowing this node to start rsync right away.
+
+        Args:
+            group_id: Broadcast group identifier
+            key: Storage key to retrieve
+            pod_ip: IP address of this pod
+            pod_name: Name of this pod
+            fanout: Tree fanout (default: 50 for filesystem)
+            transfer_callback: Function to call to perform the actual rsync.
+                              Called with (parent_ip, parent_path, source_path) -> bool
+
+        Returns:
+            dict with status, rank, transfer result, etc.
+        """
+        import asyncio
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(
+                        asyncio.run,
+                        self._join_fs_broadcast_with_callback_async(
+                            group_id, key, pod_ip, pod_name, fanout, transfer_callback
+                        ),
+                    )
+                    return future.result()
+            else:
+                return loop.run_until_complete(
+                    self._join_fs_broadcast_with_callback_async(
+                        group_id, key, pod_ip, pod_name, fanout, transfer_callback
+                    )
+                )
+        except RuntimeError:
+            return asyncio.run(
+                self._join_fs_broadcast_with_callback_async(group_id, key, pod_ip, pod_name, fanout, transfer_callback)
+            )
+
+    async def _join_fs_broadcast_with_callback_async(
+        self,
+        group_id: str,
+        key: str,
+        pod_ip: str,
+        pod_name: Optional[str],
+        fanout: Optional[int],
+        transfer_callback,
+    ) -> dict:
+        """Async implementation of filesystem broadcast join with callback."""
+        import asyncio
+        import json
+
+        try:
+            from websockets.asyncio.client import connect as ws_connect
+        except ImportError:
+            from websockets import connect as ws_connect
+
+        # Build WebSocket URL
+        encoded_group_id = quote(group_id, safe="")
+        base_url = self.base_url
+        if base_url.startswith("https://"):
+            ws_url = f"wss://{base_url[8:]}/ws/fs-broadcast/{encoded_group_id}"
+        elif base_url.startswith("http://"):
+            ws_url = f"ws://{base_url[7:]}/ws/fs-broadcast/{encoded_group_id}"
+        else:
+            ws_url = f"ws://{base_url}/ws/fs-broadcast/{encoded_group_id}"
+
+        logger.debug(f"Joining filesystem broadcast group '{group_id}' for key '{key}'")
+
+        try:
+            async with ws_connect(ws_url) as websocket:
+                # Send join message
+                join_msg = {
+                    "action": "join",
+                    "key": key,
+                    "pod_ip": pod_ip,
+                    "pod_name": pod_name,
+                }
+                if fanout is not None:
+                    join_msg["fanout"] = fanout
+
+                await websocket.send(json.dumps(join_msg))
+
+                # Wait for ready response (immediate for rolling participation)
+                response = json.loads(await asyncio.wait_for(websocket.recv(), timeout=30.0))
+
+                if response.get("event") == "error":
+                    return {
+                        "status": "error",
+                        "error": response.get("message", "Unknown error"),
+                    }
+
+                if response.get("event") != "ready":
+                    return {
+                        "status": "error",
+                        "error": f"Unexpected response: {response}",
+                    }
+
+                logger.debug(
+                    f"Joined filesystem broadcast: rank={response.get('rank')}, "
+                    f"parent_ip={response.get('parent_ip')}"
+                )
+
+                result = {
+                    "status": "ready",
+                    "rank": response.get("rank"),
+                    "parent_ip": response.get("parent_ip"),
+                    "parent_pod_name": response.get("parent_pod_name"),
+                    "parent_path": response.get("parent_path"),
+                    "parent_rank": response.get("parent_rank"),
+                    "source_ip": response.get("source_ip"),
+                    "source_pod_name": response.get("source_pod_name"),
+                    "source_path": response.get("source_path"),
+                }
+
+            # Connection closed - now perform the transfer outside the websocket context
+            transfer_success = False
+            if transfer_callback:
+                try:
+                    transfer_success = transfer_callback(
+                        result.get("parent_ip"),
+                        result.get("parent_path"),
+                        result.get("source_path"),
+                    )
+                except Exception as e:
+                    logger.error(f"Transfer callback failed: {e}")
+                    transfer_success = False
+
+            result["transfer_success"] = transfer_success
+            return result
+
+        except asyncio.TimeoutError:
+            return {"status": "error", "error": "Timeout waiting for server response"}
+        except Exception as e:
+            logger.error(f"Filesystem broadcast WebSocket error: {e}")
+            return {"status": "error", "error": str(e)}

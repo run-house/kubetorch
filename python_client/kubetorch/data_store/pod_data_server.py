@@ -1,22 +1,24 @@
 """
-GPU Data Server - Per-node server for GPU tensor transfers via NCCL.
+Pod Data Server - Per-node server for data transfers (GPU tensors and filesystem broadcasts).
 
-This server runs as a separate process on each node to handle NCCL broadcasts,
-isolating NCCL process group operations from application processes.
+This server runs as a separate process on each node to handle:
+- GPU tensor transfers via NCCL broadcasts
+- Filesystem broadcast coordination for tree-based p2p propagation
 
 Architecture:
-- Application processes call kt.put(data=tensor) which registers the tensor
-  via CUDA IPC handles with this server
-- The server holds IPC handles (not tensors) - memory is owned by the original process
-- When getters request data, the server reconstructs tensors and performs NCCL broadcast
-- Server-to-server communication for NCCL coordination (no metadata server bounce)
+- GPU: Application processes call kt.put(data=tensor) which registers the tensor
+  via CUDA IPC handles with this server. The server performs NCCL broadcasts.
+- Filesystem: Tracks completed filesystem broadcasts with local paths. Child getters
+  request data from parent's pod data server, which blocks until parent completes
+  and returns the local path for rsync.
+- Server-to-server communication for coordination (no metadata server bounce)
 
 Usage:
     # Start server (typically done automatically on first kt.put)
-    python -m kubetorch.data_store.gpu_data_server
+    python -m kubetorch.data_store.pod_data_server
 
     # Or programmatically
-    from kubetorch.data_store.gpu_data_server import start_server
+    from kubetorch.data_store.pod_data_server import start_server
     start_server()
 """
 
@@ -275,7 +277,7 @@ def _reconstruct_tensor_from_ipc(
     return tensor
 
 
-class GPUDataServer:
+class PodDataServer:
     """
     Per-node server for GPU tensor transfers via NCCL.
 
@@ -339,6 +341,15 @@ class GPUDataServer:
         self._broadcast_execution: Dict[str, Dict] = {}
         self._broadcast_execution_lock = threading.Lock()
 
+        # Filesystem broadcast tracking
+        # (group_id, key) -> {"local_path": str, "completed_at": float}
+        self._fs_broadcasts_completed: Dict[Tuple[str, str], Dict] = {}
+        # (group_id, key) -> threading.Event for waiting
+        self._fs_broadcast_events: Dict[Tuple[str, str], threading.Event] = {}
+        self._fs_broadcast_lock = threading.Lock()
+        # TTL for completed broadcasts (10 minutes)
+        self._fs_broadcast_ttl = 600
+
     def _record_nccl_success(self):
         """Record a successful NCCL operation, resetting failure counter."""
         with self._nccl_failure_lock:
@@ -357,7 +368,7 @@ class GPUDataServer:
 
         if count >= KT_NCCL_MAX_FAILURES:
             logger.critical(
-                f"GPU Data Server terminating after {count} consecutive NCCL failures. "
+                f"Pod Data Server terminating after {count} consecutive NCCL failures. "
                 "NCCL state is likely corrupted. Server will auto-restart on next request. "
                 "Registered tensors will need to be re-published with kt.put()."
             )
@@ -375,7 +386,7 @@ class GPUDataServer:
         with open(SERVER_PID_FILE, "w") as f:
             f.write(str(os.getpid()))
 
-        logger.info(f"GPU Data Server starting (PID: {os.getpid()})")
+        logger.info(f"Pod Data Server starting (PID: {os.getpid()})")
         logger.info(f"Unix socket: {self.socket_path}")
         logger.info(f"TCP port: {self.tcp_port}")
         logger.info(f"PID file: {SERVER_PID_FILE}")
@@ -405,7 +416,7 @@ class GPUDataServer:
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         signal.signal(signal.SIGINT, self._handle_shutdown)
 
-        logger.info("GPU Data Server ready")
+        logger.info("Pod Data Server ready")
 
         # Main accept loop for Unix socket (local clients)
         while self._running:
@@ -437,7 +448,7 @@ class GPUDataServer:
 
     def _cleanup(self):
         """Clean up server resources."""
-        logger.info("Cleaning up GPU Data Server")
+        logger.info("Cleaning up Pod Data Server")
 
         if self._unix_socket:
             self._unix_socket.close()
@@ -504,6 +515,9 @@ class GPUDataServer:
             elif command == "join_broadcast":
                 # Source server telling us to join as receiver
                 response = self._handle_join_broadcast(message)
+            elif command == "fs_broadcast_get_path":
+                # Child getter requesting local path for filesystem broadcast
+                response = self._handle_fs_broadcast_get_path(message)
             elif command == "ping":
                 response = {"status": "ok", "pid": os.getpid(), "tcp_port": self.tcp_port}
             else:
@@ -570,6 +584,12 @@ class GPUDataServer:
                 response = self._handle_get_tensor(message)
             elif command == "ping":
                 response = {"status": "ok", "pid": os.getpid(), "tcp_port": self.tcp_port}
+            elif command == "fs_broadcast_complete":
+                # Local client notifying that a filesystem broadcast download is complete
+                response = self._handle_fs_broadcast_complete(message)
+            elif command == "fs_broadcast_get_path":
+                # Local client requesting path (for testing; normally via TCP from child)
+                response = self._handle_fs_broadcast_get_path(message)
             else:
                 response = {"status": "error", "error": f"Unknown command: {command}"}
 
@@ -1681,7 +1701,7 @@ class GPUDataServer:
         Handle put_tensor command - register tensor locally + publish to MDS.
 
         If broadcast config is provided, joins the broadcast group via WebSocket.
-        GPU Data Server is always the coordinator for its pod.
+        Pod Data Server is always the coordinator for its pod.
         """
         key = message["key"]
         ipc_handle = _deserialize_ipc_handle(message["ipc_handle"])
@@ -1734,7 +1754,7 @@ class GPUDataServer:
         Handle get_tensor command - lookup from MDS + receive via NCCL.
 
         If broadcast config is provided, joins the broadcast group via WebSocket.
-        GPU Data Server is always the coordinator for its pod.
+        Pod Data Server is always the coordinator for its pod.
         """
         key = message["key"]
         dest_ipc_handle_serialized = message["dest_ipc_handle"]
@@ -1813,9 +1833,109 @@ class GPUDataServer:
             logger.error(f"get_tensor failed for '{key}': {e}")
             return {"status": "error", "error": str(e)}
 
+    # ==================== Filesystem Broadcast Methods ====================
 
-class GPUDataServerClient:
-    """Client for communicating with the GPU Data Server."""
+    def _cleanup_expired_fs_broadcasts(self):
+        """Remove filesystem broadcasts older than TTL."""
+        current_time = time.time()
+        with self._fs_broadcast_lock:
+            expired = [
+                key
+                for key, data in self._fs_broadcasts_completed.items()
+                if current_time - data["completed_at"] > self._fs_broadcast_ttl
+            ]
+            for key in expired:
+                del self._fs_broadcasts_completed[key]
+                if key in self._fs_broadcast_events:
+                    del self._fs_broadcast_events[key]
+
+    def _handle_fs_broadcast_complete(self, message: dict) -> dict:
+        """
+        Handle notification that a filesystem broadcast download is complete.
+
+        Called by the local client after successfully downloading data.
+        Signals any waiting child getters that data is available.
+        """
+        group_id = message.get("group_id")
+        key = message.get("key")
+        local_path = message.get("local_path")
+
+        if not all([group_id, key, local_path]):
+            return {"status": "error", "error": "Missing required fields: group_id, key, local_path"}
+
+        broadcast_key = (group_id, key)
+
+        with self._fs_broadcast_lock:
+            # Store completion info
+            self._fs_broadcasts_completed[broadcast_key] = {
+                "local_path": local_path,
+                "completed_at": time.time(),
+            }
+
+            # Signal any waiting child getters
+            if broadcast_key in self._fs_broadcast_events:
+                self._fs_broadcast_events[broadcast_key].set()
+
+            logger.info(f"Filesystem broadcast complete: {group_id}/{key} -> {local_path}")
+
+        # Cleanup expired broadcasts periodically
+        self._cleanup_expired_fs_broadcasts()
+
+        return {"status": "ok"}
+
+    def _handle_fs_broadcast_get_path(self, message: dict) -> dict:
+        """
+        Handle request from child getter for parent's local path.
+
+        Blocks until parent has completed its download, then returns the local path.
+        Called via TCP from child pod's client.
+        """
+        group_id = message.get("group_id")
+        key = message.get("key")
+        timeout = message.get("timeout", 60.0)
+
+        if not all([group_id, key]):
+            return {"status": "error", "error": "Missing required fields: group_id, key"}
+
+        broadcast_key = (group_id, key)
+
+        # Check if already completed
+        with self._fs_broadcast_lock:
+            if broadcast_key in self._fs_broadcasts_completed:
+                data = self._fs_broadcasts_completed[broadcast_key]
+                return {
+                    "status": "ok",
+                    "local_path": data["local_path"],
+                    "pod_ip": self._pod_ip,
+                }
+
+            # Create event if not exists
+            if broadcast_key not in self._fs_broadcast_events:
+                self._fs_broadcast_events[broadcast_key] = threading.Event()
+            event = self._fs_broadcast_events[broadcast_key]
+
+        # Wait for completion
+        logger.debug(f"Waiting for filesystem broadcast {group_id}/{key} to complete (timeout={timeout}s)")
+        completed = event.wait(timeout=timeout)
+
+        if not completed:
+            return {"status": "error", "error": f"Timeout waiting for broadcast {group_id}/{key}"}
+
+        # Get the path
+        with self._fs_broadcast_lock:
+            if broadcast_key in self._fs_broadcasts_completed:
+                data = self._fs_broadcasts_completed[broadcast_key]
+                return {
+                    "status": "ok",
+                    "local_path": data["local_path"],
+                    "pod_ip": self._pod_ip,
+                }
+
+        return {"status": "error", "error": "Broadcast completed but path not found"}
+
+
+class PodDataServerClient:
+    """Client for communicating with the Pod Data Server."""
 
     def __init__(self, socket_path: str = DEFAULT_SOCKET_PATH):
         self.socket_path = socket_path
@@ -2065,7 +2185,7 @@ class GPUDataServerClient:
         """
         High-level put: Register tensor + publish to MDS (or join broadcast).
 
-        GPU Data Server handles everything - just pass the tensor.
+        Pod Data Server handles everything - just pass the tensor.
 
         Args:
             key: Storage key
@@ -2119,7 +2239,7 @@ class GPUDataServerClient:
         """
         High-level get: MDS lookup + NCCL receive (or join broadcast).
 
-        GPU Data Server handles everything - just pass the destination tensor.
+        Pod Data Server handles everything - just pass the destination tensor.
 
         Args:
             key: Storage key
@@ -2163,6 +2283,92 @@ class GPUDataServerClient:
             client_timeout = max(120.0, (nccl_timeout or 60) + 30)
         return self._send_message(message, timeout=client_timeout)
 
+    # ==================== Filesystem Broadcast Methods ====================
+
+    def fs_broadcast_complete(self, group_id: str, key: str, local_path: str) -> dict:
+        """
+        Notify local server that a filesystem broadcast download is complete.
+
+        Called after successfully downloading data via rsync.
+
+        Args:
+            group_id: Broadcast group identifier
+            key: Storage key
+            local_path: Local path where data was downloaded
+
+        Returns:
+            Server response dict
+        """
+        message = {
+            "command": "fs_broadcast_complete",
+            "group_id": group_id,
+            "key": key,
+            "local_path": local_path,
+        }
+        return self._send_message(message)
+
+    def fs_broadcast_get_path_remote(
+        self,
+        parent_ip: str,
+        parent_port: int,
+        group_id: str,
+        key: str,
+        timeout: float = 60.0,
+    ) -> dict:
+        """
+        Request local path from parent's pod data server via TCP.
+
+        Blocks until parent has completed its download, then returns the path.
+
+        Args:
+            parent_ip: IP address of parent pod
+            parent_port: TCP port of parent's pod data server
+            group_id: Broadcast group identifier
+            key: Storage key
+            timeout: Max time to wait for parent to complete
+
+        Returns:
+            Server response dict with 'local_path' and 'pod_ip'
+        """
+        message = {
+            "command": "fs_broadcast_get_path",
+            "group_id": group_id,
+            "key": key,
+            "timeout": timeout,
+        }
+
+        # Connect via TCP to parent's pod data server
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout + 10)  # Extra buffer for network
+
+        try:
+            sock.connect((parent_ip, parent_port))
+
+            # Send message
+            data = json.dumps(message).encode("utf-8")
+            sock.sendall(struct.pack(">I", len(data)))
+            sock.sendall(data)
+
+            # Receive response length
+            length_data = sock.recv(4)
+            if not length_data:
+                raise RuntimeError("Parent server closed connection")
+
+            msg_length = struct.unpack(">I", length_data)[0]
+
+            # Receive response
+            data = b""
+            while len(data) < msg_length:
+                chunk = sock.recv(min(msg_length - len(data), 4096))
+                if not chunk:
+                    break
+                data += chunk
+
+            return json.loads(data.decode("utf-8"))
+
+        finally:
+            sock.close()
+
 
 def is_server_running(socket_path: str = DEFAULT_SOCKET_PATH) -> bool:
     """Check if the GPU data server is running."""
@@ -2170,7 +2376,7 @@ def is_server_running(socket_path: str = DEFAULT_SOCKET_PATH) -> bool:
         return False
 
     try:
-        client = GPUDataServerClient(socket_path)
+        client = PodDataServerClient(socket_path)
         response = client.ping()
         return response.get("status") == "ok"
     except Exception:
@@ -2195,7 +2401,7 @@ def start_server_if_needed(socket_path: str = DEFAULT_SOCKET_PATH) -> int:
     import subprocess
 
     process = subprocess.Popen(
-        [sys.executable, "-m", "kubetorch.data_store.gpu_data_server"],
+        [sys.executable, "-m", "kubetorch.data_store.pod_data_server"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
@@ -2205,10 +2411,10 @@ def start_server_if_needed(socket_path: str = DEFAULT_SOCKET_PATH) -> int:
     for _ in range(50):  # 5 seconds timeout
         time.sleep(0.1)
         if is_server_running(socket_path):
-            logger.info(f"GPU Data Server started (PID: {process.pid})")
+            logger.info(f"Pod Data Server started (PID: {process.pid})")
             return process.pid
 
-    raise RuntimeError("Failed to start GPU Data Server")
+    raise RuntimeError("Failed to start Pod Data Server")
 
 
 def main():
@@ -2217,7 +2423,7 @@ def main():
 
     _setup_cuda_ipc_permissions()
 
-    parser = argparse.ArgumentParser(description="GPU Data Server for kubetorch")
+    parser = argparse.ArgumentParser(description="Pod Data Server for kubetorch")
     parser.add_argument(
         "--socket-path",
         default=DEFAULT_SOCKET_PATH,
@@ -2238,7 +2444,7 @@ def main():
 
     args = parser.parse_args()
 
-    server = GPUDataServer(
+    server = PodDataServer(
         socket_path=args.socket_path,
         nccl_port_start=args.nccl_port_start,
         nccl_port_end=args.nccl_port_end,

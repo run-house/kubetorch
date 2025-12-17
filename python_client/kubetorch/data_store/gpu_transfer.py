@@ -148,13 +148,13 @@ class GPUTransferManager:
     def _get_gpu_server_client(self):
         """Get or create the GPU data server client, starting server if needed."""
         if self._gpu_server_client is None:
-            from .gpu_data_server import GPUDataServerClient, start_server_if_needed
+            from .pod_data_server import PodDataServerClient, start_server_if_needed
 
             # Start server if not running
             server_pid = start_server_if_needed()
-            logger.debug(f"GPU Data Server PID: {server_pid}")
+            logger.debug(f"Pod Data Server PID: {server_pid}")
 
-            self._gpu_server_client = GPUDataServerClient()
+            self._gpu_server_client = PodDataServerClient()
 
         return self._gpu_server_client
 
