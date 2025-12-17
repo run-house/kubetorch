@@ -166,7 +166,7 @@ class DataStoreClient:
                 )
 
                 # After successful upload, register with metadata server
-                self._register_store_pod(key, lifespan, verbose)
+                self._register_store_key(key, lifespan, verbose)
 
                 if verbose:
                     logger.info(f"Successfully stored at key '{key}'")
@@ -248,26 +248,24 @@ class DataStoreClient:
             else:
                 raise RuntimeError(f"Failed to publish key '{key}' with metadata server")
 
-    def _register_store_pod(self, key: str, lifespan: Lifespan, verbose: bool = False) -> None:
-        """Register the store pod with metadata server after upload."""
+    def _register_store_key(self, key: str, lifespan: Lifespan, verbose: bool = False) -> None:
+        """Register that a key exists in the store with metadata server."""
         if not is_running_in_kubernetes():
             return
 
         try:
-            rsync_client = RsyncClient(namespace=self.namespace, service_name="store")
-            label_selector = f"app={serving_constants.DATA_STORE_SERVICE_NAME}"
-            pod_list = rsync_client.core_api.list_namespaced_pod(
-                namespace=self.namespace, label_selector=label_selector
+            # Use the store service URL as the identifier (stable across pod restarts)
+            # The actual rsync routing uses the service URL, not pod IP
+            store_service_url = f"{serving_constants.DATA_STORE_SERVICE_NAME}.{self.namespace}.svc.cluster.local"
+
+            # Determine service_name for lifespan="resource"
+            service_name = os.getenv("KT_SERVICE_NAME") if lifespan == "resource" else None
+
+            self.metadata_client.register_store_pod(
+                key, store_service_url, lifespan=lifespan, service_name=service_name
             )
-            if pod_list.items:
-                store_pod_ip = pod_list.items[0].status.pod_ip
-
-                # Determine service_name for lifespan="resource"
-                service_name = os.getenv("KT_SERVICE_NAME") if lifespan == "resource" else None
-
-                self.metadata_client.register_store_pod(key, store_pod_ip, lifespan=lifespan, service_name=service_name)
-                if verbose:
-                    logger.debug(f"Registered key '{key}' with metadata server (store pod IP: {store_pod_ip})")
+            if verbose:
+                logger.debug(f"Registered key '{key}' with metadata server")
         except Exception as e:
             logger.warning(f"Failed to register key '{key}' with metadata server: {e}")
 
@@ -554,7 +552,7 @@ class DataStoreClient:
 
         # Fall back to store pod
         if has_store_backup:
-            self._get_from_store_pod(key, parsed, dest_str, contents, filter_options, force, in_cluster, verbose)
+            self._get_from_store_pod(key, parsed, dest_str, contents, filter_options, force, verbose)
         else:
             raise DataStoreError(
                 f"Key '{parsed.full_key}' not found - no peer sources and no store pod backup available"
@@ -688,9 +686,11 @@ class DataStoreClient:
 
         Returns True if successful, False otherwise.
         """
+        # This function is only called when store doesn't have the data (not has_store_backup),
+        # so we need to port-forward directly to the peer pod that has the data.
         if source_info.proxy_through_store or not source_info.pod_name:
             if verbose:
-                logger.info("Proxying through store pod for external client")
+                logger.info("Cannot use peer transfer - no pod name available")
             return False
 
         rsync_client = RsyncClient(namespace=self.namespace, service_name=parsed.service_name or "store")
@@ -698,16 +698,6 @@ class DataStoreClient:
         pod_namespace = source_info.namespace or self.namespace
 
         try:
-            # Resolve service name to actual pod name if needed
-            if pod_name == serving_constants.DATA_STORE_SERVICE_NAME:
-                label_selector = f"app={serving_constants.DATA_STORE_SERVICE_NAME}"
-                pod_list = rsync_client.core_api.list_namespaced_pod(
-                    namespace=pod_namespace, label_selector=label_selector
-                )
-                if not pod_list.items:
-                    raise RuntimeError(f"No {serving_constants.DATA_STORE_SERVICE_NAME} pod found")
-                pod_name = pod_list.items[0].metadata.name
-
             if verbose:
                 logger.info(f"Using port-forward to connect to peer pod {pod_name}")
 
@@ -820,7 +810,6 @@ class DataStoreClient:
         contents: bool,
         filter_options: Optional[str],
         force: bool,
-        in_cluster: bool,
         verbose: bool,
     ) -> None:
         """Download from the store pod."""
@@ -845,27 +834,9 @@ class DataStoreClient:
             if verbose:
                 logger.info(f"Successfully retrieved key '{key}'")
 
-            # Notify completion
-            if in_cluster:
-                self._notify_store_completion(key)
-
         except RsyncError as e:
             logger.error(f"Failed to retrieve key '{key}' from store pod: {e}")
             raise
-
-    def _notify_store_completion(self, key: str) -> None:
-        """Notify metadata server that store pod request completed."""
-        try:
-            rsync_client = RsyncClient(namespace=self.namespace, service_name="store")
-            label_selector = f"app={serving_constants.DATA_STORE_SERVICE_NAME}"
-            pod_list = rsync_client.core_api.list_namespaced_pod(
-                namespace=self.namespace, label_selector=label_selector
-            )
-            if pod_list.items:
-                store_pod_ip = pod_list.items[0].status.pod_ip
-                self.metadata_client.complete_request(key, store_pod_ip)
-        except Exception as e:
-            logger.debug(f"Failed to notify store pod completion: {e}")
 
     def ls(self, key: str = "", verbose: bool = False) -> List[dict]:
         """
