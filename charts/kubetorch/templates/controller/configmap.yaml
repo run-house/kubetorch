@@ -140,16 +140,18 @@ data:
 
             # -------------------------------------------------------
             # DEFAULT — NAMESPACE → SERVICE PROXY
+            # Format: /{namespace}/{service}:{port}{/path}
             # MUST NOT MATCH /api, /apis, or /controller
             # -------------------------------------------------------
-            location ~ ^/(?!(api|apis|controller)/)([^/]+)/([^/]+)(/.*)?$ {
+            location ~ ^/(?!(api|apis|controller)/)([^/]+)/([^/:]+):(\d+)(/.*)?$ {
                 set $namespace $2;
                 set $service $3;
-                set $rest $4;
+                set $port $4;
+                set $rest $5;
 
                 client_max_body_size {{ .Values.nginxProxy.maxBodySize.api }};
 
-                proxy_pass http://$service.$namespace.svc.cluster.local$rest$is_args$args;
+                proxy_pass http://$service.$namespace.svc.cluster.local:$port$rest$is_args$args;
                 proxy_http_version 1.1;
                 proxy_set_header Upgrade $http_upgrade;
                 proxy_set_header Connection "upgrade";

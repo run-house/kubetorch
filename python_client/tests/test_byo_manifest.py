@@ -536,7 +536,7 @@ async def test_byo_manifest_with_endpoint_url():
 
         # User's routing layer - routes traffic to pods with {app: pool_name} label
         user_service_name = f"{pool_name}-user-svc"
-        user_port = 80
+        user_port = 82
         user_service = {
             "apiVersion": "v1",
             "kind": "Service",
