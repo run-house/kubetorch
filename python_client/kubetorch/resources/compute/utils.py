@@ -74,7 +74,7 @@ class SecretNotFound(Exception):
 
 
 class ControllerRequestError(Exception):
-    """Raised when a request to the Kubetorch controller fails."""
+    """Raised when a request to the kubetorch controller fails."""
 
     def __init__(self, method: str, url: str, status_code: int, message: str):
         self.method = method
@@ -339,8 +339,7 @@ def delete_resources_for_service(
         # Kubetorch did not create or own the K8s resources, so teardown only removes
         # Kubetorch controller state and associated metadata — not the underlying pods/deployments/services
         msg = (
-            "Selector-based service: Kubernetes resources were created outside Kubetorch. "
-            "Kubetorch will remove its internal state, but you are responsible for deleting "
+            f"Kubernetes resources for {name} were created outside Kubetorch. You are responsible for deleting "
             "the actual Kubernetes resources (pods, deployments, services, etc.)."
         )
         service_manager = BaseServiceManager(namespace=namespace)
@@ -658,7 +657,25 @@ def fetch_resources_for_teardown(
             pool_info = controller_client.get_pool(namespace=namespace, name=service_name)
             if pool_info:
                 specifier = pool_info.get("specifier") or {}
-                service_type = "selector"  # All pools use the selector deletion path
+                # Determine service type based on resource_kind AND whether it's KT-managed
+                # KT-managed pools have the kubetorch.com/template label (applied via /apply)
+                # Selector-only pools may have resource_kind (discovered from pods) but no template label
+                resource_kind = pool_info.get("resource_kind")
+                pool_labels = pool_info.get("labels") or {}
+                is_kt_managed = serving_constants.KT_TEMPLATE_LABEL in pool_labels
+
+                if resource_kind and is_kt_managed:
+                    # KT-managed resource: delete the K8s resource
+                    # Map resource_kind to service_type (lowercase)
+                    # Most kinds just need lowercasing: Deployment->deployment, RayCluster->raycluster
+                    # Training jobs: PyTorchJob->pytorchjob, TFJob->tfjob, etc.
+                    service_type = resource_kind.lower()
+                    # Handle Knative special case: KnativeService -> knative
+                    if service_type == "knativeservice":
+                        service_type = "knative"
+                else:
+                    # Selector-only: user created K8s resource, only delete controller state
+                    service_type = "selector"
                 service_found = True
                 pool_selector = specifier.get("selector")
         except Exception as e:

@@ -28,13 +28,7 @@ from kubetorch.servers.http.utils import (
 )
 from kubetorch.serving.constants import DEFAULT_K8S_SERVICE_PORT
 from kubetorch.serving.utils import has_k8s_credentials, KubernetesCredentialsError
-from kubetorch.utils import (
-    extract_host_port,
-    get_container_name,
-    get_kt_install_url,
-    iso_timestamp_to_nanoseconds,
-    ServerLogsFormatter,
-)
+from kubetorch.utils import extract_host_port, get_kt_install_url, iso_timestamp_to_nanoseconds, ServerLogsFormatter
 
 logger = get_logger(__name__)
 
@@ -817,7 +811,9 @@ class Module:
             source_dir = str(Path(tmpdir) / ".kt")
             all_dirs = rsync_dirs + [source_dir]
 
-            logger.debug(f"Rsyncing directories: {all_dirs}")
+            logger.info(
+                f"Uploading directories to data store: {all_dirs} -> /{self.compute.service_name} (namespace={self.compute.namespace})"
+            )
             # Use DataStoreClient KV interface - files go to rsync pod, then sync to service pods at startup
             # Using contents=False preserves directory structure - each directory becomes a subdirectory
             # This matches the old behavior where python_client/ and .kt/ were both preserved as subdirectories
@@ -828,6 +824,7 @@ class Module:
             # This is critical when a parent service creates a child service - we want files at
             # /data/{namespace}/{child_service_name}/, not /data/{namespace}/{parent_service_name}/{child_service_name}/
             dt_client.put(key=f"/{self.compute.service_name}", src=all_dirs, contents=False)
+            logger.info(f"Successfully uploaded files to data store for service {self.compute.service_name}")
 
     async def _construct_and_rsync_files_async(self, rsync_dirs, service_dockerfile):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -929,10 +926,9 @@ class Module:
             deployment_timestamp: Timestamp to filter logs after
         """
         try:
-            # Use the correct container name based on job type to exclude queue-proxy (e.g. Knative sidecars) container logs which
-            # are spammy with tons of healthcheck calls
-            container_name = get_container_name(self.compute.kind)
-            pod_query = f'{{k8s_container_name="{container_name}"}} | json | request_id="{request_id}"'
+            # Filter by namespace and request_id - request_id is unique per launch sequence
+            # and allows logs from any container name (not just "kubetorch")
+            pod_query = f'{{k8s_namespace_name="{self.namespace}"}} | json | request_id="{request_id}"'
             event_query = f'{{service_name="unknown_service"}} | json | k8s_object_name=~"{self.service_name}.*" | k8s_namespace_name="{self.namespace}"'
 
             encoded_pod_query = urllib.parse.quote_plus(pod_query)
@@ -997,10 +993,9 @@ class Module:
             deployment_timestamp: Timestamp to filter logs after
         """
         try:
-            # Only use correct container to exclude queue-proxy (e.g. Knative sidecars) container logs which
-            # are spammy with tons of healthcheck calls
-            container_name = get_container_name(self.compute.kind)
-            pod_query = f'{{k8s_container_name="{container_name}"}} | json | request_id="{request_id}"'
+            # Filter by namespace and request_id - request_id is unique per launch sequence
+            # and allows logs from any container name (not just "kubetorch")
+            pod_query = f'{{k8s_namespace_name="{self.namespace}"}} | json | request_id="{request_id}"'
             event_query = f'{{service_name="unknown_service"}} | json | k8s_object_name=~"{self.service_name}.*" | k8s_namespace_name="{self.namespace}"'
 
             encoded_pod_query = urllib.parse.quote_plus(pod_query)

@@ -22,7 +22,7 @@ try:
 except:
     pass
 
-from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Body, FastAPI, Header, HTTPException, Query, Request, WebSocket
 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -445,7 +445,10 @@ def run_image_setup(deployed_time: Optional[float] = None):
 
     dockerfile_path = kt_directory() / "image.dockerfile"
     if not dockerfile_path.exists():
-        raise FileNotFoundError(f"No image and metadata configuration found in path: {str(dockerfile_path)}")
+        # BYO image case - no dockerfile to process because user built their own image.
+        # Code has been rsynced above, callable will be reloaded on next request via load_callable().
+        logger.info("No dockerfile found, skipping cached image setup (BYO image mode)")
+        return
     while (
         # May need to give the dockerfile time to rsync over, so wait until the dockerfile timestamp is later than
         # when we started the deployment (recorded in .to and passed here as deployed_time). We also should only
@@ -844,6 +847,12 @@ def rsync_file_updates():
 
     service_name = os.getenv("KT_SERVICE_NAME")
     namespace = os.getenv("POD_NAMESPACE")
+
+    if not service_name or not namespace:
+        logger.warning(f"Skipping rsync - KT_SERVICE_NAME={service_name}, POD_NAMESPACE={namespace}")
+        return
+
+    logger.info(f"Starting rsync for service {service_name} in namespace {namespace}")
     _dt.sync_workdir_from_store(namespace=namespace, service_name=service_name)
 
 
@@ -1147,7 +1156,6 @@ if meter_provider is not None:
     try:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-        logger.info("Instrumenting FastAPI app for metrics only")
         FastAPIInstrumentor.instrument_app(
             app,
             meter_provider=meter_provider,
@@ -1237,28 +1245,13 @@ async def generic_exception_handler(request: Request, exc: Exception):
 def _reload_image(
     request: Request,
     deployed_as_of: Optional[str] = Header(None, alias="X-Deployed-As-Of"),
-    service_name: Optional[str] = Header(None, alias="X-Service-Name"),
-    namespace: Optional[str] = Header(None, alias="X-Namespace"),
 ):
     """
     Endpoint to reload the image and metadata configuration.
     This is used to reload the image in cases where we're not calling the callable directly,
     e.g. kt.app and Ray workers.
-
-    For selector-only mode (BYO pods), the service_name and namespace headers can be provided
-    to set up the rsync path, since these pods don't have the env vars pre-configured.
     """
     global _LAST_DEPLOYED
-
-    # For selector-only mode, set up rsync env vars if provided
-    if service_name and not os.getenv("KT_SERVICE_NAME"):
-        os.environ["KT_SERVICE_NAME"] = service_name
-        logger.info(f"Set KT_SERVICE_NAME to {service_name} for selector-only mode")
-
-    if namespace and not os.getenv("POD_NAMESPACE"):
-        os.environ["POD_NAMESPACE"] = namespace
-        logger.info(f"Set POD_NAMESPACE to {namespace} for selector-only mode")
-
     deployed_time = (
         datetime.fromisoformat(deployed_as_of).timestamp() if deployed_as_of else datetime.now(timezone.utc).timestamp()
     )
@@ -1268,6 +1261,91 @@ def _reload_image(
         status_code=200,
         content={"message": "Image and metadata reloaded successfully."},
     )
+
+
+@app.websocket("/_ws/reload")
+async def ws_reload(websocket: WebSocket):
+    """WebSocket endpoint to receive reload config from controller.
+
+    Receives a JSON config with module info and triggers reload.
+    More efficient than HTTP when broadcasting to many pods since
+    the controller serializes the config once and sends the same
+    payload to all pods.
+    """
+    global _LAST_DEPLOYED
+
+    await websocket.accept()
+    logger.info("WebSocket reload: connection accepted from controller")
+    try:
+        # Receive the pre-serialized config JSON from controller
+        config_json = await websocket.receive_text()
+        config = json.loads(config_json)
+        logger.info(f"WebSocket reload: received config for module={config.get('module', {}).get('module_name')}")
+
+        # Extract reload parameters from config
+        service_name = config.get("service_name")
+        namespace = config.get("namespace")
+        deployed_as_of = config.get("deployed_as_of")
+        module = config.get("module", {})
+
+        # For selector-only mode, set up rsync env vars if provided
+        if service_name and not os.getenv("KT_SERVICE_NAME"):
+            os.environ["KT_SERVICE_NAME"] = service_name
+            logger.info(f"Set KT_SERVICE_NAME to {service_name} for selector-only mode")
+
+        if namespace and not os.getenv("POD_NAMESPACE"):
+            os.environ["POD_NAMESPACE"] = namespace
+            logger.info(f"Set POD_NAMESPACE to {namespace} for selector-only mode")
+
+        # Set up callable env vars from module config
+        if module:
+            if module.get("module_name") and not os.getenv("KT_MODULE_NAME"):
+                os.environ["KT_MODULE_NAME"] = module["module_name"]
+                logger.info(f"Set KT_MODULE_NAME to {module['module_name']} for selector-only mode")
+
+            if module.get("cls_or_fn_name") and not os.getenv("KT_CLS_OR_FN_NAME"):
+                os.environ["KT_CLS_OR_FN_NAME"] = module["cls_or_fn_name"]
+                logger.info(f"Set KT_CLS_OR_FN_NAME to {module['cls_or_fn_name']} for selector-only mode")
+
+            if module.get("file_path") and not os.getenv("KT_FILE_PATH"):
+                os.environ["KT_FILE_PATH"] = module["file_path"]
+                logger.info(f"Set KT_FILE_PATH to {module['file_path']} for selector-only mode")
+
+            init_args = module.get("init_args")
+            if init_args is not None and not os.getenv("KT_INIT_ARGS"):
+                os.environ["KT_INIT_ARGS"] = json.dumps(init_args) if init_args else "None"
+                logger.info("Set KT_INIT_ARGS for selector-only mode")
+
+            if module.get("callable_type") and not os.getenv("KT_CALLABLE_TYPE"):
+                os.environ["KT_CALLABLE_TYPE"] = module["callable_type"]
+                logger.info(f"Set KT_CALLABLE_TYPE to {module['callable_type']} for selector-only mode")
+
+            distributed_config = module.get("distributed_config")
+            if distributed_config is not None and not os.getenv("KT_DISTRIBUTED_CONFIG"):
+                os.environ["KT_DISTRIBUTED_CONFIG"] = json.dumps(distributed_config) if distributed_config else "None"
+                logger.info("Set KT_DISTRIBUTED_CONFIG for selector-only mode")
+
+        # Run the reload
+        deployed_time = (
+            datetime.fromisoformat(deployed_as_of).timestamp()
+            if deployed_as_of
+            else datetime.now(timezone.utc).timestamp()
+        )
+        run_image_setup(deployed_time)
+        _LAST_DEPLOYED = deployed_time
+
+        # Send acknowledgment back to controller
+        logger.info("WebSocket reload: completed successfully")
+        await websocket.send_text(json.dumps({"status": "ok", "message": "Reload complete"}))
+
+    except Exception as e:
+        logger.error(f"WebSocket reload failed: {e}")
+        try:
+            await websocket.send_text(json.dumps({"status": "error", "message": str(e)}))
+        except Exception:
+            pass
+    finally:
+        await websocket.close()
 
 
 @app.post("/{cls_or_fn_name}", response_class=JSONResponse)

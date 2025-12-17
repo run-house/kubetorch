@@ -4,8 +4,8 @@ Module-level convenience functions for data store operations.
 This module provides the top-level API functions (put, get, ls, rm) that users
 call directly, as well as the sync_workdir_from_store function used internally.
 """
-
 import concurrent.futures
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional, Union
@@ -310,6 +310,10 @@ def sync_workdir_from_store(namespace: str, service_name: str):
     Uses the DataStoreClient KV interface, which allows future scalability with peer-to-peer
     transfer via a central metadata store.
     """
+    logger.info(
+        f"Syncing workdir from data store: namespace={namespace}, service_name={service_name}, cwd={os.getcwd()}"
+    )
+
     # Use DataStoreClient KV interface for future scalability
     dt_client = DataStoreClient(namespace=namespace)
 
@@ -320,24 +324,26 @@ def sync_workdir_from_store(namespace: str, service_name: str):
     def sync_regular_files():
         """Sync regular files (excluding __absolute__*) to current directory."""
         try:
+            logger.info(f"Downloading files from {service_key} to current directory")
             dt_client.get(
                 key=service_key,
                 dest=".",
                 contents=True,
                 filter_options="--exclude='__absolute__*'",
             )
+            logger.info(f"Successfully synced files from {service_key}")
         except (RsyncError, DataStoreError) as e:
             # If the service storage area doesn't exist yet, that's okay
             error_msg = str(e).lower()
             if "no such file or directory" in error_msg or "not found" in error_msg:
-                logger.debug("Service storage area does not exist yet, skipping regular files sync")
+                logger.warning(f"Service storage area {service_key} does not exist, skipping regular files sync")
             else:
                 raise
         except Exception as e:
             # Catch any other exceptions and check error message
             error_msg = str(e).lower()
             if "no such file or directory" in error_msg or "not found" in error_msg:
-                logger.debug("Service storage area does not exist yet, skipping regular files sync")
+                logger.warning(f"Service storage area {service_key} does not exist, skipping regular files sync")
             else:
                 raise
 

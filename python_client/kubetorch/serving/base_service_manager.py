@@ -576,6 +576,14 @@ class BaseServiceManager:
                     if specifier.get("type") != "label_selector":
                         continue
 
+                    # Skip pools that have a KT-managed backing K8s resource - these are already
+                    # discovered by the K8s resource fetchers (fetch_deployments, fetch_rayclusters, etc.)
+                    # We detect KT-managed resources by checking for the KT_TEMPLATE_LABEL.
+                    # Selector-only pools (user-deployed resources) don't have this label.
+                    pool_labels = pool.get("labels") or {}
+                    if pool.get("resource_kind") and serving_constants.KT_TEMPLATE_LABEL in pool_labels:
+                        continue
+
                     pool_name = pool.get("name")
                     if name_filter and name_filter not in pool_name:
                         continue

@@ -87,7 +87,7 @@ def wait_for_port_forward(
     while time.time() - start_time < timeout:
         if process.poll() is not None:
             stderr = process.stderr.read().decode()
-            raise Exception(f"Port forward failed: {stderr}")
+            raise Exception(stderr)
 
         try:
             # Check if socket is open

@@ -299,13 +299,3 @@ def http_conflict(e: Exception) -> bool:
     # Fallback to string matching for edge cases
     err_str = str(e).lower()
     return "409" in err_str or "already exists" in err_str
-
-
-def get_container_name(kind: str = None) -> str:
-    """Get the container name for the service based on its kind."""
-    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
-
-    if kind and kind in TrainJobServiceManager.SUPPORTED_KINDS:
-        config = TrainJobServiceManager._get_config(kind)
-        return config["container_name"]
-    return "kubetorch"

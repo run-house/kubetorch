@@ -156,10 +156,7 @@ class KnativeServiceManager(BaseServiceManager):
 
         labels = manifest.get("metadata", {}).get("labels", {})
         annotations = manifest.get("metadata", {}).get("annotations", {})
-
-        # Service labels (exclude kt template label)
         service_labels = labels.copy()
-        service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
 
         try:
             # Step 1: Apply the Knative Service manifest via /apply
@@ -212,7 +209,7 @@ class KnativeServiceManager(BaseServiceManager):
                 )
                 if pool_response.get("status") != "success":
                     raise Exception(f"Knative service registration failed: {pool_response.get('message')}")
-                logger.info(f"Registered {service_name} in namespace {self.namespace}")
+                logger.info(f"Registered {service_name} to kubetorch controller in namespace {self.namespace}")
 
             # Return the created resource from apply response
             return apply_response.get("resource", manifest)

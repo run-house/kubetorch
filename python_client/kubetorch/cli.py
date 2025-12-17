@@ -806,7 +806,7 @@ def kt_list(
 
         # Create table
         table_columns = [
-            ("SERVICE", "cyan"),
+            ("RESOURCE", "cyan"),
             ("TYPE", "magenta"),
             ("STATUS", "green"),
             ("# OF PODS", "yellow"),
@@ -931,6 +931,19 @@ def kt_list(
                         display_status = "[yellow]Scaling[/yellow]"
                     else:
                         display_status = "[red]Failed[/red]"
+                elif kind in ("pytorchjob", "tfjob", "mxjob", "xgboostjob"):
+                    # Training jobs use conditions to track status
+                    conditions = {c["type"]: c["status"] for c in status_data.get("conditions", [])}
+                    if conditions.get("Succeeded") == "True":
+                        display_status = "[green]Succeeded[/green]"
+                    elif conditions.get("Running") == "True":
+                        display_status = "[green]Running[/green]"
+                    elif conditions.get("Created") == "True":
+                        display_status = "[yellow]Created[/yellow]"
+                    elif conditions.get("Failed") == "True":
+                        display_status = "[red]Failed[/red]"
+                    else:
+                        display_status = "[yellow]Pending[/yellow]"
                 else:
                     display_status = (
                         "[green]Ready[/green]"
@@ -1525,7 +1538,7 @@ def kt_teardown(
     if force:
         console.print("\n[yellow]Force deleting resources...[/yellow]")
     else:
-        console.print("\n[yellow]Deleting resources...[/yellow]")
+        console.print("\n[dim]Deleting resources...[/dim]")
 
     controller_client = globals.controller_client()
 
@@ -2376,6 +2389,12 @@ def kt_pool(
         "-n",
         "--namespace",
     ),
+    watchers: bool = typer.Option(
+        False,
+        "--watchers",
+        "-w",
+        help="Show pod watcher debug info (IPs being tracked for each pool)",
+    ),
 ):
     """
     List registered pools.
@@ -2383,6 +2402,36 @@ def kt_pool(
     import kubetorch as kt
 
     controller = kt.globals.controller_client()
+
+    # Show watcher debug info if requested
+    if watchers:
+        watcher_data = controller.get_watchers()
+        if not watcher_data:
+            console.print("[yellow]No pools with label_selector specifiers found[/yellow]")
+            raise typer.Exit()
+
+        table = Table(
+            show_header=True,
+            border_style="bright_black",
+            expand=True,
+        )
+        table.add_column("Pool Name", style="bold magenta", no_wrap=True)
+        table.add_column("Namespace", style="cyan", no_wrap=True)
+        table.add_column("Pods", style="green", no_wrap=True)
+        table.add_column("Pod IPs", style="yellow", overflow="fold")
+
+        for pool_name, info in watcher_data.items():
+            ips = info.get("ips", [])
+            pod_count = info.get("pod_count", len(ips))
+            table.add_row(
+                pool_name,
+                info.get("namespace", "-"),
+                str(pod_count),
+                ", ".join(ips) if ips else "-",
+            )
+
+        console.print(table)
+        raise typer.Exit()
 
     def fmt(ts):
         if not ts:
@@ -2396,7 +2445,7 @@ def kt_pool(
     pools = resp.get("pools", [])
 
     if not pools:
-        console.print(f"[yellow]No pools found in namespace {namespace}[/yellow]")
+        console.print(f"[yellow]No pools found in {namespace} namespace[/yellow]")
         raise typer.Exit()
 
     table = Table(
@@ -2405,10 +2454,11 @@ def kt_pool(
         expand=True,
     )
 
-    table.add_column("Name", style="bold magenta", no_wrap=True)
+    table.add_column("Pool Name", style="bold magenta", no_wrap=True)
     table.add_column("User", style="green", no_wrap=True)
     table.add_column("Module Metadata", style="yellow", overflow="fold")
     table.add_column("Resource", style="cyan", no_wrap=True)
+    table.add_column("Specifier", style="cyan", no_wrap=True)
     table.add_column("Labels", style="white", overflow="fold")
     table.add_column("Annotations", style="white", overflow="fold")
     table.add_column("Created (UTC)", style="white", no_wrap=True)
@@ -2424,6 +2474,7 @@ def kt_pool(
         resource_kind = p.get("resource_kind") or "-"
         resource_name = p.get("resource_name") or "-"
         resource = f"{resource_kind}/{resource_name}" if resource_kind != "-" else "-"
+        specifier = p.get("specifier", {})
 
         labels = p.get("labels") or {}
         annotations = p.get("annotations") or {}
@@ -2433,6 +2484,7 @@ def kt_pool(
             user,
             json.dumps(module, indent=2),
             resource,
+            json.dumps(specifier, indent=2),
             json.dumps(labels, indent=2),
             json.dumps(annotations, indent=2),
             fmt(p.get("created_at", "-")),
@@ -2443,7 +2495,7 @@ def kt_pool(
     console.print(table)
 
 
-@server_app.command("start")
+@server_app.command("start", hidden=True)
 def kt_server_start(
     port: int = typer.Option(
         int(os.getenv("KT_SERVER_PORT", 32300)),
@@ -2460,11 +2512,13 @@ def kt_server_start(
     pool_name: str = typer.Option(
         os.getenv("KT_POOL_NAME"),
         "--pool",
+        "-n",
         help="Pool name",
     ),
     controller_url: str = typer.Option(
         os.getenv("KT_CONTROLLER_URL"),
         "--controller-url",
+        "-u",
         help="Controller URL",
     ),
 ):
@@ -2478,12 +2532,12 @@ def kt_server_start(
 
     .. code-block:: bash
 
-        # Start server with self-registration
         $ kubetorch server start --pool my-workers --controller-url http://kubetorch-controller:8080
 
-        # Or using environment variables
         $ export KT_POOL_NAME=my-workers
+
         $ export KT_CONTROLLER_URL=http://kubetorch-controller.kubetorch.svc.cluster.local:8080
+
         $ kubetorch server start
     """
     try:
@@ -2513,7 +2567,6 @@ def kt_server_start(
 
     console.print(f"[green]Starting kubetorch HTTP server on {host}:{port}[/green]")
 
-    # Import and run the HTTP server
     from kubetorch.servers.http.http_server import app as http_app
 
     uvicorn.run(http_app, host=host, port=port)

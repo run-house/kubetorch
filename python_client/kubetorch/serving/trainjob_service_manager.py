@@ -300,7 +300,6 @@ class TrainJobServiceManager(BaseServiceManager):
         labels = manifest.get("metadata", {}).get("labels", {})
         annotations = manifest.get("metadata", {}).get("annotations", {})
         service_labels = labels.copy()
-        service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
 
         # Map kind to resource type for /apply
         kind = manifest.get("kind", "").lower()
