@@ -24,7 +24,7 @@ from kubetorch.servers.http.utils import (
 )
 
 from kubetorch.serving.constants import DEFAULT_DEBUG_PORT, DEFAULT_NGINX_PORT
-from kubetorch.utils import ColoredFormatter, extract_host_port, get_container_name, ServerLogsFormatter
+from kubetorch.utils import ColoredFormatter, extract_host_port, ServerLogsFormatter
 
 logger = get_logger(__name__)
 
@@ -538,8 +538,11 @@ class HTTPClient:
         websocket = None
 
         try:
-            container_name = get_container_name(self.compute.kind)
-            query = f'{{k8s_container_name="{container_name}"}} | json | request_id="{request_id}"'
+            # Filter by namespace and request_id - request_id is unique per function call
+            # and allows logs from any container name (not just "kubetorch")
+            # most relevant when user applies their own manifest outside of kubetorch
+            namespace = self.compute.namespace
+            query = f'{{k8s_namespace_name="{namespace}"}} | json | request_id="{request_id}"'
             encoded_query = urllib.parse.quote_plus(query)
             uri = f"ws://{host}:{port}/loki/api/v1/tail?query={encoded_query}"
             # Track when we should stop
@@ -600,8 +603,13 @@ class HTTPClient:
                                     if is_knative:
                                         log_prefix = service_name
                                     else:
-                                        # For deployments, use the pod name from the structured log
-                                        log_prefix = log_line.get("pod", service_name)
+                                        # For deployments, use the pod name from the structured log,
+                                        # falling back to k8s_pod_name from Loki labels (for BYO manifests)
+                                        pod_from_log = log_line.get("pod")
+                                        if pod_from_log and pod_from_log != "unknown-pod":
+                                            log_prefix = pod_from_log
+                                        else:
+                                            log_prefix = labels.get("k8s_pod_name") or service_name
 
                                     # Format and print the log
                                     if log_config.include_name and log_prefix:
