@@ -1995,6 +1995,7 @@ class Compute:
         if self.selector_only:
             if not dryrun:
                 # Selector-only mode: just register pool, no manifest to apply
+                # tells controller to notify existing pods to reload
                 specifier = {"type": "label_selector", "selector": self._pod_selector}
                 pool_response = globals.controller_client().register_pool(
                     name=service_name,
@@ -2002,13 +2003,18 @@ class Compute:
                     specifier=specifier,
                     pool_metadata={"username": globals.config.username},
                     module=module,
+                    broadcast_reload=True,
                 )
-                if pool_response.get("status") != "success":
-                    raise Exception(f"Pool registration failed: {pool_response.get('message')}")
-                logger.info(f"Registered pool {service_name} with selector {self._pod_selector}")
-
-                # Notify pods to reload - sync code and set up the callable
-                self._reload_selector_pods(service_name, deployment_timestamp)
+                status = pool_response.get("status")
+                message = pool_response.get("message", "")
+                if status == "error":
+                    raise Exception(f"Resource registration to kubetorch controller failed: {message}")
+                elif status == "warning":
+                    logger.warning(f"Resource registered to kubetorch controller with warning: {message}")
+                elif status == "partial":
+                    logger.warning(f"Resource registered to kubetorch controller with partial success: {message}")
+                else:
+                    logger.debug(f"Registered {service_name} to kubetorch controller: {message}")
 
             return {"metadata": {"name": service_name, "namespace": self.namespace}, "spec": {"template": {}}}
 
@@ -2332,37 +2338,6 @@ class Compute:
             time.sleep(sleep_interval)
 
         raise TimeoutError(f"Timeout waiting for pods with selector {label_selector} after {launch_timeout} seconds")
-
-    def _reload_selector_pods(self, service_name: str, deployment_timestamp: str = None):
-        """Notify pods matching the selector to reload code and callable (for selector-only mode).
-
-        This is called after registering the pool to sync code to the BYO pods and have them
-        load the callable. Uses the controller's reload endpoint to broadcast to all pods.
-        """
-        logger.debug(f"Pinging controller to reload pods for {service_name}")
-
-        result = globals.controller_client().reload_pool(
-            pool_name=service_name,
-            namespace=self.namespace,
-            service_name=service_name,
-            deployed_as_of=deployment_timestamp,
-        )
-
-        status = result.get("status", "unknown")
-        message = result.get("message", "")
-        reloaded = result.get("reloaded", 0)
-
-        if status == "warning":
-            logger.warning(f"Service reload warning: {message}")
-        elif status == "partial":
-            logger.warning(f"Service reload partial success: {message}")
-            errors = result.get("errors", [])
-            for error in errors:
-                logger.warning(f"  - {error}")
-        elif status == "success":
-            logger.info(f"Successfully reloaded {reloaded} pod(s) for {service_name}")
-        else:
-            raise RuntimeError(f"Failed to reload pods for {service_name}: {message}")
 
     async def _check_service_ready_async(self):
         """Async version of _check_service_ready. Checks if the service is ready to start serving requests.

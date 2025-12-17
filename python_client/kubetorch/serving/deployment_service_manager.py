@@ -137,10 +137,7 @@ class DeploymentServiceManager(BaseServiceManager):
         server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
         labels = deployment.get("metadata", {}).get("labels", {})
         annotations = deployment.get("metadata", {}).get("annotations", {})
-
-        # Service labels (exclude kt template label)
         service_labels = labels.copy()
-        service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
 
         dryrun = kwargs.get("dry_run")
         dockerfile = kwargs.get("dockerfile")
@@ -201,7 +198,7 @@ class DeploymentServiceManager(BaseServiceManager):
                 )
                 if pool_response.get("status") != "success":
                     raise Exception(f"Resource registration failed: {pool_response.get('message')}")
-                logger.info(f"Registered {service_name} in namespace {self.namespace}")
+                logger.info(f"Registered {service_name} to kubetorch controller in namespace {self.namespace}")
 
             # Return the created resource from apply response
             return apply_response.get("resource", deployment)

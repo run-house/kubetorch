@@ -594,7 +594,7 @@ async def test_selector_only():
                     containers=[
                         client.V1Container(
                             name="worker",
-                            image="ghcr.io/run-house/kubetorch:compute-by-selector",  # image with kt installed
+                            image="ghcr.io/run-house/kubetorch:compute-by-selector",  # image with kt + rsync installed
                             image_pull_policy="Always",
                             command=["kubetorch", "server", "start"],
                             resources=client.V1ResourceRequirements(requests={"cpu": "100m", "memory": "256Mi"}),
@@ -630,30 +630,38 @@ async def test_selector_only():
         else:
             raise
 
-    # Wait for pods to be ready
-    label_selector = ",".join(f"{k}={v}" for k, v in selector_labels.items())
-    for _ in range(60):
-        pods = core_v1.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
-        ready_pods = [
-            p
-            for p in pods.items
-            if p.status.phase == "Running" and all(c.ready for c in (p.status.container_statuses or []))
-        ]
-        if ready_pods:
-            break
-        time.sleep(2)
-    else:
-        raise TimeoutError(f"Pods with selector {selector_labels} not ready after 120s")
+    try:
+        # Wait for pods to be ready
+        label_selector = ",".join(f"{k}={v}" for k, v in selector_labels.items())
+        for _ in range(60):
+            pods = core_v1.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
+            ready_pods = [
+                p
+                for p in pods.items
+                if p.status.phase == "Running" and all(c.ready for c in (p.status.container_statuses or []))
+            ]
+            if ready_pods:
+                break
+            time.sleep(2)
+        else:
+            raise TimeoutError(f"Pods with selector {selector_labels} not ready after 120s")
 
-    # 2. Create Compute with just a selector (no manifest, no cpus, etc.)
-    compute = kt.Compute(selector=selector_labels)
+        # 2. Create Compute with just a selector (no manifest, no cpus, etc.)
+        compute = kt.Compute(selector=selector_labels)
 
-    # 3. Deploy function - should only call /pool, not /apply
-    remote_fn = kt.fn(summer).to(compute)
+        # 3. Deploy function - should only call /pool, not /apply
+        remote_fn = kt.fn(summer).to(compute)
 
-    # 4. Call the function and verify it works
-    result = remote_fn(5, 10)
-    assert result == 15, f"Expected 15, got {result}"
+        # 4. Call the function and verify it works
+        result = remote_fn(5, 10, sleep_time=5)
+        assert result == 15, f"Expected 15, got {result}"
+
+    finally:
+        # Clean up user-created deployment (not managed by kubetorch)
+        try:
+            apps_v1.delete_namespaced_deployment(name=pool_name, namespace=namespace)
+        except client.ApiException:
+            pass
 
 
 @pytest.mark.level("minimal")
@@ -710,7 +718,7 @@ async def test_byo_manifest_with_endpoint_url():
         controller.get_service(name=kt_service_name, namespace=namespace)
 
     # Traffic flows through user's service here since no KT created service exists
-    result = remote_fn(5, 10)
+    result = remote_fn(5, 10, sleep_time=5)
     assert result == 15, f"Expected 15, got {result}"
 
 
