@@ -435,6 +435,67 @@ class GPUTestHelper:
         except Exception as e:
             return {"success": False, "key": key, "local_rank": local_rank, "error": str(e)}
 
+    def get_tensors_batch(
+        self,
+        keys: List[str],
+        shapes: List[List[int]],
+        dtype: str = "float32",
+        device: str = "cuda:0",
+    ) -> Dict:
+        """
+        Get multiple GPU tensors using the batch API (single NCCL session).
+
+        Args:
+            keys: Storage keys for each tensor
+            shapes: Shapes of tensors to allocate
+            dtype: Dtype of tensors to allocate
+            device: Device to receive tensors on
+        """
+        import torch
+
+        from kubetorch.data_store.gpu_data_server import GPUDataServerClient, start_server_if_needed
+
+        dtype_map = {
+            "float32": torch.float32,
+            "float64": torch.float64,
+            "float16": torch.float16,
+            "int32": torch.int32,
+            "int64": torch.int64,
+        }
+
+        try:
+            start_server_if_needed()
+
+            # Pre-allocate all destination tensors
+            dest_tensors = [
+                torch.empty(shape, dtype=dtype_map.get(dtype, torch.float32), device=device) for shape in shapes
+            ]
+
+            # Use batch get_tensor (MDS lookup + NCCL in single session)
+            client = GPUDataServerClient()
+            response = client.get_tensor(keys=keys, dest_tensors=dest_tensors)
+
+            if response.get("status") != "ok":
+                return {"success": False, "error": response.get("error")}
+
+            # Build results
+            results = [
+                {
+                    "key": keys[i],
+                    "shape": list(tensor.shape),
+                    "sum": float(tensor.sum().item()),
+                    "mean": float(tensor.mean().item()),
+                }
+                for i, tensor in enumerate(dest_tensors)
+            ]
+
+            return {"success": True, "results": results, "num_tensors": len(keys)}
+
+        except Exception as e:
+            import traceback
+
+            return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
+
     def verify_tensor_values(
         self,
         key: str,
@@ -517,12 +578,13 @@ class GPUTestHelper:
             dest_tensor = torch.empty(shape, dtype=torch.float32, device="cuda:0")
 
             # Try to receive from non-existent source - this should timeout
+            # API accepts lists (batch mode) but normalizes single items internally
             client = GPUDataServerClient()
             result = client.receive_broadcast(
-                key="test/fake-source",
+                keys=["test/fake-source"],
                 source_ip=fake_source_ip,
                 source_gpu_port=fake_source_port,
-                dest_tensor=dest_tensor,
+                dest_tensors=[dest_tensor],
                 nccl_timeout=nccl_timeout,
             )
 

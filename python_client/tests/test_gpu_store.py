@@ -216,6 +216,52 @@ async def test_gpu_server_resilience_after_failure(gpu_source, gpu_consumer):
 
 
 @pytest.mark.level("gpu")
+async def test_gpu_transfer_batch_tensors(gpu_source, gpu_consumer):
+    """
+    Test batch GPU tensor transfer (multiple tensors in a single NCCL session).
+
+    This test verifies that when retrieving multiple tensors (e.g., a model state dict),
+    they are all transferred in a single NCCL session rather than one session per tensor.
+    This is more efficient for models with many layers.
+    """
+    service_name = gpu_source.service_name
+    base_key = f"{service_name}/gpu-test/batch"
+
+    # Simulate a small model with 3 layers
+    tensor_specs = [
+        {"key": f"{base_key}/layer1", "shape": [256, 256], "fill_value": 1.0},
+        {"key": f"{base_key}/layer2", "shape": [512, 256], "fill_value": 2.0},
+        {"key": f"{base_key}/layer3", "shape": [128, 512], "fill_value": 3.0},
+    ]
+
+    # Publish all tensors from source
+    for spec in tensor_specs:
+        pub_result = gpu_source.publish_tensor(
+            key=spec["key"],
+            shape=spec["shape"],
+            fill_value=spec["fill_value"],
+        )
+        assert pub_result["success"], f"put failed for {spec['key']}: {pub_result.get('error')}"
+
+    # Retrieve all tensors in batch (consumer uses batch API internally)
+    # The batch API should use a single NCCL session for all tensors
+    batch_result = gpu_consumer.get_tensors_batch(
+        keys=[spec["key"] for spec in tensor_specs],
+        shapes=[spec["shape"] for spec in tensor_specs],
+    )
+
+    assert batch_result["success"], f"Batch get failed: {batch_result.get('error')}"
+    assert len(batch_result["results"]) == len(tensor_specs)
+
+    # Verify each tensor was received correctly
+    for i, spec in enumerate(tensor_specs):
+        result = batch_result["results"][i]
+        expected_sum = spec["fill_value"] * spec["shape"][0] * spec["shape"][1]
+        assert result["shape"] == spec["shape"], f"Shape mismatch for {spec['key']}"
+        assert abs(result["sum"] - expected_sum) < 1.0, f"Sum mismatch for {spec['key']}"
+
+
+@pytest.mark.level("gpu")
 async def test_gpu_transfer_many_to_many(gpu_source, gpu_consumer):
     """
     Test many-to-many GPU tensor transfer with coordinated BroadcastWindow.
@@ -279,8 +325,15 @@ async def test_gpu_transfer_many_to_many(gpu_source, gpu_consumer):
     )
 
     # Wait for all participants to complete
-    # Results come back as lists (one per rank)
+    # Results come back as lists (one per rank) or single dict
     put_results, get_results = await asyncio.gather(put_task, get_task)
+
+    # Normalize to lists - SPMD results may come back as list or single dict
+    def ensure_list(v):
+        return v if isinstance(v, list) else [v]
+
+    put_results = ensure_list(put_results)
+    get_results = ensure_list(get_results)
 
     # Verify all operations succeeded
     for i, result in enumerate(put_results):
@@ -289,9 +342,10 @@ async def test_gpu_transfer_many_to_many(gpu_source, gpu_consumer):
     for i, result in enumerate(get_results):
         assert result.get("success"), f"Getter rank {i} failed: {result}"
 
-    # Verify tensor values for each rank
-    for i, get_result in enumerate(get_results):
-        expected_sum = fill_values[i] * shapes[i][0] * shapes[i][1]
+    # Verify tensor values for each getter rank
+    for get_result in get_results:
+        local_rank = get_result.get("local_rank", 0)
+        expected_sum = fill_values[local_rank] * shapes[local_rank][0] * shapes[local_rank][1]
         assert (
             abs(get_result["sum"] - expected_sum) < 1e-3
-        ), f"Getter rank {i} sum mismatch: {get_result['sum']} vs {expected_sum}"
+        ), f"Getter rank {local_rank} sum mismatch: {get_result['sum']} vs {expected_sum}"

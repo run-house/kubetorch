@@ -21,6 +21,7 @@ Usage:
 """
 
 import base64
+import contextlib
 import ctypes
 import json
 import os
@@ -31,11 +32,59 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from kubetorch.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _ensure_list(value: Any) -> List:
+    """Normalize a value to a list (single items become [item])."""
+    return value if isinstance(value, list) else [value]
+
+
+@contextlib.contextmanager
+def _nccl_process_group(
+    master_addr: str,
+    master_port: int,
+    rank: int,
+    world_size: int,
+    timeout_seconds: int = None,
+):
+    """Context manager for NCCL process group setup/teardown."""
+    from datetime import timedelta
+
+    if timeout_seconds is None:
+        timeout_seconds = KT_NCCL_TIMEOUT_SECONDS
+
+    dist = _get_torch_distributed()
+
+    os.environ["MASTER_ADDR"] = master_addr
+    os.environ["MASTER_PORT"] = str(master_port)
+
+    process_group = None
+    try:
+        if dist.is_initialized():
+            process_group = dist.new_group(list(range(world_size)))
+        else:
+            dist.init_process_group(
+                backend="nccl",
+                rank=rank,
+                world_size=world_size,
+                timeout=timedelta(seconds=timeout_seconds),
+            )
+            process_group = dist.group.WORLD
+        yield process_group
+    finally:
+        if process_group is not None:
+            try:
+                if process_group != dist.group.WORLD:
+                    dist.destroy_process_group(process_group)
+                else:
+                    dist.destroy_process_group()
+            except Exception:
+                pass
 
 
 def _setup_cuda_ipc_permissions():
@@ -166,6 +215,10 @@ class RegisteredTensor:
     device: int  # CUDA device index
     pid: int  # PID of the process that registered this tensor
     registered_at: float = field(default_factory=time.time)
+
+    def reconstruct(self):
+        """Reconstruct the tensor from its IPC handle."""
+        return _reconstruct_tensor_from_ipc(self.ipc_handle, self.shape, self.dtype, self.device)
 
 
 @dataclass
@@ -338,6 +391,12 @@ class GPUDataServer:
         # group_id -> {"executing": bool, "result": dict, "event": threading.Event}
         self._broadcast_execution: Dict[str, Dict] = {}
         self._broadcast_execution_lock = threading.Lock()
+
+        # TODO: Manifest aggregation for many-to-many broadcasts
+        # When multiple participants on the same pod join with different keys,
+        # we need to merge their manifests before executing NCCL once
+        # group_id -> {"sends": [], "receives": [], "local_transfers": [],
+        #              "additional_tensors": [], "participants": int, "ready": Event}
 
     def _record_nccl_success(self):
         """Record a successful NCCL operation, resetting failure counter."""
@@ -698,12 +757,7 @@ class GPUDataServer:
 
         # Reconstruct tensor from IPC handle
         try:
-            tensor = _reconstruct_tensor_from_ipc(
-                ipc_handle=registered.ipc_handle,
-                shape=registered.shape,
-                dtype_str=registered.dtype,
-                device=registered.device,
-            )
+            tensor = registered.reconstruct()
         except Exception as e:
             logger.error(f"Failed to reconstruct tensor for '{key}': {e}")
             return {
@@ -794,45 +848,45 @@ class GPUDataServer:
         Handle a local getter process requesting to receive GPU data.
 
         This server contacts the source's GPU server to initiate the broadcast.
+        Supports batching multiple tensors into a single NCCL session.
 
         Args:
             message: {
-                "key": storage key,
+                "keys": list of storage keys,
                 "source_ip": IP of source pod,
                 "source_gpu_port": TCP port of source GPU server,
-                "dest_ipc_handle": IPC handle for destination tensor,
-                "shape": tensor shape,
-                "dtype": tensor dtype,
-                "device": CUDA device index,
+                "dest_ipc_handles": list of IPC handles for destination tensors,
+                "shapes": list of tensor shapes,
+                "dtypes": list of tensor dtypes,
+                "devices": list of CUDA device indices,
                 "nccl_timeout": optional timeout override in seconds,
             }
         """
-        key = message["key"]
+        keys = message["keys"]
         source_ip = message["source_ip"]
         source_gpu_port = message["source_gpu_port"]
-        dest_ipc_handle = _deserialize_ipc_handle(message["dest_ipc_handle"])
-        shape = tuple(message["shape"])
-        dtype = message["dtype"]
-        device = message["device"]
-        nccl_timeout = message.get("nccl_timeout")  # Optional timeout override
+        dest_ipc_handles = [_deserialize_ipc_handle(h) for h in message["dest_ipc_handles"]]
+        shapes = [tuple(s) for s in message["shapes"]]
+        dtypes = message["dtypes"]
+        devices = message["devices"]
+        nccl_timeout = message.get("nccl_timeout")
 
         pod_ip = os.getenv("POD_IP", "127.0.0.1")
 
-        logger.info(f"Receive broadcast request for '{key}' from {source_ip}:{source_gpu_port}")
+        logger.info(f"Receive broadcast request for {len(keys)} keys from {source_ip}:{source_gpu_port}")
 
-        # Contact source GPU server to request broadcast
+        # Contact source GPU server to request batch broadcast
         try:
             response = self._send_tcp_message(
                 source_ip,
                 source_gpu_port,
                 {
                     "command": "request_broadcast",
-                    "key": key,
+                    "keys": keys,
                     "getter_ip": pod_ip,
                     "getter_port": self.tcp_port,
-                    "shape": list(shape),
-                    "dtype": dtype,
-                    # Include version info for compatibility checking
+                    "shapes": [list(s) for s in shapes],
+                    "dtypes": dtypes,
                     "versions": self._versions,
                 },
                 timeout=30.0,
@@ -848,17 +902,20 @@ class GPUDataServer:
             world_size = response["world_size"]
             broadcast_id = response["broadcast_id"]
 
-            # Reconstruct destination tensor from IPC handle
-            dest_tensor = _reconstruct_tensor_from_ipc(
-                ipc_handle=dest_ipc_handle,
-                shape=shape,
-                dtype_str=dtype,
-                device=device,
-            )
+            # Reconstruct all destination tensors from IPC handles
+            dest_tensors = []
+            for i in range(len(keys)):
+                dest_tensor = _reconstruct_tensor_from_ipc(
+                    ipc_handle=dest_ipc_handles[i],
+                    shape=shapes[i],
+                    dtype_str=dtypes[i],
+                    device=devices[i],
+                )
+                dest_tensors.append(dest_tensor)
 
-            # Join NCCL broadcast as receiver
+            # Join NCCL broadcast as receiver (batched)
             self._join_nccl_broadcast(
-                dest_tensor=dest_tensor,
+                dest_tensors=dest_tensors,
                 broadcast_id=broadcast_id,
                 master_addr=master_addr,
                 master_port=master_port,
@@ -870,7 +927,7 @@ class GPUDataServer:
             return {"status": "ok", "broadcast_id": broadcast_id}
 
         except Exception as e:
-            logger.error(f"Failed to receive broadcast for '{key}': {e}")
+            logger.error(f"Failed to receive broadcast for keys: {e}")
             return {"status": "error", "error": str(e)}
 
     def _handle_remote_broadcast_request(self, message: dict) -> dict:
@@ -878,19 +935,19 @@ class GPUDataServer:
         Handle a remote getter requesting data from this source server.
 
         This server has the data registered locally. We set up NCCL and tell
-        the getter to join.
+        the getter to join. Supports batching multiple tensors.
 
         Args:
             message: {
-                "key": storage key,
+                "keys": list of storage keys,
                 "getter_ip": IP of getter,
                 "getter_port": TCP port of getter's GPU server,
-                "shape": expected tensor shape,
-                "dtype": expected tensor dtype,
+                "shapes": list of expected tensor shapes,
+                "dtypes": list of expected tensor dtypes,
                 "versions": NCCL/CUDA version info from getter,
             }
         """
-        key = message["key"]
+        keys = message["keys"]
         # getter_ip and getter_port available for future multi-getter support
         _ = message["getter_ip"], message["getter_port"]
 
@@ -902,26 +959,22 @@ class GPUDataServer:
                 logger.error(f"Version incompatibility with getter: {error_msg}")
                 return {"status": "error", "error": error_msg}
 
-        with self._lock:
-            if key not in self._registered:
-                return {"status": "error", "error": f"Key '{key}' not registered on this server"}
+        # Reconstruct all tensors from IPC handles
+        tensors = []
+        for key in keys:
+            with self._lock:
+                if key not in self._registered:
+                    return {"status": "error", "error": f"Key '{key}' not registered on this server"}
+                registered = self._registered[key]
 
-            registered = self._registered[key]
-
-        # Reconstruct tensor from IPC handle
-        try:
-            tensor = _reconstruct_tensor_from_ipc(
-                ipc_handle=registered.ipc_handle,
-                shape=registered.shape,
-                dtype_str=registered.dtype,
-                device=registered.device,
-            )
-        except Exception as e:
-            logger.error(f"Failed to reconstruct tensor for '{key}': {e}")
-            return {
-                "status": "error",
-                "error": f"Failed to reconstruct tensor (original process may have freed it): {e}",
-            }
+            try:
+                tensors.append(registered.reconstruct())
+            except Exception as e:
+                logger.error(f"Failed to reconstruct tensor for '{key}': {e}")
+                return {
+                    "status": "error",
+                    "error": f"Failed to reconstruct tensor '{key}' (original process may have freed it): {e}",
+                }
 
         # Set up NCCL broadcast
         import uuid
@@ -931,10 +984,10 @@ class GPUDataServer:
         pod_ip = os.getenv("POD_IP", "127.0.0.1")
         world_size = 2  # Source + 1 getter (TODO: support multiple getters)
 
-        # Start broadcast in background thread
+        # Start broadcast in background thread (batched)
         broadcast_thread = threading.Thread(
             target=self._serve_nccl_broadcast,
-            args=(tensor, broadcast_id, nccl_port, world_size),
+            args=(tensors, broadcast_id, nccl_port, world_size),
             daemon=True,
         )
         broadcast_thread.start()
@@ -970,22 +1023,46 @@ class GPUDataServer:
         For sends: Looks up source tensors from the registry by key
         For receives: Reconstructs destination tensors from IPC handles
         For local transfers: Direct GPU copy from source to destination
+        For additional_tensors: Client-side batched tensors (appended to sends/receives)
         """
         group_id = message["group_id"]
         rank = message["rank"]
         world_size = message["world_size"]
         master_addr = message["master_addr"]
         master_port = message["master_port"]
-        sends = message.get("sends", [])
-        receives = message.get("receives", [])
+        sends = list(message.get("sends", []))
+        receives = list(message.get("receives", []))
         local_transfers = message.get("local_transfers", [])
+        additional_tensors = message.get("additional_tensors", [])
+
+        # Append additional tensors (client-side batching) to sends or receives
+        for tensor_info in additional_tensors:
+            if "ipc_handle" in tensor_info:
+                # This is a receive (has destination IPC handle)
+                receives.append(
+                    {
+                        "key": tensor_info["key"],
+                        "dest_ipc_handle": tensor_info["ipc_handle"],
+                        "shape": tensor_info["shape"],
+                        "dtype": tensor_info["dtype"],
+                    }
+                )
+            elif "src_tensor_key" in tensor_info:
+                # This is a send (has source tensor key in registry)
+                sends.append(
+                    {
+                        "key": tensor_info["key"],
+                        "src_tensor_key": tensor_info["src_tensor_key"],
+                    }
+                )
 
         dist = _get_torch_distributed()
 
         logger.info(
             f"Executing broadcast group {group_id}: rank={rank}/{world_size}, "
             f"master={master_addr}:{master_port}, sends={len(sends)}, "
-            f"receives={len(receives)}, local={len(local_transfers)}"
+            f"receives={len(receives)}, local={len(local_transfers)}, "
+            f"additional={len(additional_tensors)}"
         )
 
         try:
@@ -1005,12 +1082,7 @@ class GPUDataServer:
                     src_reg = self._registered[src_key]
 
                 # Reconstruct source tensor from IPC
-                src_tensor = _reconstruct_tensor_from_ipc(
-                    ipc_handle=src_reg.ipc_handle,
-                    shape=src_reg.shape,
-                    dtype_str=src_reg.dtype,
-                    device=src_reg.device,
-                )
+                src_tensor = src_reg.reconstruct()
 
                 # Reconstruct destination tensor from IPC handle
                 if dest_handle is None:
@@ -1048,12 +1120,7 @@ class GPUDataServer:
                         return {"status": "error", "error": f"Source tensor '{src_key}' not registered for send"}
                     src_reg = self._registered[src_key]
 
-                send_tensors[key] = _reconstruct_tensor_from_ipc(
-                    ipc_handle=src_reg.ipc_handle,
-                    shape=src_reg.shape,
-                    dtype_str=src_reg.dtype,
-                    device=src_reg.device,
-                )
+                send_tensors[key] = src_reg.reconstruct()
 
             for recv in receives:
                 key = recv["key"]
@@ -1148,66 +1215,37 @@ class GPUDataServer:
 
     def _serve_nccl_broadcast(
         self,
-        tensor,
+        tensors: Union[Any, List[Any]],
         broadcast_id: str,
         nccl_port: int,
         world_size: int,
     ):
         """
         Serve NCCL broadcast as rank 0 (source) in a background thread.
+        Supports batching multiple tensors in a single NCCL session.
         """
-        from datetime import timedelta
-
         dist = _get_torch_distributed()
         pod_ip = os.getenv("POD_IP", "127.0.0.1")
-
-        # Set up NCCL environment
-        os.environ["MASTER_ADDR"] = pod_ip
-        os.environ["MASTER_PORT"] = str(nccl_port)
+        tensors = _ensure_list(tensors)
 
         logger.info(
             f"Serving NCCL broadcast {broadcast_id}: world_size={world_size}, "
-            f"MASTER_ADDR={pod_ip}, MASTER_PORT={nccl_port}"
+            f"num_tensors={len(tensors)}, MASTER_ADDR={pod_ip}, MASTER_PORT={nccl_port}"
         )
 
-        process_group = None
         try:
-            # Initialize process group as rank 0 with timeout
-            if dist.is_initialized():
-                ranks = list(range(world_size))
-                process_group = dist.new_group(ranks)
-            else:
-                dist.init_process_group(
-                    backend="nccl",
-                    rank=0,
-                    world_size=world_size,
-                    timeout=timedelta(seconds=KT_NCCL_TIMEOUT_SECONDS),
-                )
-                process_group = dist.group.WORLD
-
-            # Broadcast the tensor
-            dist.broadcast(tensor, src=0, group=process_group)
-
-            logger.info(f"NCCL broadcast {broadcast_id} complete")
+            with _nccl_process_group(pod_ip, nccl_port, rank=0, world_size=world_size) as pg:
+                for tensor in tensors:
+                    dist.broadcast(tensor, src=0, group=pg)
+            logger.info(f"NCCL broadcast {broadcast_id} complete ({len(tensors)} tensors)")
             self._record_nccl_success()
-
         except Exception as e:
             logger.error(f"NCCL broadcast {broadcast_id} failed: {e}")
             self._record_nccl_failure(str(e))
 
-        finally:
-            if process_group is not None:
-                try:
-                    if process_group != dist.group.WORLD:
-                        dist.destroy_process_group(process_group)
-                    else:
-                        dist.destroy_process_group()
-                except Exception:
-                    pass
-
     def _join_nccl_broadcast(
         self,
-        dest_tensor,
+        dest_tensors: Union[Any, List[Any]],
         broadcast_id: str,
         master_addr: str,
         master_port: int,
@@ -1217,61 +1255,31 @@ class GPUDataServer:
     ):
         """
         Join NCCL broadcast as a receiver (rank > 0).
+        Supports batching multiple tensors in a single NCCL session.
 
         Args:
+            dest_tensors: Single tensor or list of destination tensors
             nccl_timeout: Optional timeout override in seconds (for testing)
         """
-        from datetime import timedelta
-
         dist = _get_torch_distributed()
-
-        # Use override timeout if provided, otherwise use global setting
-        timeout_seconds = nccl_timeout if nccl_timeout is not None else KT_NCCL_TIMEOUT_SECONDS
-
-        # Set up NCCL environment
-        os.environ["MASTER_ADDR"] = master_addr
-        os.environ["MASTER_PORT"] = str(master_port)
+        dest_tensors = _ensure_list(dest_tensors)
 
         logger.info(
             f"Joining NCCL broadcast {broadcast_id}: rank={rank}, world_size={world_size}, "
-            f"MASTER_ADDR={master_addr}, MASTER_PORT={master_port}, timeout={timeout_seconds}s"
+            f"num_tensors={len(dest_tensors)}, MASTER_ADDR={master_addr}, MASTER_PORT={master_port}, "
+            f"timeout={nccl_timeout or KT_NCCL_TIMEOUT_SECONDS}s"
         )
 
-        process_group = None
         try:
-            # Initialize process group with timeout
-            if dist.is_initialized():
-                ranks = list(range(world_size))
-                process_group = dist.new_group(ranks)
-            else:
-                dist.init_process_group(
-                    backend="nccl",
-                    rank=rank,
-                    world_size=world_size,
-                    timeout=timedelta(seconds=timeout_seconds),
-                )
-                process_group = dist.group.WORLD
-
-            # Receive broadcast into destination tensor
-            dist.broadcast(dest_tensor, src=0, group=process_group)
-
-            logger.info(f"NCCL broadcast {broadcast_id} received successfully")
+            with _nccl_process_group(master_addr, master_port, rank, world_size, nccl_timeout) as pg:
+                for tensor in dest_tensors:
+                    dist.broadcast(tensor, src=0, group=pg)
+            logger.info(f"NCCL broadcast {broadcast_id} received successfully ({len(dest_tensors)} tensors)")
             self._record_nccl_success()
-
         except Exception as e:
             logger.error(f"NCCL broadcast {broadcast_id} join failed: {e}")
             self._record_nccl_failure(str(e))
             raise
-
-        finally:
-            if process_group is not None:
-                try:
-                    if process_group != dist.group.WORLD:
-                        dist.destroy_process_group(process_group)
-                    else:
-                        dist.destroy_process_group()
-                except Exception:
-                    pass
 
     def _send_tcp_message(self, host: str, port: int, message: dict, timeout: float = 30.0) -> dict:
         """Send a message to a remote GPU server via TCP."""
@@ -1425,6 +1433,7 @@ class GPUDataServer:
         broadcast_timeout: float,
         broadcast_world_size: Optional[int],
         dest_ipc_handle: Optional[dict] = None,  # For getters
+        additional_tensors: Optional[List[dict]] = None,  # Extra tensors to transfer (client-side batching)
     ) -> dict:
         """
         Join a broadcast group via MDS WebSocket.
@@ -1433,6 +1442,12 @@ class GPUDataServer:
         aggregates participants from the same pod and assigns one coordinator per pod.
         The coordinator gets the full manifest and executes NCCL. All participants
         wait for MDS "completed" signal before returning.
+
+        Args:
+            additional_tensors: Extra tensors to transfer beyond the coordination key.
+                Each dict has: key, shape, dtype, device, ipc_handle (for receives) or
+                src_tensor_key (for sends). These are batched with the main key in a
+                single NCCL session.
         """
         import asyncio
 
@@ -1453,6 +1468,7 @@ class GPUDataServer:
                             broadcast_timeout,
                             broadcast_world_size,
                             dest_ipc_handle,
+                            additional_tensors,
                         ),
                     )
                     return future.result()
@@ -1467,6 +1483,7 @@ class GPUDataServer:
                         broadcast_timeout,
                         broadcast_world_size,
                         dest_ipc_handle,
+                        additional_tensors,
                     )
                 )
         except RuntimeError:
@@ -1480,6 +1497,7 @@ class GPUDataServer:
                     broadcast_timeout,
                     broadcast_world_size,
                     dest_ipc_handle,
+                    additional_tensors,
                 )
             )
 
@@ -1493,8 +1511,9 @@ class GPUDataServer:
         broadcast_timeout: float,
         broadcast_world_size: Optional[int],
         dest_ipc_handle: Optional[dict] = None,
+        additional_tensors: Optional[List[dict]] = None,
     ) -> dict:
-        """Async implementation of broadcast group join."""
+        """Async implementation of broadcast group join with client-side batching."""
         import asyncio
 
         try:
@@ -1619,6 +1638,7 @@ class GPUDataServer:
                             "sends": sends,
                             "receives": receives,
                             "local_transfers": local_transfers,
+                            "additional_tensors": additional_tensors or [],
                         }
                     )
 
@@ -1712,6 +1732,27 @@ class GPUDataServer:
 
         # Step 2: If broadcast, join via WebSocket; otherwise publish to MDS
         if broadcast:
+            # Build additional_tensors for client-side batching (all registered tensors except current)
+            additional_tensors = []
+            if tensor_keys and len(tensor_keys) > 1:
+                # Derive base key from current key and last tensor_key
+                # e.g., key="model/weights/layer3", tensor_keys[-1]="layer3" -> base="model/weights"
+                last_tensor_key = tensor_keys[-1]
+                if key.endswith(f"/{last_tensor_key}"):
+                    base_key = key[: -(len(last_tensor_key) + 1)]
+                else:
+                    base_key = key.rsplit("/", 1)[0] if "/" in key else ""
+
+                # Add all tensor keys except the last (current) one
+                for tk in tensor_keys[:-1]:
+                    full_key = f"{base_key}/{tk}" if base_key else tk
+                    additional_tensors.append(
+                        {
+                            "key": full_key,
+                            "src_tensor_key": full_key,  # Look up from registry by this key
+                        }
+                    )
+
             return self._join_broadcast_via_websocket(
                 key=key,
                 role="putter",
@@ -1720,6 +1761,7 @@ class GPUDataServer:
                 broadcast_group_id=broadcast["group_id"],
                 broadcast_timeout=broadcast.get("timeout", 600.0),
                 broadcast_world_size=broadcast.get("world_size"),
+                additional_tensors=additional_tensors,
             )
         else:
             # Point-to-point: just publish to MDS
@@ -1732,85 +1774,125 @@ class GPUDataServer:
     def _handle_get_tensor(self, message: dict) -> dict:
         """
         Handle get_tensor command - lookup from MDS + receive via NCCL.
+        Supports batching multiple tensors, grouping by source for efficiency.
 
         If broadcast config is provided, joins the broadcast group via WebSocket.
         GPU Data Server is always the coordinator for its pod.
         """
-        key = message["key"]
-        dest_ipc_handle_serialized = message["dest_ipc_handle"]
-        dest_ipc_handle = _deserialize_ipc_handle(dest_ipc_handle_serialized)
-        shape = tuple(message["shape"])
-        dtype = message["dtype"]
-        device = message["device"]
+        keys = message["keys"]
+        dest_ipc_handles = [_deserialize_ipc_handle(h) for h in message["dest_ipc_handles"]]
+        shapes = [tuple(s) for s in message["shapes"]]
+        dtypes = message["dtypes"]
+        devices = message["devices"]
         nccl_timeout = message.get("nccl_timeout")
-        broadcast = message.get("broadcast")  # Optional broadcast config
+        broadcast = message.get("broadcast")
 
-        # If broadcast, join via WebSocket
+        # If broadcast, join with first key for coordination, batch remaining tensors client-side
         if broadcast:
+            # Build additional_tensors for all keys beyond the first (client-side batching)
+            additional_tensors = []
+            for i in range(1, len(keys)):
+                additional_tensors.append(
+                    {
+                        "key": keys[i],
+                        "ipc_handle": message["dest_ipc_handles"][i],
+                        "shape": list(shapes[i]),
+                        "dtype": dtypes[i],
+                        "device": devices[i],
+                    }
+                )
+
             return self._join_broadcast_via_websocket(
-                key=key,
+                key=keys[0],
                 role="getter",
-                tensor_shape=list(shape),
-                tensor_dtype=dtype,
+                tensor_shape=list(shapes[0]),
+                tensor_dtype=dtypes[0],
                 broadcast_group_id=broadcast["group_id"],
                 broadcast_timeout=broadcast.get("timeout", 600.0),
                 broadcast_world_size=broadcast.get("world_size"),
-                dest_ipc_handle=dest_ipc_handle_serialized,  # Pass serialized for WebSocket
+                dest_ipc_handle=message["dest_ipc_handles"][0],
+                additional_tensors=additional_tensors,
             )
 
-        # Point-to-point: Lookup source from MDS
-        source_info = self._mds_get_gpu_source(key)
-        if source_info is None:
-            return {"status": "error", "error": f"No GPU source found for key '{key}'"}
+        # Point-to-point: Lookup source for each key and group by source
+        # source_key = (ip, port) -> list of (index, key, shape, dtype, device, ipc_handle)
+        source_groups: Dict[Tuple[str, int], List] = {}
+        missing_keys = []
 
-        source_ip = source_info["ip"]
-        source_gpu_port = source_info.get("gpu_server_port", DEFAULT_TCP_PORT)
+        for i, key in enumerate(keys):
+            source_info = self._mds_get_gpu_source(key)
+            if source_info is None:
+                missing_keys.append(key)
+                continue
 
-        logger.info(f"get_tensor: found source for '{key}' at {source_ip}:{source_gpu_port}")
+            source_ip = source_info["ip"]
+            source_gpu_port = source_info.get("gpu_server_port", DEFAULT_TCP_PORT)
+            source_key = (source_ip, source_gpu_port)
 
-        # Reconstruct destination tensor from IPC handle
-        dest_tensor = _reconstruct_tensor_from_ipc(dest_ipc_handle, shape, dtype, device)
+            if source_key not in source_groups:
+                source_groups[source_key] = []
+            source_groups[source_key].append(
+                {
+                    "index": i,
+                    "key": key,
+                    "shape": shapes[i],
+                    "dtype": dtypes[i],
+                    "device": devices[i],
+                    "ipc_handle": dest_ipc_handles[i],
+                }
+            )
 
-        # Request broadcast from source and receive via NCCL
+        if missing_keys:
+            return {"status": "error", "error": f"No GPU source found for keys: {missing_keys}"}
+
+        logger.info(f"get_tensor: {len(keys)} keys from {len(source_groups)} source(s)")
+
+        # Process each source group with its own NCCL session
         try:
-            broadcast_id = f"get-{key}-{time.time()}"
-            request_msg = {
-                "command": "request_broadcast",
-                "key": key,
-                "broadcast_id": broadcast_id,
-                "getter_ip": self._pod_ip or "127.0.0.1",
-                "getter_port": self.tcp_port,
-                "shape": list(shape),
-                "dtype": dtype,
-                "versions": self._versions,
-            }
+            for (source_ip, source_gpu_port), items in source_groups.items():
+                group_keys = [item["key"] for item in items]
+                group_shapes = [item["shape"] for item in items]
+                group_dtypes = [item["dtype"] for item in items]
 
-            response = self._send_tcp_message(source_ip, source_gpu_port, request_msg, timeout=30.0)
+                # Reconstruct destination tensors for this group
+                dest_tensors = [
+                    _reconstruct_tensor_from_ipc(item["ipc_handle"], item["shape"], item["dtype"], item["device"])
+                    for item in items
+                ]
 
-            if response.get("status") != "ok":
-                return {"status": "error", "error": f"Source rejected request: {response.get('error')}"}
+                broadcast_id = f"get-batch-{time.time()}"
+                request_msg = {
+                    "command": "request_broadcast",
+                    "keys": group_keys,
+                    "broadcast_id": broadcast_id,
+                    "getter_ip": self._pod_ip or "127.0.0.1",
+                    "getter_port": self.tcp_port,
+                    "shapes": [list(s) for s in group_shapes],
+                    "dtypes": group_dtypes,
+                    "versions": self._versions,
+                }
 
-            master_addr = response["master_addr"]
-            master_port = response["master_port"]
-            world_size = response["world_size"]
-            rank = response["rank"]
+                response = self._send_tcp_message(source_ip, source_gpu_port, request_msg, timeout=30.0)
 
-            timeout_seconds = nccl_timeout if nccl_timeout is not None else KT_NCCL_TIMEOUT_SECONDS
-            self._join_nccl_broadcast(
-                dest_tensor=dest_tensor,
-                broadcast_id=broadcast_id,
-                master_addr=master_addr,
-                master_port=master_port,
-                rank=rank,
-                world_size=world_size,
-                nccl_timeout=timeout_seconds,
-            )
+                if response.get("status") != "ok":
+                    return {"status": "error", "error": f"Source {source_ip} rejected request: {response.get('error')}"}
 
-            logger.info(f"get_tensor: received '{key}' successfully")
-            return {"status": "ok", "key": key}
+                self._join_nccl_broadcast(
+                    dest_tensors=dest_tensors,
+                    broadcast_id=broadcast_id,
+                    master_addr=response["master_addr"],
+                    master_port=response["master_port"],
+                    rank=response["rank"],
+                    world_size=response["world_size"],
+                    nccl_timeout=nccl_timeout,
+                )
+
+                logger.info(f"get_tensor: received {len(group_keys)} tensors from {source_ip}")
+
+            return {"status": "ok", "keys": keys}
 
         except Exception as e:
-            logger.error(f"get_tensor failed for '{key}': {e}")
+            logger.error(f"get_tensor failed: {e}")
             return {"status": "error", "error": str(e)}
 
 
@@ -1943,23 +2025,24 @@ class GPUDataServerClient:
 
     def receive_broadcast(
         self,
-        key: str,
+        keys: Union[str, List[str]],
         source_ip: str,
         source_gpu_port: int,
-        dest_tensor,
+        dest_tensors: Union[Any, List[Any]],
         nccl_timeout: Optional[int] = None,
     ) -> dict:
         """
         Request to receive a broadcast from a remote source.
 
         This tells the local GPU server to contact the source's GPU server
-        and participate in the NCCL broadcast.
+        and participate in the NCCL broadcast. Supports batching multiple
+        tensors into a single NCCL session for efficiency.
 
         Args:
-            key: Storage key
+            keys: Storage key(s) - single string or list of strings
             source_ip: IP of the source pod
             source_gpu_port: TCP port of the source's GPU server
-            dest_tensor: Pre-allocated destination tensor to receive into
+            dest_tensors: Pre-allocated destination tensor(s) to receive into
             nccl_timeout: Override NCCL timeout in seconds (for testing)
 
         Returns:
@@ -1967,24 +2050,38 @@ class GPUDataServerClient:
         """
         _get_torch()  # Ensure torch is available
 
-        if not dest_tensor.is_cuda:
-            raise ValueError("Destination tensor must be on a CUDA device")
+        # Normalize to lists
+        keys = _ensure_list(keys)
+        dest_tensors = _ensure_list(dest_tensors)
 
-        # Get IPC handle for destination tensor (version-compatible)
-        ipc_handle = _get_ipc_handle(dest_tensor)
+        if len(keys) != len(dest_tensors):
+            raise ValueError(f"Number of keys ({len(keys)}) must match number of dest_tensors ({len(dest_tensors)})")
 
-        # Serialize IPC handle for JSON transmission
-        serializable_handle = _serialize_ipc_handle(ipc_handle)
+        # Validate and build batch data
+        dest_ipc_handles = []
+        shapes = []
+        dtypes = []
+        devices = []
+
+        for i, tensor in enumerate(dest_tensors):
+            if not tensor.is_cuda:
+                raise ValueError(f"Destination tensor at index {i} must be on a CUDA device")
+
+            ipc_handle = _get_ipc_handle(tensor)
+            dest_ipc_handles.append(_serialize_ipc_handle(ipc_handle))
+            shapes.append(list(tensor.shape))
+            dtypes.append(str(tensor.dtype))
+            devices.append(tensor.device.index)
 
         message = {
             "command": "receive_broadcast",
-            "key": key,
+            "keys": keys,
             "source_ip": source_ip,
             "source_gpu_port": source_gpu_port,
-            "dest_ipc_handle": serializable_handle,
-            "shape": list(dest_tensor.shape),
-            "dtype": str(dest_tensor.dtype),
-            "device": dest_tensor.device.index,
+            "dest_ipc_handles": dest_ipc_handles,
+            "shapes": shapes,
+            "dtypes": dtypes,
+            "devices": devices,
         }
 
         if nccl_timeout is not None:
@@ -2111,19 +2208,18 @@ class GPUDataServerClient:
 
     def get_tensor(
         self,
-        key: str,
-        dest_tensor,
+        keys: Union[str, List[str]],
+        dest_tensors: Union[Any, List[Any]],
         nccl_timeout: Optional[int] = None,
         broadcast: Optional[dict] = None,
     ) -> dict:
         """
         High-level get: MDS lookup + NCCL receive (or join broadcast).
-
-        GPU Data Server handles everything - just pass the destination tensor.
+        Supports batching multiple tensors in a single NCCL session.
 
         Args:
-            key: Storage key
-            dest_tensor: Pre-allocated CUDA tensor to receive into
+            keys: Storage key(s) - single string or list
+            dest_tensors: Pre-allocated CUDA tensor(s) to receive into
             nccl_timeout: Override NCCL timeout in seconds (for testing)
             broadcast: Optional broadcast config dict with:
                 - group_id: Broadcast group identifier (required)
@@ -2135,20 +2231,33 @@ class GPUDataServerClient:
         """
         _get_torch()  # Ensure torch is available
 
-        if not dest_tensor.is_cuda:
-            raise ValueError("Destination tensor must be on a CUDA device")
+        keys = _ensure_list(keys)
+        dest_tensors = _ensure_list(dest_tensors)
 
-        # Get IPC handle for destination tensor
-        ipc_handle = _get_ipc_handle(dest_tensor)
-        serializable_handle = _serialize_ipc_handle(ipc_handle)
+        if len(keys) != len(dest_tensors):
+            raise ValueError(f"Number of keys ({len(keys)}) must match dest_tensors ({len(dest_tensors)})")
+
+        # Validate and build batch data
+        dest_ipc_handles = []
+        shapes = []
+        dtypes = []
+        devices = []
+
+        for i, tensor in enumerate(dest_tensors):
+            if not tensor.is_cuda:
+                raise ValueError(f"Destination tensor at index {i} must be on a CUDA device")
+            dest_ipc_handles.append(_serialize_ipc_handle(_get_ipc_handle(tensor)))
+            shapes.append(list(tensor.shape))
+            dtypes.append(str(tensor.dtype))
+            devices.append(tensor.device.index)
 
         message = {
             "command": "get_tensor",
-            "key": key,
-            "dest_ipc_handle": serializable_handle,
-            "shape": list(dest_tensor.shape),
-            "dtype": str(dest_tensor.dtype),
-            "device": dest_tensor.device.index,
+            "keys": keys,
+            "dest_ipc_handles": dest_ipc_handles,
+            "shapes": shapes,
+            "dtypes": dtypes,
+            "devices": devices,
         }
 
         if nccl_timeout is not None:

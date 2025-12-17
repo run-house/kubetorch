@@ -150,10 +150,8 @@ class GPUTransferManager:
         if self._gpu_server_client is None:
             from .gpu_data_server import GPUDataServerClient, start_server_if_needed
 
-            # Start server if not running
             server_pid = start_server_if_needed()
             logger.debug(f"GPU Data Server PID: {server_pid}")
-
             self._gpu_server_client = GPUDataServerClient()
 
         return self._gpu_server_client
@@ -337,8 +335,8 @@ class GPUTransferManager:
                 logger.info(f"Joining broadcast group for '{full_key}': shape={list(tensor.shape)}")
 
             response = gpu_client.get_tensor(
-                key=full_key,
-                dest_tensor=tensor,
+                keys=full_key,
+                dest_tensors=tensor,
                 broadcast=broadcast_config,
             )
 
@@ -350,21 +348,17 @@ class GPUTransferManager:
 
             return response
 
-        # Point-to-point: Use high-level get_tensor API for each tensor
-        # GPU Data Server handles MDS lookup + NCCL
-        for tensor_key, tensor in tensors_to_receive:
-            full_key = f"{key}/{tensor_key}" if tensor_key else key
+        # Point-to-point: Use batch get_tensor (MDS lookup + NCCL in single session)
+        keys = [f"{key}/{tensor_key}" if tensor_key else key for tensor_key, _ in tensors_to_receive]
+        tensors = [tensor for _, tensor in tensors_to_receive]
 
-            if verbose:
-                logger.info(f"Receiving tensor '{full_key}': shape={list(tensor.shape)}")
+        if verbose:
+            logger.info(f"Receiving {len(tensors)} tensor(s) for '{key}'")
 
-            response = gpu_client.get_tensor(
-                key=full_key,
-                dest_tensor=tensor,
-            )
+        response = gpu_client.get_tensor(keys=keys, dest_tensors=tensors)
 
-            if response.get("status") != "ok":
-                raise RuntimeError(f"Failed to receive tensor '{full_key}': {response.get('error')}")
+        if response.get("status") != "ok":
+            raise RuntimeError(f"Failed to receive tensors for '{key}': {response.get('error')}")
 
         if verbose:
             if len(tensors_to_receive) == 1:
