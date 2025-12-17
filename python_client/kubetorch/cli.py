@@ -1479,7 +1479,6 @@ def kt_teardown(
         service_info = resources["services"][name]
         configmaps = service_info["configmaps"]
         service_type = service_info.get("type", "knative")
-        service_group = service_info.get("group", None)
         service_types.add(service_type)
 
         delete_resources_for_service(
@@ -1489,7 +1488,6 @@ def kt_teardown(
             namespace=namespace,
             console=console,
             force=force,
-            group=service_group,
         )
 
     # Force delete any remaining pods if --force flag is set

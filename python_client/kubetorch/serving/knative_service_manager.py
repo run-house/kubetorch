@@ -464,29 +464,3 @@ class KnativeServiceManager(BaseServiceManager):
             "To update the timeout, set the `launch_timeout` parameter in the Compute class, or set the "
             "environment variable `KT_LAUNCH_TIMEOUT`."
         )
-
-    def _teardown_associated_resources(self, service_name: str, console=None) -> bool:
-        """Teardown associated pool for Knative service."""
-        success = True
-
-        # Delete pool (this also deletes associated K8s services)
-        try:
-            self.controller_client.delete_pool(namespace=self.namespace, name=service_name)
-            if console:
-                console.print(f"✓ Deleted resource [blue]{service_name}[/blue]")
-            else:
-                logger.info(f"Deleted resource {service_name}")
-        except Exception as e:
-            if http_not_found(e):
-                if console:
-                    console.print(f"[yellow]Note:[/yellow] Resource {service_name} not found or already deleted")
-                else:
-                    logger.info(f"Resource {service_name} not found or already deleted")
-            else:
-                if console:
-                    console.print(f"[red]Error:[/red] Failed to delete resource {service_name}: {e}")
-                else:
-                    logger.error(f"Failed to delete resource {service_name}: {e}")
-                success = False
-
-        return success
