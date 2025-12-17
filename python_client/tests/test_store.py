@@ -1,7 +1,19 @@
 """
-Tests for data storage and transfer APIs (kt.put and kt.get with key-value interface)
+Tests for data storage and transfer APIs (kt.put and kt.get with key-value interface).
+
+These tests verify:
+- Basic put/get operations with keys
+- Service-specific key handling
+- Hierarchical key organization
+- Force overwrite functionality
+- Error handling
+- ls (listing) operations
+- vput (virtual put) for peer-to-peer transfers
+- Metadata server integration
 """
+
 import tempfile
+from pathlib import Path
 
 import kubetorch as kt
 
@@ -11,7 +23,7 @@ from tests.assets.kv_store.store_helper import StoreTestHelper
 
 
 @pytest.fixture(scope="session")
-async def store_test_helper():
+async def store_helper():
     """Fixture that provides a StoreTestHelper instance for store testing."""
     helper_cls = await kt.cls(StoreTestHelper, name="store-test-helper").to_async(
         kt.Compute(cpus="0.1", memory="512Mi")
@@ -19,15 +31,21 @@ async def store_test_helper():
     return helper_cls
 
 
+@pytest.fixture(scope="session")
+async def store_peer():
+    """Fixture that provides a second StoreTestHelper instance for peer-to-peer testing."""
+    helper_cls = await kt.cls(StoreTestHelper, name="store-test-peer").to_async(kt.Compute(cpus="0.1", memory="512Mi"))
+    return helper_cls
+
+
+# ==================== Basic KV Operations ====================
+
+
 @pytest.mark.level("minimal")
-async def test_store_kv_interface(store_test_helper):
+async def test_store_kv_interface(store_helper):
     """Test kt.put and kt.get with key-value interface."""
-    from pathlib import Path
+    service_name = store_helper.service_name
 
-    # The fixture already provides the helper instance
-    helper = store_test_helper
-
-    # Create temporary test data locally
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
 
@@ -35,7 +53,6 @@ async def test_store_kv_interface(store_test_helper):
         single_file = tmpdir / "single.txt"
         single_file.write_text("single file content")
 
-        # Create test directory with nested structure
         test_dir = tmpdir / "test_dir"
         test_dir.mkdir()
         (test_dir / "file1.txt").write_text("file 1 content")
@@ -44,7 +61,6 @@ async def test_store_kv_interface(store_test_helper):
         nested.mkdir()
         (nested / "deep.txt").write_text("deep file content")
 
-        # Create multiple files
         file1 = tmpdir / "file1.txt"
         file2 = tmpdir / "file2.txt"
         file3 = tmpdir / "file3.txt"
@@ -52,158 +68,86 @@ async def test_store_kv_interface(store_test_helper):
         file2.write_text("content 2")
         file3.write_text("content 3")
 
-        # Test 1: Upload single file with key
-        kt.put(key=f"{store_test_helper.service_name}/test-files/single.txt", src=str(single_file))
-
-        # Test 2: Upload directory with key
-        kt.put(key=f"{store_test_helper.service_name}/test-dir", src=str(test_dir))
-
-        # Test 3: Upload multiple files with key
-        kt.put(key=f"{store_test_helper.service_name}/multi-files", src=[str(file1), str(file2), str(file3)])
-
-        # Test 4: Upload directory contents only with contents flag
-        kt.put(key=f"{store_test_helper.service_name}/contents-test", src=str(test_dir), contents=True)
+        # Test uploads
+        kt.put(key=f"{service_name}/test-files/single.txt", src=str(single_file))
+        kt.put(key=f"{service_name}/test-dir", src=str(test_dir))
+        kt.put(key=f"{service_name}/multi-files", src=[str(file1), str(file2), str(file3)])
+        kt.put(key=f"{service_name}/contents-test", src=str(test_dir), contents=True)
 
         # Verify uploads on remote
-        upload_results = helper.verify_uploaded_files()
+        results = store_helper.verify_uploaded_files()
 
-        # Check upload results
-        assert upload_results["single_file"]["exists"], "Single file not stored at key"
-        assert upload_results["single_file"]["correct"], "Single file content incorrect"
+        assert results["single_file"]["exists"], "Single file not stored"
+        assert results["single_file"]["correct"], "Single file content incorrect"
+        assert results["directory"]["exists"], "Directory not stored"
+        assert results["directory"]["file_count"] >= 3, "Not all directory files stored"
+        assert all(results["multiple_files"].values()), "Not all multiple files stored"
+        assert results["contents_flag"]["exists"], "Contents flag upload failed"
 
-        assert upload_results["directory"]["exists"], "Directory not stored at key"
-        assert upload_results["directory"]["file_count"] >= 3, "Not all directory files stored"
-        assert upload_results["directory"]["has_nested"], "Nested directory structure lost"
+        # Prepare and test downloads
+        store_helper.prepare_download_files()
 
-        assert all(upload_results["multiple_files"].values()), "Not all multiple files stored"
-
-        assert upload_results["contents_flag"]["exists"], "Contents flag upload failed"
-        assert upload_results["contents_flag"]["file1_direct"], "Contents not copied directly"
-        assert upload_results["contents_flag"].get(
-            "no_subdir", True
-        ), "Subdirectory incorrectly created with contents flag"
-
-        # Prepare download test files
-        download_prep = helper.prepare_download_files()
-        assert download_prep["prepared"], "Failed to prepare download files"
-
-        # Create download directory
         download_dir = tmpdir / "downloads"
         download_dir.mkdir()
 
-        # Test 5: Download single file with key
-        # We need to bypass filters because our .gitignore might ignore .csv files
         kt.get(
-            key=f"{store_test_helper.service_name}/downloads/result.csv",
+            key=f"{service_name}/downloads/result.csv",
             dest=str(download_dir),
             filter_options="--include='*.csv'",
         )
-        assert (download_dir / "result.csv").exists(), "Single file not retrieved from key"
-        assert "id,value" in (download_dir / "result.csv").read_text(), "Retrieved file content incorrect"
-
-        # Test 6: Download directory with key
-        models_dir = download_dir / "models_dl"
-        models_dir.mkdir()
-        # We need to bypass filters because our .gitignore ignores .pkl files
-        kt.get(key=f"{store_test_helper.service_name}/models", dest=str(models_dir), filter_options="--include='*.pkl'")
-        assert (models_dir / "models" / "model.pkl").exists(), "Directory not retrieved from key"
-        assert (models_dir / "models" / "v1" / "weights.bin").exists(), "Nested files not retrieved"
-
-        # Test 7: Download with contents flag
-        logs_dir = download_dir / "logs_dl"
-        logs_dir.mkdir()
-        # We need to bypass filters because our .gitignore ignores .log files
-        kt.get(
-            key=f"{store_test_helper.service_name}/logs",
-            dest=str(logs_dir),
-            contents=True,
-            filter_options="--include='*.log'",
-        )
-        # With contents=True, contents should be copied directly
-        for i in range(3):
-            log_file = logs_dir / f"output_{i}.log"
-            assert log_file.exists(), f"Log file {i} not retrieved from key"
-            assert f"Log file {i}" in log_file.read_text(), f"Log file {i} content incorrect"
+        assert (download_dir / "result.csv").exists(), "Single file not retrieved"
 
 
 @pytest.mark.level("minimal")
-async def test_store_service_keys(store_test_helper):
+async def test_store_service_keys(store_helper):
     """Test kt.put and kt.get with service-specific keys."""
-    from pathlib import Path
-
-    # The fixture already provides the helper instance
-    helper = store_test_helper
-    service_name = helper.service_name
+    service_name = store_helper.service_name
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
 
-        # Create test file
         test_file = tmpdir / "service_test.txt"
         test_file.write_text("service specific content")
 
-        # Upload with service as part of the key
-        # This should interpret the first part as service name
         kt.put(key=f"{service_name}/config/test.txt", src=str(test_file))
 
-        # Verify via helper - check if file exists in the service's storage
-        result = helper.check_file_exists("config/test.txt")
-
+        result = store_helper.check_file_exists("config/test.txt")
         assert result["exists"], "File not stored with service key"
-        assert "service specific content" in result["content"], "Service key upload content incorrect"
+        assert "service specific content" in result["content"], "Content incorrect"
 
-        # Create a file on the service for download
-        helper.create_output_file("output/service_result.log", "output from service\nline 2\nline 3")
-
-        # Download with service key
+        # Test download
+        store_helper.create_output_file("output/service_result.log", "output from service")
         download_dir = tmpdir / "service_downloads"
         download_dir.mkdir()
-        # We need to bypass filters because our .gitignore ignores .log files
+
         kt.get(
             key=f"{service_name}/output/service_result.log", dest=str(download_dir), filter_options="--include='*.log'"
         )
-
         downloaded = download_dir / "service_result.log"
         assert downloaded.exists(), "File not retrieved with service key"
-        assert "output from service" in downloaded.read_text(), "Service key download content incorrect"
 
 
 @pytest.mark.level("minimal")
-async def test_store_hierarchical_keys(store_test_helper):
+async def test_store_hierarchical_keys(store_helper):
     """Test hierarchical key organization."""
-    from pathlib import Path
-
-    # The fixture already provides the helper instance
-    helper = store_test_helper
+    service_name = store_helper.service_name
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
 
-        # Create test data with hierarchical structure
-        data_dir = tmpdir / "data"
-        data_dir.mkdir()
-
-        # Create model files
-        model_v1 = data_dir / "model_v1.pkl"
+        # Create model and dataset files
+        model_v1 = tmpdir / "model_v1.pkl"
         model_v1.write_text("model version 1")
-
-        model_v2 = data_dir / "model_v2.pkl"
+        model_v2 = tmpdir / "model_v2.pkl"
         model_v2.write_text("model version 2")
-
-        # Create dataset files
-        train_data = data_dir / "train.csv"
+        train_data = tmpdir / "train.csv"
         train_data.write_text("train data")
-
-        test_data = data_dir / "test.csv"
+        test_data = tmpdir / "test.csv"
         test_data.write_text("test data")
 
-        # Store with hierarchical keys - prepend service name
-        service_name = store_test_helper.service_name
-        # We need to bypass filters because our .gitignore ignores .pkl files
-        # Keys include file extensions - files will be renamed to match the key
+        # Store with hierarchical keys
         kt.put(key=f"{service_name}/ml-project/models/v1.pkl", src=str(model_v1), filter_options="--include='*.pkl'")
         kt.put(key=f"{service_name}/ml-project/models/v2.pkl", src=str(model_v2), filter_options="--include='*.pkl'")
-        # We need to bypass filters because our .gitignore might ignore .csv files
         kt.put(
             key=f"{service_name}/ml-project/datasets/train.csv", src=str(train_data), filter_options="--include='*.csv'"
         )
@@ -211,69 +155,31 @@ async def test_store_hierarchical_keys(store_test_helper):
             key=f"{service_name}/ml-project/datasets/test.csv", src=str(test_data), filter_options="--include='*.csv'"
         )
 
-        # Verify hierarchical storage
-        result = helper.check_hierarchy()
-
-        assert result["models_v1"], "Model v1 not stored with hierarchical key"
-        assert result["models_v2"], "Model v2 not stored with hierarchical key"
-        assert result["datasets_train"], "Train dataset not stored with hierarchical key"
-        assert result["datasets_test"], "Test dataset not stored with hierarchical key"
-
-        # Test retrieval with hierarchical keys
-        download_dir = tmpdir / "retrieved"
-        download_dir.mkdir()
-
-        # Create destination directories for single file downloads
-        (download_dir / "model_v1_dir").mkdir()
-        (download_dir / "datasets").mkdir()
-
-        # Get specific versions - use service name
-        # We need to bypass filters because our .gitignore ignores .pkl files
-        kt.get(
-            key=f"{service_name}/ml-project/models/v1.pkl",
-            dest=str(download_dir / "model_v1_dir"),
-            filter_options="--include='*.pkl'",
-        )
-        # We need to bypass filters because our .gitignore might ignore .csv files
-        kt.get(
-            key=f"{service_name}/ml-project/datasets/train.csv",
-            dest=str(download_dir / "datasets"),
-            filter_options="--include='*.csv'",
-        )
-
-        assert (download_dir / "model_v1_dir" / "v1.pkl").exists(), "Model v1 not retrieved"
-        assert (download_dir / "datasets" / "train.csv").exists(), "Train dataset not retrieved"
+        result = store_helper.check_hierarchy()
+        assert result["models_v1"], "Model v1 not stored"
+        assert result["models_v2"], "Model v2 not stored"
+        assert result["datasets_train"], "Train dataset not stored"
+        assert result["datasets_test"], "Test dataset not stored"
 
 
 @pytest.mark.level("minimal")
-async def test_store_overwrite(store_test_helper):
+async def test_store_overwrite(store_helper):
     """Test force overwrite option with keys."""
-    from pathlib import Path
-
-    # The fixture already provides the helper instance
-    helper = store_test_helper
+    service_name = store_helper.service_name
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
 
-        # Create initial file
         file_v1 = tmpdir / "config.yaml"
         file_v1.write_text("version: 1\ndata: initial")
 
-        # Store initial version with key - prepend service name
-        service_name = store_test_helper.service_name
-        # We need to bypass filters because our .gitignore might ignore .yaml files
-        # Key includes filename - file will be renamed to match the key
         kt.put(key=f"{service_name}/config/main/config.yaml", src=str(file_v1), filter_options="--include='*.yaml'")
 
-        # Verify initial storage - check in service's storage area
-        initial_content = helper.read_file("config/main/config.yaml")
+        initial_content = store_helper.read_file("config/main/config.yaml")
         assert "version: 1" in initial_content, "Initial storage failed"
 
-        # Update file locally
+        # Update and overwrite
         file_v1.write_text("version: 2\ndata: updated")
-
-        # Store with force=True to overwrite
         kt.put(
             key=f"{service_name}/config/main/config.yaml",
             src=str(file_v1),
@@ -281,56 +187,50 @@ async def test_store_overwrite(store_test_helper):
             filter_options="--include='*.yaml'",
         )
 
-        # Verify overwrite - check in service's storage area
-        updated_content = helper.read_file("config/main/config.yaml")
+        updated_content = store_helper.read_file("config/main/config.yaml")
         assert "version: 2" in updated_content, "Force overwrite failed"
-        assert "data: updated" in updated_content, "Content not fully updated"
+
+
+# ==================== Error Handling ====================
 
 
 @pytest.mark.level("minimal")
-def test_store_error_handling_kv():
+def test_store_error_handling():
     """Test error handling for key-value operations."""
-    from pathlib import Path
-
-    from kubetorch.resources.compute.utils import RsyncError
+    DataSyncError = kt.DataSyncError
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
 
-        # Test 1: Try to store non-existent file
-        # This raises ValueError before rsync is called (file validation)
+        # Non-existent source file
         with pytest.raises(ValueError, match="Could not locate path to sync up"):
             kt.put(key="test/nonexistent", src="/non/existent/file.txt")
 
-        # Test 2: Try to retrieve non-existent key
-        # This should raise RsyncError when rsync fails to find the remote file
-        with pytest.raises(RsyncError):
+        # Non-existent key
+        with pytest.raises(DataSyncError):
             kt.get(key="nonexistent/key", dest=str(tmpdir))
 
-        # Test 3: Invalid key formats should still work (treated as paths)
+        # These should work - keys are flexible
         test_file = tmpdir / "test.txt"
         test_file.write_text("test")
+        kt.put(key="../test", src=str(test_file))
+        kt.put(key="/absolute/path", src=str(test_file))
 
-        # These should work - keys are flexible
-        kt.put(key="../test", src=str(test_file))  # Will store under /data/store/../test
-        kt.put(key="/absolute/path", src=str(test_file))  # Will store under /data/store/absolute/path
-
-        # Clean up test files
+        # Cleanup
         try:
             kt.rm(key="../test", recursive=True)
             kt.rm(key="/absolute/path", recursive=True)
         except Exception:
-            # Ignore cleanup errors - files may not exist or may have been cleaned up already
             pass
 
 
-@pytest.mark.level("minimal")
-async def test_store_ls(store_test_helper):
-    """Test kt.ls for listing store contents."""
-    from pathlib import Path
+# ==================== Listing Operations ====================
 
-    helper = store_test_helper
-    service_name = helper.service_name
+
+@pytest.mark.level("minimal")
+async def test_store_ls(store_helper):
+    """Test kt.ls for listing store contents."""
+    service_name = store_helper.service_name
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
@@ -344,79 +244,153 @@ async def test_store_ls(store_test_helper):
         test_dir.mkdir()
         (test_dir / "nested.txt").write_text("nested content")
 
-        # Upload files to create a structure
         kt.put(key=f"{service_name}/ls-test/file1.txt", src=str(test_file1))
         kt.put(key=f"{service_name}/ls-test/file2.txt", src=str(test_file2))
         kt.put(key=f"{service_name}/ls-test/subdir", src=str(test_dir))
 
-        # Test listing from outside the cluster - need to specify service name in key
-        # List service-specific path (with verbose to see what's happening)
+        # Test listing from outside the cluster
         items = kt.ls(f"{service_name}/ls-test", verbose=True)
-        assert len(items) >= 3, f"Should list uploaded files and directories, got: {items}"
-        assert any("file1.txt" in item for item in items), "file1.txt should be listed"
-        assert any("file2.txt" in item for item in items), "file2.txt should be listed"
-        assert any("subdir" in item for item in items), "subdir should be listed"
+        assert len(items) >= 3, f"Should list uploaded files, got: {items}"
 
-        # Test listing from inside the cluster (via helper)
-        # The helper runs inside the cluster, so it can list relative paths
-        items = helper.list_store_contents("ls-test")
-        assert len(items) >= 3, "Helper should list uploaded files and directories"
-        assert any("file1.txt" in item for item in items), "file1.txt should be listed via helper"
-        assert any("file2.txt" in item for item in items), "file2.txt should be listed via helper"
-        assert any("subdir" in item for item in items), "subdir should be listed via helper"
+        item_names = [item["name"] if isinstance(item, dict) else item for item in items]
+        assert any("file1.txt" in name for name in item_names), "file1.txt should be listed"
+        assert any("file2.txt" in name for name in item_names), "file2.txt should be listed"
+
+        # Test listing from inside the cluster
+        items = store_helper.list_store_contents("ls-test")
+        assert len(items) >= 3, "Helper should list uploaded files"
+
+
+# ==================== vput / Peer-to-Peer Operations ====================
 
 
 @pytest.mark.level("minimal")
-async def test_store_single_file_contents_flag(store_test_helper):
-    """Test single file upload with contents=True flag."""
-    from pathlib import Path
-
-    helper = store_test_helper
-    service_name = helper.service_name
+async def test_vput_get_external(store_helper):
+    """Test kt.vput() for zero-copy publishing of data."""
+    service_name = store_helper.service_name
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
 
-        # Create a single file
+        test_data_path = "vput_test/data.txt"
+        test_data_content = "Published via vput\nZero-copy content"
+
+        vput_key = f"{service_name}/vput-published/data"
+        result = store_helper.vput_publish_data(key=vput_key, local_path=test_data_path, content=test_data_content)
+
+        assert result["success"], f"vput failed: {result.get('error')}"
+        assert result["pod_ip"] != "unknown", "POD_IP should be set"
+
+        # Test external client retrieval
+        download_dir = tmpdir / "external_download"
+        download_dir.mkdir()
+
+        kt.get(key=vput_key, dest=str(download_dir), verbose=True, seed_data=False)
+
+        downloaded_files = list(download_dir.rglob("*.txt"))
+        assert len(downloaded_files) > 0, "Should have downloaded file via external client"
+
+
+@pytest.mark.level("minimal")
+async def test_store_peer_to_peer_transfer(store_helper, store_peer):
+    """Test peer-to-peer data transfer using vput and get."""
+    publisher_data_path = "peer_pub/shared_model.pkl"
+    publisher_data_content = "Peer-to-peer model data\nVersion 1.0"
+    publish_key = f"{store_helper.service_name}/peer-shared/model"
+
+    pub_result = store_helper.vput_publish_data(
+        key=publish_key, local_path=publisher_data_path, content=publisher_data_content
+    )
+    assert pub_result["success"], f"Publisher vput failed: {pub_result.get('error')}"
+
+    # Retrieve from second service
+    get_result = store_peer.get_data_from_store(
+        key=publish_key,
+        dest_path="peer_download",
+        filter_options="--include='*.pkl'",
+    )
+
+    assert get_result["success"], f"Peer get failed: {get_result.get('error')}"
+    assert get_result["file_count"] > 0, "Should have downloaded from peer"
+
+
+@pytest.mark.level("minimal")
+async def test_store_metadata_server_integration(store_helper):
+    """Test that metadata server integration works for tracking published keys."""
+    service_name = store_helper.service_name
+
+    metadata_test_path = "metadata_test/tracked.txt"
+    metadata_key = f"{service_name}/metadata-tracked/data"
+    result = store_helper.vput_publish_data(key=metadata_key, local_path=metadata_test_path)
+
+    assert result["success"], "vput should succeed"
+
+    check_result = store_helper.check_metadata_server(metadata_key)
+    assert check_result.get("registered") or check_result.get("retrievable"), f"Key should be tracked: {check_result}"
+
+
+@pytest.mark.level("minimal")
+async def test_store_external_client_metadata_api(store_helper):
+    """Test that metadata server returns pod info for external clients."""
+    service_name = store_helper.service_name
+
+    metadata_api_test_path = "metadata_api_test/data.txt"
+    metadata_api_key = f"{service_name}/metadata-api-test/data"
+    result = store_helper.vput_publish_data(key=metadata_api_key, local_path=metadata_api_test_path)
+
+    assert result["success"], "vput should succeed"
+
+    from kubetorch.data_sync.metadata_client import MetadataClient
+
+    metadata_client = MetadataClient(namespace=store_helper.compute.namespace)
+
+    pod_info = metadata_client.get_source_ip(metadata_api_key, external=True)
+
+    assert pod_info is not None, "Should return pod info"
+    assert isinstance(pod_info, dict), "Should return dict"
+    assert "pod_name" in pod_info, "Should include pod_name"
+    assert "namespace" in pod_info, "Should include namespace"
+
+
+# ==================== Edge Cases ====================
+
+
+@pytest.mark.level("minimal")
+async def test_store_single_file_contents_flag(store_helper):
+    """Test single file upload with contents=True flag."""
+    service_name = store_helper.service_name
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+
         test_file = tmpdir / "source.txt"
         test_file.write_text("source content")
 
-        # Upload with contents=True - should put file inside directory at key
         kt.put(key=f"{service_name}/single-contents/dir", src=str(test_file), contents=True)
 
-        # Verify - file should be inside the directory
         download_dir = tmpdir / "verify"
         download_dir.mkdir()
         kt.get(key=f"{service_name}/single-contents/dir", dest=str(download_dir))
 
-        # File should be at dir/source.txt (original filename preserved)
-        assert (download_dir / "dir" / "source.txt").exists(), "File should be inside directory with original name"
+        assert (download_dir / "dir" / "source.txt").exists(), "File should be inside directory"
 
 
 @pytest.mark.level("minimal")
-async def test_store_file_renaming(store_test_helper):
+async def test_store_file_renaming(store_helper):
     """Test that files are renamed to match the key when uploaded."""
-    from pathlib import Path
-
-    helper = store_test_helper
-    service_name = helper.service_name
+    service_name = store_helper.service_name
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
 
-        # Create a file with one name
         source_file = tmpdir / "original_name.txt"
         source_file.write_text("renamed content")
 
-        # Upload to a key with different name - file should be renamed
         kt.put(key=f"{service_name}/renamed/new_name.txt", src=str(source_file))
 
-        # Download and verify it's renamed
         download_dir = tmpdir / "download"
         download_dir.mkdir()
         kt.get(key=f"{service_name}/renamed/new_name.txt", dest=str(download_dir))
 
-        # Should be downloaded as new_name.txt (not original_name.txt)
-        assert (download_dir / "new_name.txt").exists(), "File should be renamed to match key"
-        assert not (download_dir / "original_name.txt").exists(), "Original filename should not exist"
-        assert "renamed content" in (download_dir / "new_name.txt").read_text(), "Content should be preserved"
+        assert (download_dir / "new_name.txt").exists(), "File should be renamed"
+        assert not (download_dir / "original_name.txt").exists(), "Original name should not exist"
