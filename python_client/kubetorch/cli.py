@@ -29,6 +29,7 @@ from .cli_utils import (
     load_ingress,
     load_kubetorch_volumes_from_pods,
     load_logs_for_pod,
+    load_runhouse_dashboard,
     load_selected_pod,
     notebook_placeholder,
     port_forward_to_pod,
@@ -560,6 +561,41 @@ def kt_deploy(
 
     if not target_fn_or_class:
         console.print(f"Successfully deployed all decorated functions and modules from {target}.")
+
+
+@app.command("dashboard", hidden=True)
+def kt_dashboard(
+    local: bool = typer.Option(False, "-l", "--local", help="Use a local server"),
+    namespace: str = typer.Option(
+        globals.config.install_namespace,
+        "-n",
+        "--namespace",
+    ),
+):
+    """Open Runhouse Dashboard"""
+    processes = []
+
+    # Connect to Runhouse Dashboard
+    runhouse_process = load_runhouse_dashboard(
+        namespace=namespace,
+        local_server=local,
+    )
+
+    if runhouse_process:
+        processes += runhouse_process
+
+    console.print(f"[green]Runhouse dashboard running in namespace {namespace}[/green]")
+
+    console.print("[yellow]Both services running. Press Ctrl+C to stop...[/yellow]")
+
+    try:
+        # Main thread waits here
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Shutting down...")
+        for process in processes:
+            process.terminate()
 
 
 @app.command("describe")
