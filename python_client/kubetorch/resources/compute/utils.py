@@ -557,37 +557,14 @@ def delete_cached_service_data(
     namespace: str,
     console: "Console" = None,
 ):
-    """Delete service data from the data store pod (both filesystem and metadata)."""
-    controller_client = kubetorch.globals.controller_client()
+    """Delete service data from the data store (both filesystem and metadata)."""
     try:
-        # 1. Find the data store pod name in the provided namespace
-        pods = controller_client.list_pods(namespace=namespace, label_selector="app=kubetorch-data-store")
-        items = pods.get("items", []) if isinstance(pods, dict) else pods.items
-        if not items:
-            if console:
-                console.print(f"[yellow] No data store pod found in namespace {namespace}[/yellow]")
-            return
+        from kubetorch.data_store import DataStoreClient
 
-        pod_name = pods.items[0].metadata.name
+        client = DataStoreClient(namespace=namespace)
+        client.rm(key=service_name, recursive=True)
 
-        # Delete from both metadata server and filesystem using the metadata server's DELETE API
-        # This ensures vput registrations (pod IPs) are cleaned up along with files
-        shell_cmd = (
-            f"curl -s -X DELETE 'http://localhost:8081/api/v1/keys/{service_name}?recursive=true' "
-            f"| grep -q '\"success\":true' && echo 'Deleted {service_name}' || echo 'Nothing to delete for {service_name}'"
-        )
-
-        # 4. Execute via centralized controller
-        resp = controller_client.post(
-            f"/api/v1/namespaces/{namespace}/pods/{pod_name}/exec",
-            json={
-                "command": ["sh", "-c", shell_cmd],
-                "container": container_name,
-            },
-        )
-
-        output = resp.get("output", "").strip()
-        if console and output.startswith("Deleted"):
+        if console:
             console.print(f"✓ Deleted cached data for [blue]{service_name}[/blue]")
 
     except Exception as e:

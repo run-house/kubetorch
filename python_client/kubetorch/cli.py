@@ -107,24 +107,37 @@ def kt_check(
     If a step fails, will dump ``kubectl describe`` and pod logs for relevant pods.
     """
 
+    controller = globals.controller_client()
+
     def fail(msg, pods=None):
         console.print(f"[red]{msg}[/red]")
         if pods:
             for pn in pods:
                 try:
-                    pod_output = subprocess.run(
-                        ["kubectl", "describe", "pod", pn, "-n", namespace], capture_output=True, text=True
-                    )
-                    logs_output = subprocess.run(
-                        ["kubectl", "logs", pn, "-n", namespace, "-c", "kubetorch"], capture_output=True, text=True
-                    )
-                    console.print(Panel(pod_output.stdout or pod_output.stderr, title=f"DESCRIBE {pn}"))
-                    console.print(Panel(logs_output.stdout or logs_output.stderr, title=f"LOGS {pn}"))
-                except:
+                    pod_info = controller.get_pod(namespace, pn)
+                    pod_logs = controller.get_pod_logs(namespace, pn, container="kubetorch")
+                    # Format pod info similar to kubectl describe
+                    pod_status = pod_info.get("status", {})
+                    pod_phase = pod_status.get("phase", "Unknown")
+                    conditions = pod_status.get("conditions", [])
+                    container_statuses = pod_status.get("containerStatuses", [])
+                    describe_output = f"Phase: {pod_phase}\n"
+                    describe_output += "Conditions:\n"
+                    for c in conditions:
+                        describe_output += f"  {c.get('type')}: {c.get('status')} ({c.get('reason', '')})\n"
+                    describe_output += "Container Statuses:\n"
+                    for cs in container_statuses:
+                        state = cs.get("state", {})
+                        state_name = list(state.keys())[0] if state else "unknown"
+                        describe_output += f"  {cs.get('name')}: {state_name}\n"
+                        if state_name == "waiting":
+                            describe_output += f"    Reason: {state.get('waiting', {}).get('reason', '')}\n"
+                            describe_output += f"    Message: {state.get('waiting', {}).get('message', '')}\n"
+                    console.print(Panel(describe_output, title=f"POD STATUS {pn}"))
+                    console.print(Panel(pod_logs or "(no logs)", title=f"LOGS {pn}"))
+                except Exception:
                     pass
         raise typer.Exit(1)
-
-    controller = globals.controller_client()
 
     # --------------------------------------------------
     # 1. Determine mode
@@ -175,17 +188,14 @@ def kt_check(
     console.print("[bold blue]Checking rsync...[/bold blue]")
 
     try:
-        proc = subprocess.run(
-            ["kubectl", "exec", pod_name, "-n", namespace, "--", "ls", "-l", "."],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        lines = [line for line in proc.stdout.splitlines() if line and not line.startswith("total")]
-        if not lines:
+        from kubetorch.data_store import DataStoreClient
+
+        data_store = DataStoreClient(namespace=namespace)
+        items = data_store.ls(key=name)
+        if not items:
             fail("Rsync directory exists but is empty.", [pod_name])
-    except subprocess.CalledProcessError as e:
-        fail(f"Rsync check failed: {e.stderr or e.stdout}", [pod_name])
+    except Exception as e:
+        fail(f"Rsync check failed: {e}", [pod_name])
 
     # --------------------------------------------------
     # 5. Service health check
@@ -1572,9 +1582,7 @@ def kt_volumes(
         $ kt volumes ssh my-vol
     """
     from kubetorch import globals, Volume
-    from kubetorch.utils import load_kubeconfig
 
-    load_kubeconfig()
     controller_client = globals.controller_client()
 
     target_namespace = None

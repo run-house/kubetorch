@@ -432,7 +432,12 @@ class ControllerClient:
                         time.sleep(retry_delay)
                         continue
 
-                    logger.error(f"{method} {url} failed with status {response.status_code}: {error_message}")
+                    # Log 404 at debug level (often expected - resource/CRD not found)
+                    # Log other errors at error level
+                    if status == 404:
+                        logger.debug(f"{method} {url} returned 404: {error_message}")
+                    else:
+                        logger.error(f"{method} {url} failed with status {response.status_code}: {error_message}")
 
                     # Don't retry other HTTP errors - controller already retried K8s API
                     raise ControllerRequestError(

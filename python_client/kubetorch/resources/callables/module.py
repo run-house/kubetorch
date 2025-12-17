@@ -225,15 +225,7 @@ class Module:
         reload_prefixes: Union[str, List[str]] = [],
     ):
         """Reload an existing callable by its service name."""
-        from kubernetes.config import ConfigException, load_incluster_config, load_kube_config
-
         import kubetorch as kt
-
-        try:
-            load_incluster_config()
-        except ConfigException:
-            load_kube_config()
-
         from kubetorch import globals
 
         controller_client = globals.controller_client()
