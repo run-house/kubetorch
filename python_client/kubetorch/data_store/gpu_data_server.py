@@ -21,6 +21,7 @@ Usage:
 """
 
 import base64
+import ctypes
 import json
 import os
 import signal
@@ -35,6 +36,24 @@ from typing import Any, Dict, List, Optional, Tuple
 from kubetorch.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _setup_cuda_ipc_permissions():
+    """
+    Enable ptrace permissions required for CUDA IPC in PyTorch 2.5+.
+
+    PyTorch 2.5+ uses expandable segments which require pidfd_getfd syscall
+    for IPC. This needs ptrace permission, otherwise IPC reconstruction segfaults.
+    See: https://github.com/pytorch/pytorch/issues/165419
+    """
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        PR_SET_PTRACER = 0x59616D61
+        PR_SET_PTRACER_ANY = ctypes.c_ulong(-1).value
+        libc.prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0)
+    except Exception:
+        pass
+
 
 # Constants
 DEFAULT_SOCKET_PATH = "/tmp/kt-gpu-data-server.sock"
@@ -119,13 +138,9 @@ def _get_torch_distributed():
 
 
 def _get_ipc_handle(tensor) -> Tuple:
-    """
-    Get CUDA IPC handle from a tensor in a version-compatible way.
+    """Get CUDA IPC handle from a tensor."""
+    _setup_cuda_ipc_permissions()
 
-    Returns:
-        Tuple with IPC handle info
-    """
-    # Prefer untyped_storage() for PyTorch 2.0+, fall back to storage()
     if hasattr(tensor, "untyped_storage"):
         storage = tensor.untyped_storage()
     else:
@@ -140,21 +155,9 @@ def _reconstruct_tensor_from_ipc(
     dtype_str: str,
     device: int,
 ):
-    """
-    Reconstruct a CUDA tensor from an IPC handle.
-
-    Args:
-        ipc_handle: Tuple from _get_ipc_handle(tensor)
-        shape: Original tensor shape
-        dtype_str: String representation of dtype
-        device: CUDA device index
-
-    Returns:
-        Reconstructed tensor (view into original process's memory)
-    """
+    """Reconstruct a CUDA tensor from an IPC handle."""
     torch = _get_torch()
 
-    # Map dtype string to torch dtype
     dtype_map = {
         "torch.float32": torch.float32,
         "torch.float64": torch.float64,
@@ -169,53 +172,45 @@ def _reconstruct_tensor_from_ipc(
     }
     dtype = dtype_map.get(dtype_str, torch.float32)
 
-    # Reconstruct storage from IPC handle
-    # ipc_handle is: (device, handle, size, offset, ref_counter_handle, ref_counter_offset, event_handle, event_sync_required)
-    # Try different storage classes for PyTorch version compatibility
+    torch.cuda._lazy_init()
+    _setup_cuda_ipc_permissions()
+
+    # IPC handle format: (device, handle, size, offset, ref_counter_handle,
+    #                     ref_counter_offset, event_handle, event_sync_required)
     if hasattr(torch, "UntypedStorage"):
-        # PyTorch 2.0+
         storage = torch.UntypedStorage._new_shared_cuda(
-            ipc_handle[0],  # device
-            ipc_handle[1],  # handle
-            ipc_handle[2],  # size
-            ipc_handle[3],  # offset
-            ipc_handle[4],  # ref_counter_handle
-            ipc_handle[5],  # ref_counter_offset
-            ipc_handle[6],  # event_handle
-            ipc_handle[7],  # event_sync_required
+            ipc_handle[0],
+            ipc_handle[1],
+            ipc_handle[2],
+            ipc_handle[3],
+            ipc_handle[4],
+            ipc_handle[5],
+            ipc_handle[6],
+            ipc_handle[7],
         )
     elif hasattr(torch.cuda, "UntypedStorage"):
-        # Some PyTorch versions
         storage = torch.cuda.UntypedStorage._new_shared_cuda(
-            ipc_handle[0],  # device
-            ipc_handle[1],  # handle
-            ipc_handle[2],  # size
-            ipc_handle[3],  # offset
-            ipc_handle[4],  # ref_counter_handle
-            ipc_handle[5],  # ref_counter_offset
-            ipc_handle[6],  # event_handle
-            ipc_handle[7],  # event_sync_required
+            ipc_handle[0],
+            ipc_handle[1],
+            ipc_handle[2],
+            ipc_handle[3],
+            ipc_handle[4],
+            ipc_handle[5],
+            ipc_handle[6],
+            ipc_handle[7],
         )
     else:
-        # Older PyTorch - use typed storage approach
-        # For older versions, reconstruct via torch.multiprocessing shared tensor
         storage = torch.cuda.ByteStorage._new_shared_cuda(
-            ipc_handle[0],  # device
-            ipc_handle[1],  # handle
-            ipc_handle[2],  # size
-            ipc_handle[3],  # offset
-            ipc_handle[4],  # ref_counter_handle
-            ipc_handle[5],  # ref_counter_offset
-            ipc_handle[6],  # event_handle
-            ipc_handle[7],  # event_sync_required
+            ipc_handle[0],
+            ipc_handle[1],
+            ipc_handle[2],
+            ipc_handle[3],
+            ipc_handle[4],
+            ipc_handle[5],
+            ipc_handle[6],
+            ipc_handle[7],
         )
 
-    # Create tensor from storage
-    numel = 1
-    for dim in shape:
-        numel *= dim
-
-    # Create typed storage and tensor
     tensor = torch.empty(shape, dtype=dtype, device=f"cuda:{device}")
     tensor.set_(storage, storage_offset=0, size=shape)
 
@@ -1467,6 +1462,8 @@ def start_server_if_needed(socket_path: str = DEFAULT_SOCKET_PATH) -> int:
 def main():
     """Main entry point for running the server."""
     import argparse
+
+    _setup_cuda_ipc_permissions()
 
     parser = argparse.ArgumentParser(description="GPU Data Server for kubetorch")
     parser.add_argument(
