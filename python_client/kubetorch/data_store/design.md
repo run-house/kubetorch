@@ -32,9 +32,9 @@ The data store provides a unified `put()`/`get()` API for two fundamentally diff
                │                                  │
                ▼                                  ▼
 ┌──────────────────────────────┐   ┌─────────────────────────────┐
-│     rsync_client.py          │   │    gpu_data_server.py       │
-│     RsyncClient class        │   │    Per-node GPU server      │
-│     Low-level rsync ops      │   │    Handles NCCL broadcasts  │
+│     rsync_client.py          │   │    pod_data_server.py       │
+│     RsyncClient class        │   │    Per-node data server     │
+│     Low-level rsync ops      │   │    GPU + FS broadcast coord │
 └──────────────┬───────────────┘   └─────────────────────────────┘
                │
                ▼
@@ -140,22 +140,28 @@ GPU tensor transfer via NCCL.
 - GPU Data Server handles WebSocket coordination with MDS
 - One coordinator per pod (the GPU Data Server itself)
 
-### `gpu_data_server.py`
-Per-node server process for GPU transfers.
+### `pod_data_server.py`
+Per-node server process for GPU transfers and filesystem broadcast coordination.
 
-**GPUDataServer class:**
+**PodDataServer class:**
 - Runs as separate process per node
 - Holds CUDA IPC handles (not tensors - memory owned by application)
 - Performs NCCL broadcasts isolated from application processes
 - Tracks registered tensors by PID, cleans up on process exit
 - MDS HTTP client for source lookup and key registration
 - MDS WebSocket client for broadcast group coordination
+- Tracks completed filesystem broadcasts for inter-pod coordination
+- Serves local paths to child getters in filesystem broadcast tree
 
-**GPUDataServerClient class:**
-- Unix socket communication with server
-- High-level API:
+**PodDataServerClient class:**
+- Unix socket communication with server (local)
+- TCP communication with remote pod data servers (inter-pod)
+- High-level API for GPU:
   - `put_tensor()` - Register + MDS publish (+ broadcast coordination if specified)
   - `get_tensor()` - MDS lookup + NCCL receive (+ broadcast coordination if specified)
+- High-level API for filesystem broadcasts:
+  - `fs_broadcast_complete()` - Notify local server that download finished
+  - `fs_broadcast_get_path()` - Request local path from remote parent's server
 - Low-level API:
   - `register_tensor()` / `unregister_tensor()` - Just register, no MDS
   - `receive_broadcast()` - Just NCCL, no coordination
@@ -171,6 +177,7 @@ Core type definitions.
   - `world_size` - Expected participant count
   - `ips` - Wait for specific pods
   - `group_id` - Explicit group identifier
+  - `fanout` - Tree fanout (default: 2 for GPU, ~50 for filesystem)
 
 ### `key_utils.py`
 Key parsing utilities.
@@ -293,47 +300,128 @@ NCCL Broadcast
 Tensor data transferred via NCCL
 ```
 
-### Coordinated Broadcast (BroadcastWindow)
+### GPU Broadcast (BroadcastWindow)
+
+For GPU data, broadcasts use NCCL with quorum-based coordination:
 
 ```
 Pod A (Putter)              Metadata Server              Pod B (Getter)
 ─────────────               ───────────────              ─────────────
 kt.put(key, data,           ws://server/ws/              kt.get(key, dest,
-  broadcast=BW(             broadcast/{group}              broadcast=BW(...))
+  broadcast=BW(             gpu-broadcast/{group}          broadcast=BW(...))
     world_size=2))                │                              │
      │                            │                              │
      ▼                            │                              ▼
-Connect to WS ────────────────────┤◄─────────────────── Connect to WS
+GPU Data Server ──────────────────┤◄─────────────────── GPU Data Server
+connects to WS                    │                     connects to WS
      │                            │                              │
      ▼                            ▼                              │
-Send join                   Track participants                   │
-{action: "join",            Update group state ◄───────────────Join
- role: "putter",                  │                              │
- key: ...}                        │                              │
+Send join                   Track participants by pod            │
+{action: "join",            (unique by pod_ip)  ◄───────────────Join
+ role: "putter", ...}             │                              │
      │                            │                              │
      ▼                            ▼                              │
 Wait for quorum ◄────────── Quorum satisfied ──────────► Wait for quorum
-     │                      Finalize group:                      │
-     │                      - Assign ranks                       │
-     │                      - Build manifests                    │
+     │                      - Assign pod ranks                   │
+     │                      - Build pod manifests                │
      │                            │                              │
      ▼                            ▼                              ▼
-Receive "ready"             Send ready to all            Receive "ready"
-{rank: 0,                   participants                 {rank: 1,
- world_size: 2,                   │                       is_coordinator:
- sends: [...],                    │                        false, ...}
- is_coordinator: true}            │                              │
+All participants            Send ready to all            All participants
+receive full manifest       participants (no coordinator) receive full manifest
      │                            │                              │
      ▼                            │                              ▼
-Execute NCCL ──────────────────────────────────────────► Execute NCCL
-  via GPU server                  │                       via GPU server
+GPU Data Server             (manifests sent)             GPU Data Server
+executes NCCL once                │                      executes NCCL once
+(first thread wins)               │                      (first thread wins)
      │                            │                              │
      ▼                            ▼                              ▼
-Send "complete" ─────────────► Track completion ◄────── Send "complete"
+Send "complete" ─────────────► Track by pod ◄──────────Send "complete"
      │                            │                              │
      ▼                            ▼                              ▼
-Receive "completed"         All done                  Receive "completed"
+Receive "completed"         All pods done             Receive "completed"
 ```
+
+### Filesystem Broadcast (Rolling Participation)
+
+For filesystem data, broadcasts use rsync with tree-based propagation and pod data server coordination:
+
+```
+Original Putter             Metadata Server              Getters (rolling join)
+───────────────             ───────────────              ────────────────────
+kt.put(key, src,
+  locale="local")
+     │
+     ▼
+Start rsync daemon
+     │                                                   Getter 1           Getter 2
+     ▼                                                   ────────           ────────
+Register with MDS ──────────────────►                   kt.get(key,        kt.get(key,
+(publishes source IP                │                     broadcast=BW)      broadcast=BW)
+ and src_path)                      │                        │                  │
+     │                              │                        ▼                  ▼
+     ▼                              │                   Start pod data     Start pod data
+Available as source                 │                   server (if needed) server (if needed)
+for getters                         │                        │                  │
+                                    │                        ▼                  ▼
+                                    │                   Connect to WS      Connect to WS
+                                    │                   (fs-broadcast)     (fs-broadcast)
+                                    │                        │                  │
+                                    │                        ▼                  ▼
+                                    │                   Send join {key,    Send join {key,
+                                    │                    pod_ip, ...}       pod_ip, ...}
+                                    ▼                        │                  │
+                              Lookup source from             │                  │
+                              metadata (ip + src_path)       │                  │
+                                    │                        │                  │
+                                    ▼                        ▼                  ▼
+                              Assign rank 1 ──────────► Ready immediately  Assign rank 2
+                              Parent = source             {rank: 1,         Parent = Getter 1
+                              (root node)                  parent_ip:            │
+                                    │                       source_ip,           ▼
+                                    │                       src_path: ...}  Ready {rank: 2,
+                                    │                        │               parent_ip:
+                                    │                        ▼               getter1_ip}
+                                    │                   Rsync from               │
+                                    │                   source (root)            │
+                                    │                        │                   │
+                                    │                        ▼                   ▼
+                                    │                   Notify local        Request local path
+                                    │                   pod data server     from Getter 1's
+                                    │                   (fs_broadcast_      pod data server
+                                    │                    complete)          (fs_broadcast_
+                                    │                        │               get_path)
+                                    │                        │                   │
+                                    │                        │                   ▼
+                                    │                        │              Pod data server
+                                    │                        │              blocks until
+                                    │                        │              Getter 1 completes
+                                    │                        │                   │
+                                    │                        │◄──────────────────┤
+                                    │                        │              Returns local path
+                                    │                        │                   │
+                                    │                        ▼                   ▼
+                                    │                   Start rsync        Rsync from
+                                    │                   daemon (now a       Getter 1's
+                                    │                   potential parent)   local path
+                                    │                        │                   │
+                                    │                        ▼                   ▼
+                                    │                   Send "complete"     Notify local
+                                    │◄───────────────────────┘              pod data server
+                                    │                                            │
+                                    │                                            ▼
+                                    │                                       Send "complete"
+                                    │◄───────────────────────────────────────────┘
+```
+
+**Key differences from GPU broadcast:**
+- Only getters participate (source discovered from metadata)
+- Rolling participation - returns immediately with parent info
+- Tree topology with configurable fanout (~50 for filesystem vs 2 for GPU)
+- Each getter becomes a potential parent after completing download
+- Pod data server handles inter-pod coordination:
+  - Tracks completed broadcasts with local paths
+  - Child getters request parent's local path via TCP (not MDS)
+  - Blocks until parent completes, then returns absolute path for rsync
 
 ## Key Design Decisions
 
@@ -360,8 +448,23 @@ GPU tensors are not copied to the GPU server. Instead:
 Keys can have `lifespan="resource"` for automatic cleanup when a service is torn down. The metadata server tracks service associations and cleans up on service deletion.
 
 ### 6. BroadcastWindow Coordination
-For synchronized transfers (e.g., all workers should receive model weights simultaneously), BroadcastWindow enables:
-- Quorum formation (wait for N participants, specific IPs, or timeout)
-- Rank assignment for NCCL
-- Transfer manifest generation
-- Same-pod optimization (direct copy vs NCCL)
+For coordinated transfers, BroadcastWindow supports two modes:
+
+**GPU Broadcast (NCCL):**
+- Quorum-based: wait for all participants before starting
+- All participants join via GPU Data Server
+- Pod-level rank assignment
+- GPU Data Server executes NCCL once per pod
+- Binary tree topology (fanout=2)
+
+**Filesystem Broadcast (rsync):**
+- Rolling participation: return immediately with parent info
+- Tree-based propagation for efficient distribution
+- High fanout (~50) for parallel downloads
+- Each completed getter becomes a potential parent
+- Automatic rsync daemon startup
+- Pod data server coordination for parent-child communication:
+  - Parent notifies local pod data server when download complete
+  - Child requests local path from parent's pod data server (TCP)
+  - Pod data server blocks until parent completes, then returns absolute path
+  - Uses absolute paths (via `Path.resolve()`) for rsync daemon compatibility

@@ -276,3 +276,56 @@ class StoreTestHelper:
                 }
             except Exception as e:
                 return {"registered": False, "error": str(e)}
+
+    # ==================== Filesystem Broadcast Operations ====================
+
+    def get_with_fs_broadcast(
+        self,
+        key: str,
+        dest_path: str,
+        group_id: str,
+        fanout: int = 1,
+        timeout: float = 30.0,
+    ) -> dict:
+        """
+        Retrieve data using filesystem broadcast (tree-based p2p propagation).
+
+        Args:
+            key: Full key to retrieve
+            dest_path: Local destination path
+            group_id: Broadcast group identifier
+            fanout: Tree fanout (1 = linear chain, 50 = wide tree)
+            timeout: Max time to wait
+        """
+        from kubetorch.data_store.types import BroadcastWindow
+
+        try:
+            dest = Path(dest_path)
+            dest.mkdir(parents=True, exist_ok=True)
+
+            broadcast = BroadcastWindow(
+                group_id=group_id,
+                fanout=fanout,
+                timeout=timeout,
+                world_size=1,  # Rolling participation - just need 1 to proceed
+            )
+
+            kt.get(key=key, dest=str(dest), broadcast=broadcast, verbose=True)
+
+            if dest.exists():
+                files = [str(f) for f in dest.rglob("*") if f.is_file()]
+                content = None
+                if files:
+                    content = Path(files[0]).read_text()
+                return {
+                    "success": True,
+                    "file_count": len(files),
+                    "files": files,
+                    "content": content,
+                    "pod_ip": os.getenv("POD_IP", "unknown"),
+                }
+            return {"success": False, "error": "Destination path does not exist"}
+        except Exception as e:
+            import traceback
+
+            return {"success": False, "error": str(e), "traceback": traceback.format_exc()}

@@ -398,86 +398,145 @@ class DataStoreClient:
         force: bool,
         verbose: bool,
     ) -> None:
-        """Get with broadcast window - coordinate with putters."""
+        """Get with broadcast window - coordinate with other getters via tree topology."""
         if not is_running_in_kubernetes():
             logger.warning("Broadcast window ignored - not running in Kubernetes. Falling back to regular get.")
             for k in keys:
                 self._get_single(k, dest, contents, filter_options, force, verbose)
             return
 
+        from kubetorch.data_store.pod_data_server import DEFAULT_TCP_PORT, PodDataServerClient, start_server_if_needed
+
         pod_ip = os.getenv("POD_IP")
         pod_name = os.getenv("POD_NAME")
 
-        if verbose:
-            logger.info(f"Joining broadcast quorum as getter for keys: {keys}")
+        # Start pod data server if not running - needed for tracking completed broadcasts
+        # and allowing child getters to request our local path
+        start_server_if_needed()
 
-        # Join the broadcast quorum as a getter
-        broadcast_info = self.metadata_client.join_broadcast(
-            keys=keys,
-            role="getter",
-            pod_ip=pod_ip,
-            pod_name=pod_name,
-            broadcast=broadcast,
-        )
+        # Use filesystem broadcast for p2p tree-based propagation
+        group_id = broadcast.group_id
+        if not group_id:
+            # Auto-generate group_id from keys
+            group_id = "_".join(sorted(keys))
 
-        broadcast_id = broadcast_info.get("broadcast_id")
-        if not broadcast_id:
-            logger.warning("Failed to join broadcast quorum, falling back to regular get")
-            for k in keys:
-                self._get_single(k, dest, contents, filter_options, force, verbose)
-            return
+        fanout = broadcast.fanout
+        timeout = broadcast.timeout or 60.0
 
-        # Poll until quorum is ready
-        max_wait = broadcast.timeout or 300
-        start_time = time.time()
-
-        while time.time() - start_time < max_wait:
-            status_info = self.metadata_client.get_broadcast_status(broadcast_id, pod_ip)
-            status = status_info.get("status")
-
-            if status == "ready":
-                if verbose:
-                    logger.info(f"Broadcast quorum ready. Putters: {status_info.get('putters', [])}")
-
-                # Get data from putters
-                putters = status_info.get("putters", [])
-                if putters:
-                    # For simple flow, get from first putter for each key
-                    putter = putters[0]
-                    putter_ip = putter.get("pod_ip")
-
-                    if putter_ip:
-                        for k in keys:
-                            try:
-                                if verbose:
-                                    logger.info(f"Getting key '{k}' from putter {putter_ip}")
-                                self._get_from_putter(
-                                    key=k,
-                                    putter_ip=putter_ip,
-                                    dest=dest,
-                                    contents=contents,
-                                    filter_options=filter_options,
-                                    force=force,
-                                    verbose=verbose,
-                                )
-                            except Exception as e:
-                                logger.error(f"Failed to get from putter {putter_ip}: {e}")
-                                raise
-
-                # Mark complete
-                self.metadata_client.complete_broadcast(broadcast_id, pod_ip)
-                return
-            elif status == "missed":
-                logger.warning("Missed the broadcast window, falling back to regular get")
-                for k in keys:
-                    self._get_single(k, dest, contents, filter_options, force, verbose)
-                return
-
-            time.sleep(0.5)
-
-        logger.warning(f"Broadcast quorum timed out after {max_wait}s, falling back to regular get")
         for k in keys:
-            self._get_single(k, dest, contents, filter_options, force, verbose)
+            if verbose:
+                logger.info(f"Joining filesystem broadcast for key '{k}' (group: {group_id})")
+
+            parsed = parse_key(k)
+            dest_str = self._normalize_dest(dest, contents, k)
+
+            # Join MDS broadcast to get parent info
+            result = self.metadata_client.join_fs_broadcast(
+                group_id=group_id,
+                key=parsed.full_key,
+                pod_ip=pod_ip,
+                pod_name=pod_name,
+                fanout=fanout,
+            )
+
+            if result.get("status") == "error":
+                logger.warning(
+                    f"Filesystem broadcast join failed for key '{k}': {result.get('error')}. "
+                    f"Falling back to regular get."
+                )
+                self._get_single(k, dest, contents, filter_options, force, verbose)
+                continue
+
+            parent_rank = result.get("parent_rank")
+            parent_ip = result.get("parent_ip")
+            source_path = result.get("source_path")
+
+            if verbose:
+                logger.info(
+                    f"Joined broadcast: rank={result.get('rank')}, parent_rank={parent_rank}, " f"parent_ip={parent_ip}"
+                )
+
+            try:
+                rsync_client = RsyncClient(namespace=self.namespace, service_name=parsed.service_name or "store")
+
+                if parent_rank == 0:
+                    # Parent is the source (store) - use source_path directly
+                    rsync_path = source_path
+                else:
+                    # Parent is another getter - ask their pod data server for the local path
+                    if verbose:
+                        logger.info(f"Requesting path from parent getter at {parent_ip}:{DEFAULT_TCP_PORT}")
+
+                    pds_client = PodDataServerClient()
+                    try:
+                        path_result = pds_client.fs_broadcast_get_path_remote(
+                            parent_ip=parent_ip,
+                            parent_port=DEFAULT_TCP_PORT,
+                            group_id=group_id,
+                            key=parsed.full_key,
+                            timeout=timeout,
+                        )
+                    except Exception as conn_err:
+                        logger.error(
+                            f"Failed to connect to parent pod data server at {parent_ip}:{DEFAULT_TCP_PORT}: {conn_err}"
+                        )
+                        raise
+
+                    if path_result.get("status") != "ok":
+                        raise RuntimeError(f"Failed to get path from parent: {path_result.get('error')}")
+
+                    rsync_path = path_result["local_path"]
+                    if verbose:
+                        logger.info(f"Got rsync path from parent: {rsync_path}")
+
+                # Build rsync URL and download
+                peer_url = f"rsync://{parent_ip}:{serving_constants.REMOTE_RSYNC_PORT}/data/"
+                remote_source = peer_url + rsync_path
+                if contents:
+                    remote_source = remote_source.rstrip("/") + "/"
+
+                if verbose:
+                    logger.info(f"Rsyncing from parent {parent_ip}: {remote_source} -> {dest_str}")
+
+                rsync_client.download(
+                    source=remote_source,
+                    dest=dest_str,
+                    contents=contents,
+                    filter_options=filter_options,
+                    force=force,
+                )
+
+                # Notify local pod data server that download is complete
+                # This allows child getters to request our local path
+                # Use absolute path so rsync daemon (serving from /) can find it
+                pds_client = PodDataServerClient()
+                local_path_for_broadcast = str(Path(dest_str.rstrip("/")).resolve())
+                pds_client.fs_broadcast_complete(
+                    group_id=group_id,
+                    key=parsed.full_key,
+                    local_path=local_path_for_broadcast,
+                )
+                if verbose:
+                    logger.info(
+                        f"Registered broadcast completion: {group_id}/{parsed.full_key} -> {local_path_for_broadcast}"
+                    )
+
+                # Start rsync daemon so we can serve as parent for later joiners
+                self._ensure_rsync_daemon(Path(local_path_for_broadcast), base_path="/", verbose=verbose)
+
+                if verbose:
+                    logger.info(
+                        f"Successfully retrieved key '{k}' via filesystem broadcast "
+                        f"(rank={result.get('rank')}, parent_rank={parent_rank})"
+                    )
+
+            except Exception as e:
+                import traceback
+
+                logger.error(f"Filesystem broadcast failed for key '{k}': {e}")
+                logger.error(f"Traceback:\n{traceback.format_exc()}")
+                logger.warning(f"Falling back to regular get for key '{k}'")
+                self._get_single(k, dest, contents, filter_options, force, verbose)
 
     def _get_from_putter(
         self,
