@@ -2070,6 +2070,207 @@ def kt_logs(
         raise typer.Exit(1)
 
 
+@app.command("put")
+def kt_put(
+    key: str = typer.Argument(..., help="Storage key (e.g., 'my-service/models', 'datasets/train')"),
+    src: List[str] = typer.Option(..., "--src", "-s", help="Local file(s) or directory(s) to upload"),
+    force: bool = typer.Option(False, "--force", "-f", help="Force overwrite of existing files"),
+    exclude: str = typer.Option(None, "--exclude", help="Exclude patterns (rsync format, e.g., '*.pyc')"),
+    include: str = typer.Option(
+        None, "--include", help="Include patterns (rsync format, e.g., '*.pkl') to override .gitignore exclusions"
+    ),
+    contents: bool = typer.Option(
+        False,
+        "--contents",
+        "-c",
+        help="Copy directory contents (adds trailing slashes for rsync 'copy contents' behavior)",
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress"),
+    namespace: str = typer.Option(globals.config.namespace, "-n", "--namespace", help="Kubernetes namespace"),
+):
+    """Store files or directories in the cluster using a key-value interface"""
+    from kubetorch.data_transfer import put
+
+    try:
+        # Build filter options if exclude or include is provided
+        filter_options = None
+        if exclude and include:
+            # If both are provided, include must come before exclude in rsync
+            filter_options = f"--include='{include}' --exclude='{exclude}'"
+        elif include:
+            filter_options = f"--include='{include}'"
+        elif exclude:
+            filter_options = f"--exclude='{exclude}'"
+
+        # Handle multiple sources
+        src_list = list(src) if len(src) > 1 else src[0]
+
+        put(
+            key=key,
+            src=src_list,
+            contents=contents,
+            filter_options=filter_options,
+            force=force,
+            verbose=verbose,
+            namespace=namespace,
+        )
+
+        if not verbose:
+            console.print(f"[green]✓[/green] Stored at key '{key}'")
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command("get")
+def kt_get(
+    key: str = typer.Argument(..., help="Storage key to retrieve (e.g., 'my-service/models', 'datasets/train')"),
+    dest: str = typer.Option(
+        None,
+        "--dest",
+        "-d",
+        help="Local destination path where files will be downloaded (defaults to current working directory)",
+    ),
+    force: bool = typer.Option(False, "--force", "-f", help="Force overwrite of existing files"),
+    exclude: str = typer.Option(None, "--exclude", help="Exclude patterns (rsync format, e.g., '*.pyc')"),
+    include: str = typer.Option(
+        None, "--include", help="Include patterns (rsync format, e.g., '*.pkl') to override .gitignore exclusions"
+    ),
+    contents: bool = typer.Option(
+        False,
+        "--contents",
+        "-c",
+        help="Copy directory contents (adds trailing slashes for rsync 'copy contents' behavior)",
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress"),
+    namespace: str = typer.Option(globals.config.namespace, "-n", "--namespace", help="Kubernetes namespace"),
+):
+    """Retrieve files or directories from the cluster using a key-value interface"""
+    from kubetorch.data_transfer import get
+
+    try:
+        # Build filter options if exclude or include is provided
+        filter_options = None
+        if exclude and include:
+            # If both are provided, include must come before exclude in rsync
+            filter_options = f"--include='{include}' --exclude='{exclude}'"
+        elif include:
+            filter_options = f"--include='{include}'"
+        elif exclude:
+            filter_options = f"--exclude='{exclude}'"
+
+        # Default to current working directory if dest not specified
+        if dest is None:
+            import os
+
+            dest = os.getcwd()
+
+        get(
+            key=key,
+            dest=dest,
+            contents=contents,
+            filter_options=filter_options,
+            force=force,
+            verbose=verbose,
+            namespace=namespace,
+        )
+
+        if not verbose:
+            console.print(f"[green]✓[/green] Retrieved key '{key}'")
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command("ls")
+def kt_ls(
+    key: str = typer.Argument(
+        "", help="Storage key path to list (e.g., 'my-service/models', 'datasets'). Empty for root."
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress"),
+    namespace: str = typer.Option(globals.config.namespace, "-n", "--namespace", help="Kubernetes namespace"),
+):
+    """List files and directories in the cluster store"""
+    from kubetorch.data_transfer import ls
+
+    try:
+        # List the contents
+        items = ls(key=key, verbose=verbose, namespace=namespace)
+
+        if not items:
+            if key:
+                console.print(f"[yellow]No items found under key '{key}'[/yellow]")
+            else:
+                console.print("[yellow]Store is empty[/yellow]")
+        else:
+            # Display the items
+            if key:
+                console.print(f"\n[bold]Contents of '{key}':[/bold]")
+            else:
+                console.print("\n[bold]Contents of store root:[/bold]")
+
+            # Separate directories and files
+            dirs = [item for item in items if item.endswith("/")]
+            files = [item for item in items if not item.endswith("/")]
+
+            # Display directories first
+            for dir_name in sorted(dirs):
+                console.print(f"  📁 [blue]{dir_name}[/blue]")
+
+            # Display files
+            for file_name in sorted(files):
+                console.print(f"  📄 {file_name}")
+
+            console.print(f"\n[green]Total: {len(dirs)} directories, {len(files)} files[/green]")
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command("rm")
+def kt_rm(
+    key: str = typer.Argument(..., help="Storage key to delete (e.g., 'my-service/models', 'datasets/train.csv')"),
+    recursive: bool = typer.Option(False, "--recursive", "-r", help="Delete directories recursively"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress"),
+    namespace: str = typer.Option(globals.config.namespace, "-n", "--namespace", help="Kubernetes namespace"),
+):
+    """Delete files or directories from the cluster store"""
+    from kubetorch.data_transfer import rm
+
+    try:
+        rm(key=key, recursive=recursive, verbose=verbose, namespace=namespace)
+
+        if not verbose:
+            console.print(f"[green]✓[/green] Deleted key '{key}'")
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command("metrics")
+def kt_metrics(
+    namespace: str = typer.Option(
+        globals.config.namespace,
+        "-n",
+        "--namespace",
+    ),
+):
+    """Open a local Grafana dashboard"""
+    namespace = namespace or globals.config.namespace
+    v1_api, custom_api, _ = initialize_k8s_clients()
+    console.print(f"Loading metrics for Kubetorch services in namespace [blue]{namespace}[/blue]...")
+
+    try:
+        open_grafana_dashboard(namespace, console=console, v1_api=v1_api)
+    except Exception as e:
+        console.print(f"[red]{str(e)}[/red]")
+        raise typer.Exit(1)
+
+
 @app.callback(invoke_without_command=True, help="Kubetorch CLI")
 def main(
     ctx: typer.Context,
