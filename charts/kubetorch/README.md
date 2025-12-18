@@ -73,7 +73,6 @@ A Helm chart for kubetorch
 | kubetorchController.nginx.resources.memory.limit | string | `"512Mi"` |  |
 | kubetorchController.nginx.resources.memory.request | string | `"256Mi"` |  |
 | kubetorchController.port | int | `8081` |  |
-| kubetorchController.replicas | int | `1` |  |
 | kubetorchController.resources.cpu.limit | string | `"2000m"` |  |
 | kubetorchController.resources.cpu.request | string | `"200m"` |  |
 | kubetorchController.resources.memory.limit | string | `"2Gi"` |  |

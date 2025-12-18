@@ -239,6 +239,13 @@ def get_os_info():
     return os.uname()
 
 
+def get_hostname():
+    """Return the pod hostname for verification."""
+    import os
+
+    return os.environ.get("HOSTNAME", "unknown")
+
+
 def summer(a, b, sleep_time=None, return_pod_name=False, use_tqdm=False):
     print(f"Hello from the cluster stdout! {a} {b}")
     logger.info(f"Hello from the cluster logs! {a} {b}")

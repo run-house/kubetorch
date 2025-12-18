@@ -6,6 +6,7 @@ KT_LAUNCH_TIMEOUT = 900  # 15 minutes
 DEFAULT_NGINX_PORT = 8080
 LOCAL_NGINX_PORT = 38080
 DEFAULT_KT_SERVER_PORT = 32300  # Standard port of Knative services
+DEFAULT_K8S_SERVICE_PORT = 80  # K8s Service port (external), maps to DEFAULT_KT_SERVER_PORT
 DEFAULT_DEBUG_PORT = 5678
 
 # Namespaces
