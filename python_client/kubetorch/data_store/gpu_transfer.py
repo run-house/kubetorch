@@ -365,7 +365,6 @@ class GPUTransferManager:
         self,
         key: str,
         dest: Union[Any, Dict],
-        quorum_timeout: float = DEFAULT_QUORUM_TIMEOUT,
         broadcast: Optional["BroadcastWindow"] = None,
         verbose: bool = False,
     ) -> Optional[Dict]:
@@ -378,12 +377,12 @@ class GPUTransferManager:
         Args:
             key: Storage key
             dest: Pre-allocated destination tensor or state_dict to receive into
-            quorum_timeout: How long to wait for other consumers (default 0 = immediate)
             broadcast: Optional BroadcastWindow for coordinated multi-party transfer.
                 When provided, this call blocks until all participants join the quorum,
                 then performs the NCCL transfer as part of a unified process group.
                 For state_dicts, all tensors are received in the same NCCL session.
                 Use broadcast.pack=True for maximum efficiency (single packed buffer).
+                Use broadcast.timeout to control how long to wait for participants.
             verbose: Show detailed progress
 
         Returns:

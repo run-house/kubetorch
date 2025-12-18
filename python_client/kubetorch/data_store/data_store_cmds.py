@@ -24,8 +24,7 @@ _default_client = None
 
 def put(
     key: Union[str, List[str]],
-    src: Optional[Union[str, Path, List[Union[str, Path]]]] = None,
-    data: Optional[Union["torch.Tensor", dict]] = None,
+    src: Optional[Union[str, Path, List[Union[str, Path]], "torch.Tensor", dict]] = None,
     locale: Locale = "store",
     lifespan: Lifespan = "cluster",
     broadcast: Optional[BroadcastWindow] = None,
@@ -43,32 +42,29 @@ def put(
     """
     Upload data to the cluster using a key-value store interface.
 
-    Supports two data types:
-    - **Filesystem data**: Files/directories uploaded via rsync (use `src` parameter)
-    - **GPU data**: GPU tensors or state dicts broadcast via NCCL (use `data` parameter)
-
-    The data type is auto-detected based on which parameter is provided.
+    Supports two data types (auto-detected from `src`):
+    - **Filesystem data**: Files/directories uploaded via rsync
+    - **GPU data**: GPU tensors or state dicts broadcast via NCCL
 
     Args:
         key: Storage key(s). Keys should be explicit paths like "my-service/models/v1".
-            Can be a single key or list of keys for batch operations.
-        src: For filesystem data: Local file(s) or directory(s) to upload.
-        data: For GPU data: GPU tensor or dict of GPU tensors (state dict).
-            The GPU data will be broadcast to other pods via NCCL when they call get().
-            Implies locale="local" (GPU data is never copied to the store pod).
+            Can be a single key or list of keys for batch filesystem operations.
+        src: Data to upload. Can be:
+            - Path(s) to local file(s) or directory(s) for filesystem transfer
+            - GPU tensor for single tensor broadcast via NCCL
+            - Dict of GPU tensors (state dict) for multi-tensor broadcast via NCCL
         locale: Where data is stored:
             - "store" (default): Copy to central store pod. Data is persisted and
-              accessible from any pod. (Filesystem only)
+              accessible from any pod. (Filesystem only - GPU data always uses "local")
             - "local": Zero-copy mode. Data stays on the local pod and is only
-              registered with the metadata server. Other pods rsync directly from
-              this pod. Only works when running inside a Kubernetes pod.
+              registered with the metadata server. Other pods fetch directly from
+              this pod.
         lifespan: How long data persists:
             - "cluster" (default): Data persists until explicitly deleted.
-            - "resource": Data is stored under the service's key directory and
-              automatically cleaned up when the service is torn down.
+            - "resource": Data is automatically cleaned up when the service is torn down.
         broadcast: Optional BroadcastWindow for coordinated multi-party transfers.
             When specified, this put() joins as a "putter" and waits for other
-            participants before transferring data. (Filesystem only)
+            participants before transferring data.
         contents: If True, copy directory contents (adds trailing slashes for rsync). (Filesystem only)
         filter_options: Additional rsync filter options. (Filesystem only)
         force: Force overwrite of existing files. (Filesystem only)
@@ -80,7 +76,7 @@ def put(
         nccl_port: Port for NCCL communication (default: 29500). (GPU only)
 
     Examples:
-        # Upload to central store
+        # Upload filesystem data to central store
         >>> import kubetorch as kt
         >>> kt.put(key="my-service/weights", src="./trained_model/")
 
@@ -90,7 +86,7 @@ def put(
         # Resource-scoped (auto-cleaned on service teardown)
         >>> kt.put(key="my-service/temp", src="./temp/", lifespan="resource")
 
-        # Coordinated broadcast with timeout
+        # Coordinated filesystem broadcast with timeout
         >>> kt.put(
         ...     key="my-service/weights",
         ...     src="./weights/",
@@ -101,16 +97,19 @@ def put(
         # GPU tensor - other pods receive via NCCL broadcast
         >>> import torch
         >>> tensor = torch.randn(1000, 1000, device="cuda")
-        >>> kt.put(key="model/layer1", data=tensor)
+        >>> kt.put(key="model/layer1", src=tensor)
 
         # GPU state dict - all tensors broadcast over single NCCL process group
         >>> state_dict = model.state_dict()  # Contains CUDA tensors
-        >>> kt.put(key="model/weights", data=state_dict)
+        >>> kt.put(key="model/weights", src=state_dict, broadcast=kt.BroadcastWindow(world_size=4))
     """
+    if src is None:
+        raise ValueError("src is required. Provide a path for filesystem data or a GPU tensor/dict for GPU data.")
+
     from .gpu_transfer import _is_gpu_data
 
     # Check if this is GPU data
-    if data is not None and _is_gpu_data(data):
+    if _is_gpu_data(src):
         # GPU data transfer via NCCL
         from .gpu_transfer import _get_gpu_manager
 
@@ -119,12 +118,9 @@ def put(
             raise ValueError("GPU data transfer only supports a single key, not a list of keys.")
 
         manager = _get_gpu_manager()
-        return manager.publish(key=key, data=data, nccl_port=nccl_port, broadcast=broadcast, verbose=verbose)
+        return manager.publish(key=key, data=src, nccl_port=nccl_port, broadcast=broadcast, verbose=verbose)
 
     # Filesystem data transfer
-    if src is None:
-        raise ValueError("src is required for filesystem data. For GPU data, use the data parameter.")
-
     global _default_client
 
     if _default_client is None or namespace or kubeconfig_path:
@@ -152,7 +148,6 @@ def get(
     contents: bool = False,
     filter_options: Optional[str] = None,
     force: bool = False,
-    quorum_timeout: float = 0.0,
     verbose: bool = False,
     namespace: Optional[str] = None,
     kubeconfig_path: Optional[str] = None,
@@ -165,7 +160,7 @@ def get(
     - **GPU data**: GPU tensors or state dicts received via NCCL broadcast
 
     The data type is auto-detected from the `dest` parameter:
-    - If dest is a path (str/Path): filesystem data
+    - If dest is a path (str/Path) or None: filesystem data
     - If dest is a GPU tensor or dict of GPU tensors: GPU data
 
     Args:
@@ -176,12 +171,10 @@ def get(
             - For GPU: Pre-allocated tensor or state_dict (dict of tensors) to receive into
         broadcast: Optional BroadcastWindow for coordinated multi-party transfers.
             When specified, this get() joins as a "getter" and waits for putters
-            before receiving data. (Filesystem only)
+            before receiving data. Use broadcast.timeout to control wait time.
         contents: If True, copy directory contents (adds trailing slashes). (Filesystem only)
         filter_options: Additional rsync filter options. (Filesystem only)
         force: Force overwrite of existing files. (Filesystem only)
-        quorum_timeout: How long to wait for other consumers before starting NCCL broadcast.
-            Default is 0 (start immediately). Set higher to batch multiple consumers. (GPU only)
         verbose: Show detailed progress.
         namespace: Kubernetes namespace.
         kubeconfig_path: Path to kubeconfig file (for compatibility).
@@ -206,9 +199,13 @@ def get(
         >>> tensor = torch.empty(1000, 1000, device="cuda:0")
         >>> kt.get(key="model/layer1", dest=tensor)
         >>>
-        >>> # GPU state dict - provide model's state_dict as destination
+        >>> # GPU state dict with coordinated broadcast
         >>> model = MyModel().cuda()
-        >>> kt.get(key="model/weights", dest=model.state_dict())
+        >>> kt.get(
+        ...     key="model/weights",
+        ...     dest=model.state_dict(),
+        ...     broadcast=kt.BroadcastWindow(world_size=4)
+        ... )
         >>> model.load_state_dict(model.state_dict())  # Already updated in-place
     """
     from .gpu_transfer import _is_gpu_data
@@ -218,7 +215,7 @@ def get(
         from .gpu_transfer import _get_gpu_manager
 
         manager = _get_gpu_manager()
-        return manager.retrieve(key=key, dest=dest, quorum_timeout=quorum_timeout, broadcast=broadcast, verbose=verbose)
+        return manager.retrieve(key=key, dest=dest, broadcast=broadcast, verbose=verbose)
 
     # Filesystem data retrieval
     global _default_client
@@ -242,7 +239,7 @@ def ls(
 ) -> List[dict]:
     """
     List files and directories under a key path in the store.
-    Combines virtual keys (locally-published) and filesystem contents.
+    Combines locally-published keys and filesystem contents from the central store.
 
     Examples:
         >>> import kubetorch as kt
@@ -253,10 +250,8 @@ def ls(
     Returns:
         List of dicts with item information:
         - name: Item name (directories have trailing /)
-        - is_virtual: True if published via locale="local" (not in filesystem)
         - is_directory: True if directory
-        - pod_name: Pod name where virtual key is stored (if virtual)
-        - pod_namespace: Namespace of pod (if virtual)
+        - locale: Where the data lives - "store" for central store, or pod name for local data
     """
     global _default_client
 
@@ -296,7 +291,7 @@ def rm(
     _default_client.rm(key=key, recursive=recursive, verbose=verbose)
 
 
-def sync_workdir_from_store(namespace: str, service_name: str):
+def _sync_workdir_from_store(namespace: str, service_name: str):
     """
     Sync files from the rsync pod into the current working directory inside the server pod.
 
@@ -365,58 +360,3 @@ def sync_workdir_from_store(namespace: str, service_name: str):
         futures = [regular_future, absolute_future]
         for future in concurrent.futures.as_completed(futures):
             future.result()
-
-
-# Legacy rsync interface for backward compatibility
-def rsync(
-    source: Union[str, List[str]],
-    dest: str,
-    namespace: str,
-    service_name: str,
-    contents: bool = False,
-    filter_options: Optional[str] = None,
-    force: bool = False,
-    local_port: Optional[int] = None,
-):
-    """
-    Legacy rsync function for backward compatibility.
-    Used by Compute class and other internal components.
-    """
-    from .rsync_client import RsyncClient
-
-    client = RsyncClient(namespace=namespace, service_name=service_name)
-    client.upload(
-        source=source,
-        dest=dest,
-        contents=contents,
-        filter_options=filter_options,
-        force=force,
-        local_port=local_port,
-    )
-
-
-async def rsync_async(
-    source: Union[str, List[str]],
-    dest: str,
-    namespace: str,
-    service_name: str,
-    contents: bool = False,
-    filter_options: Optional[str] = None,
-    force: bool = False,
-    local_port: Optional[int] = None,
-):
-    """
-    Legacy async rsync function for backward compatibility.
-    Used by Compute class and other internal components.
-    """
-    from .rsync_client import RsyncClient
-
-    client = RsyncClient(namespace=namespace, service_name=service_name)
-    await client.upload_async(
-        source=source,
-        dest=dest,
-        contents=contents,
-        filter_options=filter_options,
-        force=force,
-        local_port=local_port,
-    )

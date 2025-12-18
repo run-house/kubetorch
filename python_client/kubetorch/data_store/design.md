@@ -63,14 +63,14 @@ The data store provides a unified `put()`/`get()` API for two fundamentally diff
 Module-level convenience functions that users call directly.
 
 **Key functions:**
-- `put(key, src=..., data=...)` - Upload filesystem or GPU data
+- `put(key, src=...)` - Upload filesystem or GPU data
 - `get(key, dest=...)` - Download filesystem or GPU data
 - `ls(key)` - List keys/contents
 - `rm(key)` - Delete from store
 
 **Auto-detection logic:**
-- If `data` parameter is a CUDA tensor → GPU transfer via NCCL
-- If `src` parameter is a path → Filesystem transfer via rsync
+- If `src` is a CUDA tensor or dict of tensors → GPU transfer via NCCL
+- If `src` is a path (str/Path) → Filesystem transfer via rsync
 
 ### `data_store_client.py`
 High-level client for filesystem data operations.
@@ -286,7 +286,7 @@ User: kt.get("my-svc/model", dest="./local/")
 Putter Pod                              Getter Pod
 ───────────                             ───────────
 kt.put(key="layer1",                    kt.get(key="layer1",
-       data=tensor)                            dest=tensor)
+       src=tensor)                             dest=tensor)
      │                                       │
      ▼                                       │
 GPUTransferManager.publish()                 │
@@ -332,7 +332,7 @@ state_dict = model.state_dict()         dest = model.state_dict()
 #  "layer1.bias": tensor, ...}
 
 kt.put("checkpoint",                    kt.get("checkpoint",
-       data=state_dict,                        dest=dest,
+       src=state_dict,                         dest=dest,
        broadcast=BroadcastWindow(              broadcast=BroadcastWindow(
          world_size=2))                          world_size=2))
      │                                       │
@@ -370,7 +370,7 @@ all sends (same process group)     all receives (same process group)
 
 **Packed mode (`broadcast.pack=True`):**
 ```python
-kt.put("checkpoint", data=state_dict, broadcast=BroadcastWindow(world_size=2, pack=True))
+kt.put("checkpoint", src=state_dict, broadcast=BroadcastWindow(world_size=2, pack=True))
 kt.get("checkpoint", dest=dest, broadcast=BroadcastWindow(world_size=2, pack=True))
 ```
 - Concatenates all tensors into single flat buffer
@@ -386,7 +386,7 @@ For GPU data, broadcasts use NCCL with quorum-based coordination:
 ```
 Pod A (Putter)              Metadata Server              Pod B (Getter)
 ─────────────               ───────────────              ─────────────
-kt.put(key, data,           ws://server/ws/              kt.get(key, dest,
+kt.put(key, src,            ws://server/ws/              kt.get(key, dest,
   broadcast=BW(             gpu-broadcast/{group}          broadcast=BW(...))
     world_size=2))                │                              │
      │                            │                              │

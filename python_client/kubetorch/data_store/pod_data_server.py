@@ -6,7 +6,7 @@ This server runs as a separate process on each node to handle:
 - Filesystem broadcast coordination for tree-based p2p propagation
 
 Architecture:
-- GPU: Application processes call kt.put(data=tensor) which registers the tensor
+- GPU: Application processes call kt.put(src=tensor) which registers the tensor
   via CUDA IPC handles with this server. The server performs NCCL broadcasts.
 - Filesystem: Tracks completed filesystem broadcasts with local paths. Child getters
   request data from parent's pod data server, which blocks until parent completes

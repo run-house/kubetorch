@@ -1,5 +1,5 @@
 """
-Tests for GPU tensor transfer via kt.put(data=tensor) and kt.get(dest=tensor).
+Tests for GPU tensor transfer via kt.put(src=tensor) and kt.get(dest=tensor).
 
 These tests verify:
 - GPU tensor publishing via put with GPU data
@@ -7,7 +7,7 @@ These tests verify:
 - Tensor value correctness after transfer
 
 The GPU Data Server architecture:
-- kt.put(data=tensor) registers tensor IPC handles with a per-node GPU server
+- kt.put(src=tensor) registers tensor IPC handles with a per-node GPU server
 - kt.get(dest=tensor) triggers automatic server-to-server NCCL broadcast
 - No explicit "serve" step needed - transfers are automatic
 """
@@ -74,7 +74,7 @@ async def test_gpu_transfer_single_consumer(gpu_source, gpu_consumer):
     Test GPU tensor transfer from source to a single consumer.
 
     Flow:
-    1. Source publishes tensor via put(data=tensor)
+    1. Source publishes tensor via put(src=tensor)
     2. Consumer requests tensor via get(dest=tensor)
     3. GPU servers handle the NCCL broadcast automatically
     4. Verify tensor values match
