@@ -2,12 +2,47 @@ kubetorchConfig:
   # List of namespaces to allow deploying compute resources to
   deployment_namespaces:
     - "default"
-    - "kubetorch"
   otelEnabled: true # Allows OTEL on the server, necessary for enabling TTL
 
-nginx:
-  # if using a custom DNS resolver, update the value below (e.g., "coredns.kube-system.svc.cluster.local")
-  resolver: "kube-dns.kube-system.svc.cluster.local"
+kubetorchController:
+  image: ghcr.io/run-house/kubetorch-controller
+  tag: v0.1.0
+  imagePullPolicy: Always
+
+  port: 8081  # Port the controller listens on
+  workers: 8  # Number of Uvicorn worker processes (each handles ~10 concurrent requests)
+  connectionPoolSize: 20  # K8s API connection pool size per worker
+  replicas: 1  # Number of controller replica pods
+
+  resources:
+    cpu:
+      request: "200m"   # Minimum guaranteed CPU (0.2 cores)
+      limit: "2000m"    # Maximum burst CPU (2 cores) for 8 workers
+    memory:
+      request: "1Gi"    # Minimum guaranteed memory
+      limit: "2Gi"      # Maximum memory for 8 workers + connection pools + headroom
+
+  tolerations: []
+  affinity: {}
+
+  # Nginx sidecar configuration (runs alongside controller in same pod)
+  nginx:
+    resolver: "kube-dns.kube-system.svc.cluster.local"  # DNS resolver for upstream resolution
+    image:
+      repository: nginx
+      tag: 1.29.0-alpine
+      pullPolicy: IfNotPresent
+    maxBodySize:
+      rsync: "10G"   # Max body size for rsync operations (large data transfers)
+      api: "250M"    # Max body size for API routes
+    healthRoute: "/health"
+    resources:
+      cpu:
+        request: "200m"
+        limit: "1"
+      memory:
+        request: "256Mi"
+        limit: "512Mi"
 
 nvidia-device-plugin:
   enabled: true # set to `false` to disable GPU support
@@ -31,6 +66,7 @@ nvidia-device-plugin:
 
 dataStore:
   image: ghcr.io/run-house/kubetorch-data-store:v1
+#  imagePullPolicy: IfNotPresent
   imagePullPolicy: Always
   # serviceAccount: kubetorch-service-account  # Optional: use specific service account for Workload Identity
   maxConnections: 500  # Maximum concurrent rsync connections (increase for many worker pods)
@@ -53,59 +89,11 @@ dataStore:
   tolerations: []
   affinity: {}
 
-controller:
-  image: ghcr.io/run-house/kubetorch-controller
-  tag: v0.1.0
-  imagePullPolicy: Always
-
-  port: 8081  # Port the controller listens on
-  workers: 8  # Number of Uvicorn worker processes (each handles ~10 concurrent requests)
-  connectionPoolSize: 20  # K8s API connection pool size per worker
-  replicas: 1  # Number of controller replica pods
-
-  resources:
-    cpu:
-      request: "200m"   # Minimum guaranteed CPU (0.2 cores)
-      limit: "2000m"    # Maximum burst CPU (2 cores) for 8 workers
-    memory:
-      request: "1Gi"    # Minimum guaranteed memory
-      limit: "2Gi"      # Maximum memory for 8 workers + connection pools + headroom
-
-  tolerations: []
-  affinity: {}
-
-nginxProxy:
-  image:
-    repository: nginx
-    tag: 1.29.0-alpine
-    pullPolicy: IfNotPresent
-  maxBodySize:
-    rsync: "10G" # 10GB max body size for rsync operations (e.g. large data transfers)
-    api: "250M"  # 250MB max body size for all other routes
-  backends:
-    logging:
-      route: "/loki"
-    health:
-      route: "/health"
-  resources:
-    cpu:
-      request: "200m"   # Minimum guaranteed CPU (0.2 cores)
-      limit: "1"        # Maximum CPU (1 core)
-    memory:
-      request: "256Mi"  # Minimum guaranteed memory
-      limit: "512Mi"    # Maximum memory - handles 1000+ concurrent connections
-  tolerations: []
-  affinity: {}
-
 logStreaming:
-  enabled: true # set to `false` to disable log streaming
+  enabled: true # set to `false` to disable log streaming (OTEL collector and Loki in data store)
   retentionPeriod: 24h
   maxConcurrentTailRequests: 100
-  image: grafana/loki:3.5.3
   port: 3100
-  resources:
-    cpu: 100m
-    memory: 256Mi
 
 metrics:
   enabled: true # set to `false` to disable metrics collection & streaming
@@ -142,9 +130,6 @@ metrics:
 
 opentelemetry-collector:
   enabled: true # set to `false` to disable opentelemetry collector
-  serviceAccount:
-    create: false # use the SA that kubetorch creates
-    name: kubetorch-opentelemetry-collector
   mode: daemonset
   image:
     repository: otel/opentelemetry-collector-contrib

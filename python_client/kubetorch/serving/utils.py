@@ -11,7 +11,7 @@ import httpx
 from kubetorch import globals
 from kubetorch.logger import get_logger
 from kubetorch.servers.http.utils import is_running_in_kubernetes
-from kubetorch.serving.constants import LOKI_GATEWAY_SERVICE_NAME, PROMETHEUS_SERVICE_NAME
+from kubetorch.serving.constants import PROMETHEUS_SERVICE_NAME
 from kubetorch.utils import http_not_found
 
 logger = get_logger(__name__)
@@ -129,25 +129,33 @@ def pod_is_running(pod: dict) -> bool:
     return phase == "Running" and deletion_timestamp is None
 
 
-def check_loki_enabled() -> bool:
-    """Check if Loki is enabled using the centralized controller."""
+def check_loki_enabled(namespace: str = "default") -> bool:
+    """Check if Loki is enabled by checking the data store service in the target namespace.
+
+    Loki is now embedded in the data store, so we check for port 3100 on the data store service.
+    """
     controller = globals.controller_client()
-    kt_namespace = globals.config.install_namespace
 
     try:
-        controller.get_service(namespace=kt_namespace, name=LOKI_GATEWAY_SERVICE_NAME)
-        logger.debug(f"Loki gateway service found in namespace {kt_namespace}")
-        return True
+        # Check if data store service exists with Loki port (3100)
+        service = controller.get_service(namespace=namespace, name="kubetorch-data-store")
+        ports = service.get("spec", {}).get("ports", [])
+        for port in ports:
+            if port.get("port") == 3100 or port.get("name") == "loki":
+                logger.debug(f"Loki enabled in data store service in namespace {namespace}")
+                return True
+        logger.debug(f"Data store service found but Loki port not exposed in namespace {namespace}")
+        return False
 
     except Exception as e:
         # controller wraps K8s 404 properly
         if http_not_found(e):
-            logger.debug(f"Loki gateway service not found in namespace {kt_namespace}")
+            logger.debug(f"Data store service not found in namespace {namespace}")
             return False
 
         # fallback check: inside cluster, try resolving service DNS
         if is_running_in_kubernetes():
-            loki_url = f"http://{LOKI_GATEWAY_SERVICE_NAME}.{kt_namespace}.svc.cluster.local/loki/api/v1/labels"
+            loki_url = f"http://kubetorch-data-store.{namespace}.svc.cluster.local:3100/loki/api/v1/labels"
             try:
                 resp = httpx.get(loki_url, timeout=2)
                 if resp.status_code == 200:

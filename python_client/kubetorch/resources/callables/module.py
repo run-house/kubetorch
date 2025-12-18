@@ -889,6 +889,7 @@ class Module:
                         port,
                         encoded_pod_query,
                         deployment_timestamp,
+                        namespace=self.namespace,
                         dedup=True,
                     )
 
@@ -900,6 +901,7 @@ class Module:
                         port,
                         encoded_event_query,
                         deployment_timestamp,
+                        namespace=self.namespace,
                     )
 
                 pod_thread = threading.Thread(target=run_pod_logs, daemon=True)
@@ -963,6 +965,7 @@ class Module:
                     port=port,
                     query=encoded_pod_query,
                     deployment_timestamp=deployment_timestamp,
+                    namespace=self.namespace,
                     dedup=True,
                 )
             )
@@ -978,6 +981,7 @@ class Module:
                         port=port,
                         query=encoded_event_query,
                         deployment_timestamp=deployment_timestamp,
+                        namespace=self.namespace,
                     )
                 )
                 tasks.append(event_task)
@@ -1000,6 +1004,7 @@ class Module:
         port: int,
         query: str,
         deployment_timestamp: str,
+        namespace: str,
         dedup: bool = False,
     ):
         """Helper to run log streaming in an event loop"""
@@ -1014,6 +1019,7 @@ class Module:
                     port=port,
                     query=query,
                     deployment_timestamp=deployment_timestamp,
+                    namespace=namespace,
                     dedup=dedup,
                 )
             )
@@ -1028,6 +1034,7 @@ class Module:
         port: int,
         query: str,
         deployment_timestamp: str,
+        namespace: str,
         dedup: bool = False,
     ):
         """Async helper to run log streaming directly in the current event loop"""
@@ -1038,6 +1045,7 @@ class Module:
             port=port,
             query=query,
             deployment_timestamp=deployment_timestamp,
+            namespace=namespace,
             dedup=dedup,
         )
 
@@ -1049,6 +1057,7 @@ class Module:
         port: int,
         query: str,
         deployment_timestamp: str,
+        namespace: str,
         dedup: bool = False,
     ):
         """Stream logs and events using Loki's websocket tail endpoint.
@@ -1060,6 +1069,7 @@ class Module:
             port: WebSocket port
             query: Loki query string
             deployment_timestamp: Timestamp to filter logs after
+            namespace: Namespace to stream logs from
             dedup: Whether to deduplicate log messages
         """
         # Map logging_config.level to filtering behavior
@@ -1067,7 +1077,8 @@ class Module:
         log_level = self.logging_config.level.lower() if self.logging_config.level else "info"
 
         try:
-            uri = f"ws://{host}:{port}/loki/api/v1/tail?query={query}"
+            # Namespace-aware Loki URL - routes to data store in the target namespace
+            uri = f"ws://{host}:{port}/loki/{namespace}/api/v1/tail?query={query}"
 
             # Track the last timestamp we've seen to avoid duplicates
             last_timestamp = None

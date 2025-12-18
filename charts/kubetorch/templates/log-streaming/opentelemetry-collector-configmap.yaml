@@ -1,8 +1,5 @@
 {{- if .Values.logStreaming.enabled }}
-{{- $allNamespaces := .Values.kubetorchConfig.deployment_namespaces | default list }}
-{{- if not (has .Release.Namespace $allNamespaces) }}
-  {{- $allNamespaces = append $allNamespaces .Release.Namespace }}
-{{- end }}
+{{- $deploymentNamespaces := .Values.kubetorchConfig.deployment_namespaces | default list }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -16,7 +13,7 @@ data:
     receivers:
       filelog:
         include:
-        {{- range $allNamespaces }}
+        {{- range $deploymentNamespaces }}
           - /var/log/pods/{{ . }}_*/*/*.log
         {{- end }}
         exclude:
@@ -30,7 +27,7 @@ data:
             id: container-parser
       k8s_events:
         namespaces:
-        {{- range $allNamespaces }}
+        {{- range $deploymentNamespaces }}
           - {{ . }}
         {{- end }}
     processors:
@@ -44,19 +41,41 @@ data:
             - k8s.namespace.name
             - k8s.pod.name
             - k8s.container.name
+    connectors:
+      routing:
+        default_pipelines: [logs/fallback]
+        error_mode: ignore
+        table:
+        {{- range $deploymentNamespaces }}
+          - statement: route() where resource.attributes["k8s.namespace.name"] == "{{ . }}"
+            pipelines: [logs/{{ . }}]
+        {{- end }}
     exporters:
-      otlphttp/logs:
-        endpoint: "http://loki-gateway.{{ .Release.Namespace }}.svc.cluster.local:3100/otlp"
+      {{- range $deploymentNamespaces }}
+      otlphttp/{{ . }}:
+        endpoint: "http://kubetorch-data-store.{{ . }}.svc.cluster.local:3100/otlp"
         tls:
           insecure: true
+      {{- end }}
+      # Fallback exporter for logs that don't match any namespace (should not happen)
+      debug:
+        verbosity: basic
     service:
       extensions: [health_check]
       telemetry:
         logs:
           level: warn
       pipelines:
-        logs:
+        logs/ingestion:
           receivers: [filelog, k8s_events]
           processors: [k8sattributes, batch]
-          exporters: [otlphttp/logs]
+          exporters: [routing]
+        {{- range $deploymentNamespaces }}
+        logs/{{ . }}:
+          receivers: [routing]
+          exporters: [otlphttp/{{ . }}]
+        {{- end }}
+        logs/fallback:
+          receivers: [routing]
+          exporters: [debug]
 {{- end }}

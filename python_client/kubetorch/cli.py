@@ -252,12 +252,13 @@ def kt_check(
         console.print("[bold blue]Checking log streaming...[/bold blue]")
 
         try:
+            # Check that data store exists in the namespace (Loki is embedded in data store)
             controller.get_service(
-                name=serving_constants.LOKI_GATEWAY_SERVICE_NAME,
-                namespace=globals.config.install_namespace,
+                name="kubetorch-data-store",
+                namespace=namespace,
             )
             q = f'{{k8s_pod_name="{pod_name}", k8s_container_name="kubetorch"}}'
-            logs = load_logs_for_pod(query=q, print_pod_name=False, timeout=2.0)
+            logs = load_logs_for_pod(query=q, print_pod_name=False, timeout=2.0, namespace=namespace)
             if logs is None:
                 fail("No logs found for pod", [pod_name])
         except Exception as e:
@@ -2094,7 +2095,7 @@ def kt_logs(
                 if not query:
                     return
 
-                logs = load_logs_for_pod(query=query, print_pod_name=print_pod_name, timeout=5.0)
+                logs = load_logs_for_pod(query=query, print_pod_name=print_pod_name, timeout=5.0, namespace=namespace)
                 if logs is None:
                     console.print("[red]No logs found for service[/red]")
                     return
