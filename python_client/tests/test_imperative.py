@@ -806,7 +806,7 @@ def test_compute_factory_namespace():
 
     default_ns_compute = kt.Compute(cpus="1")
     assert default_ns_compute
-    assert default_ns_compute.namespace == "default"
+    assert default_ns_compute.namespace == kt.config.namespace
 
     tests_ns = get_tests_namespace()
     create_test_ns_cmd = f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"

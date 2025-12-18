@@ -124,6 +124,7 @@ A Helm chart for kubetorch
 | nvidia-device-plugin.tolerations[1].key | string | `"dedicated"` |  |
 | nvidia-device-plugin.tolerations[1].operator | string | `"Equal"` |  |
 | nvidia-device-plugin.tolerations[1].value | string | `"gpu"` |  |
+| opentelemetry-collector.affinity | object | `{}` |  |
 | opentelemetry-collector.configMap.create | bool | `false` |  |
 | opentelemetry-collector.configMap.existingName | string | `"otel-collector-config"` |  |
 | opentelemetry-collector.enabled | bool | `true` |  |

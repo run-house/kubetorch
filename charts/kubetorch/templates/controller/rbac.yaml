@@ -1,9 +1,23 @@
 ###############################################################################
 # Kubetorch Controller RBAC
 # - Namespace-scoped permissions ONLY for deployment namespaces
-# - Cluster-wide permissions ONLY for Ray + Knative CRDs
+# - Cluster-wide permissions ONLY for Ray + Knative + Kubeflow CRDs
 ###############################################################################
 
+{{- /*
+Compute CRD ClusterRole name:
+- Use plain name in "kubetorch"
+- Append namespace everywhere else
+*/ -}}
+{{- $crdsBaseName := "kubetorch-controller-crds" }}
+{{- $crdsName := $crdsBaseName }}
+{{- if ne .Release.Namespace "kubetorch" }}
+{{- $crdsName = printf "%s-%s" $crdsBaseName .Release.Namespace }}
+{{- end }}
+
+###############################################################################
+# ServiceAccount (controller namespace)
+###############################################################################
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -94,7 +108,6 @@ rules:
     verbs: ["get", "list"]
 {{- end }}
 
-
 ###############################################################################
 # RoleBindings per Deployment Namespace
 ###############################################################################
@@ -115,7 +128,6 @@ subjects:
     namespace: {{ $.Release.Namespace }}
 {{- end }}
 
-
 ###############################################################################
 # ClusterRole for Ray + Knative + Kubeflow CRDs
 ###############################################################################
@@ -123,7 +135,7 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: kubetorch-controller-crds
+  name: {{ $crdsName }}
 rules:
   # RayCluster CRDs
   - apiGroups: ["ray.io"]
@@ -135,16 +147,15 @@ rules:
     resources: ["services", "revisions"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # Kubeflow Training Jobs (PyTorchJob, TFJob, MXJob, XGBoostJob)
+  # Kubeflow Training Jobs
   - apiGroups: ["kubeflow.org"]
     resources: ["pytorchjobs", "tfjobs", "mxjobs", "xgboostjobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # StorageClasses (read-only for volume provisioning)
+  # StorageClasses (read-only)
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses"]
     verbs: ["get", "list"]
-
 
 ###############################################################################
 # ClusterRoleBinding for CRDs
@@ -153,11 +164,11 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: kubetorch-controller-crds-binding
+  name: {{ printf "%s-binding" $crdsName }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: kubetorch-controller-crds
+  name: {{ $crdsName }}
 subjects:
   - kind: ServiceAccount
     name: kubetorch-controller

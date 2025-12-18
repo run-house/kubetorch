@@ -38,6 +38,7 @@ def remote_fn_for_teardown(secret: kt.Secret = None):
         launch_timeout=300,
         allowed_serialization=["json", "pickle"],
         secrets=secrets,
+        logging_config=kt.LoggingConfig(stream_logs=False),
     )
     name = f"td-summer-{random_string(3)}"
     fn = kt.fn(summer, name=name).to(compute)
@@ -174,7 +175,7 @@ async def test_cli_kt_list_non_existing_prefix(remote_logs_fn):
     result = runner.invoke(app, ["list", "-t", "no-such-prefix"], env={"COLUMNS": "200"}, color=False)
     assert result.exit_code == 0
     list_output = result.stdout
-    assert "No services found in default namespace" in list_output
+    assert f"No services found in {kt.config.namespace}" in list_output
 
 
 @pytest.mark.level("minimal")
@@ -566,7 +567,7 @@ def test_cli_kt_teardown_namespace():
     service_name = remote_fn.service_name
     teardown_result = runner.invoke(
         app,
-        ["teardown", service_name, "-y", "--namespace", "default"],
+        ["teardown", service_name, "-y", "--namespace", kt.config.namespace],
         color=False,
         env={"COLUMNS": "200"},
     )
@@ -595,10 +596,10 @@ def test_cli_kt_teardown_force():
 @pytest.mark.level("minimal")
 def test_cli_kt_teardown_multiple_flags():
     flag_combinations = [
-        ["-p", f"{get_test_hash()}-td-", "-n", "default", "-y"],
+        ["-p", f"{get_test_hash()}-td-", "-n", kt.config.namespace, "-y"],
         ["-p", f"{get_test_hash()}-td-", "-f"],
-        ["-f", "-n", "default"],
-        ["-p", f"{get_test_hash()}-td-", "-n", "default", "-f"],
+        ["-f", "-n", kt.config.namespace],
+        ["-p", f"{get_test_hash()}-td-", "-n", kt.config.namespace, "-f"],
     ]
     for flag_combination in flag_combinations:
         remote_fn = remote_fn_for_teardown()
@@ -634,7 +635,7 @@ def test_cli_kt_teardown_wrong_usage():
 
     assert teardown_result.exit_code == 1
     output = teardown_result.output
-    assert f"Finding resources for service {service_name.lower()} in default namespace..." in output
+    assert f"Finding resources for service {service_name.lower()} in {kt.config.namespace} namespace..." in output
     assert f"Service {service_name.lower()} not found" in output
 
     # Part C: teardown service with non-existing prefix
@@ -642,7 +643,7 @@ def test_cli_kt_teardown_wrong_usage():
 
     assert teardown_result.exit_code == 0
     output = teardown_result.output
-    assert f"Deleting all services with prefix {service_name} in default namespace" in output
+    assert f"Deleting all services with prefix {service_name} in {kt.config.namespace} namespace" in output
     assert "No services found" in output
 
     # Part D: teardown service but provide wrong namespace
@@ -706,7 +707,7 @@ def test_cli_secrets_create_gcp():
     output = result.output
     assert "✔ Secret created successfully\n" in output
     assert f"Name: {kt.config.username}-gcp\n" in output
-    assert "Namespace: default\n" in output
+    assert f"Namespace: {kt.config.namespace}\n" in output
 
 
 @pytest.mark.level("unit")
@@ -718,7 +719,7 @@ def test_cli_secrets_create_gcp_with_name():
     output = result.output
     assert "✔ Secret created successfully\n" in output
     assert f"Name: {secret_name}\n" in output
-    assert "Namespace: default\n" in output
+    assert f"Namespace: {kt.config.namespace}\n" in output
 
 
 @pytest.mark.level("unit")
@@ -745,7 +746,7 @@ def test_cli_secrets_create_huggingface():
     output = result.output
     assert "✔ Secret created successfully\n" in output
     assert f"Name: {kt.config.username}-huggingface\n" in output
-    assert "Namespace: default\n" in output
+    assert f"Namespace: {kt.config.namespace}\n" in output
 
 
 @pytest.mark.level("unit")
@@ -757,7 +758,7 @@ def test_cli_secrets_create_huggingface_with_name():
     output = result.output
     assert "✔ Secret created successfully\n" in output
     assert f"Name: {secret_name}\n" in output
-    assert "Namespace: default\n" in output
+    assert f"Namespace: {kt.config.namespace}\n" in output
 
 
 @pytest.mark.level("unit")
@@ -802,13 +803,13 @@ def test_cli_secrets_create_same_secret_twice_gcp():
     first_output = result_first_creation.output
     assert "✔ Secret created successfully\n" in first_output
     assert f"Name: {secret_name}\n" in first_output
-    assert "Namespace: default\n" in first_output
+    assert f"Namespace: {kt.config.namespace}\n" in first_output
 
     # create the secret for the second time
     result_second_creation = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
     assert result_second_creation.exit_code == 0
     assert (
-        f"Secret '{secret_name}' already exists in namespace default, skipping creation"
+        f"Secret '{secret_name}' already exists in namespace {kt.config.namespace}, skipping creation"
         in result_second_creation.output
     )
 
@@ -828,7 +829,7 @@ def test_cli_secrets_create_using_path():
         output = result.output
         assert "✔ Secret created successfully\n" in output
         assert f"Name: {secret_name}\n" in output
-        assert "Namespace: default\n" in output
+        assert f"Namespace: {kt.config.namespace}\n" in output
 
 
 @pytest.mark.level("unit")
@@ -842,7 +843,7 @@ def test_cli_secrets_create_using_env_vars():
     output = result.output
     assert "✔ Secret created successfully\n" in output
     assert f"Name: {secret_name}\n" in output
-    assert "Namespace: default\n" in output
+    assert f"Namespace: {kt.config.namespace}\n" in output
 
 
 @pytest.mark.level("unit")
@@ -853,7 +854,7 @@ def test_cli_secrets_list():
     assert result.exit_code == 0
 
     list_cmds = [["secrets"], ["secrets", "list"]]
-    expected_pattern = rf".*{secret_name}.*{kt.globals.config.username}.*default.*"
+    expected_pattern = rf".*{secret_name}.*{kt.globals.config.username}.*{kt.config.namespace}.*"
     for cmd in list_cmds:
         result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
         assert result.exit_code == 0
@@ -1229,14 +1230,14 @@ def test_cli_secrets_describe_show():
 
     cmds = [
         ["secrets", "describe", secret_name, "--show"],
-        ["secrets", "describe", secret_name, "-n", "default", "--show"],
+        ["secrets", "describe", secret_name, "-n", kt.config.namespace, "--show"],
     ]
     for cmd in cmds:
         result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "300"})
         assert result.exit_code == 0
         output = result.output
         assert f"K8 Name: {secret_name}" in output
-        assert "Namespace: default" in output
+        assert f"Namespace: {kt.config.namespace}" in output
         mount_type = "env" if os.getenv("CI", None) else "mount"
         assert (
             f"Labels: {{'kubetorch.com/mount-type': '{mount_type}', 'kubetorch.com/provider': 'gcp', "
@@ -1390,7 +1391,7 @@ async def test_logs_cli_single_pod_namespace(remote_logs_fn):
 
     service_name = remote_logs_fn.service_name
 
-    result = runner.invoke(app, ["logs", service_name, "-n", "default"], color=False)
+    result = runner.invoke(app, ["logs", service_name, "-n", kt.config.namespace], color=False)
     assert result.exit_code == 0
     logs_output = result.stdout
 
@@ -1483,7 +1484,7 @@ async def test_logs_cli_multi_pod_tail(remote_logs_fn_autoscaled):
     log_msg = "Tests logs msg"
     log_amount = 50
 
-    remote_logs_fn_autoscaled(log_msg, log_amount)
+    remote_logs_fn_autoscaled(log_msg, log_amount, stream_logs=False)
 
     assert len(remote_logs_fn_autoscaled.compute.pod_names()) == 2
 
@@ -1518,7 +1519,7 @@ async def test_logs_cli_multi_pod_namespace(remote_logs_fn_autoscaled):
 
     service_name = remote_logs_fn_autoscaled.service_name
 
-    result = runner.invoke(app, ["logs", service_name, "-n", "default"], color=False)
+    result = runner.invoke(app, ["logs", service_name, "-n", kt.config.namespace], color=False)
     assert result.exit_code == 0
     logs_output = result.stdout
 
