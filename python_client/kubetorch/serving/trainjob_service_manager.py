@@ -91,6 +91,9 @@ class TrainJobServiceManager(BaseServiceManager):
         self.worker_replica = config["worker_replica"]
 
     def get_pod_template_path(self) -> List[str]:
+        """Get the path to the primary replica pod template."""
+        return ["spec", self.replica_specs_key, self.primary_replica, "template"]
+
     def _delete_resource(self, service_name: str, force: bool = False, **kwargs) -> None:
         """Delete a training job and its associated K8s Services."""
         # Delete the training job CRD using base class logic
@@ -293,6 +296,7 @@ class TrainJobServiceManager(BaseServiceManager):
         dockerfile = kwargs.get("dockerfile")
         module = kwargs.get("module")
         create_headless_service = kwargs.get("create_headless_service", False)
+        endpoint = kwargs.get("endpoint")
 
         pod_spec = self.pod_spec(manifest)
         server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
@@ -332,16 +336,19 @@ class TrainJobServiceManager(BaseServiceManager):
                     "selector": pool_selector,
                 }
 
-                # Service selector routes only to primary replica (Master/Chief/Scheduler)
-                is_distributed = self.is_distributed(manifest)
-                if is_distributed:
-                    service_selector = {
-                        **pool_selector,
-                        "training.kubeflow.org/replica-type": self.primary_replica.lower(),
-                    }
-                    service_config = {"type": "selector", "selector": service_selector}
+                if endpoint:
+                    service_config = endpoint.to_service_config()
                 else:
-                    service_config = None  # Auto-create service using pool selector
+                    is_distributed = self.is_distributed(manifest)
+                    if is_distributed:
+                        # Service selector routes only to primary replica (Master/Chief/Scheduler)
+                        service_selector = {
+                            **pool_selector,
+                            "training.kubeflow.org/replica-type": self.primary_replica.lower(),
+                        }
+                        service_config = {"type": "selector", "selector": service_selector}
+                    else:
+                        service_config = None  # Auto-create service using pool selector
 
                 pool_response = self.controller_client.register_pool(
                     name=service_name,
