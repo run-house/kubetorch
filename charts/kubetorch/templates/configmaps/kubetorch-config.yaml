@@ -4,7 +4,7 @@ metadata:
   name: kubetorch-config
   namespace: {{ .Release.Namespace }}
 data:
-  NGINX_RESOLVER: {{ .Values.nginx.resolver | default "kube-dns.kube-system.svc.cluster.local" }}
+  NGINX_RESOLVER: {{ .Values.kubetorchController.nginx.resolver | default "kube-dns.kube-system.svc.cluster.local" }}
   COMPUTE_DEFAULTS: |-
 {{- range $key, $value := .Values.kubetorchConfig.computeDefaults }}
     {{ $key }}: {{ if not (kindOf $value | eq "slice") }}{{ $value }}{{ else }}

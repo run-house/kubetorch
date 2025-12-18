@@ -1,0 +1,49 @@
+{{- if .Values.logStreaming.enabled }}
+{{- range (.Values.kubetorchConfig.deployment_namespaces | default list) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubetorch-loki-config
+  namespace: {{ . }}
+data:
+  loki.yaml: |
+    auth_enabled: false
+
+    server:
+      http_listen_port: {{ $.Values.logStreaming.port }}
+      grpc_listen_port: 9096
+
+    common:
+      path_prefix: /tmp/loki
+      storage:
+        filesystem:
+          chunks_directory: /tmp/loki/chunks
+          rules_directory: /tmp/loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+
+    schema_config:
+      configs:
+        - from: 2020-10-24
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+
+    limits_config:
+      retention_period: {{ $.Values.logStreaming.retentionPeriod }}
+      max_concurrent_tail_requests: {{ $.Values.logStreaming.maxConcurrentTailRequests }}
+
+    compactor:
+      working_directory: /tmp/loki/compactor
+      compaction_interval: 10m
+      retention_enabled: true
+      retention_delete_delay: 2h
+      delete_request_store: filesystem
+{{- end }}
+{{- end }}

@@ -646,8 +646,17 @@ def load_logs_for_pod(
     uri: str = None,
     print_pod_name: bool = False,
     timeout: float = 2.0,
+    namespace: str = None,
 ):
-    """Get logs from Loki with fail-fast approach to avoid hanging."""
+    """Get logs from Loki with fail-fast approach to avoid hanging.
+
+    Args:
+        query: LogQL query string
+        uri: Direct URI to use (skips cluster checks)
+        print_pod_name: Whether to print pod name with each log
+        timeout: Connection timeout
+        namespace: Namespace to query logs from (required if uri not provided)
+    """
     try:
         # If URI is provided, use it directly (skip cluster checks)
         if uri:
@@ -680,8 +689,13 @@ def load_logs_for_pod(
         if not base_url:
             return None
 
+        if not namespace:
+            logger.debug("Namespace required for Loki query")
+            return None
+
         start_ns = hours_to_ns()
-        target_uri = f"{http_to_ws(base_url)}/loki/api/v1/tail?query={urllib.parse.quote_plus(query)}&start={start_ns}"
+        # Namespace-aware Loki URL - routes to data store in the target namespace
+        target_uri = f"{http_to_ws(base_url)}/loki/{namespace}/api/v1/tail?query={urllib.parse.quote_plus(query)}&start={start_ns}"
 
         # Use daemon thread so Python exits even if websocket hangs
         result = [None]
@@ -816,7 +830,8 @@ def follow_logs_in_cli(
 
     start_ns = hours_to_ns()
     base_url = globals.service_url()
-    uri = f"{http_to_ws(base_url)}/loki/api/v1/tail?query={encoded_query}&start={start_ns}"
+    # Namespace-aware Loki URL - routes to data store in the target namespace
+    uri = f"{http_to_ws(base_url)}/loki/{namespace}/api/v1/tail?query={encoded_query}&start={start_ns}"
 
     try:
         stream_logs_websocket(

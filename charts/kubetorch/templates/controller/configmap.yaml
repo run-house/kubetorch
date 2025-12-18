@@ -9,20 +9,8 @@ data:
 
     events { worker_connections 1024; }
 
-    # TCP proxying (for direct rsync)
-    stream {
-        upstream rsync_backend {
-            server kubetorch-data-store.{{ .Release.Namespace }}.svc.cluster.local:873;
-        }
-
-        server {
-            listen 8873;
-            proxy_pass rsync_backend;
-        }
-    }
-
     http {
-        resolver {{ .Values.nginx.resolver }} valid=5s;
+        resolver {{ .Values.kubetorchController.nginx.resolver }} valid=5s;
 
         map $http_upgrade $connection_upgrade {
             default upgrade;
@@ -35,7 +23,7 @@ data:
             # -------------------------------------------------------
             # HEALTH
             # -------------------------------------------------------
-            location {{ .Values.nginxProxy.backends.health.route }} {
+            location {{ .Values.kubetorchController.nginx.healthRoute }} {
                 access_log off;
                 return 200 '{"status":"ok","version":"{{ .Chart.Version }}","config":{"otel_enabled":{{ .Values.kubetorchConfig.otelEnabled }}}}';
                 add_header Content-Type text/plain;
@@ -46,7 +34,7 @@ data:
             # -------------------------------------------------------
 
             location ^~ /api/ {
-                proxy_pass http://localhost:{{ .Values.controller.port }};
+                proxy_pass http://localhost:{{ .Values.kubetorchController.port }};
                 proxy_http_version 1.1;
                 proxy_set_header Host $host;
                 proxy_set_header X-Real-IP $remote_addr;
@@ -60,7 +48,7 @@ data:
             }
 
             location ^~ /apis/ {
-                proxy_pass http://localhost:{{ .Values.controller.port }};
+                proxy_pass http://localhost:{{ .Values.kubetorchController.port }};
                 proxy_http_version 1.1;
                 proxy_set_header Host $host;
                 proxy_set_header X-Real-IP $remote_addr;
@@ -78,7 +66,7 @@ data:
             # -------------------------------------------------------
             location ~ ^/rsync/([^/]+)/?(.*)$ {
                 set $namespace $1;
-                client_max_body_size {{ .Values.nginxProxy.maxBodySize.rsync }};
+                client_max_body_size {{ .Values.kubetorchController.nginx.maxBodySize.rsync }};
                 # Data store service is in the same namespace as the request
                 proxy_pass http://kubetorch-data-store.$namespace.svc.cluster.local:8080;
                 proxy_http_version 1.1;
@@ -94,7 +82,7 @@ data:
             # METRICS
             # -------------------------------------------------------
             location ^~ /prometheus/ {
-                resolver {{ .Values.nginx.resolver }} valid=5s;
+                resolver {{ .Values.kubetorchController.nginx.resolver }} valid=5s;
                 set $prom_host "kubetorch-metrics.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.metrics.prometheus.port }}";
                 rewrite ^/prometheus/(.*)$ /$1 break;
                 proxy_pass http://$prom_host;
@@ -106,12 +94,14 @@ data:
             }
 
             # -------------------------------------------------------
-            # LOGGING — LOKI
+            # LOGGING — LOKI (namespace-aware)
+            # Routes /loki/{namespace}/... to kubetorch-data-store.{namespace}:3100/...
             # -------------------------------------------------------
-            location ^~ {{ .Values.nginxProxy.backends.logging.route }}/ {
-                resolver {{ .Values.nginx.resolver }} valid=5s;
-                set $loki_host "loki-gateway.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.logStreaming.port }}";
-                proxy_pass http://$loki_host;
+            location ~ ^/loki/([^/]+)/(.*)$ {
+                set $namespace $1;
+                set $loki_path $2;
+                resolver {{ .Values.kubetorchController.nginx.resolver }} valid=5s;
+                proxy_pass http://kubetorch-data-store.$namespace.svc.cluster.local:3100/loki/$loki_path$is_args$args;
                 proxy_http_version 1.1;
                 proxy_set_header Upgrade $http_upgrade;
                 proxy_set_header Connection $connection_upgrade;
@@ -130,7 +120,7 @@ data:
                 set $service $3;
                 set $rest $4;
 
-                client_max_body_size {{ .Values.nginxProxy.maxBodySize.api }};
+                client_max_body_size {{ .Values.kubetorchController.nginx.maxBodySize.api }};
 
                 proxy_pass http://$service.$namespace.svc.cluster.local$rest$is_args$args;
                 proxy_http_version 1.1;
