@@ -26,6 +26,7 @@ from kubetorch.servers.http.utils import (
     generate_unique_request_id,
     is_running_in_kubernetes,
 )
+from kubetorch.serving.constants import DEFAULT_K8S_SERVICE_PORT
 from kubetorch.serving.utils import has_k8s_credentials, KubernetesCredentialsError
 from kubetorch.utils import (
     extract_host_port,
@@ -161,8 +162,12 @@ class Module:
             if not self._compute.endpoint:
                 return self._compute._wait_for_endpoint()
             return self._compute.endpoint
-        # URL format when using the NGINX proxy
-        return f"http://localhost:{self._compute.client_port()}/{self.namespace}/{self.service_name}"
+
+        if self._compute._endpoint_config and self._compute._endpoint_config.url:
+            return self._compute._endpoint_config.get_proxied_url(self._compute.client_port())
+
+        # URL format when using the NGINX proxy: /{namespace}/{service}:{port}/{path}
+        return f"http://localhost:{self._compute.client_port()}/{self.namespace}/{self.service_name}:{DEFAULT_K8S_SERVICE_PORT}"
 
     @property
     def request_headers(self):

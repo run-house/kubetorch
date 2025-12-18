@@ -331,35 +331,55 @@ def delete_resources_for_service(
     """
     from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
 
-    # Construct the appropriate service manager based on service type
-    if service_type == "deployment":
-        from kubetorch.serving.deployment_service_manager import DeploymentServiceManager
+    if service_type == "selector":
+        from kubetorch.serving.base_service_manager import BaseServiceManager
 
-        service_manager = DeploymentServiceManager(namespace=namespace)
-
-    elif service_type == "raycluster":
-        from kubetorch.serving.raycluster_service_manager import RayClusterServiceManager
-
-        service_manager = RayClusterServiceManager(namespace=namespace)
-
-    elif service_type == "knative":
-        from kubetorch.serving.knative_service_manager import KnativeServiceManager
-
-        service_manager = KnativeServiceManager(namespace=namespace)
-
-    elif service_type in [k.lower() for k in TrainJobServiceManager.SUPPORTED_KINDS]:
-        service_manager = TrainJobServiceManager(namespace=namespace, kind=service_type)
-
-    else:
-        msg = f"Unknown service type: {service_type}, skipping teardown"
+        # BYO (selector-based) compute mode:
+        # The user applied the Kubernetes manifest themselves (e.g., via kubectl, Helm, or ArgoCD).
+        # Kubetorch did not create or own the K8s resources, so teardown only removes
+        # Kubetorch controller state and associated metadata — not the underlying pods/deployments/services
+        msg = (
+            "Selector-based service: Kubernetes resources were created outside Kubetorch. "
+            "Kubetorch will remove its internal state, but you are responsible for deleting "
+            "the actual Kubernetes resources (pods, deployments, services, etc.)."
+        )
+        service_manager = BaseServiceManager(namespace=namespace)
+        service_manager._delete_controller_resource(service_name=name, console=console)
         if console:
             console.print(f"[yellow]{msg}[/yellow]")
         else:
             logger.warning(msg)
-        return
+    else:
+        # manifest applied via kubetorch
+        if service_type == "deployment":
+            # Construct the appropriate service manager based on service type
+            from kubetorch.serving.deployment_service_manager import DeploymentServiceManager
 
-    # Use the same teardown path as the Python API to tear down
-    service_manager.teardown_service(service_name=name, console=console, force=force)
+            service_manager = DeploymentServiceManager(namespace=namespace)
+
+        elif service_type == "raycluster":
+            from kubetorch.serving.raycluster_service_manager import RayClusterServiceManager
+
+            service_manager = RayClusterServiceManager(namespace=namespace)
+
+        elif service_type == "knative":
+            from kubetorch.serving.knative_service_manager import KnativeServiceManager
+
+            service_manager = KnativeServiceManager(namespace=namespace)
+
+        elif service_type in [k.lower() for k in TrainJobServiceManager.SUPPORTED_KINDS]:
+            service_manager = TrainJobServiceManager(namespace=namespace, kind=service_type)
+
+        else:
+            msg = f"Unknown service type: {service_type}, skipping teardown"
+            if console:
+                console.print(f"[yellow]{msg}[/yellow]")
+            else:
+                logger.warning(msg)
+            return
+
+        # Use the same teardown path as the Python API to tear down
+        service_manager.teardown_service(service_name=name, console=console, force=force)
 
     # Delete configmaps
     if configmaps:

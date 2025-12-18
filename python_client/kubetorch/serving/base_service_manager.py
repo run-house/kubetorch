@@ -686,6 +686,7 @@ class BaseServiceManager:
         module: dict = None,
         pod_selector: dict = None,
         create_headless_service: bool = False,
+        endpoint: "Endpoint" = None,
     ):
         """Create or update service."""
         logger.info(f"Deploying {manifest['kind']} service with name: {service_name}")
@@ -704,6 +705,7 @@ class BaseServiceManager:
         kwargs["module"] = module
         kwargs["pod_selector"] = pod_selector
         kwargs["create_headless_service"] = create_headless_service
+        kwargs["endpoint"] = endpoint
         created_service = self._create_or_update_resource(updated_manifest, service_name, clean_module_name, **kwargs)
         return created_service, updated_manifest
 
