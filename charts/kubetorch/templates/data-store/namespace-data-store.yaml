@@ -75,6 +75,11 @@ spec:
             - containerPort: 873   # rsync daemon
             - containerPort: 8080  # HTTP/WebSocket tunnel
             - containerPort: 8081  # Metadata server API
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           volumeMounts:
             - name: data-store-storage
               mountPath: /data
