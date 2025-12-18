@@ -216,6 +216,111 @@ async def test_gpu_server_resilience_after_failure(gpu_source, gpu_consumer):
 
 
 @pytest.mark.level("gpu")
+async def test_gpu_transfer_state_dict(gpu_source, gpu_consumer):
+    """
+    Test GPU state_dict (dictionary of tensors) transfer with BroadcastWindow.
+
+    This test verifies:
+    - Multiple tensors can be transferred as a dict (like model.state_dict())
+    - All tensors flow through the same NCCL session
+    - Tensor values are preserved correctly
+
+    Architecture:
+    - Source publishes a state_dict with multiple tensors
+    - Consumer receives into a pre-allocated state_dict with same structure
+    - All tensors are broadcast in a single coordinated transfer
+    """
+    import uuid
+
+    service_name = gpu_source.service_name
+    group_id = f"{service_name}/state-dict-test-{uuid.uuid4().hex[:8]}"
+
+    # Define a realistic "model" state_dict (simulating a small transformer/MLP)
+    # ~40 tensors, ~10MB total - similar to a small production model
+    state_dict_spec = {}
+
+    # Embedding layer: 8192 vocab x 256 dim = 8MB
+    state_dict_spec["embedding.weight"] = {"shape": [8192, 256], "fill_value": 0.02}
+
+    # 8 transformer-like layers, each with:
+    # - attention weights (256x256) + bias
+    # - feedforward weights (256x512, 512x256) + biases
+    # - layer norm weights + biases
+    for i in range(8):
+        prefix = f"layers.{i}"
+        state_dict_spec[f"{prefix}.attention.query.weight"] = {"shape": [256, 256], "fill_value": 0.01}
+        state_dict_spec[f"{prefix}.attention.query.bias"] = {"shape": [256], "fill_value": 0.001}
+        state_dict_spec[f"{prefix}.attention.key.weight"] = {"shape": [256, 256], "fill_value": 0.01}
+        state_dict_spec[f"{prefix}.attention.key.bias"] = {"shape": [256], "fill_value": 0.001}
+        state_dict_spec[f"{prefix}.attention.value.weight"] = {"shape": [256, 256], "fill_value": 0.01}
+        state_dict_spec[f"{prefix}.attention.value.bias"] = {"shape": [256], "fill_value": 0.001}
+        state_dict_spec[f"{prefix}.attention.out.weight"] = {"shape": [256, 256], "fill_value": 0.01}
+        state_dict_spec[f"{prefix}.attention.out.bias"] = {"shape": [256], "fill_value": 0.001}
+        state_dict_spec[f"{prefix}.ffn.up.weight"] = {"shape": [512, 256], "fill_value": 0.01}
+        state_dict_spec[f"{prefix}.ffn.up.bias"] = {"shape": [512], "fill_value": 0.001}
+        state_dict_spec[f"{prefix}.ffn.down.weight"] = {"shape": [256, 512], "fill_value": 0.01}
+        state_dict_spec[f"{prefix}.ffn.down.bias"] = {"shape": [256], "fill_value": 0.001}
+        state_dict_spec[f"{prefix}.norm1.weight"] = {"shape": [256], "fill_value": 1.0}
+        state_dict_spec[f"{prefix}.norm1.bias"] = {"shape": [256], "fill_value": 0.0}
+        state_dict_spec[f"{prefix}.norm2.weight"] = {"shape": [256], "fill_value": 1.0}
+        state_dict_spec[f"{prefix}.norm2.bias"] = {"shape": [256], "fill_value": 0.0}
+
+    # Output head
+    state_dict_spec["output.weight"] = {"shape": [1000, 256], "fill_value": 0.01}
+    state_dict_spec["output.bias"] = {"shape": [1000], "fill_value": 0.0}
+
+    # Calculate total size for logging
+    total_params = sum(
+        spec["shape"][0] * (spec["shape"][1] if len(spec["shape"]) > 1 else 1) for spec in state_dict_spec.values()
+    )
+    total_mb = total_params * 4 / (1024 * 1024)  # float32 = 4 bytes
+    print(f"State dict: {len(state_dict_spec)} tensors, {total_params:,} params, {total_mb:.1f} MB")
+
+    # Calculate expected sums for verification
+    for name, spec in state_dict_spec.items():
+        numel = 1
+        for dim in spec["shape"]:
+            numel *= dim
+        spec["expected_sum"] = spec["fill_value"] * numel
+        spec["tolerance"] = abs(spec["expected_sum"]) * 0.01 + 0.1  # 1% + small absolute tolerance
+
+    # Create BroadcastWindow - 1 putter + 1 getter = world_size 2
+    broadcast_window = kt.BroadcastWindow(
+        group_id=group_id,
+        world_size=2,
+        timeout=30.0,
+    )
+
+    # Launch putter and getter concurrently
+    put_task = gpu_source.publish_state_dict_with_broadcast(
+        key=group_id,
+        state_dict_spec=state_dict_spec,
+        broadcast_window=broadcast_window.to_dict(),
+        async_=True,
+    )
+
+    get_task = gpu_consumer.get_state_dict_with_broadcast(
+        key=group_id,
+        state_dict_spec=state_dict_spec,
+        broadcast_window=broadcast_window.to_dict(),
+        async_=True,
+    )
+
+    put_result, get_result = await asyncio.gather(put_task, get_task)
+
+    # Verify put succeeded
+    assert put_result.get("success"), f"State dict put failed: {put_result.get('error')}"
+    assert put_result["num_tensors"] == len(state_dict_spec), "Wrong number of tensors published"
+
+    # Verify get succeeded
+    assert get_result.get("success"), f"State dict get failed: {get_result.get('error')}"
+    assert get_result["num_tensors"] == len(state_dict_spec), "Wrong number of tensors received"
+
+    # Verify all tensor values are correct
+    assert get_result["all_correct"], f"State dict values mismatch: {get_result.get('verification')}"
+
+
+@pytest.mark.level("gpu")
 async def test_gpu_transfer_many_to_many(gpu_source, gpu_consumer):
     """
     Test many-to-many GPU tensor transfer with coordinated BroadcastWindow.

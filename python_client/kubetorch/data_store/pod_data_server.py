@@ -582,6 +582,12 @@ class PodDataServer:
             elif command == "get_tensor":
                 # High-level: MDS lookup + NCCL receive
                 response = self._handle_get_tensor(message)
+            elif command == "put_tensors_broadcast":
+                # Batch: register multiple tensors + join broadcast as putter
+                response = self._handle_put_tensors_broadcast(message)
+            elif command == "get_tensors_broadcast":
+                # Batch: join broadcast as getter for multiple tensors
+                response = self._handle_get_tensors_broadcast(message)
             elif command == "ping":
                 response = {"status": "ok", "pid": os.getpid(), "tcp_port": self.tcp_port}
             elif command == "fs_broadcast_complete":
@@ -1437,17 +1443,17 @@ class PodDataServer:
 
     def _join_broadcast_via_websocket(
         self,
-        key: str,
+        tensors: List[dict],  # List of {"key": str, "shape": list, "dtype": str, "dest_ipc_handle": optional}
         role: str,  # "putter" or "getter"
-        tensor_shape: List[int],
-        tensor_dtype: str,
         broadcast_group_id: str,
         broadcast_timeout: float,
         broadcast_world_size: Optional[int],
-        dest_ipc_handle: Optional[dict] = None,  # For getters
     ) -> dict:
         """
         Join a broadcast group via MDS WebSocket.
+
+        Takes a list of tensors (can be single element for single tensor broadcasts).
+        Each tensor dict has: key, shape, dtype, and optionally dest_ipc_handle (for getters).
 
         Each client request creates its own WebSocket connection to MDS. The MDS
         aggregates participants from the same pod and assigns one coordinator per pod.
@@ -1465,54 +1471,42 @@ class PodDataServer:
                     future = pool.submit(
                         asyncio.run,
                         self._join_broadcast_via_websocket_async(
-                            key,
+                            tensors,
                             role,
-                            tensor_shape,
-                            tensor_dtype,
                             broadcast_group_id,
                             broadcast_timeout,
                             broadcast_world_size,
-                            dest_ipc_handle,
                         ),
                     )
                     return future.result()
             else:
                 return loop.run_until_complete(
                     self._join_broadcast_via_websocket_async(
-                        key,
+                        tensors,
                         role,
-                        tensor_shape,
-                        tensor_dtype,
                         broadcast_group_id,
                         broadcast_timeout,
                         broadcast_world_size,
-                        dest_ipc_handle,
                     )
                 )
         except RuntimeError:
             return asyncio.run(
                 self._join_broadcast_via_websocket_async(
-                    key,
+                    tensors,
                     role,
-                    tensor_shape,
-                    tensor_dtype,
                     broadcast_group_id,
                     broadcast_timeout,
                     broadcast_world_size,
-                    dest_ipc_handle,
                 )
             )
 
     async def _join_broadcast_via_websocket_async(
         self,
-        key: str,
+        tensors: List[dict],
         role: str,
-        tensor_shape: List[int],
-        tensor_dtype: str,
         broadcast_group_id: str,
         broadcast_timeout: float,
         broadcast_world_size: Optional[int],
-        dest_ipc_handle: Optional[dict] = None,
     ) -> dict:
         """Async implementation of broadcast group join."""
         import asyncio
@@ -1540,26 +1534,31 @@ class PodDataServer:
         else:
             ws_url = f"ws://{base_url}/ws/broadcast/{encoded_group_id}"
 
-        logger.info(f"Joining broadcast group '{broadcast_group_id}' as {role} for key '{key}'")
+        tensor_keys = [t["key"] for t in tensors]
+        logger.info(
+            f"Joining broadcast group '{broadcast_group_id}' as {role} " f"with {len(tensors)} tensor(s): {tensor_keys}"
+        )
 
         try:
             async with ws_connect(ws_url) as websocket:
-                # Build join message
+                # Build join message with tensors list (unified format)
                 join_msg = {
                     "action": "join",
-                    "key": key,
                     "role": role,
                     "pod_ip": pod_ip,
                     "pod_name": pod_name,
                     "timeout": broadcast_timeout,
                     "world_size": broadcast_world_size,
-                    "tensor_shape": tensor_shape,
-                    "tensor_dtype": tensor_dtype,
+                    "tensors": [
+                        {
+                            "key": t["key"],
+                            "shape": t.get("shape", []),
+                            "dtype": t.get("dtype", "torch.float32"),
+                            "dest_ipc_handle": t.get("dest_ipc_handle"),  # For getters
+                        }
+                        for t in tensors
+                    ],
                 }
-
-                # For getters, include destination IPC handle
-                if role == "getter" and dest_ipc_handle is not None:
-                    join_msg["dest_ipc_handle"] = dest_ipc_handle
 
                 await websocket.send(json.dumps(join_msg))
 
@@ -1732,11 +1731,17 @@ class PodDataServer:
 
         # Step 2: If broadcast, join via WebSocket; otherwise publish to MDS
         if broadcast:
+            # Use unified tensors list format (single tensor as list of one)
+            tensors = [
+                {
+                    "key": key,
+                    "shape": list(shape),
+                    "dtype": dtype,
+                }
+            ]
             return self._join_broadcast_via_websocket(
-                key=key,
+                tensors=tensors,
                 role="putter",
-                tensor_shape=list(shape),
-                tensor_dtype=dtype,
                 broadcast_group_id=broadcast["group_id"],
                 broadcast_timeout=broadcast.get("timeout", 600.0),
                 broadcast_world_size=broadcast.get("world_size"),
@@ -1767,15 +1772,21 @@ class PodDataServer:
 
         # If broadcast, join via WebSocket
         if broadcast:
+            # Use unified tensors list format (single tensor as list of one)
+            tensors = [
+                {
+                    "key": key,
+                    "shape": list(shape),
+                    "dtype": dtype,
+                    "dest_ipc_handle": dest_ipc_handle_serialized,  # For getters
+                }
+            ]
             return self._join_broadcast_via_websocket(
-                key=key,
+                tensors=tensors,
                 role="getter",
-                tensor_shape=list(shape),
-                tensor_dtype=dtype,
                 broadcast_group_id=broadcast["group_id"],
                 broadcast_timeout=broadcast.get("timeout", 600.0),
                 broadcast_world_size=broadcast.get("world_size"),
-                dest_ipc_handle=dest_ipc_handle_serialized,  # Pass serialized for WebSocket
             )
 
         # Point-to-point: Lookup source from MDS
@@ -1832,6 +1843,92 @@ class PodDataServer:
         except Exception as e:
             logger.error(f"get_tensor failed for '{key}': {e}")
             return {"status": "error", "error": str(e)}
+
+    # ==================== Batch Tensor Methods for State Dict ====================
+
+    def _handle_put_tensors_broadcast(self, message: dict) -> dict:
+        """
+        Handle batch put_tensors_broadcast command.
+
+        Registers multiple tensors and joins broadcast as putter.
+        All tensors are transferred in a single NCCL session.
+        """
+        tensor_infos = message["tensors"]
+        broadcast = message["broadcast"]
+        pid = message.get("pid", 0)
+
+        # Step 1: Register all tensors locally
+        for info in tensor_infos:
+            key = info["key"]
+            ipc_handle = _deserialize_ipc_handle(info["ipc_handle"])
+            shape = tuple(info["shape"])
+            dtype = info["dtype"]
+            device = info["device"]
+
+            with self._lock:
+                self._registered[key] = RegisteredTensor(
+                    key=key,
+                    ipc_handle=ipc_handle,
+                    shape=shape,
+                    dtype=dtype,
+                    device=device,
+                    pid=pid,
+                )
+
+                # Track PID for cleanup
+                if pid not in self._pid_keys:
+                    self._pid_keys[pid] = []
+                if key not in self._pid_keys[pid]:
+                    self._pid_keys[pid].append(key)
+
+        logger.info(f"Registered {len(tensor_infos)} tensors for broadcast")
+
+        # Step 2: Join broadcast via WebSocket with ALL tensors (unified method)
+        tensors = [
+            {
+                "key": t["key"],
+                "shape": t.get("shape", []),
+                "dtype": t.get("dtype", "torch.float32"),
+            }
+            for t in tensor_infos
+        ]
+        return self._join_broadcast_via_websocket(
+            tensors=tensors,
+            role="putter",
+            broadcast_group_id=broadcast["group_id"],
+            broadcast_timeout=broadcast.get("timeout", 600.0),
+            broadcast_world_size=broadcast.get("world_size"),
+        )
+
+    def _handle_get_tensors_broadcast(self, message: dict) -> dict:
+        """
+        Handle batch get_tensors_broadcast command.
+
+        Joins broadcast as getter for multiple tensors.
+        All tensors are received in a single NCCL session.
+        """
+        tensor_infos = message["tensors"]
+        broadcast = message["broadcast"]
+
+        logger.info(f"Joining broadcast to receive {len(tensor_infos)} tensors")
+
+        # Join broadcast via WebSocket with ALL tensors (unified method)
+        tensors = [
+            {
+                "key": t["key"],
+                "shape": t.get("shape", []),
+                "dtype": t.get("dtype", "torch.float32"),
+                "dest_ipc_handle": t.get("dest_ipc_handle"),  # For getters
+            }
+            for t in tensor_infos
+        ]
+        return self._join_broadcast_via_websocket(
+            tensors=tensors,
+            role="getter",
+            broadcast_group_id=broadcast["group_id"],
+            broadcast_timeout=broadcast.get("timeout", 600.0),
+            broadcast_world_size=broadcast.get("world_size"),
+        )
 
     # ==================== Filesystem Broadcast Methods ====================
 
@@ -2282,6 +2379,116 @@ class PodDataServerClient:
         else:
             client_timeout = max(120.0, (nccl_timeout or 60) + 30)
         return self._send_message(message, timeout=client_timeout)
+
+    # ==================== Batch Tensor Methods for State Dict ====================
+
+    def put_tensors_broadcast(
+        self,
+        keys: List[str],
+        tensors: List,
+        broadcast: dict,
+        pid: Optional[int] = None,
+    ) -> dict:
+        """
+        Batch put: Register multiple tensors and join broadcast as putter.
+
+        All tensors are transferred in a single NCCL session for efficiency.
+        Used for state_dict broadcasts where multiple tensors need to be sent together.
+
+        Args:
+            keys: List of storage keys (one per tensor)
+            tensors: List of CUDA tensors to publish
+            broadcast: Broadcast config dict with:
+                - group_id: Broadcast group identifier (required)
+                - timeout: Timeout for quorum formation (default 600s)
+                - world_size: Expected number of participants (optional)
+            pid: PID of the registering process (defaults to current)
+
+        Returns:
+            Server response dict with broadcast results
+        """
+        _get_torch()
+
+        if len(keys) != len(tensors):
+            raise ValueError(f"keys and tensors must have same length: {len(keys)} vs {len(tensors)}")
+
+        # Build tensor info list
+        tensor_infos = []
+        for key, tensor in zip(keys, tensors):
+            if not tensor.is_cuda:
+                raise ValueError(f"Tensor for key '{key}' must be on a CUDA device")
+
+            ipc_handle = _get_ipc_handle(tensor)
+            tensor_infos.append(
+                {
+                    "key": key,
+                    "ipc_handle": _serialize_ipc_handle(ipc_handle),
+                    "shape": list(tensor.shape),
+                    "dtype": str(tensor.dtype),
+                    "device": tensor.device.index,
+                }
+            )
+
+        message = {
+            "command": "put_tensors_broadcast",
+            "tensors": tensor_infos,
+            "broadcast": broadcast,
+            "pid": pid or os.getpid(),
+        }
+
+        # Longer timeout for broadcast operations
+        timeout = broadcast.get("timeout", 600.0) + 60.0
+        return self._send_message(message, timeout=timeout)
+
+    def get_tensors_broadcast(
+        self,
+        tensors: List[tuple],  # List of (key, dest_tensor)
+        broadcast: dict,
+    ) -> dict:
+        """
+        Batch get: Join broadcast as getter for multiple tensors.
+
+        All tensors are received in a single NCCL session for efficiency.
+        Used for state_dict broadcasts where multiple tensors need to be received together.
+
+        Args:
+            tensors: List of (key, dest_tensor) tuples
+            broadcast: Broadcast config dict with:
+                - group_id: Broadcast group identifier (required)
+                - timeout: Timeout for quorum formation (default 600s)
+                - world_size: Expected number of participants (optional)
+
+        Returns:
+            Server response dict with broadcast results
+        """
+        _get_torch()
+
+        # Build tensor info list
+        tensor_infos = []
+        for key, dest_tensor in tensors:
+            if not dest_tensor.is_cuda:
+                raise ValueError(f"Destination tensor for key '{key}' must be on a CUDA device")
+
+            ipc_handle = _get_ipc_handle(dest_tensor)
+            tensor_infos.append(
+                {
+                    "key": key,
+                    "dest_ipc_handle": _serialize_ipc_handle(ipc_handle),
+                    "shape": list(dest_tensor.shape),
+                    "dtype": str(dest_tensor.dtype),
+                    "device": dest_tensor.device.index,
+                }
+            )
+
+        message = {
+            "command": "get_tensors_broadcast",
+            "tensors": tensor_infos,
+            "broadcast": broadcast,
+        }
+
+        # Longer timeout for broadcast operations
+        timeout = broadcast.get("timeout", 600.0) + 60.0
+        return self._send_message(message, timeout=timeout)
 
     # ==================== Filesystem Broadcast Methods ====================
 

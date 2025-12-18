@@ -128,17 +128,32 @@ Client for the metadata server API.
 GPU tensor transfer via NCCL.
 
 **GPUTransferManager class:**
-- `publish()` - Register tensor and publish via GPU Data Server
-- `retrieve()` - Receive tensor via GPU Data Server
+- `publish()` - Register tensor(s) and publish via GPU Data Server
+- `retrieve()` - Receive tensor(s) via GPU Data Server
+- `_publish_packed()` - Pack all tensors into single buffer for broadcast
+- `_retrieve_packed()` - Receive packed buffer and unpack into destination tensors
 
-**Transfer flow:**
+**Single tensor transfer flow:**
 1. Publish: Call `gpu_client.put_tensor()` which registers IPC handle and publishes to MDS
 2. Retrieve: Call `gpu_client.get_tensor()` which queries MDS and performs NCCL transfer
 
+**State dict (multi-tensor) transfer flow:**
+1. Publish: Flatten dict, register all tensors, join broadcast with ALL tensor keys
+2. Retrieve: Join broadcast with ALL destination tensors, receive in single NCCL session
+3. Uses `put_tensors_broadcast()` / `get_tensors_broadcast()` batch methods
+
 **BroadcastWindow support:**
-- Pass broadcast config to `put_tensor()`/`get_tensor()`
+- Pass broadcast config to batch methods
 - GPU Data Server handles WebSocket coordination with MDS
 - One coordinator per pod (the GPU Data Server itself)
+- All tensors transferred in same NCCL process group (no repeated init/destroy)
+
+**Packed mode (`broadcast.pack=True`):**
+- Concatenates all tensors into single flat buffer before broadcast
+- Single NCCL broadcast call for maximum efficiency
+- Receiver unpacks into destination tensors in sorted key order
+- Requires all tensors to have same dtype
+- Validates structure match at receive time (offset == packed.numel())
 
 ### `pod_data_server.py`
 Per-node server process for GPU transfers and filesystem broadcast coordination.
@@ -156,9 +171,12 @@ Per-node server process for GPU transfers and filesystem broadcast coordination.
 **PodDataServerClient class:**
 - Unix socket communication with server (local)
 - TCP communication with remote pod data servers (inter-pod)
-- High-level API for GPU:
+- High-level API for GPU (single tensor):
   - `put_tensor()` - Register + MDS publish (+ broadcast coordination if specified)
   - `get_tensor()` - MDS lookup + NCCL receive (+ broadcast coordination if specified)
+- High-level API for GPU (batch/state_dict):
+  - `put_tensors_broadcast()` - Register multiple tensors + join broadcast as putter
+  - `get_tensors_broadcast()` - Join broadcast as getter for multiple tensors
 - High-level API for filesystem broadcasts:
   - `fs_broadcast_complete()` - Notify local server that download finished
   - `fs_broadcast_get_path()` - Request local path from remote parent's server
@@ -178,6 +196,7 @@ Core type definitions.
   - `ips` - Wait for specific pods
   - `group_id` - Explicit group identifier
   - `fanout` - Tree fanout (default: 2 for GPU, ~50 for filesystem)
+  - `pack` - For GPU state_dicts: pack all tensors into single buffer (default: False)
 
 ### `key_utils.py`
 Key parsing utilities.
@@ -299,6 +318,66 @@ NCCL Broadcast
      ▼
 Tensor data transferred via NCCL
 ```
+
+### GPU State Dict Transfer
+
+State dicts (dictionaries of tensors like `model.state_dict()`) are supported with efficient multi-tensor transfers:
+
+```
+Trainer Pod                             Inference Pod
+───────────                             ─────────────
+model = MyModel().cuda()                model = MyModel().cuda()
+state_dict = model.state_dict()         dest = model.state_dict()
+# {"layer1.weight": tensor,             # Pre-allocated with same structure
+#  "layer1.bias": tensor, ...}
+
+kt.put("checkpoint",                    kt.get("checkpoint",
+       data=state_dict,                        dest=dest,
+       broadcast=BroadcastWindow(              broadcast=BroadcastWindow(
+         world_size=2))                          world_size=2))
+     │                                       │
+     ▼                                       ▼
+Flatten dict to sorted keys:            Flatten dict to sorted keys:
+["layer1.bias", "layer1.weight", ...]   ["layer1.bias", "layer1.weight", ...]
+     │                                       │
+     ▼                                       ▼
+Register all tensors with               Join broadcast with all
+GPU Data Server                         destination tensors
+     │                                       │
+     ▼                                       ▼
+Join broadcast via WebSocket            Join broadcast via WebSocket
+with ALL tensor keys                    with ALL tensor keys + IPC handles
+     │                                       │
+     └───────────► MDS ◄─────────────────────┘
+                    │
+                    ▼
+             Build manifest with
+             ALL tensors for each pod
+                    │
+                    ▼
+             Send "ready" with sends/receives
+                    │
+     ┌──────────────┴──────────────┐
+     ▼                             ▼
+Execute NCCL for                   Execute NCCL for
+all sends (same process group)     all receives (same process group)
+```
+
+**Default mode (async overlap):**
+- Each tensor is broadcast separately but within same NCCL process group
+- NCCL internally pipelines overlapping broadcasts
+- Supports mixed dtypes
+
+**Packed mode (`broadcast.pack=True`):**
+```python
+kt.put("checkpoint", data=state_dict, broadcast=BroadcastWindow(world_size=2, pack=True))
+kt.get("checkpoint", dest=dest, broadcast=BroadcastWindow(world_size=2, pack=True))
+```
+- Concatenates all tensors into single flat buffer
+- Single NCCL broadcast call
+- Maximum efficiency for large state_dicts
+- Requires same dtype throughout
+- Validates structure match at receive time
 
 ### GPU Broadcast (BroadcastWindow)
 
