@@ -317,216 +317,6 @@ def delete_knative_service(
                 console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
 
 
-def delete_pool(
-    name: str,
-    namespace: str,
-    console: "Console" = None,
-):
-    """Delete a self-register pool from controller database."""
-    controller_client = kubetorch.globals.controller_client()
-    try:
-        controller_client.delete_pool(
-            name=name,
-            namespace=namespace,
-        )
-        if console:
-            console.print(f"✓ Deleted resource [blue]{name}[/blue]")
-    except Exception as e:
-        if http_not_found(e):
-            if console:
-                console.print(f"[yellow]Note:[/yellow] Resource {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete resource {name}: {e}")
-
-
-def delete_deployment(
-    name: str,
-    namespace: str,
-    console: "Console" = None,
-):
-    """Delete a Deployment and its associated service."""
-    controller_client = kubetorch.globals.controller_client()
-    try:
-        # Delete the Deployment
-        controller_client.delete_deployment(
-            name=name,
-            namespace=namespace,
-        )
-        if console:
-            console.print(f"✓ Deleted deployment [blue]{name}[/blue]")
-    except Exception as e:
-        if http_not_found(e):
-            if console:
-                console.print(f"[yellow]Note:[/yellow] Deployment {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete deployment {name}: {e}")
-
-    # Delete the associated service (regular service, not headless)
-    try:
-        controller_client.delete_service(
-            namespace=namespace,
-            name=name,
-        )
-        if console:
-            console.print(f"✓ Deleted service [blue]{name}[/blue]")
-    except Exception as e:
-        if http_not_found(e):
-            if console:
-                console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
-
-    try:
-        headless = controller_client.get_service(namespace=namespace, name=f"{name}-headless", ignore_not_found=True)
-    except Exception:
-        headless = None
-
-    if headless:
-        try:
-            controller_client.delete_service(
-                namespace=namespace,
-                name=f"{name}-headless",
-            )
-            if console:
-                console.print(f"✓ Deleted headless service [blue]{name}-headless[/blue]")
-        except Exception as e:
-            if not http_not_found(e) and console:
-                console.print(f"[red]Error:[/red] Failed to delete headless service {name}-headless: {e}")
-
-
-def delete_raycluster(
-    name: str,
-    namespace: str,
-    console: "Console" = None,
-    force: bool = False,
-):
-    """Delete a RayCluster and its associated service."""
-
-    grace_period_seconds, propagation_policy = None, None
-    if force:
-        grace_period_seconds = 0
-        propagation_policy = "Foreground"
-
-    try:
-        # Delete the RayCluster
-        kubetorch.globals.controller_client().delete_namespaced_custom_object(
-            group="ray.io",
-            version="v1",
-            namespace=namespace,
-            plural="rayclusters",
-            name=name,
-            grace_period_seconds=grace_period_seconds,
-            propagation_policy=propagation_policy,
-        )
-        if console:
-            console.print(f"✓ Deleted RayCluster [blue]{name}[/blue]")
-    except Exception as e:
-        if http_not_found(e):
-            if console:
-                console.print(f"[yellow]Note:[/yellow] RayCluster {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete RayCluster {name}: {e}")
-
-    # Delete the associated service (created alongside RayCluster)
-    try:
-        kubetorch.globals.controller_client().delete_service(
-            namespace=namespace,
-            name=name,
-        )
-        if console:
-            console.print(f"✓ Deleted service [blue]{name}[/blue]")
-    except Exception as e:
-        if http_not_found(e):
-            if console:
-                console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
-
-    # Delete the headless service for Ray pod discovery
-    try:
-        kubetorch.globals.controller_client().delete_service(
-            namespace=namespace,
-            name=f"{name}-headless",
-        )
-        if console:
-            console.print(f"✓ Deleted headless service [blue]{name}-headless[/blue]")
-    except Exception as e:
-        if http_not_found(e):
-            # This is normal for older Ray clusters without headless services
-            pass
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete headless service {name}-headless: {e}")
-
-
-def delete_trainjob(
-    name: str,
-    namespace: str,
-    group: str,
-    plural: str,
-    console: "Console" = None,
-    force: bool = False,
-):
-    """Delete a manifest and its associated service."""
-
-    grace_period_seconds, propagation_policy = None, None
-    if force:
-        grace_period_seconds = 0
-        propagation_policy = "Foreground"
-
-    manifest_type = plural[:-1]
-
-    try:
-        # Delete the manifest
-        kubetorch.globals.controller_client().delete_namespaced_custom_object(
-            group=group,
-            version="v1",
-            namespace=namespace,
-            plural=plural,
-            name=name,
-            grace_period_seconds=grace_period_seconds,
-            propagation_policy=propagation_policy,
-        )
-        if console:
-            console.print(f"✓ Deleted {manifest_type} [blue]{name}[/blue]")
-    except Exception as e:
-        if http_not_found(e):
-            if console:
-                console.print(f"[yellow]Note:[/yellow] {manifest_type} {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete {manifest_type} {name}: {e}")
-
-    # Delete the associated services (created alongside the trainjob)
-    associated_services = kubetorch.globals.controller_client().list_services(
-        namespace=namespace, label_selector=f"kubetorch.com/service={name}"
-    )
-    associated_services = associated_services.get("items", [])
-    if len(associated_services) > 0:
-        if console:
-            console.print(f"Deleting services associated with [reset]{name}")
-        for service in associated_services:
-            associated_service_name = service["metadata"]["name"]
-            try:
-                kubetorch.globals.controller_client().delete_service(
-                    namespace=namespace,
-                    name=associated_service_name,
-                )
-                if console:
-                    console.print(f"✓ Deleted service [blue]{associated_service_name}[/blue]")
-            except Exception as e:
-                if http_not_found(e):
-                    pass
-                else:
-                    if console:
-                        console.print(f"[red]Error:[/red] Failed to delete {associated_service_name}: {e}")
-
-
 def delete_resources_for_service(
     configmaps: List[str],
     name: str,
@@ -534,42 +324,42 @@ def delete_resources_for_service(
     namespace: str = None,
     console: "Console" = None,
     force: bool = False,
-    group: str = None,
 ):
-    """Delete service resources based on service type."""
-    # Delete the main service (Knative, Deployment, or RayCluster)
-    if service_type == "self-register":
-        # For self-register pools, delete the resource from controller database
-        # Do NOT delete the K8s deployment - user manages their own BYO deployment
-        delete_pool(
-            name=name,
-            namespace=namespace,
-            console=console,
-        )
-    elif service_type == "deployment":
-        delete_deployment(
-            name=name,
-            namespace=namespace,
-            console=console,
-        )
+    """Delete the relevant k8s resource(s) based on service type.
+
+    Uses the same teardown path as the Python API (module.teardown() -> service_manager.teardown_service()).
+    """
+    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+
+    # Construct the appropriate service manager based on service type
+    if service_type == "deployment":
+        from kubetorch.serving.deployment_service_manager import DeploymentServiceManager
+
+        service_manager = DeploymentServiceManager(namespace=namespace)
+
     elif service_type == "raycluster":
-        delete_raycluster(
-            name=name,
-            namespace=namespace,
-            console=console,
-            force=force,
-        )
+        from kubetorch.serving.raycluster_service_manager import RayClusterServiceManager
+
+        service_manager = RayClusterServiceManager(namespace=namespace)
+
     elif service_type == "knative":
-        delete_knative_service(
-            name=name,
-            namespace=namespace,
-            console=console,
-            force=force,
-        )
-    elif group:  # service is a training job
-        delete_trainjob(
-            name=name, namespace=namespace, console=console, force=force, group=group, plural=f"{service_type}s"
-        )
+        from kubetorch.serving.knative_service_manager import KnativeServiceManager
+
+        service_manager = KnativeServiceManager(namespace=namespace)
+
+    elif service_type in [k.lower() for k in TrainJobServiceManager.SUPPORTED_KINDS]:
+        service_manager = TrainJobServiceManager(namespace=namespace, kind=service_type)
+
+    else:
+        msg = f"Unknown service type: {service_type}, skipping teardown"
+        if console:
+            console.print(f"[yellow]{msg}[/yellow]")
+        else:
+            logger.warning(msg)
+        return
+
+    # Use the same teardown path as the Python API to tear down
+    service_manager.teardown_service(service_name=name, console=console, force=force)
 
     # Delete configmaps
     if configmaps:

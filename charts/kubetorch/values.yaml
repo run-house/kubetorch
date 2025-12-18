@@ -55,8 +55,8 @@ dataStore:
 
 controller:
   image: ghcr.io/run-house/kubetorch-controller
-  tag: deploy-endpoint # TODO: flip to main
-  imagePullPolicy: Always
+  tag: support-reload-by-selector # TODO: flip to main
+  imagePullPolicy: Always # TODO: use IfNotPresent
 
   servicePort: 8080  # Port the controller service is exposed on (via nginx)
   port: 8081  # Internal port the controller listens on
