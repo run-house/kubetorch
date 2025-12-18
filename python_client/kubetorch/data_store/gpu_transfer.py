@@ -212,11 +212,6 @@ class GPUTransferManager:
         # Get GPU data server client (starts server if needed)
         gpu_client = self._get_gpu_server_client()
 
-        # Determine if this is a state dict
-        is_state_dict = len(tensors_to_register) > 1 or (
-            len(tensors_to_register) == 1 and tensors_to_register[0][0] != ""
-        )
-
         # Handle packed mode for broadcasts
         if broadcast is not None and broadcast.pack and len(tensors_to_register) > 1:
             return self._publish_packed(
@@ -265,26 +260,27 @@ class GPUTransferManager:
 
             return response
 
-        # No broadcast - just publish to MDS
-        # Publish the parent key to MDS with tensor_keys metadata
-        tensor_keys = [k for k, _ in tensors_to_register] if is_state_dict else None
-        response = gpu_client.put_tensor(
-            key=key,
-            tensor=tensors_to_register[0][1] if len(tensors_to_register) == 1 else tensors_to_register[-1][1],
-            is_state_dict=is_state_dict,
-            tensor_keys=tensor_keys,
-            broadcast=None,
-        )
-
-        # Store reference for backward compatibility
-        self._pending_data[key] = {"data": data, "nccl_port": nccl_port}
+        # No broadcast - use put_tensor for each tensor (registers + publishes to MDS)
+        for tensor_key, tensor in tensors_to_register:
+            full_key = f"{key}/{tensor_key}" if tensor_key else key
+            response = gpu_client.put_tensor(
+                key=full_key,
+                tensor=tensor,
+                is_state_dict=False,
+                broadcast=None,
+            )
+            if response.get("status") != "ok":
+                raise RuntimeError(f"Failed to publish tensor '{full_key}': {response.get('error')}")
 
         if verbose:
-            if len(tensors_to_register) == 1 and tensors_to_register[0][0] == "":
-                tensor = tensors_to_register[0][1]
+            if len(tensors_to_register) == 1:
+                _, tensor = tensors_to_register[0]
                 logger.info(f"Published GPU tensor '{key}': shape={list(tensor.shape)}, dtype={tensor.dtype}")
             else:
                 logger.info(f"Published GPU state dict '{key}': {len(tensors_to_register)} tensors")
+
+        # Store reference for backward compatibility
+        self._pending_data[key] = {"data": data, "nccl_port": nccl_port}
 
         return None
 
@@ -461,21 +457,13 @@ class GPUTransferManager:
 
             return response
 
-        # Point-to-point: Use high-level get_tensor API for each tensor
-        # GPU Data Server handles MDS lookup + NCCL
-        for tensor_key, tensor in tensors_to_receive:
-            full_key = f"{key}/{tensor_key}" if tensor_key else key
+        # Point-to-point: Use unified get_tensor (handles both single and multiple tensors)
+        keys = [f"{key}/{tensor_key}" if tensor_key else key for tensor_key, _ in tensors_to_receive]
+        tensors = [tensor for _, tensor in tensors_to_receive]
 
-            if verbose:
-                logger.info(f"Receiving tensor '{full_key}': shape={list(tensor.shape)}")
-
-            response = gpu_client.get_tensor(
-                key=full_key,
-                dest_tensor=tensor,
-            )
-
-            if response.get("status") != "ok":
-                raise RuntimeError(f"Failed to receive tensor '{full_key}': {response.get('error')}")
+        response = gpu_client.get_tensor(keys=keys, dest_tensors=tensors)
+        if response.get("status") != "ok":
+            raise RuntimeError(f"Failed to receive '{key}': {response.get('error')}")
 
         if verbose:
             if len(tensors_to_receive) == 1:
