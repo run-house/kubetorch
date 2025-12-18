@@ -180,6 +180,8 @@ class GPUTransferManager:
             broadcast: Optional BroadcastWindow for coordinated multi-party transfer.
                 When provided, this call blocks until all participants join the quorum,
                 then performs the NCCL transfer as part of a unified process group.
+                For state_dicts, all tensors are transferred in the same NCCL session.
+                Use broadcast.pack=True for maximum efficiency (single packed buffer).
             verbose: Show detailed progress
 
         Returns:
@@ -191,7 +193,7 @@ class GPUTransferManager:
 
         torch = _get_torch()
 
-        # Validate data is on GPU
+        # Validate data is on GPU and flatten if dict
         if isinstance(data, torch.Tensor):
             if not data.is_cuda:
                 raise ValueError("Tensor must be on a CUDA device")
@@ -199,7 +201,7 @@ class GPUTransferManager:
         elif isinstance(data, dict):
             flat = _flatten_state_dict(data)
             tensors_to_register = []
-            for k, v in flat.items():
+            for k, v in sorted(flat.items()):  # Sort for deterministic ordering
                 if isinstance(v, torch.Tensor):
                     if not v.is_cuda:
                         raise ValueError(f"Tensor at '{k}' must be on a CUDA device")
@@ -214,46 +216,68 @@ class GPUTransferManager:
         is_state_dict = len(tensors_to_register) > 1 or (
             len(tensors_to_register) == 1 and tensors_to_register[0][0] != ""
         )
-        tensor_keys = [k for k, _ in tensors_to_register] if len(tensors_to_register) > 1 else None
 
-        # Use high-level put_tensor API - GPU Data Server handles registration + MDS publish
-        # For broadcast, the GPU Data Server joins the broadcast group via WebSocket
-        last_response = None
-        for i, (tensor_key, tensor) in enumerate(tensors_to_register):
+        # Handle packed mode for broadcasts
+        if broadcast is not None and broadcast.pack and len(tensors_to_register) > 1:
+            return self._publish_packed(
+                key=key,
+                tensors=tensors_to_register,
+                broadcast=broadcast,
+                gpu_client=gpu_client,
+                verbose=verbose,
+            )
+
+        # Build list of all tensor info
+        all_tensor_info = []
+        for tensor_key, tensor in tensors_to_register:
             full_key = f"{key}/{tensor_key}" if tensor_key else key
-            is_last = i == len(tensors_to_register) - 1
-
-            # Build broadcast config for the last tensor (when broadcast is specified)
-            broadcast_config = None
-            if is_last and broadcast is not None:
-                broadcast_config = {
-                    "group_id": broadcast.group_id,
-                    "timeout": broadcast.timeout or 600.0,
-                    "world_size": broadcast.world_size,
+            all_tensor_info.append(
+                {
+                    "key": full_key,
+                    "tensor_key": tensor_key,
+                    "tensor": tensor,
                 }
+            )
 
-            # For state dicts, only publish to MDS on the last tensor
-            # For single tensors, publish immediately
-            # Broadcast coordination happens via GPU Data Server when broadcast_config is set
-            response = gpu_client.put_tensor(
-                key=full_key,
-                tensor=tensor,
-                is_state_dict=is_state_dict if is_last else False,
-                tensor_keys=tensor_keys if is_last else None,
+        # Broadcast mode: use unified put_tensors_broadcast for all cases (1 or N tensors)
+        if broadcast is not None:
+            broadcast_config = {
+                "group_id": broadcast.group_id,
+                "timeout": broadcast.timeout or 600.0,
+                "world_size": broadcast.world_size,
+            }
+
+            # Single path handles both single tensor and multi-tensor broadcasts
+            response = gpu_client.put_tensors_broadcast(
+                keys=[info["key"] for info in all_tensor_info],
+                tensors=[info["tensor"] for info in all_tensor_info],
                 broadcast=broadcast_config,
             )
 
             if response.get("status") != "ok":
-                raise RuntimeError(f"Failed to publish tensor '{full_key}': {response.get('error')}")
+                raise RuntimeError(f"Failed to broadcast '{key}': {response.get('error')}")
 
-            if is_last:
-                last_response = response
+            # Store reference for backward compatibility
+            self._pending_data[key] = {"data": data, "nccl_port": nccl_port}
 
-        # Store reference for backward compatibility with tests
-        self._pending_data[key] = {
-            "data": data,
-            "nccl_port": nccl_port,
-        }
+            if verbose:
+                logger.info(f"Published GPU data '{key}': {len(tensors_to_register)} tensor(s) via broadcast")
+
+            return response
+
+        # No broadcast - just publish to MDS
+        # Publish the parent key to MDS with tensor_keys metadata
+        tensor_keys = [k for k, _ in tensors_to_register] if is_state_dict else None
+        response = gpu_client.put_tensor(
+            key=key,
+            tensor=tensors_to_register[0][1] if len(tensors_to_register) == 1 else tensors_to_register[-1][1],
+            is_state_dict=is_state_dict,
+            tensor_keys=tensor_keys,
+            broadcast=None,
+        )
+
+        # Store reference for backward compatibility
+        self._pending_data[key] = {"data": data, "nccl_port": nccl_port}
 
         if verbose:
             if len(tensors_to_register) == 1 and tensors_to_register[0][0] == "":
@@ -262,11 +286,80 @@ class GPUTransferManager:
             else:
                 logger.info(f"Published GPU state dict '{key}': {len(tensors_to_register)} tensors")
 
-        # Return broadcast result if broadcast was specified
-        if broadcast is not None and last_response is not None:
-            return last_response
-
         return None
+
+    def _publish_packed(
+        self,
+        key: str,
+        tensors: List[tuple],
+        broadcast: "BroadcastWindow",
+        gpu_client,
+        verbose: bool = False,
+    ) -> Dict:
+        """
+        Publish state_dict using packed mode - concatenate all tensors into one buffer.
+
+        This provides maximum efficiency by using a single NCCL broadcast for all tensors.
+        Requires all participants to have identical dict structure.
+        """
+        torch = _get_torch()
+
+        # Get sorted tensor keys and values
+        sorted_keys = [k for k, _ in tensors]  # Already sorted in publish()
+        sorted_tensors = [t for _, t in tensors]
+
+        # Validate all tensors have same dtype (required for packing)
+        dtypes = set(t.dtype for t in sorted_tensors)
+        if len(dtypes) > 1:
+            raise ValueError(
+                f"pack=True requires all tensors to have the same dtype, "
+                f"but found: {dtypes}. Use pack=False for mixed dtypes."
+            )
+        dtype = sorted_tensors[0].dtype
+
+        # Pack all tensors into a single buffer
+        packed = torch.cat([t.flatten().to(dtype) for t in sorted_tensors])
+
+        if verbose:
+            logger.info(
+                f"Packed {len(sorted_tensors)} tensors into buffer: " f"shape={list(packed.shape)}, dtype={dtype}"
+            )
+
+        # Create packed key
+        packed_key = f"{key}/__packed__"
+
+        # Register the packed tensor
+        response = gpu_client.put_tensor(
+            key=packed_key,
+            tensor=packed,
+            is_state_dict=False,
+            broadcast=None,
+        )
+        if response.get("status") != "ok":
+            raise RuntimeError(f"Failed to register packed tensor: {response.get('error')}")
+
+        # Join broadcast with the packed tensor
+        broadcast_config = {
+            "group_id": broadcast.group_id,
+            "timeout": broadcast.timeout or 600.0,
+            "world_size": broadcast.world_size,
+            "pack": True,
+            "tensor_keys": sorted_keys,  # Send metadata about original structure
+        }
+
+        response = gpu_client.put_tensors_broadcast(
+            keys=[packed_key],
+            tensors=[packed],
+            broadcast=broadcast_config,
+        )
+
+        if response.get("status") != "ok":
+            raise RuntimeError(f"Failed to broadcast packed tensor: {response.get('error')}")
+
+        if verbose:
+            logger.info(f"Published packed GPU state dict '{key}': {len(tensors)} tensors in 1 broadcast")
+
+        return response
 
     def retrieve(
         self,
@@ -289,6 +382,8 @@ class GPUTransferManager:
             broadcast: Optional BroadcastWindow for coordinated multi-party transfer.
                 When provided, this call blocks until all participants join the quorum,
                 then performs the NCCL transfer as part of a unified process group.
+                For state_dicts, all tensors are received in the same NCCL session.
+                Use broadcast.pack=True for maximum efficiency (single packed buffer).
             verbose: Show detailed progress
 
         Returns:
@@ -300,7 +395,7 @@ class GPUTransferManager:
 
         torch = _get_torch()
 
-        # Validate destination is on GPU
+        # Validate destination is on GPU and flatten if dict
         if isinstance(dest, torch.Tensor):
             if not dest.is_cuda:
                 raise ValueError("Destination tensor must be on a CUDA device")
@@ -308,7 +403,7 @@ class GPUTransferManager:
         elif isinstance(dest, dict):
             flat = _flatten_state_dict(dest)
             tensors_to_receive = []
-            for k, v in flat.items():
+            for k, v in sorted(flat.items()):  # Sort for deterministic ordering
                 if isinstance(v, torch.Tensor):
                     if not v.is_cuda:
                         raise ValueError(f"Tensor at '{k}' must be on a CUDA device")
@@ -319,34 +414,50 @@ class GPUTransferManager:
         # Get GPU data server client (starts server if needed)
         gpu_client = self._get_gpu_server_client()
 
-        # If broadcast window specified, join via GPU Data Server's high-level API
-        # GPU Data Server handles WebSocket coordination internally
+        # Handle packed mode for broadcasts
+        if broadcast is not None and broadcast.pack and len(tensors_to_receive) > 1:
+            return self._retrieve_packed(
+                key=key,
+                tensors=tensors_to_receive,
+                broadcast=broadcast,
+                gpu_client=gpu_client,
+                verbose=verbose,
+            )
+
+        # Broadcast mode: use unified get_tensors_broadcast for all cases (1 or N tensors)
         if broadcast is not None:
-            # Build broadcast config
             broadcast_config = {
                 "group_id": broadcast.group_id,
                 "timeout": broadcast.timeout or 600.0,
                 "world_size": broadcast.world_size,
             }
 
-            # For broadcast, use the first tensor (consistent with previous behavior)
-            tensor_key, tensor = tensors_to_receive[0]
-            full_key = f"{key}/{tensor_key}" if tensor_key else key
+            # Build list of all tensors to receive
+            all_tensor_info = []
+            for tensor_key, tensor in tensors_to_receive:
+                full_key = f"{key}/{tensor_key}" if tensor_key else key
+                all_tensor_info.append(
+                    {
+                        "key": full_key,
+                        "tensor_key": tensor_key,
+                        "tensor": tensor,
+                    }
+                )
 
             if verbose:
-                logger.info(f"Joining broadcast group for '{full_key}': shape={list(tensor.shape)}")
+                logger.info(f"Joining broadcast group for '{key}': {len(all_tensor_info)} tensor(s)")
 
-            response = gpu_client.get_tensor(
-                key=full_key,
-                dest_tensor=tensor,
+            # Single path handles both single tensor and multi-tensor broadcasts
+            response = gpu_client.get_tensors_broadcast(
+                tensors=[(info["key"], info["tensor"]) for info in all_tensor_info],
                 broadcast=broadcast_config,
             )
 
             if response.get("status") != "ok":
-                raise RuntimeError(f"Failed to receive tensor via broadcast '{full_key}': {response.get('error')}")
+                raise RuntimeError(f"Failed to receive via broadcast '{key}': {response.get('error')}")
 
             if verbose:
-                logger.info(f"Broadcast receive complete for '{key}'")
+                logger.info(f"Broadcast receive complete for '{key}': {len(all_tensor_info)} tensor(s)")
 
             return response
 
@@ -373,6 +484,83 @@ class GPUTransferManager:
                 logger.info(f"Successfully received GPU state dict '{key}': {len(tensors_to_receive)} tensors")
 
         return None
+
+    def _retrieve_packed(
+        self,
+        key: str,
+        tensors: List[tuple],
+        broadcast: "BroadcastWindow",
+        gpu_client,
+        verbose: bool = False,
+    ) -> Dict:
+        """
+        Retrieve state_dict using packed mode - receive single packed buffer and unpack.
+
+        This provides maximum efficiency by using a single NCCL broadcast.
+        Requires all participants to have identical dict structure.
+        """
+        torch = _get_torch()
+
+        # Get sorted tensors (already sorted in retrieve())
+        sorted_tensors = [t for _, t in tensors]
+
+        # Validate all tensors have same dtype
+        dtypes = set(t.dtype for t in sorted_tensors)
+        if len(dtypes) > 1:
+            raise ValueError(
+                f"pack=True requires all tensors to have the same dtype, "
+                f"but found: {dtypes}. Use pack=False for mixed dtypes."
+            )
+        dtype = sorted_tensors[0].dtype
+
+        # Calculate total size and allocate packed buffer
+        total_numel = sum(t.numel() for t in sorted_tensors)
+        packed = torch.empty(total_numel, dtype=dtype, device=sorted_tensors[0].device)
+
+        if verbose:
+            logger.info(
+                f"Allocated packed buffer for {len(sorted_tensors)} tensors: "
+                f"total_numel={total_numel}, dtype={dtype}"
+            )
+
+        # Create packed key
+        packed_key = f"{key}/__packed__"
+
+        # Join broadcast to receive the packed tensor
+        broadcast_config = {
+            "group_id": broadcast.group_id,
+            "timeout": broadcast.timeout or 600.0,
+            "world_size": broadcast.world_size,
+            "pack": True,
+        }
+
+        response = gpu_client.get_tensors_broadcast(
+            tensors=[(packed_key, packed)],
+            broadcast=broadcast_config,
+        )
+
+        if response.get("status") != "ok":
+            raise RuntimeError(f"Failed to receive packed tensor: {response.get('error')}")
+
+        # Unpack into destination tensors
+        offset = 0
+        for tensor_key, dest_tensor in tensors:
+            numel = dest_tensor.numel()
+            dest_tensor.copy_(packed[offset : offset + numel].view_as(dest_tensor))
+            offset += numel
+
+        # Validate we consumed exactly the right amount
+        if offset != packed.numel():
+            raise ValueError(
+                f"State dict structure mismatch: expected {offset} elements "
+                f"but packed tensor has {packed.numel()} elements. "
+                f"Ensure putter and getter have identical dict structure."
+            )
+
+        if verbose:
+            logger.info(f"Unpacked {len(tensors)} tensors from packed buffer")
+
+        return response
 
     def serve_broadcast(
         self,

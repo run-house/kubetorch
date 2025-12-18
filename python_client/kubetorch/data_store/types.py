@@ -67,6 +67,11 @@ class BroadcastWindow:
         fanout: Number of children each node can have in the broadcast tree.
             Defaults to 2 for GPU (binary tree), can be set higher for filesystem
             transfers where rsync can handle many concurrent clients (~50).
+        pack: For GPU state_dict transfers only. When True, concatenates all
+            tensors into a single packed buffer before broadcasting for maximum
+            efficiency (single NCCL call). Requires all participants to have
+            identical dict structure (same keys). Default False uses async
+            overlapped broadcasts (one per tensor, pipelined).
 
     Examples:
         # Wait up to 10 seconds for participants
@@ -83,6 +88,9 @@ class BroadcastWindow:
 
         # Filesystem broadcast with high fanout
         BroadcastWindow(world_size=100, fanout=50, timeout=60.0)
+
+        # GPU state_dict with packed mode for maximum efficiency
+        BroadcastWindow(world_size=4, timeout=30.0, pack=True)
     """
 
     timeout: Optional[float] = None
@@ -90,6 +98,7 @@ class BroadcastWindow:
     ips: Optional[List[str]] = None
     group_id: Optional[str] = None
     fanout: Optional[int] = None  # Default: 2 for GPU, 50 for filesystem
+    pack: bool = False  # Pack tensors into single buffer for GPU state_dict transfers
 
     def __post_init__(self):
         """Validate that at least one condition is specified."""
@@ -104,4 +113,5 @@ class BroadcastWindow:
             "ips": self.ips,
             "group_id": self.group_id,
             "fanout": self.fanout,
+            "pack": self.pack,
         }

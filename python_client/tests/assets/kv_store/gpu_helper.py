@@ -605,3 +605,142 @@ class GPUTestHelper:
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    # ==================== State Dict (Dictionary of Tensors) Support ====================
+
+    def publish_state_dict_with_broadcast(
+        self,
+        key: str,
+        state_dict_spec: Dict[str, Dict],  # {"layer1.weight": {"shape": [...], "fill_value": ...}, ...}
+        broadcast_window: Dict,
+        dtype: str = "float32",
+    ) -> Dict:
+        """
+        Create and publish a state_dict (dict of tensors) using BroadcastWindow.
+
+        Args:
+            key: Base storage key for the state_dict
+            state_dict_spec: Dict mapping tensor names to their specs (shape, fill_value)
+            broadcast_window: BroadcastWindow configuration dict
+            dtype: Tensor dtype (same for all tensors)
+        """
+        import torch
+
+        from kubetorch.data_store.types import BroadcastWindow
+
+        dtype_map = {
+            "float32": torch.float32,
+            "float64": torch.float64,
+            "float16": torch.float16,
+        }
+
+        try:
+            # Create state_dict with specified tensors
+            state_dict = {}
+            for name, spec in state_dict_spec.items():
+                shape = spec["shape"]
+                fill_value = spec.get("fill_value", 1.0)
+                state_dict[name] = torch.full(
+                    shape, fill_value, dtype=dtype_map.get(dtype, torch.float32), device="cuda:0"
+                )
+
+            # Keep tensors alive
+            if not hasattr(self, "_published_state_dicts"):
+                self._published_state_dicts = {}
+            self._published_state_dicts[key] = state_dict
+
+            # Create BroadcastWindow from dict
+            bw = BroadcastWindow(
+                group_id=broadcast_window.get("group_id"),
+                timeout=broadcast_window.get("timeout"),
+                world_size=broadcast_window.get("world_size"),
+                ips=broadcast_window.get("ips"),
+            )
+
+            result = kt.put(key=key, data=state_dict, broadcast=bw, verbose=True)
+
+            return {
+                "success": True,
+                "key": key,
+                "num_tensors": len(state_dict),
+                "tensor_names": list(state_dict.keys()),
+                "broadcast_result": result,
+            }
+        except Exception as e:
+            return {"success": False, "key": key, "error": str(e)}
+
+    def get_state_dict_with_broadcast(
+        self,
+        key: str,
+        state_dict_spec: Dict[str, Dict],  # {"layer1.weight": {"shape": [...], "expected_sum": ...}, ...}
+        broadcast_window: Dict,
+        dtype: str = "float32",
+        device: str = "cuda:0",
+    ) -> Dict:
+        """
+        Get a state_dict (dict of tensors) using BroadcastWindow.
+
+        Args:
+            key: Base storage key for the state_dict
+            state_dict_spec: Dict mapping tensor names to their specs (shape, expected_sum)
+            broadcast_window: BroadcastWindow configuration dict
+            dtype: Tensor dtype
+            device: Device to receive tensors on
+        """
+        import torch
+
+        from kubetorch.data_store.types import BroadcastWindow
+
+        dtype_map = {
+            "float32": torch.float32,
+            "float64": torch.float64,
+            "float16": torch.float16,
+        }
+
+        try:
+            # Pre-allocate destination state_dict with same structure
+            dest_state_dict = {}
+            for name, spec in state_dict_spec.items():
+                shape = spec["shape"]
+                dest_state_dict[name] = torch.empty(shape, dtype=dtype_map.get(dtype, torch.float32), device=device)
+
+            # Create BroadcastWindow from dict
+            bw = BroadcastWindow(
+                group_id=broadcast_window.get("group_id"),
+                timeout=broadcast_window.get("timeout"),
+                world_size=broadcast_window.get("world_size"),
+                ips=broadcast_window.get("ips"),
+            )
+
+            result = kt.get(key=key, dest=dest_state_dict, broadcast=bw, verbose=True)
+
+            # Verify tensor values
+            verification = {}
+            all_correct = True
+            for name, spec in state_dict_spec.items():
+                tensor = dest_state_dict[name]
+                actual_sum = float(tensor.sum().item())
+                expected_sum = spec.get("expected_sum", 0.0)
+                tolerance = spec.get("tolerance", 1.0)
+                correct = abs(actual_sum - expected_sum) < tolerance
+
+                verification[name] = {
+                    "shape": list(tensor.shape),
+                    "actual_sum": actual_sum,
+                    "expected_sum": expected_sum,
+                    "correct": correct,
+                }
+                if not correct:
+                    all_correct = False
+
+            return {
+                "success": True,
+                "key": key,
+                "num_tensors": len(dest_state_dict),
+                "tensor_names": list(dest_state_dict.keys()),
+                "verification": verification,
+                "all_correct": all_correct,
+                "broadcast_result": result,
+            }
+        except Exception as e:
+            return {"success": False, "key": key, "error": str(e)}
