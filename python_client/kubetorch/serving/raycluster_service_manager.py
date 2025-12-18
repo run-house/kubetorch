@@ -4,6 +4,7 @@ import time
 from typing import List, Optional
 
 import kubetorch.serving.constants as serving_constants
+
 from kubetorch.logger import get_logger
 from kubetorch.servers.http.utils import load_template
 from kubetorch.serving.base_service_manager import BaseServiceManager
@@ -41,6 +42,31 @@ class RayClusterServiceManager(BaseServiceManager):
             api_version=api_version,
             service_annotations=default_service_annotations,
         )
+
+    def _delete_resource(self, service_name: str, force: bool = False, **kwargs) -> None:
+        """Delete a RayCluster and its associated K8s Services."""
+        # Delete the RayCluster CRD using base class logic
+        super()._delete_resource(service_name, force=force, **kwargs)
+
+        # Delete the associated K8s Service
+        try:
+            self.controller_client.delete_service(
+                namespace=self.namespace,
+                name=service_name,
+            )
+        except Exception as e:
+            if not http_not_found(e):
+                logger.warning(f"Failed to delete service {service_name}: {e}")
+
+        # Delete the headless service for Ray pod discovery
+        try:
+            self.controller_client.delete_service(
+                namespace=self.namespace,
+                name=f"{service_name}-headless",
+            )
+        except Exception as e:
+            if not http_not_found(e):
+                logger.warning(f"Failed to delete headless service {service_name}-headless: {e}")
 
     def get_resource(self, service_name: str) -> dict:
         """Retrieve a RayCluster by name."""
@@ -436,32 +462,6 @@ class RayClusterServiceManager(BaseServiceManager):
 
         # Timeout reached
         raise TimeoutError(f"RayCluster {service_name} did not become ready within {launch_timeout} seconds")
-
-    def _teardown_associated_resources(self, service_name: str, console=None) -> bool:
-        """Teardown associated RayCluster and Kubernetes Services for RayCluster."""
-        success = True
-
-        # Delete pool (this also deletes associated K8s services)
-        try:
-            self.controller_client.delete_pool(namespace=self.namespace, name=service_name)
-            if console:
-                console.print(f"✓ Deleted RayCluster [blue]{service_name}[/blue]")
-            else:
-                logger.info(f"Deleted RayCluster {service_name}")
-        except Exception as e:
-            if http_not_found(e):
-                if console:
-                    console.print(f"[yellow]Note:[/yellow] Pool {service_name} not found or already deleted")
-                else:
-                    logger.info(f"RayCluster {service_name} not found or already deleted")
-            else:
-                if console:
-                    console.print(f"[red]Error:[/red] Failed to delete RayCluster {service_name}: {e}")
-                else:
-                    logger.error(f"Failed to delete RayCluster {service_name}: {e}")
-                success = False
-
-        return success
 
     def _check_ray_installation_error(self, service_name: str, head_pod_name: str) -> Optional[str]:
         """Check if there's a Ray installation error in the head pod logs.

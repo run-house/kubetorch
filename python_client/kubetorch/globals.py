@@ -537,10 +537,24 @@ class ControllerClient:
         """Get a Deployment"""
         return self.get(f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}", ignore_not_found=ignore_not_found)
 
-    def delete_deployment(self, namespace: str, name: str) -> Dict[str, Any]:
+    def delete_deployment(
+        self,
+        namespace: str,
+        name: str,
+        grace_period_seconds: Optional[int] = None,
+        propagation_policy: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Delete a Deployment"""
-        print(f"calling server with deletion of namespace {namespace} and name {name}")
-        return self.delete(f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}", ignore_not_found=True)
+        params = {}
+        if grace_period_seconds is not None:
+            params["grace_period_seconds"] = grace_period_seconds
+        if propagation_policy is not None:
+            params["propagation_policy"] = propagation_policy
+        return self.delete(
+            f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}",
+            params=params if params else None,
+            ignore_not_found=True,
+        )
 
     def patch_deployment(self, namespace: str, name: str, body: Dict[str, Any]) -> Dict[str, Any]:
         """Patch a Deployment"""
