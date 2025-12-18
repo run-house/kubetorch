@@ -361,7 +361,7 @@ class BaseServiceManager:
         )
 
     def _delete_resource(self, service_name: str, force: bool = False, **kwargs) -> None:
-        """Delete a resource."""
+        """Delete a resource from K8s."""
         if force:
             kwargs.setdefault("grace_period_seconds", 0)
             kwargs.setdefault("propagation_policy", "Foreground")
@@ -374,6 +374,23 @@ class BaseServiceManager:
             name=service_name,
             **kwargs,
         )
+
+    def _delete_controller_resource(self, service_name: str, console=None) -> bool:
+        """Teardown associated resource for the service."""
+        success = True
+
+        # Delete the registered resource from the controller (separate from the actual K8s resource)
+        try:
+            globals.controller_client().delete_pool(namespace=self.namespace, name=service_name)
+        except Exception as e:
+            if not http_not_found(e):
+                if console:
+                    console.print(f"[red]Error:[/red] Failed to delete {service_name} from the controller: {e}")
+                else:
+                    logger.error(f"Failed to delete {service_name} from the controller: {e}")
+                success = False
+
+        return success
 
     def fetch_kubetorch_config(self) -> dict:
         """Fetch kubetorch-config ConfigMap via controller."""
@@ -740,8 +757,8 @@ class BaseServiceManager:
         """
         success = True
 
-        # Delete the main resource
         try:
+            # Delete the main k8s resource
             self._delete_resource(service_name, force=force)
             resource_type = self.template_label.lower() if self.template_label else "resource"
             if console:
@@ -764,14 +781,6 @@ class BaseServiceManager:
                     logger.error(f"Failed to delete {resource_type} {service_name}: {e}")
                 success = False
 
-        # Delete associated resources
-        associated_success = self._teardown_associated_resources(service_name, console)
-        return success and associated_success
-
-    def _teardown_associated_resources(self, service_name: str, console=None) -> bool:
-        """Teardown associated resources (e.g., Kubernetes Services).
-
-        Returns:
-            True if all associated resources were deleted successfully, False otherwise
-        """
-        return True
+        # Delete controller resource
+        controller_success = self._delete_controller_resource(service_name, console)
+        return success and controller_success

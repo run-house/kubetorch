@@ -3,6 +3,7 @@ import time
 from typing import List
 
 import kubetorch.serving.constants as serving_constants
+
 from kubetorch.logger import get_logger
 from kubetorch.serving.base_service_manager import BaseServiceManager
 from kubetorch.utils import http_conflict, http_not_found
@@ -90,6 +91,31 @@ class TrainJobServiceManager(BaseServiceManager):
         self.worker_replica = config["worker_replica"]
 
     def get_pod_template_path(self) -> List[str]:
+    def _delete_resource(self, service_name: str, force: bool = False, **kwargs) -> None:
+        """Delete a training job and its associated K8s Services."""
+        # Delete the training job CRD using base class logic
+        super()._delete_resource(service_name, force=force, **kwargs)
+
+        # Delete the associated K8s Services (created alongside the training job)
+        try:
+            associated_services = self.controller_client.list_services(
+                namespace=self.namespace,
+                label_selector=f"kubetorch.com/service={service_name}",
+            )
+            for service in associated_services.get("items", []):
+                associated_service_name = service["metadata"]["name"]
+                try:
+                    self.controller_client.delete_service(
+                        namespace=self.namespace,
+                        name=associated_service_name,
+                    )
+                except Exception as e:
+                    if not http_not_found(e):
+                        logger.warning(f"Failed to delete service {associated_service_name}: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to list services for {service_name}: {e}")
+
+    def _get_pod_template_path(self) -> List[str]:
         """Get the path to the primary replica pod template."""
         return ["spec", self.replica_specs_key, self.primary_replica, "template"]
 
@@ -436,29 +462,3 @@ class TrainJobServiceManager(BaseServiceManager):
     def get_endpoint(self, service_name: str) -> str:
         """Get endpoint for primary replica service."""
         return f"http://{service_name}.{self.namespace}.svc.cluster.local:80"
-
-    def _teardown_associated_resources(self, service_name: str, console=None) -> bool:
-        """Teardown associated pool and Kubernetes Services for training job."""
-        success = True
-
-        # Delete pool (this also deletes associated K8s services)
-        try:
-            self.controller_client.delete_pool(namespace=self.namespace, name=service_name)
-            if console:
-                console.print(f"✓ Deleted service [blue]{service_name}[/blue]")
-            else:
-                logger.info(f"Deleted service {service_name}")
-        except Exception as e:
-            if http_not_found(e):
-                if console:
-                    console.print(f"[yellow]Note:[/yellow] service {service_name} not found or already deleted")
-                else:
-                    logger.info(f"Service {service_name} not found or already deleted")
-            else:
-                if console:
-                    console.print(f"[red]Error:[/red] Failed to delete service {service_name}: {e}")
-                else:
-                    logger.error(f"Failed to delete service {service_name}: {e}")
-                success = False
-
-        return success
