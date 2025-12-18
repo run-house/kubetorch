@@ -3,6 +3,7 @@ import time
 from typing import List
 
 import kubetorch.serving.constants as serving_constants
+
 from kubetorch.logger import get_logger
 from kubetorch.resources.compute.utils import (
     check_pod_events_for_errors,
@@ -26,6 +27,39 @@ class DeploymentServiceManager(BaseServiceManager):
     def __init__(self, *args, **kwargs):
         kwargs["template_label"] = self.RESOURCE_TYPE
         super().__init__(*args, **kwargs)
+
+    def _delete_resource(self, service_name: str, force: bool = False, **kwargs) -> None:
+        """Delete a Deployment and its associated K8s Services."""
+        grace_period_seconds = 0 if force else None
+        propagation_policy = "Foreground" if force else None
+
+        # Delete the Deployment
+        self.controller_client.delete_deployment(
+            name=service_name,
+            namespace=self.namespace,
+            grace_period_seconds=grace_period_seconds,
+            propagation_policy=propagation_policy,
+        )
+
+        # Delete the associated K8s Service
+        try:
+            self.controller_client.delete_service(
+                namespace=self.namespace,
+                name=service_name,
+            )
+        except Exception as e:
+            if not http_not_found(e):
+                logger.warning(f"Failed to delete service {service_name}: {e}")
+
+        # Delete the headless service if it exists
+        try:
+            self.controller_client.delete_service(
+                namespace=self.namespace,
+                name=f"{service_name}-headless",
+            )
+        except Exception as e:
+            if not http_not_found(e):
+                logger.warning(f"Failed to delete headless service {service_name}-headless: {e}")
 
     @classmethod
     def _build_base_manifest(
@@ -312,29 +346,3 @@ class DeploymentServiceManager(BaseServiceManager):
             time.sleep(sleep_interval)
 
         raise ServiceTimeoutError(f"Deployment {service_name} is not ready after {launch_timeout} seconds")
-
-    def _teardown_associated_resources(self, service_name: str, console=None) -> bool:
-        """Teardown associated pool and Kubernetes Services for Deployment."""
-        success = True
-
-        # Delete pool (this also deletes associated K8s services)
-        try:
-            self.controller_client.delete_pool(namespace=self.namespace, name=service_name)
-            if console:
-                console.print(f"✓ Deleted service [blue]{service_name}[/blue]")
-            else:
-                logger.info(f"Deleted service {service_name}")
-        except Exception as e:
-            if http_not_found(e):
-                if console:
-                    console.print(f"[yellow]Note:[/yellow] Service {service_name} not found or already deleted")
-                else:
-                    logger.info(f"Service {service_name} not found or already deleted")
-            else:
-                if console:
-                    console.print(f"[red]Error:[/red] Failed to delete service {service_name}: {e}")
-                else:
-                    logger.error(f"Failed to delete service {service_name}: {e}")
-                success = False
-
-        return success
