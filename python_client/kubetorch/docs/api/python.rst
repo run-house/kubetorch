@@ -100,6 +100,17 @@ storage configuration.
 
    python/volumes
 
+Data Store
+----------
+
+The Data Store provides a key-value interface for transferring data to and from your cluster.
+It supports both filesystem data (files/directories via rsync) and GPU data (tensors/state dicts via NCCL).
+
+.. toctree::
+   :maxdepth: 1
+
+   python/data_store
+
 Workload Configs
 -------
 Kubetorch provides several observability and debugging features to help monitor and troubleshoot your workloads. The behavior of these features can be fully customized via their respective configurations, allowing you to adjust their settings accordingly:

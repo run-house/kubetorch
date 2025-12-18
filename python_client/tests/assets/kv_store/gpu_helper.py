@@ -2,7 +2,7 @@
 Helper class for GPU tensor transfer testing on remote cluster.
 
 This helper runs inside a Kubernetes pod with GPU and provides methods for:
-- Publishing GPU tensors via kt.put(data=tensor)
+- Publishing GPU tensors via kt.put(src=tensor)
 - Retrieving GPU tensors via kt.get(dest=tensor)
 - Verifying tensor contents
 
@@ -107,7 +107,7 @@ class GPUTestHelper:
         nccl_port: int = 29500,
     ) -> Dict:
         """
-        Create and publish a GPU tensor via put(data=...).
+        Create and publish a GPU tensor via put(src=tensor).
 
         The tensor is registered with the local GPU Data Server via IPC handles.
         When a consumer calls get(), the GPU servers coordinate the NCCL transfer.
@@ -137,7 +137,7 @@ class GPUTestHelper:
         self._published_tensors[key] = tensor
 
         try:
-            kt.put(key=key, data=tensor, nccl_port=nccl_port, verbose=True)
+            kt.put(key=key, src=tensor, nccl_port=nccl_port, verbose=True)
             return {
                 "success": True,
                 "key": key,
@@ -156,7 +156,6 @@ class GPUTestHelper:
         shape: List[int],
         dtype: str = "float32",
         device: str = "cuda:0",
-        quorum_timeout: float = 0.0,
     ) -> Dict:
         """
         Get a GPU tensor from the store via get with pre-allocated destination.
@@ -169,7 +168,6 @@ class GPUTestHelper:
             shape: Shape of tensor to allocate
             dtype: Dtype of tensor to allocate
             device: Device to receive tensor on
-            quorum_timeout: How long to wait for other consumers (0 = immediate)
         """
         import torch
 
@@ -186,7 +184,7 @@ class GPUTestHelper:
             dest_tensor = torch.empty(shape, dtype=dtype_map.get(dtype, torch.float32), device=device)
 
             # Get data into the pre-allocated tensor
-            kt.get(key=key, dest=dest_tensor, quorum_timeout=quorum_timeout, verbose=True)
+            kt.get(key=key, dest=dest_tensor, verbose=True)
 
             return {
                 "success": True,
@@ -209,7 +207,7 @@ class GPUTestHelper:
         nccl_port: int = 29500,
     ) -> Dict:
         """
-        Publish multiple GPU tensors via put(data=...).
+        Publish multiple GPU tensors via put(src=tensor).
 
         Args:
             keys: Storage keys for each tensor
@@ -237,7 +235,7 @@ class GPUTestHelper:
             self._published_tensors[key] = tensor
 
             try:
-                kt.put(key=key, data=tensor, nccl_port=nccl_port, verbose=True)
+                kt.put(key=key, src=tensor, nccl_port=nccl_port, verbose=True)
                 results.append(
                     {
                         "success": True,
@@ -262,7 +260,6 @@ class GPUTestHelper:
         shapes: List[List[int]],
         dtype: str = "float32",
         device: str = "cuda:0",
-        quorum_timeout: float = 0.0,
     ) -> Dict:
         """
         Get multiple GPU tensors from the store.
@@ -272,7 +269,6 @@ class GPUTestHelper:
             shapes: Shapes of tensors to allocate
             dtype: Dtype of tensors to allocate
             device: Device to receive tensors on
-            quorum_timeout: How long to wait for other consumers (0 = immediate)
         """
         import torch
 
@@ -288,7 +284,7 @@ class GPUTestHelper:
         for key, shape in zip(keys, shapes):
             try:
                 dest_tensor = torch.empty(shape, dtype=dtype_map.get(dtype, torch.float32), device=device)
-                kt.get(key=key, dest=dest_tensor, quorum_timeout=quorum_timeout, verbose=True)
+                kt.get(key=key, dest=dest_tensor, verbose=True)
 
                 results.append(
                     {
@@ -358,7 +354,7 @@ class GPUTestHelper:
                 ips=broadcast_window.get("ips"),
             )
 
-            result = kt.put(key=key, data=tensor, broadcast=bw, verbose=True)
+            result = kt.put(key=key, src=tensor, broadcast=bw, verbose=True)
 
             return {
                 "success": True,
@@ -442,7 +438,6 @@ class GPUTestHelper:
         expected_shape: List[int],
         dtype: str = "float32",
         device: str = "cuda:0",
-        quorum_timeout: float = 0.0,
         tolerance: float = 1.0,  # Use larger tolerance for large tensor sums due to float32 precision
     ) -> Dict:
         """
@@ -454,12 +449,9 @@ class GPUTestHelper:
             expected_shape: Expected tensor shape (also used to allocate destination)
             dtype: Tensor dtype
             device: Device to receive on
-            quorum_timeout: How long to wait for other consumers (0 = immediate)
             tolerance: Tolerance for float comparison
         """
-        result = self.get_tensor(
-            key=key, shape=expected_shape, dtype=dtype, device=device, quorum_timeout=quorum_timeout
-        )
+        result = self.get_tensor(key=key, shape=expected_shape, dtype=dtype, device=device)
 
         if not result["success"]:
             return result
@@ -772,7 +764,7 @@ class GPUTestHelper:
                 ips=broadcast_window.get("ips"),
             )
 
-            result = kt.put(key=key, data=state_dict, broadcast=bw, verbose=True)
+            result = kt.put(key=key, src=state_dict, broadcast=bw, verbose=True)
 
             return {
                 "success": True,

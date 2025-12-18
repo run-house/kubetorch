@@ -844,7 +844,7 @@ def rsync_file_updates():
 
     service_name = os.getenv("KT_SERVICE_NAME")
     namespace = os.getenv("POD_NAMESPACE")
-    _dt.sync_workdir_from_store(namespace=namespace, service_name=service_name)
+    _dt._sync_workdir_from_store(namespace=namespace, service_name=service_name)
 
 
 #####################################

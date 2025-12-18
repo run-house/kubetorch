@@ -2275,9 +2275,10 @@ def kt_ls(
                 if not dir_name.endswith("/"):
                     dir_name += "/"
 
-                if dir_item.get("is_virtual"):
-                    pod_info = f" [dim](virtual, pod: {dir_item.get('pod_name', 'unknown')})[/dim]"
-                    console.print(f"  📁 [blue]{dir_name}[/blue]{pod_info}")
+                locale = dir_item.get("locale", "store")
+                if locale != "store":
+                    locale_info = f" [dim](locale: {locale})[/dim]"
+                    console.print(f"  📁 [blue]{dir_name}[/blue]{locale_info}")
                 else:
                     console.print(f"  📁 [blue]{dir_name}[/blue]")
 
@@ -2285,16 +2286,17 @@ def kt_ls(
             for file_item in sorted(files, key=lambda x: x["name"].lower()):
                 file_name = file_item["name"]
 
-                if file_item.get("is_virtual"):
-                    pod_info = f" [dim](virtual, pod: {file_item.get('pod_name', 'unknown')})[/dim]"
-                    console.print(f"  📄 {file_name}{pod_info}")
+                locale = file_item.get("locale", "store")
+                if locale != "store":
+                    locale_info = f" [dim](locale: {locale})[/dim]"
+                    console.print(f"  📄 {file_name}{locale_info}")
                 else:
                     console.print(f"  📄 {file_name}")
 
-            virtual_count = sum(1 for item in items if item.get("is_virtual"))
+            local_count = sum(1 for item in items if item.get("locale", "store") != "store")
             console.print(f"\n[green]Total: {len(dirs)} directories, {len(files)} files[/green]")
-            if virtual_count > 0:
-                console.print(f"[dim]  ({virtual_count} virtual key(s) published via vput)[/dim]")
+            if local_count > 0:
+                console.print(f"[dim]  ({local_count} item(s) stored locally on pods)[/dim]")
 
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
