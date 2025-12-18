@@ -19,11 +19,11 @@ import kubetorch.serving.constants as serving_constants
 
 from kubetorch import globals
 from kubetorch.logger import get_logger
-from kubetorch.resources.compute.utils import _get_rsync_exclude_options, find_available_port, RsyncError
+from kubetorch.resources.compute.utils import _get_rsync_exclude_options, RsyncError
 from kubetorch.servers.http.utils import is_running_in_kubernetes
 from kubetorch.utils import http_to_ws
 
-from .websocket_tunnel import WebSocketRsyncTunnel
+from .websocket_tunnel import TunnelManager
 
 logger = get_logger(__name__)
 
@@ -63,10 +63,11 @@ class RsyncClient:
         ws_url = f"{http_to_ws(base_url)}/rsync/{self.namespace}/"
         parsed_url = urlparse(base_url)
 
-        # Choose a local ephemeral port for the tunnel
+        # Return a starting port for the tunnel - TunnelManager caches tunnels by
+        # ws_url and reuses them across calls. The underlying WebSocketRsyncTunnel
+        # has robust port finding logic, so we just provide a starting point
         start_from = (parsed_url.port or rsync_local_port) + 1
-        websocket_port = find_available_port(start_from, max_tries=10)
-        return websocket_port, ws_url
+        return start_from, ws_url
 
     def create_rsync_target_dir(self):
         """Create the subdirectory for this particular service in the data store."""
@@ -540,21 +541,20 @@ class RsyncClient:
             )
             self.run_rsync_command(rsync_cmd)
         else:
-            # External upload via websocket tunnel
-            websocket_port, ws_url = self.get_websocket_info(local_port)
-            logger.debug(f"Opening WebSocket tunnel on port {websocket_port} to {ws_url}")
+            # External upload via websocket tunnel (reused across calls)
+            start_port, ws_url = self.get_websocket_info(local_port)
+            tunnel = TunnelManager.get_tunnel(ws_url, start_port)
 
-            with WebSocketRsyncTunnel(websocket_port, ws_url) as tunnel:
-                rsync_cmd = self.build_rsync_command(
-                    source=source,
-                    dest=dest,
-                    rsync_local_port=tunnel.local_port,
-                    contents=contents,
-                    filter_options=filter_options,
-                    force=force,
-                    in_cluster=False,
-                )
-                self.run_rsync_command(rsync_cmd)
+            rsync_cmd = self.build_rsync_command(
+                source=source,
+                dest=dest,
+                rsync_local_port=tunnel.local_port,
+                contents=contents,
+                filter_options=filter_options,
+                force=force,
+                in_cluster=False,
+            )
+            self.run_rsync_command(rsync_cmd)
 
     async def upload_async(
         self,
@@ -577,20 +577,20 @@ class RsyncClient:
             )
             await self.run_rsync_command_async(rsync_cmd)
         else:
-            websocket_port, ws_url = self.get_websocket_info(local_port)
-            logger.debug(f"Opening WebSocket tunnel on port {websocket_port} to {ws_url}")
+            # External upload via websocket tunnel (reused across calls)
+            start_port, ws_url = self.get_websocket_info(local_port)
+            tunnel = TunnelManager.get_tunnel(ws_url, start_port)
 
-            with WebSocketRsyncTunnel(websocket_port, ws_url) as tunnel:
-                rsync_cmd = self.build_rsync_command(
-                    source=source,
-                    dest=dest,
-                    rsync_local_port=tunnel.local_port,
-                    contents=contents,
-                    filter_options=filter_options,
-                    force=force,
-                    in_cluster=False,
-                )
-                await self.run_rsync_command_async(rsync_cmd)
+            rsync_cmd = self.build_rsync_command(
+                source=source,
+                dest=dest,
+                rsync_local_port=tunnel.local_port,
+                contents=contents,
+                filter_options=filter_options,
+                force=force,
+                in_cluster=False,
+            )
+            await self.run_rsync_command_async(rsync_cmd)
 
     def download(
         self,
@@ -625,26 +625,25 @@ class RsyncClient:
             )
             self.run_rsync_command(rsync_cmd, create_target_dir=False)
         else:
-            # External download via websocket tunnel
-            websocket_port, ws_url = self.get_websocket_info(local_port)
-            logger.debug(f"Opening WebSocket tunnel on port {websocket_port} to {ws_url}")
+            # External download via websocket tunnel (reused across calls)
+            start_port, ws_url = self.get_websocket_info(local_port)
+            tunnel = TunnelManager.get_tunnel(ws_url, start_port)
 
-            with WebSocketRsyncTunnel(websocket_port, ws_url) as tunnel:
-                # Replace the rsync pod URL with localhost URL for tunneling
-                base_url = self.get_base_rsync_url(tunnel.local_port)
-                rsync_pod_url = self.get_rsync_pod_url()
+            # Replace the rsync pod URL with localhost URL for tunneling
+            base_url = self.get_base_rsync_url(tunnel.local_port)
+            rsync_pod_url = self.get_rsync_pod_url()
 
-                if isinstance(source, str):
-                    source = source.replace(rsync_pod_url, base_url + "/")
+            if isinstance(source, str):
+                source = source.replace(rsync_pod_url, base_url + "/")
 
-                rsync_cmd = self.build_rsync_command(
-                    source=source,
-                    dest=dest,
-                    rsync_local_port=tunnel.local_port,
-                    contents=contents,
-                    filter_options=filter_options,
-                    force=force,
-                    is_download=True,
-                    in_cluster=False,
-                )
-                self.run_rsync_command(rsync_cmd, create_target_dir=False)
+            rsync_cmd = self.build_rsync_command(
+                source=source,
+                dest=dest,
+                rsync_local_port=tunnel.local_port,
+                contents=contents,
+                filter_options=filter_options,
+                force=force,
+                is_download=True,
+                in_cluster=False,
+            )
+            self.run_rsync_command(rsync_cmd, create_target_dir=False)

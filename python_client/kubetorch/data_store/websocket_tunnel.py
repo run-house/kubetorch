@@ -1,9 +1,72 @@
+import atexit
 import random
 import socket
 import threading
 import time
 
 import websocket
+
+from kubetorch.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+class TunnelManager:
+    """Manages a pool of reusable WebSocket tunnels.
+
+    Tunnels are cached by their websocket URL and reused across multiple
+    rsync operations, similar to HTTP connection pooling.
+    """
+
+    _tunnels: dict = {}  # ws_url -> WebSocketRsyncTunnel
+    _lock = threading.Lock()
+    _cleanup_registered = False
+
+    @classmethod
+    def get_tunnel(cls, ws_url: str, start_port: int) -> "WebSocketRsyncTunnel":
+        """Get or create a tunnel for the given websocket URL.
+
+        Args:
+            ws_url: The websocket URL to tunnel to
+            start_port: Starting port for finding an available local port
+
+        Returns:
+            A running WebSocketRsyncTunnel instance
+        """
+        with cls._lock:
+            # Register cleanup handler on first use
+            if not cls._cleanup_registered:
+                atexit.register(cls.cleanup_all)
+                cls._cleanup_registered = True
+
+            # Check if we have a valid cached tunnel
+            if ws_url in cls._tunnels:
+                tunnel = cls._tunnels[ws_url]
+                if tunnel.running and tunnel.server_socket:
+                    logger.debug(f"Reusing existing tunnel on port {tunnel.local_port} for {ws_url}")
+                    return tunnel
+                else:
+                    # Tunnel is dead, remove it
+                    logger.debug(f"Cached tunnel for {ws_url} is dead, creating new one")
+                    del cls._tunnels[ws_url]
+
+            # Create new tunnel
+            logger.debug(f"Creating new tunnel for {ws_url}")
+            tunnel = WebSocketRsyncTunnel(start_port, ws_url)
+            tunnel.__enter__()
+            cls._tunnels[ws_url] = tunnel
+            return tunnel
+
+    @classmethod
+    def cleanup_all(cls):
+        """Close all cached tunnels. Called on process exit."""
+        with cls._lock:
+            for ws_url, tunnel in list(cls._tunnels.items()):
+                try:
+                    tunnel.__exit__(None, None, None)
+                except Exception:
+                    pass
+            cls._tunnels.clear()
 
 
 class WebSocketRsyncTunnel:
