@@ -173,9 +173,7 @@ def test_store_api_integration():
             return results
 
         # Deploy and run verification
-        verify_fn = kt.fn(verify_and_prepare, name="integration-verifier").to(
-            kt.Compute(cpus="0.1", memory="256Mi"), force=True
-        )
+        verify_fn = kt.fn(verify_and_prepare, name="integration-verifier").to(kt.Compute(cpus="0.1", memory="256Mi"))
         results = verify_fn()
 
         # Check upload results
