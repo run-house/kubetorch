@@ -28,6 +28,9 @@ A Helm chart for kubetorch
 | dataStore.maxVerbosity | int | `0` |  |
 | dataStore.memory.limit | string | `"8Gi"` |  |
 | dataStore.memory.request | string | `"4Gi"` |  |
+| dataStore.redis.enabled | bool | `true` |  |
+| dataStore.redis.maxMemory | string | `"256mb"` |  |
+| dataStore.redis.maxMemoryPolicy | string | `"allkeys-lru"` |  |
 | dataStore.storage.size | string | `"100Gi"` |  |
 | dataStore.storage.storageClassName | string | `""` |  |
 | dataStore.timeout | int | `600` |  |

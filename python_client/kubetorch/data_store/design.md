@@ -50,6 +50,12 @@ The data store provides a unified `put()`/`get()` API for two fundamentally diff
 │  MetadataClient              │   │  BroadcastWindow, Locale,   │
 │  Communicates with server    │   │  Lifespan, ParsedKey        │
 └──────────────────────────────┘   └─────────────────────────────┘
+
+┌──────────────────────────────┐
+│  queue_client.py             │
+│  QueueClient                 │
+│  Direct Redis for queues     │
+└──────────────────────────────┘
 ```
 
 ## Module Responsibilities
@@ -184,6 +190,21 @@ Per-node server process for GPU transfers and filesystem broadcast coordination.
   - `register_tensor()` / `unregister_tensor()` - Just register, no MDS
   - `receive_broadcast()` - Just NCCL, no coordination
   - `execute_broadcast_group()` - Coordinated multi-party transfer
+
+### `queue_client.py`
+Direct Redis client for queue/stream operations.
+
+**QueueClient class:**
+- `put()` / `put_from_queue()` - Write to Redis Streams
+- `get()` / `get_to_queue()` - Read from Redis Streams
+- `tail()` - Follow queue with callback
+- `length()` / `delete()` / `trim()` - Queue management
+
+**Design:**
+- Direct Redis connection (bypasses MDS for data transfer)
+- Uses redis-py client library
+- MAXLEN for memory bounds (automatic eviction)
+- Blocking reads for real-time streaming
 
 ### `types.py`
 Core type definitions.
@@ -526,7 +547,29 @@ GPU tensors are not copied to the GPU server. Instead:
 ### 5. Lifespan Management
 Keys can have `lifespan="resource"` for automatic cleanup when a service is torn down. The metadata server tracks service associations and cleans up on service deletion.
 
-### 6. BroadcastWindow Coordination
+### 6. Queue/Stream Primitive
+The data store now includes a queue primitive backed by Redis Streams for high-throughput streaming operations.
+
+**QueueClient class:**
+- `put(key, data)` - Put single item to queue
+- `put_from_queue(key, src_queue)` - Stream from Python Queue to Redis
+- `get(key)` - Iterate over queue items
+- `get_to_queue(key, dest_queue)` - Stream from Redis to Python Queue
+- `tail(key, callback)` - Tail queue with callback for new items
+- `length(key)` / `delete(key)` / `trim(key)` - Queue management
+
+**Architecture:**
+- MDS returns Redis connection info for direct access
+- PDS uses redis-py client for direct streaming
+- MAXLEN enforced per-stream for memory bounds
+- Key hierarchy uses `/` separator (e.g., `logs/launch_123`)
+
+**Use cases:**
+- Log streaming (Phase 4 migration from Loki)
+- Request queuing for service-like modules
+- Pub/sub between pods
+
+### 7. BroadcastWindow Coordination
 For coordinated transfers, BroadcastWindow supports two modes:
 
 **GPU Broadcast (NCCL):**

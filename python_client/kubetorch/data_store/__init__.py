@@ -14,6 +14,7 @@ The data type is auto-detected from the `src`/`dest` parameters:
 from .data_store_client import DataStoreClient, DataStoreError
 from .data_store_cmds import _sync_workdir_from_store, get, ls, put, rm  # Internal use only
 from .key_utils import parse_key, ParsedKey
+from .queue_client import create_queue_client, QueueClient
 from .rsync_client import RsyncClient
 from .types import BroadcastWindow, Lifespan, Locale
 
@@ -24,8 +25,10 @@ __all__ = [
     "Lifespan",
     "Locale",
     "ParsedKey",
+    "QueueClient",
     "RsyncClient",
     "_sync_workdir_from_store",  # Internal use only
+    "create_queue_client",
     "get",
     "ls",
     "parse_key",

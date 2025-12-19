@@ -329,3 +329,115 @@ class StoreTestHelper:
             import traceback
 
             return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
+
+    # ==================== Queue/Stream Operations ====================
+
+    def queue_produce(self, key: str, items: list, timeout: float = 10.0) -> dict:
+        """
+        Produce items to a queue using kt.put with a Queue src.
+
+        Args:
+            key: Full key for the queue
+            items: List of items to put (strings or bytes)
+            timeout: Max time to wait for streaming to complete
+        """
+        from queue import Queue
+
+        try:
+            q = Queue()
+
+            # Start producer thread
+            thread = kt.put(key, src=q, verbose=True)
+
+            # Put items
+            for item in items:
+                q.put(item)
+            q.put(None)  # Sentinel to stop
+
+            # Wait for thread to complete
+            thread.join(timeout=timeout)
+
+            return {
+                "success": True,
+                "items_sent": len(items),
+                "key": key,
+                "pod_ip": os.getenv("POD_IP", "unknown"),
+            }
+        except Exception as e:
+            import traceback
+
+            return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
+
+    def queue_consume(self, key: str, max_items: int = 100, timeout: float = 10.0) -> dict:
+        """
+        Consume items from a queue using kt.get with a Queue dest.
+
+        Args:
+            key: Full key for the queue
+            max_items: Maximum number of items to consume
+            timeout: Max time to wait for items
+        """
+        import time
+        from queue import Empty, Queue
+
+        try:
+            q = Queue()
+
+            # Start consumer thread
+            _thread = kt.get(key, dest=q, verbose=True)  # noqa: F841
+
+            # Collect items with timeout
+            items = []
+            start_time = time.time()
+
+            while len(items) < max_items and (time.time() - start_time) < timeout:
+                try:
+                    item = q.get(timeout=1.0)
+                    if item is None:
+                        break
+                    # Decode if bytes
+                    if isinstance(item, bytes):
+                        item = item.decode()
+                    items.append(item)
+                except Empty:
+                    # Check if we have any items yet - if not, keep waiting
+                    if items:
+                        break
+                    continue
+
+            return {
+                "success": True,
+                "items_received": len(items),
+                "items": items,
+                "key": key,
+                "pod_ip": os.getenv("POD_IP", "unknown"),
+            }
+        except Exception as e:
+            import traceback
+
+            return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
+
+    def queue_check_redis(self, key: str) -> dict:
+        """
+        Check if a queue exists in Redis and return its info.
+
+        This directly queries Redis to verify the queue was created.
+        """
+        try:
+            from kubetorch.data_store.queue_client import QueueClient
+
+            namespace = os.getenv("KT_NAMESPACE", "default")
+            client = QueueClient(namespace=namespace)
+
+            length = client.length(key)
+
+            return {
+                "success": True,
+                "exists": length >= 0,
+                "length": length,
+                "key": key,
+            }
+        except Exception as e:
+            import traceback
+
+            return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
