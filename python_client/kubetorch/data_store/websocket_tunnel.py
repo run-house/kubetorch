@@ -15,23 +15,25 @@ class TunnelManager:
     """Manages a pool of reusable WebSocket tunnels.
 
     Tunnels are cached by their websocket URL and reused across multiple
-    rsync operations, similar to HTTP connection pooling.
+    operations, similar to HTTP connection pooling.
+
+    This is a generic manager that works for any WebSocket tunnel (rsync, redis, etc).
     """
 
-    _tunnels: dict = {}  # ws_url -> WebSocketRsyncTunnel
+    _tunnels: dict = {}  # ws_url -> WebSocketTunnel
     _lock = threading.Lock()
     _cleanup_registered = False
 
     @classmethod
-    def get_tunnel(cls, ws_url: str, start_port: int) -> "WebSocketRsyncTunnel":
+    def get_tunnel(cls, ws_url: str, start_port: int) -> "WebSocketTunnel":
         """Get or create a tunnel for the given websocket URL.
 
         Args:
-            ws_url: The websocket URL to tunnel to
+            ws_url: The websocket URL to tunnel to (e.g., ws://host/rsync/ns/ or ws://host/redis/ns/)
             start_port: Starting port for finding an available local port
 
         Returns:
-            A running WebSocketRsyncTunnel instance
+            A running WebSocketTunnel instance
         """
         with cls._lock:
             # Register cleanup handler on first use
@@ -52,7 +54,7 @@ class TunnelManager:
 
             # Create new tunnel
             logger.debug(f"Creating new tunnel for {ws_url}")
-            tunnel = WebSocketRsyncTunnel(start_port, ws_url)
+            tunnel = WebSocketTunnel(start_port, ws_url)
             tunnel.__enter__()
             cls._tunnels[ws_url] = tunnel
             return tunnel
@@ -69,7 +71,16 @@ class TunnelManager:
             cls._tunnels.clear()
 
 
-class WebSocketRsyncTunnel:
+class WebSocketTunnel:
+    """Generic WebSocket tunnel that bridges local TCP to remote WebSocket.
+
+    This creates a local TCP server that accepts connections and tunnels them
+    over WebSocket to a remote service. The remote WebSocket server then
+    bridges to the actual service (rsync, redis, etc).
+
+    Flow: local TCP client -> local TCP server -> WebSocket -> remote service
+    """
+
     def __init__(self, local_port: int, ws_url: str):
         self.requested_port = local_port
         self.local_port = None  # Will be set in __enter__
@@ -196,3 +207,7 @@ class WebSocketRsyncTunnel:
                         conn.close()
                     except:
                         pass
+
+
+# Backward compatibility alias
+WebSocketRsyncTunnel = WebSocketTunnel

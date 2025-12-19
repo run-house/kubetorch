@@ -88,6 +88,10 @@ dataStore:
     enabled: false # set to true to enable pod cleanup
   tolerations: []
   affinity: {}
+  redis:
+    enabled: true  # Enable Redis for queue/stream operations
+    maxMemory: 256mb  # Maximum memory before eviction
+    maxMemoryPolicy: allkeys-lru  # Eviction policy when maxmemory is reached
 
 logStreaming:
   enabled: true # set to `false` to disable log streaming (OTEL collector and Loki in data store)

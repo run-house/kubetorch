@@ -35,6 +35,7 @@ pydantic = ">=2.5.0"
 requests = "^2.32.0"
 websockets = "^15.0"
 websocket-client = "^1.6.0"
+redis = "^5.0.0"
 httpx = "^0.28.0"
 pyyaml = "^6.0"
 

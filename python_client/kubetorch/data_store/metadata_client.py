@@ -123,27 +123,56 @@ class MetadataClient:
             logger.warning(f"Failed to get source IP for key '{key}': {e}")
             return None
 
+    def get_source_info(self, key: str) -> Optional[dict]:
+        """
+        Get full source info for a key, including data type.
+
+        This is useful for queue keys to get Redis connection info.
+
+        Args:
+            key: Storage key
+
+        Returns:
+            Dict with source info including data_type, or None if not found
+        """
+        try:
+            encoded_key = quote(key, safe="")
+            url = f"{self.base_url}/api/v1/keys/{encoded_key}/source"
+            response = requests.get(url, timeout=5)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            logger.warning(f"Failed to get source info for key '{key}': {e}")
+            return None
+
     def publish_key(
         self,
         key: str,
-        pod_ip: str,
+        ip: str,
         pod_name: Optional[str] = None,
         namespace: Optional[str] = None,
         src_path: Optional[str] = None,
+        data_type: Optional[str] = None,
         lifespan: Lifespan = "cluster",
         service_name: Optional[str] = None,
+        # Queue-specific fields
+        queue_maxlen: Optional[int] = None,
+        queue_ttl: Optional[int] = None,
     ) -> bool:
         """
         Publish that this pod has data for the given key.
 
         Args:
             key: Storage key
-            pod_ip: IP address of the pod publishing the data
+            ip: IP address of the pod publishing the data
             pod_name: Optional pod name (for external client support)
             namespace: Optional namespace (for external client support)
             src_path: Optional relative path from working directory to the data on the pod (for peer-to-peer rsync)
+            data_type: Type of data ("filesystem", "gpu", "queue")
             lifespan: "cluster" for persistent, "resource" for service-scoped cleanup
             service_name: Service name for resource-scoped cleanup
+            queue_maxlen: For queue type - maximum queue length (MAXLEN)
+            queue_ttl: For queue type - TTL in seconds for auto-cleanup
 
         Returns:
             True if successful, False otherwise
@@ -151,15 +180,22 @@ class MetadataClient:
         try:
             # URL-encode the key to handle special characters
             encoded_key = quote(key, safe="")
-            payload = {"ip": pod_ip, "lifespan": lifespan}
+            payload = {"ip": ip, "lifespan": lifespan}
             if pod_name:
                 payload["pod_name"] = pod_name
             if namespace:
                 payload["namespace"] = namespace
             if src_path:
                 payload["src_path"] = src_path
+            if data_type:
+                payload["data_type"] = data_type
             if service_name:
                 payload["service_name"] = service_name
+            # Queue-specific fields
+            if queue_maxlen is not None:
+                payload["queue_maxlen"] = queue_maxlen
+            if queue_ttl is not None:
+                payload["queue_ttl"] = queue_ttl
 
             response = requests.post(
                 f"{self.base_url}/api/v1/keys/{encoded_key}/publish",
@@ -169,7 +205,7 @@ class MetadataClient:
             response.raise_for_status()
             return True
         except requests.RequestException as e:
-            logger.warning(f"Failed to publish key '{key}' from IP '{pod_ip}': {e}")
+            logger.warning(f"Failed to publish key '{key}' from IP '{ip}': {e}")
             return False
 
     def complete_request(self, key: str, ip: str) -> bool:

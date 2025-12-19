@@ -104,7 +104,27 @@ def put(
         >>> kt.put(key="model/weights", src=state_dict, broadcast=kt.BroadcastWindow(world_size=4))
     """
     if src is None:
-        raise ValueError("src is required. Provide a path for filesystem data or a GPU tensor/dict for GPU data.")
+        raise ValueError(
+            "src is required. Provide a path for filesystem data, a GPU tensor/dict for GPU data, or a Queue for streaming data."
+        )
+
+    from .queue_client import _is_queue_data
+
+    # Check if this is queue/stream data (Python Queue object)
+    if _is_queue_data(src):
+        from .queue_client import _queue_put
+
+        # Handle single key only for queue data
+        if isinstance(key, list):
+            raise ValueError("Queue data transfer only supports a single key, not a list of keys.")
+
+        return _queue_put(
+            key=key,
+            src=src,
+            lifespan=lifespan,
+            namespace=namespace,
+            verbose=verbose,
+        )
 
     from .gpu_transfer import _is_gpu_data
 
@@ -208,6 +228,23 @@ def get(
         ... )
         >>> model.load_state_dict(model.state_dict())  # Already updated in-place
     """
+    from .queue_client import _is_queue_data
+
+    # Check if dest is a queue (Python Queue object)
+    if dest is not None and _is_queue_data(dest):
+        from .queue_client import _queue_get
+
+        # Handle single key only for queue data
+        if isinstance(key, list):
+            raise ValueError("Queue data transfer only supports a single key, not a list of keys.")
+
+        return _queue_get(
+            key=key,
+            dest=dest,
+            namespace=namespace,
+            verbose=verbose,
+        )
+
     from .gpu_transfer import _is_gpu_data
 
     # Check if dest is GPU data (tensor or dict of tensors)

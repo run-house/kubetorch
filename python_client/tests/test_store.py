@@ -552,3 +552,236 @@ async def test_store_file_renaming(store_helper):
 
         assert (download_dir / "new_name.txt").exists(), "File should be renamed"
         assert not (download_dir / "original_name.txt").exists(), "Original name should not exist"
+
+
+# ==================== Queue/Stream Operations ====================
+
+
+@pytest.mark.level("minimal")
+async def test_queue_basic_produce_consume(store_helper):
+    """Test basic queue produce and consume with kt.put/kt.get using Queue objects."""
+    import uuid
+
+    test_id = uuid.uuid4().hex[:8]
+    service_name = store_helper.service_name
+    queue_key = f"{service_name}/queue-test-{test_id}/logs"
+
+    # Test items to send
+    test_items = [f"log line {i}" for i in range(5)]
+
+    # Produce items from the remote pod
+    produce_result = store_helper.queue_produce(key=queue_key, items=test_items, timeout=30.0)
+    assert produce_result["success"], f"Queue produce failed: {produce_result.get('error')}"
+    assert produce_result["items_sent"] == len(test_items), "Should send all items"
+
+    # Consume items from the remote pod
+    consume_result = store_helper.queue_consume(key=queue_key, max_items=10, timeout=30.0)
+    assert consume_result["success"], f"Queue consume failed: {consume_result.get('error')}"
+    assert consume_result["items_received"] == len(
+        test_items
+    ), f"Should receive all items, got {consume_result['items_received']}"
+    assert consume_result["items"] == test_items, "Items should match"
+
+
+@pytest.mark.level("minimal")
+async def test_queue_cross_pod_transfer(store_helper, store_peer):
+    """Test queue transfer between two pods: one produces, other consumes."""
+    import uuid
+
+    test_id = uuid.uuid4().hex[:8]
+    service_name = store_helper.service_name
+    queue_key = f"{service_name}/queue-cross-{test_id}/stream"
+
+    # Test items
+    test_items = [f"cross-pod message {i}" for i in range(3)]
+
+    # Producer: store_helper produces items
+    produce_result = store_helper.queue_produce(key=queue_key, items=test_items, timeout=30.0)
+    assert produce_result["success"], f"Queue produce failed: {produce_result.get('error')}"
+
+    # Consumer: store_peer consumes items
+    consume_result = store_peer.queue_consume(key=queue_key, max_items=10, timeout=30.0)
+    assert consume_result["success"], f"Queue consume failed: {consume_result.get('error')}"
+    assert consume_result["items_received"] == len(
+        test_items
+    ), f"Should receive all items, got {consume_result['items_received']}"
+    assert consume_result["items"] == test_items, "Items should match"
+
+
+@pytest.mark.level("minimal")
+async def test_queue_metadata_registration(store_helper):
+    """Test that queue keys are properly registered with the metadata server."""
+    import uuid
+
+    test_id = uuid.uuid4().hex[:8]
+    service_name = store_helper.service_name
+    queue_key = f"{service_name}/queue-meta-{test_id}/data"
+
+    # Produce a single item to create the queue
+    produce_result = store_helper.queue_produce(key=queue_key, items=["test"], timeout=30.0)
+    assert produce_result["success"], f"Queue produce failed: {produce_result.get('error')}"
+
+    # Check that the queue was created in Redis
+    check_result = store_helper.queue_check_redis(queue_key)
+    assert check_result["success"], f"Queue check failed: {check_result.get('error')}"
+    assert check_result["exists"], "Queue should exist in Redis"
+    assert check_result["length"] >= 1, "Queue should have at least 1 item"
+
+    # Verify metadata server knows about this key
+    from kubetorch.data_store.metadata_client import MetadataClient
+
+    metadata_client = MetadataClient(namespace=store_helper.compute.namespace)
+    source_info = metadata_client.get_source_info(queue_key)
+
+    assert source_info is not None, "Should return source info"
+    assert source_info.get("found"), "Key should be found"
+    assert source_info.get("data_type") == "queue", f"Data type should be 'queue', got {source_info.get('data_type')}"
+
+
+@pytest.mark.level("minimal")
+def test_queue_error_handling():
+    """Test error handling for queue operations."""
+    from queue import Queue
+
+    # Non-existent queue key should raise error on get
+    q = Queue()
+    with pytest.raises(ValueError, match="not found"):
+        kt.get(key="nonexistent/queue/key", dest=q)
+
+    # Queue operations only support single keys
+    with pytest.raises(ValueError, match="only supports a single key"):
+        kt.put(key=["key1", "key2"], src=Queue())
+
+    with pytest.raises(ValueError, match="only supports a single key"):
+        kt.get(key=["key1", "key2"], dest=Queue())
+
+
+# ==================== External Queue Tests ====================
+
+
+@pytest.mark.level("minimal")
+async def test_queue_external_consume(store_helper):
+    """Test consuming queue items from outside the cluster via WebSocket tunnel."""
+    import time
+    import uuid
+    from queue import Empty, Queue
+
+    test_id = uuid.uuid4().hex[:8]
+    service_name = store_helper.service_name
+    queue_key = f"{service_name}/queue-external-consume-{test_id}/logs"
+
+    # Produce items from inside the cluster
+    test_items = [f"external consume test {i}" for i in range(5)]
+    produce_result = store_helper.queue_produce(key=queue_key, items=test_items, timeout=30.0)
+    assert produce_result["success"], f"Queue produce failed: {produce_result.get('error')}"
+
+    # Consume from outside the cluster (this test runs externally)
+    # This exercises the WebSocket tunnel for Redis access
+    dest_queue = Queue()
+    _thread = kt.get(key=queue_key, dest=dest_queue, verbose=True)  # noqa: F841
+
+    # Collect items with timeout
+    received_items = []
+    start_time = time.time()
+    while len(received_items) < len(test_items) and (time.time() - start_time) < 30:
+        try:
+            item = dest_queue.get(timeout=1.0)
+            if item is None:
+                break
+            if isinstance(item, bytes):
+                item = item.decode()
+            received_items.append(item)
+        except Empty:
+            if received_items:  # Have some items, check if stream ended
+                break
+            continue
+
+    assert len(received_items) == len(test_items), f"Should receive all items externally, got {len(received_items)}"
+    assert received_items == test_items, "Items should match"
+
+
+@pytest.mark.level("minimal")
+async def test_queue_external_produce(store_helper):
+    """Test producing queue items from outside the cluster via WebSocket tunnel."""
+    import uuid
+    from queue import Queue
+
+    test_id = uuid.uuid4().hex[:8]
+    service_name = store_helper.service_name
+    queue_key = f"{service_name}/queue-external-produce-{test_id}/logs"
+
+    # Produce from outside the cluster (this test runs externally)
+    # This exercises the WebSocket tunnel for Redis access
+    src_queue = Queue()
+    test_items = [f"external produce test {i}" for i in range(5)]
+
+    thread = kt.put(key=queue_key, src=src_queue, verbose=True)
+
+    # Put items to the queue
+    for item in test_items:
+        src_queue.put(item)
+    src_queue.put(None)  # Sentinel to stop streaming
+
+    # Wait for thread to complete
+    thread.join(timeout=10.0)
+
+    # Consume from inside the cluster to verify items arrived
+    consume_result = store_helper.queue_consume(key=queue_key, max_items=10, timeout=30.0)
+    assert consume_result["success"], f"Queue consume failed: {consume_result.get('error')}"
+    assert consume_result["items_received"] == len(
+        test_items
+    ), f"Should receive all items, got {consume_result['items_received']}"
+    assert consume_result["items"] == test_items, "Items should match"
+
+
+@pytest.mark.level("minimal")
+async def test_queue_external_bidirectional(store_helper):
+    """Test bidirectional queue access from outside the cluster."""
+    import time
+    import uuid
+    from queue import Empty, Queue
+
+    test_id = uuid.uuid4().hex[:8]
+    service_name = store_helper.service_name
+    queue_key = f"{service_name}/queue-external-bidir-{test_id}/stream"
+
+    # Phase 1: Produce from external, consume from internal
+    src_queue = Queue()
+    external_items = [f"external to internal {i}" for i in range(3)]
+
+    thread = kt.put(key=queue_key, src=src_queue, verbose=True)
+    for item in external_items:
+        src_queue.put(item)
+    src_queue.put(None)
+    thread.join(timeout=10.0)
+
+    consume_result = store_helper.queue_consume(key=queue_key, max_items=10, timeout=30.0)
+    assert consume_result["success"], f"Internal consume failed: {consume_result.get('error')}"
+    assert consume_result["items"] == external_items, "Phase 1: External->Internal should work"
+
+    # Phase 2: Produce from internal, consume from external
+    queue_key_2 = f"{service_name}/queue-external-bidir2-{test_id}/stream"
+    internal_items = [f"internal to external {i}" for i in range(3)]
+
+    produce_result = store_helper.queue_produce(key=queue_key_2, items=internal_items, timeout=30.0)
+    assert produce_result["success"], f"Internal produce failed: {produce_result.get('error')}"
+
+    dest_queue = Queue()
+    _thread = kt.get(key=queue_key_2, dest=dest_queue, verbose=True)  # noqa: F841
+
+    received_items = []
+    start_time = time.time()
+    while len(received_items) < len(internal_items) and (time.time() - start_time) < 30:
+        try:
+            item = dest_queue.get(timeout=1.0)
+            if item is None:
+                break
+            if isinstance(item, bytes):
+                item = item.decode()
+            received_items.append(item)
+        except Empty:
+            if received_items:
+                break
+            continue
+
+    assert received_items == internal_items, "Phase 2: Internal->External should work"

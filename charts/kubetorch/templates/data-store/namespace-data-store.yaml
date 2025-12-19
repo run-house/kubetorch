@@ -74,11 +74,14 @@ spec:
           env:
             - name: LOKI_ENABLED
               value: "{{ $.Values.logStreaming.enabled }}"
+            - name: REDIS_ENABLED
+              value: "{{ $.Values.dataStore.redis.enabled | default true }}"
           ports:
             - containerPort: 873   # rsync daemon
             - containerPort: 8080  # HTTP/WebSocket tunnel
             - containerPort: 8081  # Metadata server API
             - containerPort: 3100  # Loki log storage
+            - containerPort: 6379  # Redis queue/stream
           volumeMounts:
             - name: data-store-storage
               mountPath: /data
@@ -89,6 +92,11 @@ spec:
             - name: loki-config
               mountPath: /etc/loki/loki.yaml
               subPath: loki.yaml
+            {{- end }}
+            {{- if $.Values.dataStore.redis.enabled | default true }}
+            - name: redis-config
+              mountPath: /etc/redis/redis.conf
+              subPath: redis.conf
             {{- end }}
           resources:
             requests:
@@ -106,6 +114,11 @@ spec:
         - name: loki-config
           configMap:
             name: kubetorch-loki-config
+        {{- end }}
+        {{- if $.Values.dataStore.redis.enabled | default true }}
+        - name: redis-config
+          configMap:
+            name: kubetorch-redis-config
         {{- end }}
 ---
 apiVersion: v1
@@ -129,5 +142,8 @@ spec:
     - name: loki
       port: 3100
       targetPort: 3100
+    - name: redis
+      port: 6379
+      targetPort: 6379
   type: ClusterIP
 {{- end }}

@@ -1,0 +1,35 @@
+{{- if .Values.dataStore.redis.enabled | default true }}
+{{- range (.Values.kubetorchConfig.deployment_namespaces | default list) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubetorch-redis-config
+  namespace: {{ . }}
+data:
+  redis.conf: |
+    # Redis configuration for kubetorch data store
+    # Optimized for queue/stream operations with memory bounds
+
+    # Network
+    bind 0.0.0.0
+    port 6379
+    protected-mode no
+
+    # Memory management
+    maxmemory {{ $.Values.dataStore.redis.maxMemory | default "256mb" }}
+    maxmemory-policy {{ $.Values.dataStore.redis.maxMemoryPolicy | default "allkeys-lru" }}
+
+    # Disable persistence (ephemeral data only)
+    appendonly no
+    save ""
+
+    # Performance tuning
+    tcp-keepalive 300
+    timeout 0
+
+    # Logging
+    loglevel notice
+    logfile ""
+{{- end }}
+{{- end }}
