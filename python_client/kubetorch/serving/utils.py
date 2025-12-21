@@ -278,3 +278,306 @@ def nested_merge(user_dict, kt_dict):
                     for kt_item in kt_value:
                         if str(kt_item) not in user_set:
                             user_value.append(copy.deepcopy(kt_item))
+
+
+# =============================================================================
+# Resource Configuration
+# =============================================================================
+
+RESOURCE_CONFIGS: Dict[str, dict] = {
+    "deployment": {
+        "pod_template_path": ["spec", "template"],
+        "api_group": "apps",
+        "api_version": "v1",
+        "api_plural": "deployments",
+        "default_routing": None,  # Route to all pods
+        "template_label": "deployment",
+    },
+    "knative": {
+        "pod_template_path": ["spec", "template"],
+        "api_group": "serving.knative.dev",
+        "api_version": "v1",
+        "api_plural": "services",
+        "default_routing": "knative_url",  # Knative provides its own URL
+        "template_label": "ksvc",
+        "resource_kind": "KnativeService",
+    },
+    "raycluster": {
+        "pod_template_path": ["spec", "headGroupSpec", "template"],
+        "worker_template_path": ["spec", "workerGroupSpecs", 0, "template"],
+        "api_group": "ray.io",
+        "api_version": "v1",
+        "api_plural": "rayclusters",
+        "default_routing": {"ray.io/node-type": "head"},  # Route to head only
+        "template_label": "raycluster",
+    },
+    "pytorchjob": {
+        "pod_template_path": ["spec", "pytorchReplicaSpecs", "Master", "template"],
+        "worker_template_path": ["spec", "pytorchReplicaSpecs", "Worker", "template"],
+        "replica_specs_key": "pytorchReplicaSpecs",
+        "primary_replica": "Master",
+        "container_name": "pytorch",
+        "api_group": "kubeflow.org",
+        "api_version": "v1",
+        "api_plural": "pytorchjobs",
+        "default_routing": {"training.kubeflow.org/replica-type": "master"},
+        "template_label": "pytorchjob",
+    },
+    "tfjob": {
+        "pod_template_path": ["spec", "tfReplicaSpecs", "Chief", "template"],
+        "worker_template_path": ["spec", "tfReplicaSpecs", "Worker", "template"],
+        "replica_specs_key": "tfReplicaSpecs",
+        "primary_replica": "Chief",
+        "container_name": "tensorflow",
+        "api_group": "kubeflow.org",
+        "api_version": "v1",
+        "api_plural": "tfjobs",
+        "default_routing": {"training.kubeflow.org/replica-type": "chief"},
+        "template_label": "tfjob",
+    },
+    "mxjob": {
+        "pod_template_path": ["spec", "mxReplicaSpecs", "Scheduler", "template"],
+        "worker_template_path": ["spec", "mxReplicaSpecs", "Worker", "template"],
+        "replica_specs_key": "mxReplicaSpecs",
+        "primary_replica": "Scheduler",
+        "container_name": "mxnet",
+        "api_group": "kubeflow.org",
+        "api_version": "v1",
+        "api_plural": "mxjobs",
+        "default_routing": {"training.kubeflow.org/replica-type": "scheduler"},
+        "template_label": "mxjob",
+    },
+    "xgboostjob": {
+        "pod_template_path": ["spec", "xgbReplicaSpecs", "Master", "template"],
+        "worker_template_path": ["spec", "xgbReplicaSpecs", "Worker", "template"],
+        "replica_specs_key": "xgbReplicaSpecs",
+        "primary_replica": "Master",
+        "container_name": "xgboost",
+        "api_group": "kubeflow.org",
+        "api_version": "v1",
+        "api_plural": "xgboostjobs",
+        "default_routing": {"training.kubeflow.org/replica-type": "master"},
+        "template_label": "xgboostjob",
+    },
+    "selector": {
+        # Selector-only mode - no K8s resource, just pod discovery
+        "pod_template_path": None,
+        "default_routing": None,
+        "template_label": "selector",
+    },
+}
+
+
+def get_resource_config(resource_type: str) -> dict:
+    """Get configuration for a resource type."""
+    resource_type = resource_type.lower()
+    if resource_type not in RESOURCE_CONFIGS:
+        raise ValueError(
+            f"Unknown resource type: {resource_type}. " f"Supported types: {', '.join(RESOURCE_CONFIGS.keys())}"
+        )
+    return RESOURCE_CONFIGS[resource_type]
+
+
+# =============================================================================
+# Training Job Constants
+# =============================================================================
+
+# Supported training job types (derived from RESOURCE_CONFIGS)
+SUPPORTED_TRAINING_JOBS = ["pytorchjob", "tfjob", "mxjob", "xgboostjob"]
+
+
+# =============================================================================
+# Manifest Building Functions
+# =============================================================================
+
+
+def build_deployment_manifest(
+    pod_spec: dict,
+    namespace: str,
+    replicas: int = 1,
+    inactivity_ttl: str = None,
+    custom_labels: dict = None,
+    custom_annotations: dict = None,
+    custom_template: dict = None,
+) -> dict:
+    """Build a base deployment manifest from pod spec and configuration."""
+    import os
+
+    from kubetorch import __version__
+    from kubetorch.servers.http.utils import load_template
+    from kubetorch.serving import constants as serving_constants
+
+    # Build labels
+    labels = {
+        serving_constants.KT_VERSION_LABEL: __version__,
+        serving_constants.KT_TEMPLATE_LABEL: "deployment",
+        serving_constants.KT_USERNAME_LABEL: globals.config.username,
+    }
+    if custom_labels:
+        labels.update(custom_labels)
+
+    # Template labels (exclude kt template label)
+    template_labels = labels.copy()
+    template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+
+    # Build annotations
+    annotations = {
+        "prometheus.io/scrape": "true",
+        "prometheus.io/path": serving_constants.PROMETHEUS_HEALTH_ENDPOINT,
+        "prometheus.io/port": "8080",
+    }
+    if custom_annotations:
+        annotations.update(custom_annotations)
+    if inactivity_ttl:
+        annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
+
+    # Create Deployment manifest
+    deployment = load_template(
+        template_file=serving_constants.DEPLOYMENT_TEMPLATE_FILE,
+        template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
+        name="",  # Will be set during launch
+        namespace=namespace,
+        annotations=annotations,
+        template_annotations={},  # Will be filled in during launch
+        labels=labels,
+        template_labels=template_labels,
+        pod_spec=pod_spec,
+        replicas=replicas,
+    )
+
+    if custom_template:
+        nested_override(deployment, custom_template)
+
+    return deployment
+
+
+def build_knative_manifest(
+    pod_spec: dict,
+    namespace: str,
+    autoscaling_config: Optional[AutoscalingConfig] = None,
+    gpu_annotations: dict = None,
+    inactivity_ttl: str = None,
+    custom_labels: dict = None,
+    custom_annotations: dict = None,
+) -> dict:
+    """Build a Knative Service manifest from pod spec and configuration."""
+    import os
+
+    from kubetorch import __version__
+    from kubetorch.servers.http.utils import load_template
+    from kubetorch.serving import constants as serving_constants
+
+    # Build labels
+    labels = {
+        serving_constants.KT_VERSION_LABEL: __version__,
+        serving_constants.KT_TEMPLATE_LABEL: "ksvc",
+        serving_constants.KT_USERNAME_LABEL: globals.config.username,
+    }
+    if custom_labels:
+        labels.update(custom_labels)
+
+    # Template labels (exclude kt template label)
+    template_labels = labels.copy()
+    template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+
+    # Build annotations
+    annotations = {
+        "prometheus.io/scrape": "true",
+        "prometheus.io/path": serving_constants.PROMETHEUS_HEALTH_ENDPOINT,
+        "prometheus.io/port": "8080",
+    }
+    if custom_annotations:
+        annotations.update(custom_annotations)
+    if inactivity_ttl:
+        annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
+
+    # Build template annotations for autoscaling
+    template_annotations = {}
+    if gpu_annotations:
+        template_annotations.update(gpu_annotations)
+
+    if autoscaling_config:
+        # AutoscalingConfig is a dataclass - access attributes directly
+        if autoscaling_config.min_scale is not None:
+            template_annotations["autoscaling.knative.dev/min-scale"] = str(autoscaling_config.min_scale)
+        if autoscaling_config.max_scale is not None:
+            template_annotations["autoscaling.knative.dev/max-scale"] = str(autoscaling_config.max_scale)
+        if autoscaling_config.target is not None:
+            template_annotations["autoscaling.knative.dev/target"] = str(autoscaling_config.target)
+
+    knative_service = load_template(
+        template_file=serving_constants.KNATIVE_SERVICE_TEMPLATE_FILE,
+        template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
+        name="",
+        namespace=namespace,
+        annotations=annotations,
+        labels=labels,
+        template_labels=template_labels,
+        template_annotations=template_annotations,
+        pod_spec=pod_spec,
+    )
+
+    return knative_service
+
+
+def build_raycluster_manifest(
+    pod_spec: dict,
+    namespace: str,
+    replicas: int = 1,
+    inactivity_ttl: str = None,
+    custom_labels: dict = None,
+    custom_annotations: dict = None,
+) -> dict:
+    """Build a RayCluster manifest from pod spec and configuration."""
+    import os
+
+    from kubetorch import __version__
+    from kubetorch.servers.http.utils import load_template
+    from kubetorch.serving import constants as serving_constants
+
+    # Build labels
+    labels = {
+        serving_constants.KT_VERSION_LABEL: __version__,
+        serving_constants.KT_TEMPLATE_LABEL: "raycluster",
+        serving_constants.KT_USERNAME_LABEL: globals.config.username,
+    }
+    if custom_labels:
+        labels.update(custom_labels)
+
+    # Template labels for head and worker pods (exclude kt template label)
+    head_template_labels = labels.copy()
+    head_template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+    worker_template_labels = head_template_labels.copy()
+
+    # Build annotations
+    annotations = {
+        "prometheus.io/scrape": "true",
+        "prometheus.io/path": serving_constants.PROMETHEUS_HEALTH_ENDPOINT,
+        "prometheus.io/port": "8080",
+    }
+    if custom_annotations:
+        annotations.update(custom_annotations)
+    if inactivity_ttl:
+        annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
+
+    # Template annotations for pod specs
+    template_annotations = annotations.copy()
+
+    # Calculate worker replicas (total - 1 for head)
+    worker_replicas = max(0, replicas - 1)
+
+    raycluster = load_template(
+        template_file=serving_constants.RAYCLUSTER_TEMPLATE_FILE,
+        template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
+        name="",
+        namespace=namespace,
+        annotations=annotations,
+        labels=labels,
+        template_annotations=template_annotations,
+        head_template_labels=head_template_labels,
+        worker_template_labels=worker_template_labels,
+        pod_spec=pod_spec,
+        worker_replicas=worker_replicas,
+    )
+
+    return raycluster

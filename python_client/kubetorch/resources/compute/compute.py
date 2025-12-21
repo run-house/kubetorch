@@ -230,14 +230,14 @@ class Compute:
             manifest_annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
 
         # Build initial manifest based on deployment type
-        from kubetorch.serving.service_manager import DeploymentServiceManager
+        from kubetorch.serving.utils import build_deployment_manifest
 
         # Prepare labels, including Kueue queue label if specified
         manifest_labels = labels.copy() if labels else {}
         if queue_name:
             manifest_labels[serving_constants.KUEUE_QUEUE_NAME_LABEL] = queue_name
 
-        self._manifest = DeploymentServiceManager._build_base_manifest(
+        self._manifest = build_deployment_manifest(
             pod_spec=pod_spec,
             namespace=template_vars["namespace"],
             replicas=replicas if replicas else 1,
@@ -356,7 +356,7 @@ class Compute:
             manifest_annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
 
         # Apply kubetorch-specific metadata to user manifest
-        self.service_manager._apply_kubetorch_updates(
+        self.service_manager._apply_kubetorch_metadata_to_manifest(
             manifest=self._manifest,
             custom_labels={},
             custom_annotations=manifest_annotations,
@@ -469,12 +469,11 @@ class Compute:
         kubetorch values are added where user doesn't have them, but existing user
         values are preserved.
         """
-        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
-        from kubetorch.serving.utils import nested_merge
+        from kubetorch.serving.utils import get_resource_config, nested_merge, SUPPORTED_TRAINING_JOBS
 
-        if self.kind in TrainJobServiceManager.SUPPORTED_KINDS:
-            config = TrainJobServiceManager._get_config(self.kind)
-            container_name = config["container_name"]
+        if self.kind.lower() in SUPPORTED_TRAINING_JOBS:
+            config = get_resource_config(self.kind.lower())
+            container_name = config.get("container_name", "kubetorch")
         else:
             container_name = "kubetorch"
         if not self.pod_spec or not self.pod_spec.get("containers"):
@@ -536,8 +535,9 @@ class Compute:
         if self.kind in ["PyTorchJob", "TFJob", "MXJob", "XGBoostJob"]:
             service_manager = self.service_manager
             spec = self._manifest.get("spec", {})
-            replica_specs = spec.get(service_manager.replica_specs_key, {})
-            worker_spec = replica_specs.get(service_manager.worker_replica, {})
+            replica_specs_key = service_manager.config.get("replica_specs_key")
+            replica_specs = spec.get(replica_specs_key, {}) if replica_specs_key else {}
+            worker_spec = replica_specs.get("Worker", {})
             if worker_spec:
                 worker_template = worker_spec.setdefault("template", {})
                 worker_pod_spec = worker_template.setdefault("spec", {})
@@ -629,24 +629,12 @@ class Compute:
     @property
     def service_manager(self):
         if self._service_manager is None:
-            from kubetorch.serving.deployment_service_manager import DeploymentServiceManager
-            from kubetorch.serving.knative_service_manager import KnativeServiceManager
-            from kubetorch.serving.raycluster_service_manager import RayClusterServiceManager
-            from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+            from kubetorch.serving.service_manager import ServiceManager
 
-            service_manager_mapping = {
-                "deployment": DeploymentServiceManager,
-                "knative": KnativeServiceManager,
-                "raycluster": RayClusterServiceManager,
-            }
-            kwargs = {
-                "namespace": self.namespace,
-            }
-            if self.deployment_mode not in service_manager_mapping:
-                kwargs["kind"] = self.kind
-                self._service_manager = TrainJobServiceManager(**kwargs)
-            else:
-                self._service_manager = service_manager_mapping[self.deployment_mode](**kwargs)
+            self._service_manager = ServiceManager(
+                resource_type=self.deployment_mode,
+                namespace=self.namespace,
+            )
         return self._service_manager
 
     @property
@@ -692,10 +680,10 @@ class Compute:
         if "containers" not in self.pod_spec:
             raise ValueError("pod_spec missing 'containers' field.")
 
-        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+        from kubetorch.serving.utils import SUPPORTED_TRAINING_JOBS
 
         expected_name = (
-            self.kind.lower().replace("job", "") if self.kind in TrainJobServiceManager.SUPPORTED_KINDS else "kubetorch"
+            self.kind.lower().replace("job", "") if self.kind.lower() in SUPPORTED_TRAINING_JOBS else "kubetorch"
         )
         containers = self.pod_spec.get("containers")
         for container in containers:
@@ -1530,7 +1518,7 @@ class Compute:
         """Set distributed config in all containers."""
         import json
 
-        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+        from kubetorch.serving.utils import SUPPORTED_TRAINING_JOBS
 
         # Populate defaults if config is missing values
         workers = config.get("workers")
@@ -1567,10 +1555,11 @@ class Compute:
             env_vars_to_set["KT_SERVICE_DNS"] = service_dns
 
         # For training jobs (PyTorchJob, TFJob, etc.), set in both Master and Worker replica containers
-        if self.kind in TrainJobServiceManager.SUPPORTED_KINDS:
+        if self.kind.lower() in SUPPORTED_TRAINING_JOBS:
             service_manager = self.service_manager
             spec = self._manifest.get("spec", {})
-            replica_specs = spec.get(service_manager.replica_specs_key, {})
+            replica_specs_key = service_manager.config.get("replica_specs_key")
+            replica_specs = spec.get(replica_specs_key, {}) if replica_specs_key else {}
 
             for replica_name in [service_manager.primary_replica, service_manager.worker_replica]:
                 replica_spec = replica_specs.get(replica_name, {})
@@ -1604,10 +1593,9 @@ class Compute:
 
     @property
     def dispatch_method(self):
-        dispatch = "regular"
-        if self.distributed_config:
-            dispatch = self.distributed_config.get("dispatch")
-        return dispatch
+        if self.distributed_config and self.distributed_config.get("dispatch"):
+            return self.distributed_config.get("dispatch")
+        return "regular"
 
     @property
     def deployment_mode(self):
@@ -1649,9 +1637,9 @@ class Compute:
     @replicas.setter
     def replicas(self, value: int):
         # Set replicas in manifest and applies to relevant containers
-        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+        from kubetorch.serving.service_manager import SUPPORTED_TRAINING_JOBS
 
-        if isinstance(self.service_manager, TrainJobServiceManager):
+        if self.kind.lower() in SUPPORTED_TRAINING_JOBS:
             # For kubeflow training service managers, also update distributed config
             distributed_config = self.distributed_config
 
@@ -2040,13 +2028,12 @@ class Compute:
             dryrun=dryrun,
             dockerfile=dockerfile,
             module=module,
-            pod_selector=getattr(self, "_pod_selector", None),
             create_headless_service=bool(self.distributed_config),
             endpoint=getattr(self, "_endpoint_config", None),
         )
         self._manifest = updated_manifest
 
-        service_info = self.service_manager.normalize_created_service(created_service)
+        service_info = self.service_manager.load_service_info(created_service)
         service_name = service_info["name"]
         service_template = {
             "metadata": {
@@ -2653,13 +2640,14 @@ class Compute:
 
             distribution_type = distributed_config.get("distribution_type")
             if distribution_type == "ray":
-                # Convert to RayCluster manifest
-                from kubetorch.serving.service_manager import RayClusterServiceManager
+                # Build RayCluster manifest from pod spec
+                from kubetorch.serving.utils import build_raycluster_manifest
 
-                self._manifest = RayClusterServiceManager._convert_manifest(
-                    deployment_manifest=self._manifest,
+                self._manifest = build_raycluster_manifest(
+                    pod_spec=self.pod_spec,
                     namespace=self.namespace,
                     replicas=self.replicas,
+                    inactivity_ttl=self.inactivity_ttl,
                 )
 
             # Invalidate cached service manager so it gets recreated with the right type
@@ -2752,17 +2740,18 @@ class Compute:
         if autoscaling_config:
             self._autoscaling_config = autoscaling_config
 
-            # Convert manifest to Knative service manifest
-            from kubetorch.serving.service_manager import KnativeServiceManager
+            # Build Knative service manifest from pod spec
+            from kubetorch.serving.utils import build_knative_manifest
 
-            self._manifest = KnativeServiceManager._convert_manifest(
-                deployment_manifest=self._manifest,
+            self._manifest = build_knative_manifest(
+                pod_spec=self.pod_spec,
                 namespace=self.namespace,
                 autoscaling_config=autoscaling_config,
                 gpu_annotations=self.gpu_annotations,
+                inactivity_ttl=self.inactivity_ttl,
             )
 
-            # Invalidate cached service manager so it gets recreated with KnativeServiceManager
+            # Invalidate cached service manager so it gets recreated with correct type
             self._service_manager = None
 
         return self

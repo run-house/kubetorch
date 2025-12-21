@@ -751,11 +751,11 @@ def kt_list(
     """
 
     # Import here to avoid circular imports
-    from kubetorch.serving.service_manager import BaseServiceManager
+    from kubetorch.serving.service_manager import ServiceManager
 
     try:
         # Use unified service discovery
-        unified_services = BaseServiceManager.discover_services_static(namespace=namespace, name_filter=tag)
+        unified_services = ServiceManager.discover_services(namespace=namespace, name_filter=tag)
 
         if not unified_services:
             console.print(f"[yellow]No services found in {namespace} namespace[/yellow]")

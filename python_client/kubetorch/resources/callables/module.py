@@ -231,19 +231,15 @@ class Module:
     ):
         """Reload an existing callable by its service name."""
         import kubetorch as kt
-        from kubetorch import globals
+        from kubetorch.serving.service_manager import ServiceManager
 
-        controller_client = globals.controller_client()
-
+        controller_client = kt.globals.controller_client()
         namespace = namespace or config.namespace
         if isinstance(reload_prefixes, str):
             reload_prefixes = [reload_prefixes]
         potential_names = get_names_for_reload_fallbacks(name=name, prefixes=reload_prefixes)
 
-        # Use unified service discovery from BaseServiceManager
-        from kubetorch.serving.service_manager import BaseServiceManager
-
-        all_services = BaseServiceManager.discover_services_static(namespace=namespace)
+        all_services = ServiceManager.discover_services(namespace=namespace)
 
         # Create name-to-service lookup for efficient searching
         # Prefer non-selector services over selector pools (which don't have env vars)

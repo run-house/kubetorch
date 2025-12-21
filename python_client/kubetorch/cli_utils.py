@@ -785,11 +785,12 @@ def stream_logs_websocket(uri, stop_event, print_pod_name: bool = False):
 
 
 def generate_logs_query(name: str, namespace: str, selected_pod: str, deployment_mode):
-    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+    from kubetorch.serving.utils import SUPPORTED_TRAINING_JOBS
 
     if not selected_pod:
-        if deployment_mode in ["knative", "deployment"] + TrainJobServiceManager.SUPPORTED_KINDS:
-            # Query by service name and namespace (labels set by LogCapture)
+        if deployment_mode in ["knative", "deployment"] + SUPPORTED_TRAINING_JOBS:
+            # we need to get the pod names first since Loki doesn't have a service_name label
+            # Don't filter by container name to support BYO manifests with custom container names
             return f'{{service="{name}", namespace="{namespace}"}}'
         else:
             console.print(f"[red]Logs does not support deployment mode: {deployment_mode}[/red]")
@@ -922,10 +923,9 @@ def detect_deployment_mode(name: str, namespace: str):
             raise
 
     # Then try TrainJobs
+    from kubetorch.serving.utils import SUPPORTED_TRAINING_JOBS
 
-    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
-
-    for kind in TrainJobServiceManager.SUPPORTED_KINDS:
+    for kind in SUPPORTED_TRAINING_JOBS:
         try:
             controller_client.get_namespaced_custom_object(
                 group="kubeflow.org",
