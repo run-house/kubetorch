@@ -771,10 +771,10 @@ def stream_logs_websocket(uri, stop_event, print_pod_name: bool = False):
 
 
 def generate_logs_query(name: str, namespace: str, selected_pod: str, deployment_mode):
-    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+    from kubetorch.serving.utils import SUPPORTED_TRAINING_JOBS
 
     if not selected_pod:
-        if deployment_mode in ["knative", "deployment"] + TrainJobServiceManager.SUPPORTED_KINDS:
+        if deployment_mode in ["knative", "deployment"] + SUPPORTED_TRAINING_JOBS:
             # we need to get the pod names first since Loki doesn't have a service_name label
             pods = validate_pods_exist(name, namespace)
             pod_names = [pod["metadata"]["name"] for pod in pods]
@@ -910,10 +910,9 @@ def detect_deployment_mode(name: str, namespace: str):
             raise
 
     # Then try TrainJobs
+    from kubetorch.serving.utils import SUPPORTED_TRAINING_JOBS
 
-    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
-
-    for kind in TrainJobServiceManager.SUPPORTED_KINDS:
+    for kind in SUPPORTED_TRAINING_JOBS:
         try:
             controller_client.get_namespaced_custom_object(
                 group="kubeflow.org",

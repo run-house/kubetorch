@@ -27,7 +27,7 @@ A Helm chart for kubetorch
 | controller.resources.memory.request | string | `"1Gi"` |  |
 | controller.servicePort | int | `8080` |  |
 | controller.storage.size | string | `"1Gi"` |  |
-| controller.tag | string | `"pod-communication-from-controller"` |  |
+| controller.tag | string | `"consolidate-service-managers"` |  |
 | controller.tolerations | list | `[]` |  |
 | controller.workers | int | `8` |  |
 | dataStore.affinity | object | `{}` |  |

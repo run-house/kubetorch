@@ -329,46 +329,30 @@ def delete_resources_for_service(
 
     Uses the same teardown path as the Python API (module.teardown() -> service_manager.teardown_service()).
     """
-    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+    from kubetorch.serving.service_manager import ServiceManager
+    from kubetorch.serving.utils import SUPPORTED_TRAINING_JOBS
 
     if service_type == "selector":
-        from kubetorch.serving.base_service_manager import BaseServiceManager
-
         # BYO (selector-based) compute mode:
         # The user applied the Kubernetes manifest themselves (e.g., via kubectl, Helm, or ArgoCD).
         # Kubetorch did not create or own the K8s resources, so teardown only removes
         # Kubetorch controller state and associated metadata — not the underlying pods/deployments/services
         msg = (
-            f"Kubernetes resources for {name} were created outside Kubetorch. You are responsible for deleting "
+            f"Resources for {name} were created outside Kubetorch. You are responsible for deleting "
             "the actual Kubernetes resources (pods, deployments, services, etc.)."
         )
-        service_manager = BaseServiceManager(namespace=namespace)
-        service_manager._delete_controller_resource(service_name=name, console=console)
+        # For selector-based pools, just delete the controller pool (no K8s resource to delete)
+        service_manager = ServiceManager(resource_type="selector", namespace=namespace)
+        service_manager.teardown_service(service_name=name, console=console, force=force)
         if console:
             console.print(f"[yellow]{msg}[/yellow]")
         else:
             logger.warning(msg)
     else:
         # manifest applied via kubetorch
-        if service_type == "deployment":
-            # Construct the appropriate service manager based on service type
-            from kubetorch.serving.deployment_service_manager import DeploymentServiceManager
-
-            service_manager = DeploymentServiceManager(namespace=namespace)
-
-        elif service_type == "raycluster":
-            from kubetorch.serving.raycluster_service_manager import RayClusterServiceManager
-
-            service_manager = RayClusterServiceManager(namespace=namespace)
-
-        elif service_type == "knative":
-            from kubetorch.serving.knative_service_manager import KnativeServiceManager
-
-            service_manager = KnativeServiceManager(namespace=namespace)
-
-        elif service_type in [k.lower() for k in TrainJobServiceManager.SUPPORTED_KINDS]:
-            service_manager = TrainJobServiceManager(namespace=namespace, kind=service_type)
-
+        supported_types = ["deployment", "raycluster", "knative"] + [k.lower() for k in SUPPORTED_TRAINING_JOBS]
+        if service_type in supported_types:
+            service_manager = ServiceManager(resource_type=service_type, namespace=namespace)
         else:
             msg = f"Unknown service type: {service_type}, skipping teardown"
             if console:
@@ -567,9 +551,9 @@ def fetch_resources_for_teardown(
             if not http_not_found(e):
                 logger.warning(f"Failed to list RayClusters: {e}")
 
-        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+        from kubetorch.serving.utils import SUPPORTED_TRAINING_JOBS
 
-        for job_kind in TrainJobServiceManager.SUPPORTED_KINDS:
+        for job_kind in SUPPORTED_TRAINING_JOBS:
             try:
                 plural = job_kind.lower() + "s"
                 if username:
@@ -738,9 +722,9 @@ def fetch_resources_for_teardown(
 
         # Check if it's a custom training job (PyTorchJob, TFJob, MXJob, XGBoostJob) if not found as other types
         if not service_found:
-            from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+            from kubetorch.serving.utils import SUPPORTED_TRAINING_JOBS
 
-            for job_kind in TrainJobServiceManager.SUPPORTED_KINDS:
+            for job_kind in SUPPORTED_TRAINING_JOBS:
                 try:
                     plural = job_kind.lower() + "s"
                     job_resource = controller_client.get_namespaced_custom_object(

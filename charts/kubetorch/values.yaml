@@ -56,7 +56,7 @@ dataStore:
 
 controller:
   image: ghcr.io/run-house/kubetorch-controller
-  tag: pod-communication-from-controller # TODO: flip to main
+  tag: consolidate-service-managers # TODO: flip to main
   imagePullPolicy: Always # TODO: use IfNotPresent
 
   servicePort: 8080  # Port the controller service is exposed on (via nginx)
