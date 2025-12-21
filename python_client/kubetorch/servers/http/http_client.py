@@ -609,13 +609,21 @@ class HTTPClient:
                                     else:
                                         prefix = ""
 
+                                    # Strip trailing whitespace/control chars to prevent line overwrites
+                                    log_message = log_message.rstrip() if log_message else ""
+
                                     if log_name == "print_redirect":
-                                        print(f"{formatter.start_color}{prefix}{log_message}{formatter.reset_color}")
+                                        print(
+                                            f"{formatter.start_color}{prefix}{log_message}{formatter.reset_color}",
+                                            flush=True,
+                                        )
                                     else:
                                         formatted_log = (
                                             f"{prefix}{log_line.get('asctime')} | {log_level} | {log_message}"
                                         )
-                                        print(f"{formatter.start_color}{formatted_log}{formatter.reset_color}")
+                                        print(
+                                            f"{formatter.start_color}{formatted_log}{formatter.reset_color}", flush=True
+                                        )
 
                     except asyncio.TimeoutError:
                         # Timeout is expected - rotate deduplication window and continue
