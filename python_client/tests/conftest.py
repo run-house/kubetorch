@@ -165,7 +165,12 @@ async def remote_logs_fn():
     from .utils import log_n_messages
 
     remote_fn = await kt.fn(log_n_messages).to_async(
-        kt.Compute(cpus="100m", gpu_anti_affinity=True, image_pull_policy="IfNotPresent")
+        kt.Compute(
+            cpus="100m",
+            gpu_anti_affinity=True,
+            image_pull_policy="IfNotPresent",
+            logging_config=kt.LoggingConfig(stream_logs=False),
+        )
     )
     return remote_fn
 
@@ -177,10 +182,9 @@ async def remote_logs_fn_autoscaled():
     from .utils import log_n_messages
 
     remote_fn = await kt.fn(log_n_messages, name="log-autoscaled").to_async(
-        kt.Compute(
-            cpus=".01",
-            gpu_anti_affinity=True,
-        ).autoscale(min_scale=2)
+        kt.Compute(cpus=".01", gpu_anti_affinity=True, logging_config=kt.LoggingConfig(stream_logs=False)).autoscale(
+            min_scale=2
+        )
     )
     return remote_fn
 
