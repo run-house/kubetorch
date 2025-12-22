@@ -959,8 +959,9 @@ class StreamToLogger:
         # Check if this is from logging system
         is_from_logging = self._is_from_logging()
 
-        # Always write to original stream first
-        if self.original_stream:
+        # Only write to original stream if it's a TTY (interactive terminal)
+        # In a pod/container, we don't want raw output - only JSON logs
+        if self.original_stream and self.isatty():
             self.original_stream.write(buf)
             self.original_stream.flush()
 
@@ -992,7 +993,7 @@ class StreamToLogger:
                 self.logger.log(self.log_level, line)
 
     def flush(self):
-        if self.original_stream:
+        if self.original_stream and self.isatty():
             self.original_stream.flush()
         if self.logger.name == "print_redirect" and self._is_from_logging():
             return
