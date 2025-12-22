@@ -97,6 +97,7 @@ jobs:
             kt config set install_namespace "$NAMESPACE"
           else
             echo "Namespace $NAMESPACE does not exist, kt config remains unchanged"
+            echo "NAMESPACE=kubetorch" >> $GITHUB_OUTPUT
           fi
 
       - name: Configure test namespace RBAC
@@ -104,6 +105,10 @@ jobs:
           TEST_NS="kt-test-$TEST_HASH"
           echo "Creating test namespace $TEST_NS and configuring RBAC..."
           kubectl create namespace $TEST_NS --dry-run=client -o yaml | kubectl apply -f -
+
+          # Use controller-ns output or fallback to 'kubetorch' (service account setup)
+          CONTROLLER_NS="${{ steps.controller-ns.outputs.NAMESPACE }}"
+          CONTROLLER_NS="${CONTROLLER_NS:-kubetorch}"
 
           # Create Role for the test namespace
           kubectl apply -f - <<EOF
@@ -138,7 +143,7 @@ jobs:
           subjects:
             - kind: ServiceAccount
               name: kubetorch-controller
-              namespace: "${{ steps.controller-ns.outputs.NAMESPACE || 'kubetorch' }}"
+              namespace: $CONTROLLER_NS
           EOF
 
       - name: Run tests with level unit
