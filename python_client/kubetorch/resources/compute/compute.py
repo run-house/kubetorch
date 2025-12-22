@@ -62,6 +62,7 @@ class Compute:
         allowed_serialization: Optional[List[str]] = None,
         replicas: int = None,
         logging_config: LoggingConfig = None,
+        queue_name: str = None,
         _skip_template_init: bool = False,
     ):
         """Initialize the compute requirements for a Kubetorch service.
@@ -116,6 +117,10 @@ class Compute:
                 or up to half the node's RAM.
             logging_config (LoggingConfig, optional): Configuration for logging behavior on this service. Controls
                 log level, streaming options, and grace periods. See :class:`LoggingConfig` for details.
+            queue_name (str, optional): Kueue LocalQueue name for GPU scheduling. When set, adds the
+                ``kueue.x-k8s.io/queue-name`` label to the pod template metadata. For training jobs
+                (PyTorchJob, TFJob, etc.), also sets ``spec.runPolicy.suspend: true`` so Kueue can
+                manage admission. Requires Kueue to be installed in the cluster.
 
         Note:
 
@@ -211,12 +216,17 @@ class Compute:
         # Build initial manifest based on deployment type
         from kubetorch.serving.service_manager import DeploymentServiceManager
 
+        # Prepare labels, including Kueue queue label if specified
+        manifest_labels = labels.copy() if labels else {}
+        if queue_name:
+            manifest_labels[serving_constants.KUEUE_QUEUE_NAME_LABEL] = queue_name
+
         self._manifest = DeploymentServiceManager._build_base_manifest(
             pod_spec=pod_spec,
             namespace=template_vars["namespace"],
             replicas=replicas if replicas else 1,
             inactivity_ttl=template_vars["inactivity_ttl"],
-            custom_labels=labels or {},
+            custom_labels=manifest_labels,
             custom_annotations=manifest_annotations,
             custom_template=service_template or {},
         )
@@ -529,7 +539,7 @@ class Compute:
     @property
     def pod_spec(self):
         """Get the pod spec from the manifest."""
-        template_path = self.service_manager._get_pod_template_path()
+        template_path = self.service_manager.get_pod_template_path()
         path = template_path + ["spec"]
 
         if path:
@@ -544,7 +554,7 @@ class Compute:
     @pod_spec.setter
     def pod_spec(self, value: dict):
         """Set the pod spec in the manifest."""
-        template_path = self.service_manager._get_pod_template_path()
+        template_path = self.service_manager.get_pod_template_path()
         path = template_path + ["spec"]
 
         if path:
@@ -1556,9 +1566,55 @@ class Compute:
         return metadata.get("labels", {})
 
     @property
+    def queue_name(self) -> Optional[str]:
+        pod_template = self.pod_template
+        if pod_template:
+            queue = pod_template.get("metadata", {}).get("labels", {}).get(serving_constants.KUEUE_QUEUE_NAME_LABEL)
+            if queue:
+                return queue
+        # Fall back to top-level manifest metadata (for from_manifest cases)
+        return self._manifest.get("metadata", {}).get("labels", {}).get(serving_constants.KUEUE_QUEUE_NAME_LABEL)
+
+    @queue_name.setter
+    def queue_name(self, value: Optional[str]):
+        """Set the Kueue queue name.
+
+        Adds the kueue.x-k8s.io/queue-name label to both top-level and pod template metadata.
+        For training jobs (PyTorchJob, TFJob, etc.), also sets spec.runPolicy.suspend = True
+        so that Kueue can manage workload admission. When clearing queue_name, also clears
+        the suspend flag.
+        """
+        queue_label = {serving_constants.KUEUE_QUEUE_NAME_LABEL: value} if value else {}
+
+        # Add to top-level metadata
+        if value:
+            self.add_labels(queue_label)
+        else:
+            # Remove label if value is None
+            metadata = self._get_manifest_metadata()
+            metadata.get("labels", {}).pop(serving_constants.KUEUE_QUEUE_NAME_LABEL, None)
+
+        # Add to pod template metadata
+        self.add_pod_template_labels(
+            queue_label if value else {}, remove_keys=[serving_constants.KUEUE_QUEUE_NAME_LABEL] if not value else []
+        )
+
+        # For training jobs, manage runPolicy.suspend for Kueue admission control
+        kind = self._manifest.get("kind", "")
+        if kind in ["PyTorchJob", "TFJob", "MXJob", "XGBoostJob"]:
+            if value:
+                # Set runPolicy.suspend = True for training jobs when using Kueue
+                self._manifest.setdefault("spec", {}).setdefault("runPolicy", {})["suspend"] = True
+            else:
+                # Clear runPolicy.suspend = False for training jobs when using Kueue
+                run_policy = self._manifest.get("spec", {}).get("runPolicy", {})
+                if "suspend" in run_policy:
+                    run_policy["suspend"] = False
+
+    @property
     def pod_template(self):
         """Get the pod template from the manifest (includes metadata and spec)."""
-        template_path = self.service_manager._get_pod_template_path()
+        template_path = self.service_manager.get_pod_template_path()
         if template_path:
             current = self._manifest
             for key in template_path:
@@ -1578,6 +1634,30 @@ class Compute:
         metadata = self._get_manifest_metadata()
         metadata.setdefault("labels", {})
         metadata["labels"].update(labels)
+
+    def add_pod_template_labels(self, labels: Dict, remove_keys: List[str] = None):
+        """Add or update labels in the pod template metadata.
+
+        This is useful for labels that need to be on the pod itself, such as
+        Kueue queue labels (kueue.x-k8s.io/queue-name).
+
+        Args:
+            labels (Dict): Dictionary of labels to add or update.
+            remove_keys (List[str], optional): List of label keys to remove.
+        """
+        pod_template = self.pod_template
+        if not pod_template:
+            return
+
+        metadata = pod_template.setdefault("metadata", {})
+        template_labels = metadata.setdefault("labels", {})
+
+        if labels:
+            template_labels.update(labels)
+
+        if remove_keys:
+            for key in remove_keys:
+                template_labels.pop(key, None)
 
     def add_annotations(self, annotations: Dict):
         """Add or update annotations in the manifest metadata.

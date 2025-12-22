@@ -148,7 +148,7 @@ class BaseServiceManager:
             if "gpu_annotations" in kwargs and kwargs["gpu_annotations"]:
                 annotations.update(kwargs["gpu_annotations"])
 
-        template_path = path or self._get_pod_template_path()
+        template_path = path or self.get_pod_template_path()
 
         # Navigate to template metadata
         current = manifest
@@ -173,7 +173,7 @@ class BaseServiceManager:
         updated_manifest["metadata"]["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
 
         # Update template metadata
-        template_path = self._get_pod_template_path()
+        template_path = self.get_pod_template_path()
         current = updated_manifest
         for key in template_path:
             current = current.setdefault(key, {})
@@ -203,7 +203,7 @@ class BaseServiceManager:
             service_name = created_service.get("metadata", {}).get("name")
             namespace = created_service.get("metadata", {}).get("namespace")
 
-            template_path = self._get_pod_template_path()
+            template_path = self.get_pod_template_path()
             current = created_service
             try:
                 for key in template_path:
@@ -283,17 +283,17 @@ class BaseServiceManager:
         except Exception:
             return None
 
-    def _get_pod_template_path(self) -> List[str]:
+    def get_pod_template_path(self) -> List[str]:
         """Get the path to the pod template in the manifest as a list of keys.
 
         To get the pod spec, append ["spec"] to this path.
         Must be implemented by subclasses.
         """
-        raise NotImplementedError("Subclasses must implement _get_pod_template_path")
+        raise NotImplementedError("Subclasses must implement get_pod_template_path")
 
     def pod_spec(self, manifest: dict) -> dict:
         """Get the pod spec from a manifest based on the pod template path."""
-        template_path = self._get_pod_template_path()
+        template_path = self.get_pod_template_path()
         current = manifest
         for key in template_path:
             current = current.get(key, {})

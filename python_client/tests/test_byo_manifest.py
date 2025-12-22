@@ -1,12 +1,15 @@
 import copy
 import os
 
-import pytest
+import kubetorch.serving.constants as serving_constants
 
+import pytest
 from kubetorch.utils import http_not_found
 
 from .assets.torch_ddp.torch_ddp import torch_ddp
 from .utils import summer
+
+QUEUE_LABEL = serving_constants.KUEUE_QUEUE_NAME_LABEL
 
 TRAINING_JOB_CONFIG = {
     "PyTorchJob": {
@@ -208,7 +211,7 @@ async def test_byo_manifest_with_overrides(kind):
 @pytest.mark.level("minimal")
 @pytest.mark.asyncio
 async def test_byo_manifest_pytorchjob_ddp():
-    """Test BYO manifest PyTorchJob running a PyTorch DDP job."""
+    """Test BYO manifest PyTorchJob running a PyTorch DDP job with Kueue queue integration."""
     import kubetorch as kt
 
     # Create PyTorchJob manifest for distributed training
@@ -240,10 +243,21 @@ async def test_byo_manifest_pytorchjob_ddp():
     compute.launch_timeout = 600  # 10 minutes for large image pulls
     compute.distributed_config = {"quorum_workers": 3}
 
+    # Set Kueue queue for GPU scheduling (if Kueue is installed)
+    # This adds the kueue.x-k8s.io/queue-name label and sets runPolicy.suspend = True
+    compute.queue_name = "gpu-queue"
+
     # Verify configuration
     assert compute.cpus == "0.5"
     assert compute.memory == "2Gi"
     assert compute.replicas == 3
+
+    # Verify Kueue queue configuration
+    assert compute.queue_name == "gpu-queue"
+    assert compute._manifest["metadata"]["labels"].get(QUEUE_LABEL) == "gpu-queue"
+    assert compute.pod_template["metadata"]["labels"].get(QUEUE_LABEL) == "gpu-queue"
+    # For PyTorchJob, runPolicy.suspend should be True for Kueue admission control
+    assert compute._manifest["spec"]["runPolicy"]["suspend"] is True
 
     # Verify service manager is TrainJobServiceManager
     assert compute.service_manager.__class__.__name__ == "TrainJobServiceManager"
@@ -256,7 +270,7 @@ async def test_byo_manifest_pytorchjob_ddp():
     assert compute.distributed_config["distribution_type"] == "spmd"
     assert compute.distributed_config["quorum_workers"] == 3
 
-    # Deploy and test DDP function (if Kubeflow Training Operator is available)
+    # Deploy and test DDP function with Kueue queue (requires Kubeflow Training Operator and Kueue)
     try:
         name = "byo-pytorchjob-ddp"
         fn = await kt.fn(torch_ddp, name=name).to_async(compute)

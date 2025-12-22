@@ -75,7 +75,7 @@ class RayClusterServiceManager(BaseServiceManager):
             logger.error(f"Failed to update deployment timestamp for RayCluster '{service_name}': {str(e)}")
             raise
 
-    def _get_pod_template_path(self) -> List[str]:
+    def get_pod_template_path(self) -> List[str]:
         """Get the path to the pod template (head node)."""
         return ["spec", "headGroupSpec", "template"]
 
