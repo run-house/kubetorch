@@ -1219,8 +1219,6 @@ class Module:
                                             # streaming pre server setup logs, before we have the pod name
                                             formatter = base_formatter
 
-                                        newline = "" if log_dict is None else None
-
                                         # Add service name prefix if configured
                                         prefix = f"({self.service_name}) " if self.logging_config.include_name else ""
                                         formatted_line = (
@@ -1233,7 +1231,7 @@ class Module:
                                                 continue
                                             seen_log_messages.add(message)
 
-                                        print(formatted_line, end=newline)
+                                        print(formatted_line, flush=True)
                     except asyncio.TimeoutError:
                         # Timeout is expected, just continue the loop
                         continue
