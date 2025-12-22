@@ -1,4 +1,17 @@
 {{- if .Values.metrics.enabled }}
+
+{{- /*
+Compute metrics ClusterRole name:
+- Use plain name in "kubetorch"
+- Append namespace elsewhere
+*/ -}}
+{{- $metricsBaseName := "kubetorch-metrics" }}
+{{- $metricsName := $metricsBaseName }}
+{{- if ne .Release.Namespace "kubetorch" }}
+{{- $metricsName = printf "%s-%s" $metricsBaseName .Release.Namespace }}
+{{- end }}
+
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -10,7 +23,7 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: kubetorch-metrics
+  name: {{ $metricsName }}
   labels:
     app: kubetorch-metrics
 rules:
@@ -30,13 +43,13 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: kubetorch-metrics
+  name: {{ printf "%s-binding" $metricsName }}
   labels:
     app: kubetorch-metrics
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: kubetorch-metrics
+  name: {{ $metricsName }}
 subjects:
   - kind: ServiceAccount
     name: kubetorch-metrics

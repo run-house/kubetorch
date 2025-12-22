@@ -161,6 +161,7 @@ opentelemetry-collector:
   configMap:
     create: false
     existingName: otel-collector-config
+  affinity: {}
   tolerations:
     - operator: "Exists"
       # This single toleration with operator: Exists and no key/value/effect

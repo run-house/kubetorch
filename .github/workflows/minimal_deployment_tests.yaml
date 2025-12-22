@@ -82,6 +82,23 @@ jobs:
           TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)"
           echo "TEST_HASH=$TEST_HASH" >> $GITHUB_ENV
 
+      - name: Update kt config with controller test namespace, if exists
+        shell: bash
+        run: |
+          BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
+          NAMESPACE=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9]#-#g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-63)
+          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+
+          # Check if namespace exists
+          if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+            echo "Namespace $NAMESPACE exists, setting kt config"
+            kt config set namespace "$NAMESPACE"
+            kt config set install_namespace "$NAMESPACE"
+          else
+            echo "Namespace $NAMESPACE does not exist, kt config remains unchanged"
+          fi
+
       - name: Run tests with all deployment modes
         run: |
           cd python_client
@@ -127,6 +144,23 @@ jobs:
         run: |
           TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)"
           echo "TEST_HASH=$TEST_HASH" >> $GITHUB_ENV
+
+      - name: Update kt config with controller test namespace, if exists
+        shell: bash
+        run: |
+          BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
+          NAMESPACE=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9]#-#g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-63)
+          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+
+          # Check if namespace exists
+          if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+            echo "Namespace $NAMESPACE exists, setting kt config"
+            kt config set namespace "$NAMESPACE"
+            kt config set install_namespace "$NAMESPACE"
+          else
+            echo "Namespace $NAMESPACE does not exist, kt config remains unchanged"
+          fi
 
       - name: Run Teardown Commands
         run: |
