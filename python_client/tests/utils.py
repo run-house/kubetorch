@@ -61,6 +61,32 @@ def simple_summer_with_logs(a, b):
     return a + b
 
 
+def verify_store_uploads():
+    """Verify kt.put uploads and create files for kt.get download test."""
+    from pathlib import Path
+
+    results = {}
+
+    # Verify uploads with key-value store paths
+    file_path = Path("/data/store/integration/test_file/integration_test.txt")
+    results["file_uploaded"] = file_path.exists()
+    if file_path.exists():
+        results["file_content"] = file_path.read_text()
+
+    dir_path = Path("/data/store/integration/test_dir/integration_dir")
+    results["dir_uploaded"] = dir_path.exists()
+    if dir_path.exists():
+        results["dir_files"] = sorted([f.name for f in dir_path.iterdir()])
+
+    # Create files for download test
+    output_dir = Path("/data/store/integration/output")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "result.json").write_text('{"status": "success"}')
+    (output_dir / "log.txt").write_text("Process completed")
+
+    return results
+
+
 async def async_simple_summer(a, b, return_times=False):
     import asyncio
     import time

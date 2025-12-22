@@ -22,6 +22,7 @@ from .utils import (
     ResourceHungryService,
     SlowNumpyArray,
     summer,
+    verify_store_uploads,
     write_temp_file_fn,
 )
 
@@ -147,33 +148,7 @@ def test_store_api_integration():
         kt.put(key="integration/test_file", src=str(test_file))
         kt.put(key="integration/test_dir", src=str(test_dir))
 
-        # Create a function to verify uploads and test downloads
-        def verify_and_prepare():
-            from pathlib import Path
-
-            results = {}
-
-            # Verify uploads with key-value store paths
-            file_path = Path("/data/store/integration/test_file/integration_test.txt")
-            results["file_uploaded"] = file_path.exists()
-            if file_path.exists():
-                results["file_content"] = file_path.read_text()
-
-            dir_path = Path("/data/store/integration/test_dir/integration_dir")
-            results["dir_uploaded"] = dir_path.exists()
-            if dir_path.exists():
-                results["dir_files"] = sorted([f.name for f in dir_path.iterdir()])
-
-            # Create files for download test
-            output_dir = Path("/data/store/integration/output")
-            output_dir.mkdir(parents=True, exist_ok=True)
-            (output_dir / "result.json").write_text('{"status": "success"}')
-            (output_dir / "log.txt").write_text("Process completed")
-
-            return results
-
-        # Deploy and run verification
-        verify_fn = kt.fn(verify_and_prepare, name="integration-verifier").to(kt.Compute(cpus="0.1", memory="256Mi"))
+        verify_fn = kt.fn(verify_store_uploads, name="integration-verifier").to(kt.Compute(cpus="0.1", memory="256Mi"))
         results = verify_fn()
 
         # Check upload results
