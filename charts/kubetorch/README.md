@@ -55,6 +55,7 @@ A Helm chart for kubetorch
 | kubetorchConfig.metricsEnabled | bool | `true` |  |
 | kubetorchConfig.serviceAccountAnnotations | object | `{}` |  |
 | kubetorchController.affinity | object | `{}` |  |
+| kubetorchController.authEndpoint | string | `""` |  |
 | kubetorchController.connectionPoolSize | int | `20` |  |
 | kubetorchController.image | string | `"ghcr.io/run-house/kubetorch-controller"` |  |
 | kubetorchController.imagePullPolicy | string | `"Always"` |  |

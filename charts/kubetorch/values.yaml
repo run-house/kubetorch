@@ -18,6 +18,10 @@ kubetorchController:
   connectionPoolSize: 20  # K8s API connection pool size per worker
   replicas: 1  # Number of controller replica pods
 
+  # Authentication endpoint (leave empty to disable auth)
+  # Example: "http://kubetorch-mgmt-controller-api.kubetorch.svc.cluster.local:8000/api/v1/auth/validate"
+  authEndpoint: ""
+
   resources:
     cpu:
       request: "200m"   # Minimum guaranteed CPU (0.2 cores)
