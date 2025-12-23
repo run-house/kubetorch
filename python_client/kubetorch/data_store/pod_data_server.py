@@ -1401,12 +1401,7 @@ class PodDataServer:
             self._mds_base_url = f"http://{service_name}.{self._namespace}.svc.cluster.local:{DATA_STORE_METADATA_PORT}"
         return self._mds_base_url
 
-    def _mds_publish_gpu(
-        self,
-        key: str,
-        is_state_dict: bool = False,
-        tensor_keys: Optional[List[str]] = None,
-    ) -> bool:
+    def _mds_publish_gpu(self, key: str) -> bool:
         """Publish GPU data key to metadata server."""
         from urllib.parse import quote
 
@@ -1427,10 +1422,7 @@ class PodDataServer:
                 "nccl_port": self.nccl_port_start,
                 "gpu_server_port": self.tcp_port,
                 "gpu_server_socket": self.socket_path,
-                "is_state_dict": is_state_dict,
             }
-            if tensor_keys:
-                payload["tensor_keys"] = tensor_keys
 
             response = requests.post(url, json=payload, timeout=10)
             response.raise_for_status()
@@ -1730,8 +1722,6 @@ class PodDataServer:
         dtype = message["dtype"]
         device = message["device"]
         pid = message.get("pid", 0)
-        is_state_dict = message.get("is_state_dict", False)
-        tensor_keys = message.get("tensor_keys")
         broadcast = message.get("broadcast")  # Optional broadcast config
 
         # Step 1: Register tensor locally
@@ -1770,7 +1760,7 @@ class PodDataServer:
             )
         else:
             # Point-to-point: just publish to MDS
-            if not self._mds_publish_gpu(key, is_state_dict=is_state_dict, tensor_keys=tensor_keys):
+            if not self._mds_publish_gpu(key):
                 return {"status": "error", "error": "Failed to publish to MDS"}
 
             logger.info(f"put_tensor: registered and published '{key}'")
@@ -2326,8 +2316,6 @@ class PodDataServerClient:
         self,
         key: str,
         tensor,
-        is_state_dict: bool = False,
-        tensor_keys: Optional[List[str]] = None,
         pid: Optional[int] = None,
         broadcast: Optional[dict] = None,
     ) -> dict:
@@ -2339,8 +2327,6 @@ class PodDataServerClient:
         Args:
             key: Storage key
             tensor: CUDA tensor to publish
-            is_state_dict: Whether this is part of a state dict
-            tensor_keys: List of tensor keys if state dict
             pid: PID of the registering process (defaults to current)
             broadcast: Optional broadcast config dict with:
                 - group_id: Broadcast group identifier (required)
@@ -2367,10 +2353,7 @@ class PodDataServerClient:
             "dtype": str(tensor.dtype),
             "device": tensor.device.index,
             "pid": pid or os.getpid(),
-            "is_state_dict": is_state_dict,
         }
-        if tensor_keys:
-            message["tensor_keys"] = tensor_keys
         if broadcast:
             message["broadcast"] = broadcast
 
