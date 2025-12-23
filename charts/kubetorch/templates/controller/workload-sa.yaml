@@ -10,4 +10,10 @@ kind: ServiceAccount
 metadata:
   name: kubetorch-service-account
   namespace: {{ . }}
+{{- if $.Values.kubetorchConfig.serviceAccountAnnotations }}
+  annotations:
+{{- if kindIs "map" $.Values.kubetorchConfig.serviceAccountAnnotations }}
+{{ $.Values.kubetorchConfig.serviceAccountAnnotations | toYaml | nindent 4 }}
+{{- end }}
+{{- end }}
 {{- end }}
