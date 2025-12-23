@@ -315,13 +315,14 @@ class Compute:
         namespace = config.get("namespace") or globals.config.namespace
         server_port = serving_constants.DEFAULT_KT_SERVER_PORT
         service_account_name = config.get("service_account_name") or serving_constants.DEFAULT_SERVICE_ACCOUNT_NAME
-        otel_enabled = (
-            globals.config.cluster_config.get("otel_enabled", False) if globals.config.cluster_config else False
+        log_streaming_enabled = (
+            globals.config.cluster_config.get("log_streaming_enabled", True) if globals.config.cluster_config else True
+        )
+        metrics_enabled = (
+            globals.config.cluster_config.get("metrics_enabled", True) if globals.config.cluster_config else True
         )
 
-        server_image = self._get_server_image(
-            config.get("image") or self._image, otel_enabled, config.get("inactivity_ttl")
-        )
+        server_image = self._get_server_image(config.get("image") or self._image)
 
         gpus = None if config.get("gpus") == 0 else config.get("gpus")
         requested_resources = self._get_requested_resources(
@@ -377,7 +378,8 @@ class Compute:
             "priority_class_name": config.get("priority_class_name"),
             "launch_timeout": self._get_launch_timeout(config.get("launch_timeout")),
             "inactivity_ttl": config.get("inactivity_ttl"),
-            "otel_enabled": otel_enabled,
+            "log_streaming_enabled": log_streaming_enabled,
+            "metrics_enabled": metrics_enabled,
             "setup_script": "",
         }
 
@@ -1303,13 +1305,13 @@ class Compute:
         self.pod_spec["priorityClassName"] = value
 
     @property
-    def otel_enabled(self):
+    def metrics_enabled(self):
         container = self._container()
         if "env" in container:
             for env_var in container["env"]:
-                if env_var["name"] == "KT_OTEL_ENABLED" and "value" in env_var:
+                if env_var["name"] == "KT_METRICS_ENABLED" and "value" in env_var:
                     return env_var["value"].lower() == "true"
-        return False
+        return True  # Default to True
 
     @property
     def launch_timeout(self):
@@ -1348,9 +1350,9 @@ class Compute:
     def inactivity_ttl(self, value: str):
         if value and (not isinstance(value, str) or not re.match(r"^\d+[smhd]$", value)):
             raise ValueError("Inactivity TTL must be a string, e.g. '5m', '1h', '1d'")
-        if value and not self.otel_enabled:
+        if value and not self.metrics_enabled:
             logger.warning(
-                "Inactivity TTL is only supported when OTEL is enabled, please update your Kubetorch Helm chart and restart the nginx proxy"
+                "Inactivity TTL requires metrics collection to be enabled. " "Please update your Kubetorch Helm chart."
             )
 
         container = self._container()
@@ -1643,14 +1645,11 @@ class Compute:
         self._set_env_vars_in_container(container, env_vars)
 
     # ----------------- Init Template Setup Helpers ----------------- #
-    def _get_server_image(self, image, otel_enabled, inactivity_ttl):
+    def _get_server_image(self, image):
         """Return base server image"""
         image = self.image.image_id if self.image and self.image.image_id else None
 
         if not image or image == serving_constants.KUBETORCH_IMAGE_TRAPDOOR:
-            # No custom image or Trapdoor → pick OTEL or default
-            if self._server_should_enable_otel(otel_enabled, inactivity_ttl):
-                return serving_constants.SERVER_IMAGE_WITH_OTEL
             return serving_constants.SERVER_IMAGE_MINIMAL
 
         return image
@@ -1701,15 +1700,6 @@ class Compute:
         if allowed_serialization:
             config_env_vars["KT_ALLOWED_SERIALIZATION"] = ",".join(allowed_serialization)
         return config_env_vars
-
-    def _server_should_enable_otel(self, otel_enabled, inactivity_ttl):
-        return otel_enabled and inactivity_ttl
-
-    def _should_install_otel_dependencies(self, server_image, otel_enabled, inactivity_ttl):
-        return (
-            self._server_should_enable_otel(otel_enabled, inactivity_ttl)
-            and server_image != serving_constants.SERVER_IMAGE_WITH_OTEL
-        )
 
     @property
     def image_install_cmd(self):
@@ -1899,8 +1889,10 @@ class Compute:
 
         # Ensure cluster config env vars are set
         if globals.config.cluster_config:
-            if globals.config.cluster_config.get("otel_enabled"):
-                kt_env_vars["KT_OTEL_ENABLED"] = True
+            if globals.config.cluster_config.get("log_streaming_enabled", True):
+                kt_env_vars["KT_LOG_STREAMING_ENABLED"] = True
+            if globals.config.cluster_config.get("metrics_enabled", True):
+                kt_env_vars["KT_METRICS_ENABLED"] = True
 
         # Ensure all environment variable values are strings for Kubernetes compatibility
         kt_env_vars = self._serialize_env_vars(kt_env_vars)
@@ -1963,9 +1955,6 @@ class Compute:
             freeze=self.freeze,
             install_url=install_url or globals.config.install_url,
             install_cmd=self.image_install_cmd,
-            install_otel=self._should_install_otel_dependencies(
-                self.server_image, self.otel_enabled, self.inactivity_ttl
-            ),
             server_image=self.server_image,
             rsync_kt_local_cmd=startup_rsync_command,
             server_port=self.server_port,

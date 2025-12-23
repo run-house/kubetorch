@@ -52,7 +52,8 @@ A Helm chart for kubetorch
 | dcgm-exporter.tolerations[0].key | string | `"nvidia.com/gpu"` |  |
 | dcgm-exporter.tolerations[0].operator | string | `"Exists"` |  |
 | kubetorchConfig.deployment_namespaces[0] | string | `"default"` |  |
-| kubetorchConfig.otelEnabled | bool | `true` |  |
+| kubetorchConfig.logStreamingEnabled | bool | `true` |  |
+| kubetorchConfig.metricsEnabled | bool | `true` |  |
 | kubetorchConfig.serviceAccountAnnotations | object | `{}` |  |
 | kubetorchController.affinity | object | `{}` |  |
 | kubetorchController.connectionPoolSize | int | `20` |  |
@@ -121,7 +122,7 @@ A Helm chart for kubetorch
 | opentelemetry-collector.affinity | object | `{}` |  |
 | opentelemetry-collector.configMap.create | bool | `false` |  |
 | opentelemetry-collector.configMap.existingName | string | `"otel-collector-config"` |  |
-| opentelemetry-collector.enabled | bool | `true` |  |
+| opentelemetry-collector.enabled | bool | `false` |  |
 | opentelemetry-collector.image.pullPolicy | string | `"IfNotPresent"` |  |
 | opentelemetry-collector.image.repository | string | `"otel/opentelemetry-collector-contrib"` |  |
 | opentelemetry-collector.mode | string | `"daemonset"` |  |

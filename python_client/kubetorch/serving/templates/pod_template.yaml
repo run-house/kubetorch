@@ -96,16 +96,10 @@ containers:
             fieldPath: spec.serviceAccountName
       - name: UV_LINK_MODE
         value: "copy"  # Suppress the hardlink warning
-      - name: OTEL_EXPORTER_OTLP_ENDPOINT
-        value: "kubetorch-otel-opentelemetry-collector.kubetorch-monitoring.svc.cluster.local:4317"
-      - name: OTEL_EXPORTER_OTLP_PROTOCOL
-        value: "grpc"
-      - name: OTEL_TRACES_EXPORTER
-        value: "otlp"
-      - name: OTEL_PROPAGATORS
-        value: "tracecontext,baggage"
-      - name: KT_OTEL_ENABLED
-        value: "{{ otel_enabled }}"
+      - name: KT_LOG_STREAMING_ENABLED
+        value: "{{ log_streaming_enabled }}"
+      - name: KT_METRICS_ENABLED
+        value: "{{ metrics_enabled }}"
       - name: KT_SERVER_PORT
         value: "{{ server_port }}"
       - name: KT_FREEZE

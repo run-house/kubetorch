@@ -31,7 +31,9 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
 try:
-    from server_metrics import get_inactivity_ttl_annotation, HeartbeatManager, setup_otel_metrics
+    from log_capture import init_log_capture, stop_log_capture
+    from metrics_push import init_metrics_pusher, stop_metrics_pusher
+    from server_metrics import get_inactivity_ttl_annotation
     from utils import (
         clear_debugging_sessions,
         collect_reload_modules,
@@ -44,7 +46,9 @@ try:
         wait_for_app_start,
     )
 except ImportError:
-    from .server_metrics import get_inactivity_ttl_annotation, HeartbeatManager, setup_otel_metrics
+    from .log_capture import init_log_capture, stop_log_capture
+    from .metrics_push import init_metrics_pusher, stop_metrics_pusher
+    from .server_metrics import get_inactivity_ttl_annotation
     from .utils import (
         clear_debugging_sessions,
         collect_reload_modules,
@@ -66,12 +70,8 @@ logging.config.dictConfig(LOG_CONFIG)
 # Set up our structured JSON logging
 ensure_structured_logging()
 
-# Create the print logger AFTER ensure_structured_logging so it inherits handlers
-print_logger = logging.getLogger("print_redirect")
-
 logger = logging.getLogger(__name__)
 # Set log level based on environment variable
-# Don't default the log_level
 kt_log_level = os.getenv("KT_LOG_LEVEL")
 if kt_log_level:
     kt_log_level = kt_log_level.upper()
@@ -83,9 +83,10 @@ _CACHED_IMAGE = []
 DISTRIBUTED_SUPERVISOR = None
 APP_PROCESS = None
 _CALLABLE_LOAD_LOCK = threading.Lock()  # Lock for thread-safe callable loading
-LOKI_HOST = os.environ.get("LOKI_HOST", "loki-gateway.kubetorch.svc.cluster.local")
-LOKI_PORT = int(os.environ.get("LOKI_PORT", 80))  # Default Loki port
-KT_OTEL_ENABLED = os.environ.get("KT_OTEL_ENABLED", "False").lower() == "true"
+
+# Log streaming and metrics collection - enabled by default in Kubernetes
+KT_LOG_STREAMING_ENABLED = os.environ.get("KT_LOG_STREAMING_ENABLED", "True").lower() == "true"
+KT_METRICS_ENABLED = os.environ.get("KT_METRICS_ENABLED", "True").lower() == "true"
 
 # Global termination event that can be checked by running requests
 TERMINATION_EVENT = threading.Event()
@@ -745,7 +746,7 @@ def load_callable_from_env():
         logger.debug(f"Module {module_name} loaded")
 
         # Ensure our structured logging is in place after user module import
-        # (in case the user's module configured its own logging)
+        # (in case the user's module configured its own logging via dictConfig)
         ensure_structured_logging()
 
         callable_obj = getattr(module, cls_or_fn_name)
@@ -939,101 +940,26 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
             request_id_ctx_var.reset(token)
 
 
-class StreamToLogger:
-    def __init__(self, logger, log_level=logging.INFO, original_stream=None):
-        self.logger = logger
-        self.log_level = log_level
-        self.original_stream = original_stream
-        self.linebuf = ""
-
-    def _is_from_logging(self):
-        """Check if the current write call is coming from the logging system"""
-        frame = sys._getframe()
-        while frame:
-            if frame.f_globals.get("__name__", "").startswith("logging"):
-                return True
-            frame = frame.f_back
-        return False
-
-    def write(self, buf):
-        # Check if this is from logging system
-        is_from_logging = self._is_from_logging()
-
-        # Only write to original stream if it's a TTY (interactive terminal)
-        # In a pod/container, we don't want raw output - only JSON logs
-        if self.original_stream and self.isatty():
-            self.original_stream.write(buf)
-            self.original_stream.flush()
-
-        # Skip logging if this is from the logging system to prevent infinite loops
-        if self.logger.name == "print_redirect" and is_from_logging:
-            return
-
-        # Buffer and log complete lines
-        temp_linebuf = self.linebuf + buf
-        self.linebuf = ""
-
-        # Split on newlines but keep carriage returns
-        lines = []
-        current_line = ""
-        for char in temp_linebuf:
-            if char == "\n":
-                lines.append(current_line)
-                current_line = ""
-            else:
-                current_line += char
-
-        # Add any remaining content to linebuf
-        if current_line:
-            self.linebuf = current_line
-
-        # Log complete lines
-        for line in lines:
-            if line:
-                self.logger.log(self.log_level, line)
-
-    def flush(self):
-        if self.original_stream and self.isatty():
-            self.original_stream.flush()
-        if self.logger.name == "print_redirect" and self._is_from_logging():
-            return
-        if self.linebuf != "":
-            self.logger.log(self.log_level, self.linebuf)
-            self.linebuf = ""
-
-    def isatty(self):
-        # Delegate to the original stream if it exists, else return False
-        if self.original_stream and hasattr(self.original_stream, "isatty"):
-            return self.original_stream.isatty()
-        return False
-
-    def fileno(self):
-        if self.original_stream and hasattr(self.original_stream, "fileno"):
-            return self.original_stream.fileno()
-        raise OSError("Stream does not support fileno()")
-
-    @property
-    def encoding(self):
-        # Return the encoding of the original stream if available, else UTF-8
-        if self.original_stream and hasattr(self.original_stream, "encoding"):
-            return self.original_stream.encoding
-        return "utf-8"
-
-
-# Save original streams before redirection
-_original_stdout = sys.stdout
-_original_stderr = sys.stderr
-
-# Redirect stdout and stderr to our logger while preserving original streams
-sys.stdout = StreamToLogger(print_logger, logging.INFO, _original_stdout)
-sys.stderr = StreamToLogger(print_logger, logging.ERROR, _original_stderr)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
     import signal
     import threading
+
+    # Initialize log capture early (before other logging happens)
+    # This captures ALL stdout/stderr from the pod and pushes to log store
+    if KT_LOG_STREAMING_ENABLED:
+        log_capture = init_log_capture()
+        if log_capture:
+            logger.info("Log streaming enabled")
+            app.state.log_capture = log_capture
+
+    # Initialize metrics collection
+    if KT_METRICS_ENABLED:
+        metrics_pusher = init_metrics_pusher()
+        if metrics_pusher:
+            logger.info("Metrics collection enabled")
+            app.state.metrics_pusher = metrics_pusher
 
     # Only register signal handlers if we're in the main thread
     # This allows tests to run without signal handling
@@ -1071,17 +997,15 @@ async def lifespan(app: FastAPI):
         signal.signal(signal.SIGTERM, handle_sigterm)
     app.state.terminating = False
 
-    # Startup
+    # Startup - TTL tracking via metrics
     ttl = get_inactivity_ttl_annotation()
-    if ttl and KT_OTEL_ENABLED is True:
-        app.state.heartbeat_manager = HeartbeatManager(ttl_seconds=ttl)
-        if app.state.heartbeat_manager:
-            await app.state.heartbeat_manager.start()
-            logger.debug(f"Heartbeat manager started with TTL={ttl}s")
+    if ttl and KT_METRICS_ENABLED:
+        # MetricsPusher handles activity tracking via record_activity()
+        logger.info(f"TTL={ttl}s enabled with metrics tracking")
     elif ttl:
-        logger.warning("TTL annotation found, but OTEL is not enabled, heartbeat disabled")
+        logger.warning("TTL annotation found but metrics collection is disabled - TTL will not work")
     else:
-        logger.debug("No TTL annotation found, heartbeat disabled")
+        logger.debug("No TTL annotation found")
 
     try:
         if os.getenv("KT_CALLABLE_TYPE") == "app":
@@ -1090,6 +1014,12 @@ async def lifespan(app: FastAPI):
             load_callable()
 
         logger.info("Kubetorch Server started.")
+
+        # Flush logs immediately so launch logs are pushed before request_id is reset
+        log_capture = getattr(app.state, "log_capture", None)
+        if log_capture:
+            log_capture.flush()
+
         request_id_ctx_var.set("-")  # Reset request_id after launch sequence
         yield
 
@@ -1102,15 +1032,26 @@ async def lifespan(app: FastAPI):
         # However if this service is frozen, it should just fail because the user isn't debugging the service and there is no
         # way for the dependencies to be added at runtime.
         logger.error(traceback.format_exc())
+
+        # Flush logs immediately so launch logs are pushed before request_id is reset
+        log_capture = getattr(app.state, "log_capture", None)
+        if log_capture:
+            log_capture.flush()
+
         request_id_ctx_var.set("-")
         yield
 
     finally:
-        # Shutdown
-        manager = getattr(app.state, "heartbeat_manager", None)
-        if manager:
-            await manager.stop()
-            logger.info("Heartbeat manager stopped")
+        # Shutdown - stop log capture and metrics collection
+        log_capture = getattr(app.state, "log_capture", None)
+        if log_capture:
+            stop_log_capture()
+            logger.info("Log streaming stopped")
+
+        metrics_pusher = getattr(app.state, "metrics_pusher", None)
+        if metrics_pusher:
+            stop_metrics_pusher()
+            logger.info("Metrics collection stopped")
 
         # Clean up during normal shutdown so we don't leave any hanging processes, which can cause pods to hang
         # indefinitely. Skip if already cleaned up by SIGTERM handler.
@@ -1128,29 +1069,44 @@ root_logger = logging.getLogger()
 root_logger.addFilter(RequestContextFilter())
 for handler in root_logger.handlers:
     handler.addFilter(RequestContextFilter())
-print_logger.addFilter(RequestContextFilter())
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(TerminationCheckMiddleware)  # Check termination first
 app.add_middleware(RequestIDMiddleware)
 
-# Configure the FastAPI app for metrics first
-# Method will return None for meter_provider if otel is not enabled
-app, meter_provider = setup_otel_metrics(app) if KT_OTEL_ENABLED is True else (app, None)
 
-# instrument metrics
-if meter_provider is not None:
-    try:
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+# Add metrics tracking middleware
+@app.middleware("http")
+async def track_requests_metrics(request: Request, call_next):
+    """Middleware to track active requests and record metrics."""
+    metrics_pusher = getattr(request.app.state, "metrics_pusher", None)
+    if metrics_pusher and request.url.path not in ["/metrics", "/health", "/"]:
+        metrics_pusher.request_started()
+        start_time = time.time()
+        try:
+            response = await call_next(request)
+            duration = time.time() - start_time
+            metrics_pusher.record_request(
+                method=request.method,
+                endpoint=request.url.path,
+                status=response.status_code,
+                duration=duration,
+            )
+            return response
+        except Exception:
+            duration = time.time() - start_time
+            metrics_pusher.record_request(
+                method=request.method,
+                endpoint=request.url.path,
+                status=500,
+                duration=duration,
+            )
+            raise
+        finally:
+            metrics_pusher.request_finished()
+    else:
+        return await call_next(request)
 
-        logger.info("Instrumenting FastAPI app for metrics only")
-        FastAPIInstrumentor.instrument_app(
-            app,
-            meter_provider=meter_provider,
-            excluded_urls="/,/metrics,/health",
-        )
-    except ImportError:
-        logger.info("OpenTelemetry instrumentation not enabled, skipping metrics instrumentation")
 
 # add route for fastapi app
 if os.getenv("KT_CALLABLE_TYPE") == "app" and os.getenv("KT_APP_PORT"):

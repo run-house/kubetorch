@@ -24,7 +24,7 @@ from kubetorch.servers.http.utils import (
 )
 
 from kubetorch.serving.constants import DEFAULT_DEBUG_PORT, DEFAULT_NGINX_PORT
-from kubetorch.utils import ColoredFormatter, extract_host_port, get_container_name, ServerLogsFormatter
+from kubetorch.utils import ColoredFormatter, extract_host_port, ServerLogsFormatter
 
 logger = get_logger(__name__)
 
@@ -538,11 +538,10 @@ class HTTPClient:
         websocket = None
 
         try:
-            container_name = get_container_name(self.compute.kind)
-            query = f'{{k8s_container_name="{container_name}"}} | json | request_id="{request_id}"'
-            encoded_query = urllib.parse.quote_plus(query)
-            # Namespace-aware Loki URL - routes to data store in the target namespace
+            # Query using labels set by LogCapture (service, namespace, request_id)
             namespace = self.compute.namespace
+            query = f'{{service="{self.service_name}", namespace="{namespace}", request_id="{request_id}"}}'
+            encoded_query = urllib.parse.quote_plus(query)
             uri = f"ws://{host}:{port}/loki/{namespace}/api/v1/tail?query={encoded_query}"
             # Track when we should stop
             stop_time = None
@@ -576,10 +575,8 @@ class HTTPClient:
                         if data.get("streams"):
                             for stream in data["streams"]:
                                 labels = stream["stream"]
-                                service_name = labels.get("kubetorch_com_service")
-
-                                # Determine if this is a Knative service by checking for Knative-specific labels
-                                is_knative = labels.get("serving_knative_dev_configuration") is not None
+                                # Get pod name from Loki labels
+                                pod_name = labels.get("pod", "")
 
                                 for value in stream["values"]:
                                     raw_log = value[1]
@@ -588,43 +585,44 @@ class HTTPClient:
                                     if deduplicator.is_duplicate(raw_log):
                                         continue
 
-                                    # Now safe to deserialize
-                                    log_line = json.loads(raw_log)
-                                    log_name = log_line.get("name")
-                                    log_message = log_line.get("message")
-                                    log_level = log_line.get("levelname", "INFO")
+                                    # Parse JSON message from LogCapture
+                                    try:
+                                        log_line = json.loads(raw_log)
+                                        log_name = log_line.get("name", "")
+                                        log_message = log_line.get("message", "")
+                                        log_level = log_line.get("levelname", "INFO")
+                                        log_asctime = log_line.get("asctime", "")
+                                    except json.JSONDecodeError:
+                                        # Fallback for plain text (shouldn't happen with LogCapture)
+                                        log_name = ""
+                                        log_message = raw_log
+                                        log_level = labels.get("level", "INFO")
+                                        log_asctime = ""
 
                                     # Apply log level and system log filters
                                     if not self._should_display_log(log_name, log_level, log_config):
                                         continue
 
-                                    # Choose the appropriate identifier for the log prefix
-                                    if is_knative:
-                                        log_prefix = service_name
-                                    else:
-                                        # For deployments, use the pod name from the structured log
-                                        log_prefix = log_line.get("pod", service_name)
-
                                     # Format and print the log
-                                    if log_config.include_name and log_prefix:
-                                        prefix = f"({log_prefix}) "
+                                    if log_config.include_name and pod_name:
+                                        prefix = f"({pod_name}) "
                                     else:
                                         prefix = ""
 
                                     # Strip trailing whitespace/control chars to prevent line overwrites
                                     log_message = log_message.rstrip() if log_message else ""
 
+                                    # Format differently for print statements vs logger output
                                     if log_name == "print_redirect":
                                         print(
                                             f"{formatter.start_color}{prefix}{log_message}{formatter.reset_color}",
                                             flush=True,
                                         )
                                     else:
-                                        formatted_log = (
-                                            f"{prefix}{log_line.get('asctime')} | {log_level} | {log_message}"
-                                        )
+                                        formatted_log = f"{prefix}{log_asctime} | {log_level} | {log_message}"
                                         print(
-                                            f"{formatter.start_color}{formatted_log}{formatter.reset_color}", flush=True
+                                            f"{formatter.start_color}{formatted_log}{formatter.reset_color}",
+                                            flush=True,
                                         )
 
                     except asyncio.TimeoutError:
@@ -654,6 +652,10 @@ class HTTPClient:
 
     def _run_log_stream(self, request_id, stop_event, host, port, log_config: LoggingConfig = None):
         """Helper to run log streaming in an event loop"""
+        # Set request_id in this thread's context so any logs printed here
+        # (e.g., nested service logs) are captured with the correct request_id
+        request_id_ctx_var.set(request_id)
+
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
