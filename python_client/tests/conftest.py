@@ -211,6 +211,7 @@ async def remote_cls():
         gpu_anti_affinity=True,
         allowed_serialization=["json", "pickle"],
         launch_timeout=300,
+        inactivity_ttl="5m",
     )
 
     if compute_type == "knative":
