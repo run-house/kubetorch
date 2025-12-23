@@ -366,6 +366,8 @@ class ControllerClient:
         self.base_url = base_url.rstrip("/")
         self.session = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})
+        if config.token:
+            self.session.headers.update({"Authorization": f"Bearer {config.token}"})
 
     def _request(self, method: str, path: str, ignore_not_found=False, **kwargs) -> requests.Response:
         """Make HTTP request to controller.

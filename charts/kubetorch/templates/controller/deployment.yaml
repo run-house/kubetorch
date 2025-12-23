@@ -72,6 +72,8 @@ spec:
               value: {{ .Values.kubetorchController.workers | quote }}
             - name: CONNECTION_POOL_SIZE
               value: {{ .Values.kubetorchController.connectionPoolSize | quote }}
+            - name: AUTH_ENDPOINT
+              value: {{ .Values.kubetorchController.authEndpoint | default "" | quote }}
             # Event watcher configuration
             - name: EVENT_WATCH_ENABLED
               value: {{ .Values.kubetorchController.eventWatcher.enabled | quote }}
