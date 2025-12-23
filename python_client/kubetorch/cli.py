@@ -1242,6 +1242,10 @@ def kt_secrets(
             console=console,
         )
 
+        if not secrets_to_delete:
+            console.print("[yellow] No secrets found[/yellow]")
+            raise typer.Exit(0)
+
         username = globals.config.username
         secrets_to_delete_by_namespace: dict[str, list[str]] = {}
         for secret in secrets_to_delete:
