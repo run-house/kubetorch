@@ -866,8 +866,9 @@ class Module:
         try:
             # Query using labels set by LogCapture (service, namespace, request_id)
             pod_query = f'{{service="{self.service_name}", namespace="{self.namespace}", request_id="{request_id}"}}'
-            # Event query for K8s events (these come from a different source with different labels)
-            event_query = f'{{service_name="unknown_service"}} | json | k8s_object_name=~"{self.service_name}.*" | k8s_namespace_name="{self.namespace}"'
+            # Event query for K8s events pushed by controller's event watcher
+            # Matches all events for resources with names starting with service name (pods, deployments, replicasets)
+            event_query = f'{{job="kubetorch-events", namespace="{self.namespace}", name=~"{self.service_name}.*"}}'
 
             encoded_pod_query = urllib.parse.quote_plus(pod_query)
             encoded_event_query = urllib.parse.quote_plus(event_query)
@@ -935,8 +936,9 @@ class Module:
         try:
             # Query using labels set by LogCapture (service, namespace, request_id)
             pod_query = f'{{service="{self.service_name}", namespace="{self.namespace}", request_id="{request_id}"}}'
-            # Event query for K8s events (these come from a different source with different labels)
-            event_query = f'{{service_name="unknown_service"}} | json | k8s_object_name=~"{self.service_name}.*" | k8s_namespace_name="{self.namespace}"'
+            # Event query for K8s events pushed by controller's event watcher
+            # Matches all events for resources with names starting with service name (pods, deployments, replicasets)
+            event_query = f'{{job="kubetorch-events", namespace="{self.namespace}", name=~"{self.service_name}.*"}}'
 
             encoded_pod_query = urllib.parse.quote_plus(pod_query)
             encoded_event_query = urllib.parse.quote_plus(event_query)
@@ -1069,17 +1071,18 @@ class Module:
         log_level = self.logging_config.level.lower() if self.logging_config.level else "info"
 
         try:
+            # Track most recent deployment timestamp to filter out old logs / events
+            start_timestamp = iso_timestamp_to_nanoseconds(deployment_timestamp)
+
             # Namespace-aware Loki URL - routes to data store in the target namespace
-            uri = f"ws://{host}:{port}/loki/{namespace}/api/v1/tail?query={query}"
+            # Include start timestamp to avoid showing old events/logs
+            uri = f"ws://{host}:{port}/loki/{namespace}/api/v1/tail?query={query}&start={start_timestamp}"
 
             # Track the last timestamp we've seen to avoid duplicates
             last_timestamp = None
 
             # Track when we should stop
             stop_time = None
-
-            # Track most recent deployment timestamp to filter out old logs / events
-            start_timestamp = iso_timestamp_to_nanoseconds(deployment_timestamp)
 
             shown_event_messages = set()
 
@@ -1122,61 +1125,56 @@ class Module:
                         if data.get("streams"):
                             for stream in data["streams"]:
                                 labels = stream.get("stream", {})
-                                is_event = "k8s_event_count" in list(labels.keys())
+                                # Detect events by job label (pushed by controller's event watcher)
+                                is_event = labels.get("job") == "kubetorch-events"
                                 for value in stream["values"]:
                                     ts_ns = int(value[0])
                                     if start_timestamp is not None and ts_ns < start_timestamp:
                                         continue
                                     log_line = value[1]
                                     if is_event:
-                                        event_type = labels.get("detected_level", "")
+                                        event_type = labels.get("event_type", "Normal")
+                                        reason = labels.get("reason", "")
+                                        resource_kind = labels.get("kind", "")
+                                        resource_name = labels.get("name", "")
+
                                         # Skip Normal events when log level is warning or error
                                         if log_level in ["warning", "error"] and event_type == "Normal":
                                             continue
 
+                                        # Parse the event message from JSON payload
                                         try:
+                                            event_data = json.loads(log_line)
+                                            msg = event_data.get("message", log_line)
+                                        except json.JSONDecodeError:
                                             msg = log_line
-                                            reason = (labels.get("k8s_event_reason", ""),)
 
-                                            # Note: relevant starting in release 0.1.19 (using OTel instead of Alloy)
-                                            if isinstance(reason, tuple):
-                                                reason = reason[0]
+                                        # Skip expected probe failures during setup
+                                        if reason == "Unhealthy" and (
+                                            "HTTP probe failed with statuscode: 503" in msg
+                                            or "Startup probe failed" in msg
+                                        ):
+                                            continue
 
-                                            event_type = labels.get("detected_level", "")
+                                        # Ignore noisy events
+                                        ignore_patterns = (
+                                            "queue-proxy",
+                                            "resolving reference: address not set for kind = service",
+                                            "failed to get private k8s service endpoints:",
+                                        )
+                                        if any(pattern in msg.lower() for pattern in ignore_patterns):
+                                            continue
 
-                                            if reason == "Unhealthy" and (
-                                                "HTTP probe failed with statuscode: 503" in msg
-                                                or "Startup probe failed" in msg
-                                            ):
-                                                # HTTP probe failures are expected during setup
-                                                continue
+                                        # Only show unique event messages
+                                        if msg in shown_event_messages:
+                                            continue
+                                        shown_event_messages.add(msg)
 
-                                            ignore_patterns = (
-                                                "queue-proxy",
-                                                "resolving reference: address not set for kind = service",
-                                                "failed to get private k8s service endpoints:",
-                                            )
-                                            # Ignore queue-proxy events and gateway setup events
-                                            if any(pattern in msg.lower() for pattern in ignore_patterns):
-                                                continue
-
-                                            if msg in shown_event_messages:
-                                                # Only show unique event messages
-                                                continue
-
-                                            shown_event_messages.add(msg)
-
-                                        except Exception:
-                                            # If parsing fails, just print the event as is
-                                            pass
-
+                                        # Format and print event
                                         is_multi_pod = len(self.compute.pods()) > 1
-                                        k8_object_type = labels.get("k8s_object_kind")
-                                        k8_object_name = labels.get("k8s_object_name")
-                                        add_pod_info = is_multi_pod and k8_object_type == "Pod"
-                                        pod_info = f" | {k8_object_name} |" if add_pod_info else ""
+                                        add_pod_info = is_multi_pod and resource_kind == "Pod"
+                                        pod_info = f" | {resource_name} |" if add_pod_info else ""
                                         if event_type == "Normal":
-                                            # Show Normal events for debug/info levels
                                             if log_level in ["debug", "info"]:
                                                 print(f'[EVENT]{pod_info} reason={reason} "{msg}"')
                                         else:
