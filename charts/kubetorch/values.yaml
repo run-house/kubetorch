@@ -26,6 +26,10 @@ kubetorchController:
     batchSize: 10  # Number of events to batch before pushing to Loki
     flushInterval: 1.0  # Max seconds between flushes (lower = faster delivery)
 
+  # Authentication endpoint (leave empty to disable auth)
+  # Example: "http://kubetorch-mgmt-controller-api.kubetorch.svc.cluster.local:8000/api/v1/auth/validate"
+  authEndpoint: ""
+
   resources:
     cpu:
       request: "200m"   # Minimum guaranteed CPU (0.2 cores)

@@ -387,6 +387,8 @@ class ControllerClient:
 
         # No default timeout - long-running operations (e.g.: deploy, check-ready) should not time out
         self.session = httpx.Client(headers={"Content-Type": "application/json"}, timeout=None)
+        if config.token:
+            self.session.headers.update({"Authorization": f"Bearer {config.token}"})
 
     def _request(self, method: str, path: str, ignore_not_found=False, timeout=None, **kwargs) -> httpx.Response:
         """Make HTTP request to controller.

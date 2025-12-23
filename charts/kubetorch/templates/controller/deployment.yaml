@@ -74,6 +74,8 @@ spec:
               value: {{ .Values.kubetorchController.connectionPoolSize | quote }}
             - name: KUBETORCH_DB_PATH
               value: "/data/kubetorch.db"
+            - name: AUTH_ENDPOINT
+              value: {{ .Values.kubetorchController.authEndpoint | default "" | quote }}
             # Event watcher configuration
             - name: EVENT_WATCH_ENABLED
               value: {{ .Values.kubetorchController.eventWatcher.enabled | quote }}
