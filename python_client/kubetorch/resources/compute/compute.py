@@ -1961,6 +1961,7 @@ class Compute:
             module=module,
             create_headless_service=bool(self.distributed_config),
             endpoint=getattr(self, "_endpoint_config", None),
+            pod_selector=getattr(self, "_pod_selector", None),
         )
         self._manifest = updated_manifest
 
