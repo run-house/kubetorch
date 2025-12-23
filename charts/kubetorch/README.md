@@ -10,7 +10,6 @@ A Helm chart for kubetorch
 |------------|------|---------|
 | https://nvidia.github.io/dcgm-exporter/helm-charts | dcgm-exporter | 4.5.0 |
 | https://nvidia.github.io/k8s-device-plugin | nvidia-device-plugin | 0.14.1 |
-| https://open-telemetry.github.io/opentelemetry-helm-charts | opentelemetry-collector | 0.132.0 |
 
 ## Values
 
@@ -119,19 +118,6 @@ A Helm chart for kubetorch
 | nvidia-device-plugin.tolerations[1].key | string | `"dedicated"` |  |
 | nvidia-device-plugin.tolerations[1].operator | string | `"Equal"` |  |
 | nvidia-device-plugin.tolerations[1].value | string | `"gpu"` |  |
-| opentelemetry-collector.affinity | object | `{}` |  |
-| opentelemetry-collector.configMap.create | bool | `false` |  |
-| opentelemetry-collector.configMap.existingName | string | `"otel-collector-config"` |  |
-| opentelemetry-collector.enabled | bool | `false` |  |
-| opentelemetry-collector.image.pullPolicy | string | `"IfNotPresent"` |  |
-| opentelemetry-collector.image.repository | string | `"otel/opentelemetry-collector-contrib"` |  |
-| opentelemetry-collector.mode | string | `"daemonset"` |  |
-| opentelemetry-collector.presets.kubernetesAttributes.enabled | bool | `true` |  |
-| opentelemetry-collector.presets.kubernetesAttributes.extractAllPodLabels | bool | `true` |  |
-| opentelemetry-collector.presets.kubernetesEvents.enabled | bool | `true` |  |
-| opentelemetry-collector.presets.logsCollection.enabled | bool | `true` |  |
-| opentelemetry-collector.presets.logsCollection.includeCollectorLogs | bool | `true` |  |
-| opentelemetry-collector.tolerations[0].operator | string | `"Exists"` |  |
 | ttlController.enabled | bool | `true` |  |
 | ttlController.namespaces | list | `[]` |  |
 | ttlController.networkPolicy.enabled | bool | `false` |  |

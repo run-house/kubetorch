@@ -137,6 +137,16 @@ kind: ClusterRole
 metadata:
   name: {{ $crdsName }}
 rules:
+  # Events (cluster-wide watch for event streaming to Loki)
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+
+  # Services (cluster-wide list to discover data-store namespaces)
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
+
   # RayCluster CRDs
   - apiGroups: ["ray.io"]
     resources: ["rayclusters"]

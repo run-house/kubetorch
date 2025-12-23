@@ -27,7 +27,13 @@ from kubetorch.servers.http.utils import (
     is_running_in_kubernetes,
 )
 from kubetorch.serving.utils import has_k8s_credentials, KubernetesCredentialsError
-from kubetorch.utils import extract_host_port, get_kt_install_url, iso_timestamp_to_nanoseconds, ServerLogsFormatter
+from kubetorch.utils import (
+    ColoredFormatter,
+    extract_host_port,
+    get_kt_install_url,
+    iso_timestamp_to_nanoseconds,
+    ServerLogsFormatter,
+)
 
 logger = get_logger(__name__)
 
@@ -1135,8 +1141,6 @@ class Module:
                                     if is_event:
                                         event_type = labels.get("event_type", "Normal")
                                         reason = labels.get("reason", "")
-                                        resource_kind = labels.get("kind", "")
-                                        resource_name = labels.get("name", "")
 
                                         # Skip Normal events when log level is warning or error
                                         if log_level in ["warning", "error"] and event_type == "Normal":
@@ -1170,15 +1174,29 @@ class Module:
                                             continue
                                         shown_event_messages.add(msg)
 
-                                        # Format and print event
-                                        is_multi_pod = len(self.compute.pods()) > 1
-                                        add_pod_info = is_multi_pod and resource_kind == "Pod"
-                                        pod_info = f" | {resource_name} |" if add_pod_info else ""
+                                        # Format timestamp from event
+                                        from datetime import datetime
+
+                                        try:
+                                            event_ts = datetime.fromtimestamp(ts_ns / 1e9).strftime("%Y-%m-%d %H:%M:%S")
+                                        except Exception:
+                                            event_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                                        # Use yellow for warnings, green for normal
+                                        if event_type == "Warning":
+                                            color = ColoredFormatter.get_color("yellow")
+                                        else:
+                                            color = ColoredFormatter.get_color("green")
+                                        reset = ColoredFormatter.get_color("reset")
+
+                                        # Format like metrics: ({service} events) timestamp | reason: message
+                                        service_name = self.compute.service_name
+                                        prefix = f"({service_name} events)"
                                         if event_type == "Normal":
                                             if log_level in ["debug", "info"]:
-                                                print(f'[EVENT]{pod_info} reason={reason} "{msg}"')
+                                                print(f"{color}{prefix} {event_ts} | {reason}: {msg}{reset}")
                                         else:
-                                            print(f'[EVENT]{pod_info} type={event_type} reason={reason} "{msg}"')
+                                            print(f"{color}{prefix} {event_ts} | {reason}: {msg}{reset}")
                                         continue
 
                                     # Skip if we've already seen this timestamp
