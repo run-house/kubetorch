@@ -138,6 +138,15 @@ GPU tensor transfer via NCCL.
 2. Retrieve: Call `gpu_client.get_tensor()` which queries MDS and performs NCCL transfer
 
 **State dict (multi-tensor) transfer flow:**
+
+Point-to-point (no broadcast):
+1. Publish: Each tensor registered and published individually with full key (`key/tensor_key`)
+   - e.g., `checkpoint/layer1.weight`, `checkpoint/layer1.bias`, etc.
+2. Retrieve: Batch all keys together, group by source, single NCCL session per source
+   - Enables individual tensor access (useful for resharding)
+   - Consistent with filesystem storage (flat key structure)
+
+Broadcast mode:
 1. Publish: Flatten dict, register all tensors, join broadcast with ALL tensor keys
 2. Retrieve: Join broadcast with ALL destination tensors, receive in single NCCL session
 3. Uses `put_tensors_broadcast()` / `get_tensors_broadcast()` batch methods

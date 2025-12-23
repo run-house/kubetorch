@@ -263,12 +263,7 @@ class GPUTransferManager:
         # No broadcast - use put_tensor for each tensor (registers + publishes to MDS)
         for tensor_key, tensor in tensors_to_register:
             full_key = f"{key}/{tensor_key}" if tensor_key else key
-            response = gpu_client.put_tensor(
-                key=full_key,
-                tensor=tensor,
-                is_state_dict=False,
-                broadcast=None,
-            )
+            response = gpu_client.put_tensor(key=full_key, tensor=tensor)
             if response.get("status") != "ok":
                 raise RuntimeError(f"Failed to publish tensor '{full_key}': {response.get('error')}")
 
@@ -325,12 +320,7 @@ class GPUTransferManager:
         packed_key = f"{key}/__packed__"
 
         # Register the packed tensor
-        response = gpu_client.put_tensor(
-            key=packed_key,
-            tensor=packed,
-            is_state_dict=False,
-            broadcast=None,
-        )
+        response = gpu_client.put_tensor(key=packed_key, tensor=packed)
         if response.get("status") != "ok":
             raise RuntimeError(f"Failed to register packed tensor: {response.get('error')}")
 

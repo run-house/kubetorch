@@ -67,6 +67,7 @@ A Helm chart for kubetorch
 | kubetorchConfig.deployment_namespaces[0] | string | `"default"` |  |
 | kubetorchConfig.deployment_namespaces[1] | string | `"kubetorch"` |  |
 | kubetorchConfig.otelEnabled | bool | `true` |  |
+| kubetorchConfig.serviceAccountAnnotations | object | `{}` |  |
 | logStreaming.enabled | bool | `true` |  |
 | logStreaming.image | string | `"grafana/loki:3.5.3"` |  |
 | logStreaming.maxConcurrentTailRequests | int | `100` |  |

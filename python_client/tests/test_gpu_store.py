@@ -218,22 +218,19 @@ async def test_gpu_server_resilience_after_failure(gpu_source, gpu_consumer):
 @pytest.mark.level("gpu")
 async def test_gpu_transfer_state_dict(gpu_source, gpu_consumer):
     """
-    Test GPU state_dict (dictionary of tensors) transfer with BroadcastWindow.
+    Test GPU state_dict (dictionary of tensors) transfer in both modes:
+    1. Point-to-point (no broadcast) - each tensor registered with full key
+    2. Broadcast mode - coordinated multi-party transfer
 
     This test verifies:
     - Multiple tensors can be transferred as a dict (like model.state_dict())
-    - All tensors flow through the same NCCL session
-    - Tensor values are preserved correctly
-
-    Architecture:
-    - Source publishes a state_dict with multiple tensors
-    - Consumer receives into a pre-allocated state_dict with same structure
-    - All tensors are broadcast in a single coordinated transfer
+    - Point-to-point: each tensor stored individually, batched retrieval
+    - Broadcast: all tensors flow through the same NCCL session
+    - Tensor values are preserved correctly in both modes
     """
     import uuid
 
     service_name = gpu_source.service_name
-    group_id = f"{service_name}/state-dict-test-{uuid.uuid4().hex[:8]}"
 
     # Define a realistic "model" state_dict (simulating a small transformer/MLP)
     # ~40 tensors, ~10MB total - similar to a small production model
@@ -284,6 +281,33 @@ async def test_gpu_transfer_state_dict(gpu_source, gpu_consumer):
         spec["expected_sum"] = spec["fill_value"] * numel
         spec["tolerance"] = abs(spec["expected_sum"]) * 0.01 + 0.1  # 1% + small absolute tolerance
 
+    # ==================== Test 1: Point-to-point (no broadcast) ====================
+    print("\n=== Testing point-to-point state dict transfer ===")
+    p2p_key = f"{service_name}/state-dict-p2p-{uuid.uuid4().hex[:8]}"
+
+    # Source publishes state dict (each tensor gets its own key: key/tensor_name)
+    put_result = gpu_source.publish_state_dict(
+        key=p2p_key,
+        state_dict_spec=state_dict_spec,
+    )
+    assert put_result.get("success"), f"Point-to-point put failed: {put_result.get('error')}"
+    assert put_result["num_tensors"] == len(state_dict_spec), "Wrong number of tensors published"
+    print(f"Published {put_result['num_tensors']} tensors via point-to-point")
+
+    # Consumer retrieves state dict (batched retrieval, grouped by source)
+    get_result = gpu_consumer.get_state_dict(
+        key=p2p_key,
+        state_dict_spec=state_dict_spec,
+    )
+    assert get_result.get("success"), f"Point-to-point get failed: {get_result.get('error')}"
+    assert get_result["num_tensors"] == len(state_dict_spec), "Wrong number of tensors received"
+    assert get_result["all_correct"], f"Point-to-point values mismatch: {get_result.get('verification')}"
+    print(f"Retrieved {get_result['num_tensors']} tensors via point-to-point - all values correct")
+
+    # ==================== Test 2: Broadcast mode ====================
+    print("\n=== Testing broadcast state dict transfer ===")
+    group_id = f"{service_name}/state-dict-broadcast-{uuid.uuid4().hex[:8]}"
+
     # Create BroadcastWindow - 1 putter + 1 getter = world_size 2
     broadcast_window = kt.BroadcastWindow(
         group_id=group_id,
@@ -309,15 +333,15 @@ async def test_gpu_transfer_state_dict(gpu_source, gpu_consumer):
     put_result, get_result = await asyncio.gather(put_task, get_task)
 
     # Verify put succeeded
-    assert put_result.get("success"), f"State dict put failed: {put_result.get('error')}"
+    assert put_result.get("success"), f"Broadcast put failed: {put_result.get('error')}"
     assert put_result["num_tensors"] == len(state_dict_spec), "Wrong number of tensors published"
+    print(f"Published {put_result['num_tensors']} tensors via broadcast")
 
     # Verify get succeeded
-    assert get_result.get("success"), f"State dict get failed: {get_result.get('error')}"
+    assert get_result.get("success"), f"Broadcast get failed: {get_result.get('error')}"
     assert get_result["num_tensors"] == len(state_dict_spec), "Wrong number of tensors received"
-
-    # Verify all tensor values are correct
-    assert get_result["all_correct"], f"State dict values mismatch: {get_result.get('verification')}"
+    assert get_result["all_correct"], f"Broadcast values mismatch: {get_result.get('verification')}"
+    print(f"Retrieved {get_result['num_tensors']} tensors via broadcast - all values correct")
 
 
 @pytest.mark.level("gpu")
