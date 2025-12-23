@@ -1,4 +1,5 @@
 kubetorchConfig:
+  serviceAccountAnnotations: {}
   # List of namespaces to allow deploying compute resources to
   deployment_namespaces:
     - "default"
