@@ -1,4 +1,4 @@
-{{- range (.Values.kubetorchConfig.deployment_namespaces | default list | concat (list .Release.Namespace) | uniq) }}
+{{- range (.Values.kubetorchConfig.deployment_namespaces | default list) }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -71,16 +71,25 @@ spec:
         - name: data-store
           image: {{ $.Values.dataStore.image }}
           imagePullPolicy: {{ $.Values.dataStore.imagePullPolicy | default "IfNotPresent" }}
+          env:
+            - name: LOKI_ENABLED
+              value: "{{ $.Values.logStreaming.enabled }}"
           ports:
             - containerPort: 873   # rsync daemon
             - containerPort: 8080  # HTTP/WebSocket tunnel
             - containerPort: 8081  # Metadata server API
+            - containerPort: 3100  # Loki log storage
           volumeMounts:
             - name: data-store-storage
               mountPath: /data
             - name: rsyncd-config
               mountPath: /etc/rsyncd.conf
               subPath: rsyncd.conf
+            {{- if $.Values.logStreaming.enabled }}
+            - name: loki-config
+              mountPath: /etc/loki/loki.yaml
+              subPath: loki.yaml
+            {{- end }}
           resources:
             requests:
               cpu: {{ $.Values.dataStore.cpu.request }}
@@ -93,6 +102,11 @@ spec:
         - name: rsyncd-config
           configMap:
             name: kubetorch-rsyncd-config
+        {{- if $.Values.logStreaming.enabled }}
+        - name: loki-config
+          configMap:
+            name: kubetorch-loki-config
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -112,5 +126,8 @@ spec:
     - name: metadata
       port: 8081
       targetPort: 8081
+    - name: loki
+      port: 3100
+      targetPort: 3100
   type: ClusterIP
 {{- end }}

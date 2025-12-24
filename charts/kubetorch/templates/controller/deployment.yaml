@@ -6,7 +6,7 @@ metadata:
   labels:
     app: kubetorch-controller
 spec:
-  replicas: {{ .Values.controller.replicas }}
+  replicas: {{ .Values.kubetorchController.replicas }}
   selector:
     matchLabels:
       app: kubetorch-controller
@@ -19,14 +19,14 @@ spec:
     spec:
       serviceAccountName: kubetorch-controller
 
-      {{- if .Values.nginxProxy.affinity }}
+      {{- if .Values.kubetorchController.affinity }}
       affinity:
-        {{- toYaml .Values.nginxProxy.affinity | nindent 8 }}
+        {{- toYaml .Values.kubetorchController.affinity | nindent 8 }}
       {{- end }}
 
-      {{- if .Values.nginxProxy.tolerations }}
+      {{- if .Values.kubetorchController.tolerations }}
       tolerations:
-        {{- toYaml .Values.nginxProxy.tolerations | nindent 8 }}
+        {{- toYaml .Values.kubetorchController.tolerations | nindent 8 }}
       {{- end }}
 
       containers:
@@ -34,8 +34,8 @@ spec:
         # NGINX sidecar (public-facing) running on port 8080
         # --------------------------------------------------------------------
         - name: nginx
-          image: "{{ .Values.nginxProxy.image.repository }}:{{ .Values.nginxProxy.image.tag }}"
-          imagePullPolicy: {{ .Values.nginxProxy.image.pullPolicy }}
+          image: "{{ .Values.kubetorchController.nginx.image.repository }}:{{ .Values.kubetorchController.nginx.image.tag }}"
+          imagePullPolicy: {{ .Values.kubetorchController.nginx.image.pullPolicy }}
           command: ["/bin/sh", "-c"]
           args:
             - |
@@ -45,44 +45,42 @@ spec:
           ports:
             - containerPort: 8080
               name: nginx
-            - containerPort: 8873
-              name: rsync
           volumeMounts:
             - name: nginx-config
               mountPath: /etc/nginx/nginx.conf.template
               subPath: nginx.conf
           resources:
             requests:
-              cpu: {{ .Values.nginxProxy.resources.cpu.request | quote }}
-              memory: {{ .Values.nginxProxy.resources.memory.request | quote }}
+              cpu: {{ .Values.kubetorchController.nginx.resources.cpu.request | quote }}
+              memory: {{ .Values.kubetorchController.nginx.resources.memory.request | quote }}
             limits:
-              cpu: {{ .Values.nginxProxy.resources.cpu.limit | quote }}
-              memory: {{ .Values.nginxProxy.resources.memory.limit | quote }}
+              cpu: {{ .Values.kubetorchController.nginx.resources.cpu.limit | quote }}
+              memory: {{ .Values.kubetorchController.nginx.resources.memory.limit | quote }}
 
         # --------------------------------------------------------------------
         # Controller container (the K8s API proxy)
         # --------------------------------------------------------------------
         - name: controller
-          image: "{{ .Values.controller.image }}:{{ .Values.controller.tag }}"
-          imagePullPolicy: {{ .Values.controller.imagePullPolicy }}
+          image: "{{ .Values.kubetorchController.image }}:{{ .Values.kubetorchController.tag }}"
+          imagePullPolicy: {{ .Values.kubetorchController.imagePullPolicy }}
           env:
             - name: VERSION
-              value: {{ .Values.controller.tag | quote }}
+              value: {{ .Values.kubetorchController.tag | quote }}
             - name: PORT
-              value: {{ .Values.controller.port | quote }}
+              value: {{ .Values.kubetorchController.port | quote }}
             - name: WORKERS
-              value: {{ .Values.controller.workers | quote }}
+              value: {{ .Values.kubetorchController.workers | quote }}
             - name: CONNECTION_POOL_SIZE
-              value: {{ .Values.controller.connectionPoolSize | quote }}
+              value: {{ .Values.kubetorchController.connectionPoolSize | quote }}
           ports:
-            - containerPort: {{ .Values.controller.port }}
+            - containerPort: {{ .Values.kubetorchController.port }}
               name: controller
           # Startup probe allows arbitrary startup time (up to 5 minutes)
           # Checks every 5s, allows up to 60 failures before giving up
           startupProbe:
             httpGet:
               path: /health
-              port: {{ .Values.controller.port }}
+              port: {{ .Values.kubetorchController.port }}
             initialDelaySeconds: 0
             periodSeconds: 5
             timeoutSeconds: 5
@@ -91,7 +89,7 @@ spec:
           livenessProbe:
             httpGet:
               path: /health
-              port: {{ .Values.controller.port }}
+              port: {{ .Values.kubetorchController.port }}
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
@@ -100,17 +98,17 @@ spec:
           readinessProbe:
             httpGet:
               path: /health
-              port: {{ .Values.controller.port }}
+              port: {{ .Values.kubetorchController.port }}
             periodSeconds: 5
             timeoutSeconds: 5
             failureThreshold: 3
           resources:
             requests:
-              cpu: {{ .Values.controller.resources.cpu.request | quote }}
-              memory: {{ .Values.controller.resources.memory.request | quote }}
+              cpu: {{ .Values.kubetorchController.resources.cpu.request | quote }}
+              memory: {{ .Values.kubetorchController.resources.memory.request | quote }}
             limits:
-              cpu: {{ .Values.controller.resources.cpu.limit | quote }}
-              memory: {{ .Values.controller.resources.memory.limit | quote }}
+              cpu: {{ .Values.kubetorchController.resources.cpu.limit | quote }}
+              memory: {{ .Values.kubetorchController.resources.memory.limit | quote }}
 
       volumes:
         - name: nginx-config
