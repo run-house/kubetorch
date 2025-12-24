@@ -91,7 +91,7 @@ class TrainJobServiceManager(BaseServiceManager):
         self.primary_replica = config["primary_replica"]
         self.worker_replica = config["worker_replica"]
 
-    def _get_pod_template_path(self) -> List[str]:
+    def get_pod_template_path(self) -> List[str]:
         """Get the path to the primary replica pod template."""
         return ["spec", self.replica_specs_key, self.primary_replica, "template"]
 

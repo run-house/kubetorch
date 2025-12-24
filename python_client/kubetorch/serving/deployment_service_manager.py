@@ -76,7 +76,7 @@ class DeploymentServiceManager(BaseServiceManager):
 
         return deployment
 
-    def _get_pod_template_path(self) -> List[str]:
+    def get_pod_template_path(self) -> List[str]:
         """Get the path to the pod template."""
         return ["spec", "template"]
 

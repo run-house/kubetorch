@@ -1,0 +1,100 @@
+# Kueue Resources for GPU Scheduling with Kubetorch
+#
+# This file contains the Kueue resources needed for GPU workload queuing.
+# Install these resources after installing Kueue in your cluster.
+#
+# Prerequisites:
+#   1. Install Kueue:
+#      kubectl apply --server-side -f https://github.com/kubernetes-sigs/kueue/releases/download/v0.14.3/manifests.yaml
+#
+#   2. Wait for Kueue to be ready:
+#      kubectl wait --for=condition=Available deployment/kueue-controller-manager -n kueue-system --timeout=300s
+#
+# Usage:
+#   kubectl apply -f kueue-resources.yaml
+#
+# To customize for your cluster, update:
+#   - nodeLabels in ResourceFlavor to match your GPU node labels
+#   - nominalQuota in ClusterQueue to match your GPU capacity
+#   - namespace in LocalQueue to match your workload namespace
+
+---
+# ResourceFlavor for GPU nodes
+# This defines the characteristics of GPU resources in your cluster.
+# Update nodeLabels to match your actual GPU node labels.
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: gpu
+spec:
+  # Node labels that identify GPU nodes in your cluster.
+  # Common labels by cloud provider:
+  #   GKE: cloud.google.com/gke-accelerator: nvidia-l4
+  #   EKS: eks.amazonaws.com/accelerator: nvidia-tesla-t4
+  #   AKS: kubernetes.azure.com/accelerator: nvidia
+  #   Generic: nvidia.com/gpu.present: "true"
+  nodeLabels:
+    nvidia.com/gpu.present: "true"
+  # Optional: Add tolerations if your GPU nodes have taints
+  # tolerations:
+  #   - key: "nvidia.com/gpu"
+  #     operator: "Exists"
+  #     effect: "NoSchedule"
+
+---
+# ClusterQueue for GPU resources
+# This defines the shared pool of GPU resources available for queuing.
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: gpu-cluster-queue
+spec:
+  # Namespace selector - which namespaces can use this queue
+  # Empty selector allows all namespaces with a LocalQueue pointing here
+  namespaceSelector: {}
+
+  # Queueing strategy: StrictFIFO or BestEffortFIFO
+  queueingStrategy: BestEffortFIFO
+
+  # Resource groups define what resources this queue manages
+  resourceGroups:
+    - coveredResources: ["cpu", "memory", "nvidia.com/gpu"]
+      flavors:
+        - name: gpu
+          resources:
+            - name: "cpu"
+              nominalQuota: 100  # Total CPU cores for GPU workloads
+            - name: "memory"
+              nominalQuota: 400Gi  # Total memory for GPU workloads
+            - name: "nvidia.com/gpu"
+              nominalQuota: 8  # Total number of GPUs available for queuing
+              # Optional: Set borrowingLimit to prevent over-subscription
+              # borrowingLimit: 4
+
+  # Optional: Preemption policy
+  # preemption:
+  #   reclaimWithinCohort: Any
+  #   withinClusterQueue: LowerPriority
+
+---
+# LocalQueue for the default namespace
+# Users submit workloads to this queue, which routes to the ClusterQueue.
+# Create additional LocalQueues for other namespaces as needed.
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: gpu-queue
+  namespace: default
+spec:
+  clusterQueue: gpu-cluster-queue
+
+---
+# Example: LocalQueue for a team namespace
+# Uncomment and customize for additional namespaces
+# apiVersion: kueue.x-k8s.io/v1beta1
+# kind: LocalQueue
+# metadata:
+#   name: gpu-queue
+#   namespace: ml-team
+# spec:
+#   clusterQueue: gpu-cluster-queue

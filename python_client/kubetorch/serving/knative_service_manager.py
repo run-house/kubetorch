@@ -54,7 +54,7 @@ class KnativeServiceManager(BaseServiceManager):
             "networking.knative.dev/ingress.class": "kourier.ingress.networking.knative.dev",
         }
 
-    def _get_pod_template_path(self) -> List[str]:
+    def get_pod_template_path(self) -> List[str]:
         """Get the path to the pod template."""
         return ["spec", "template"]
 
