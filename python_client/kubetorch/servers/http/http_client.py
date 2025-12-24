@@ -708,8 +708,6 @@ class HTTPClient:
                                 labels = stream["stream"]
                                 event_type = labels.get("event_type", "Normal")
                                 reason = labels.get("reason", "")
-                                resource_name = labels.get("name", "")
-                                resource_kind = labels.get("kind", "")
 
                                 # Skip Normal events unless log level includes info
                                 log_level = log_config.level.lower() if log_config.level else "info"
@@ -744,17 +742,22 @@ class HTTPClient:
                                         continue
                                     shown_messages.add(msg)
 
-                                    # Format and print
-                                    is_multi_pod = len(self.compute.pods()) > 1
-                                    pod_info = (
-                                        f" | {resource_name} |" if is_multi_pod and resource_kind == "Pod" else ""
-                                    )
-                                    if event_type == "Normal":
-                                        print(f'[EVENT]{pod_info} reason={reason} "{msg}"', flush=True)
+                                    # Format timestamp from event
+                                    try:
+                                        event_ts = datetime.fromtimestamp(ts_ns / 1e9).strftime("%Y-%m-%d %H:%M:%S")
+                                    except Exception:
+                                        event_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                                    # Use yellow for warnings, green for normal
+                                    if event_type == "Warning":
+                                        color = ColoredFormatter.get_color("yellow")
                                     else:
-                                        print(
-                                            f'[EVENT]{pod_info} type={event_type} reason={reason} "{msg}"', flush=True
-                                        )
+                                        color = ColoredFormatter.get_color("green")
+                                    reset = ColoredFormatter.get_color("reset")
+
+                                    # Format like metrics: ({service} events) timestamp | reason: message
+                                    prefix = f"({self.service_name} events)"
+                                    print(f"{color}{prefix} {event_ts} | {reason}: {msg}{reset}", flush=True)
 
                     except asyncio.TimeoutError:
                         continue

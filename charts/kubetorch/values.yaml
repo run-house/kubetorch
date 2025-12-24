@@ -132,33 +132,6 @@ metrics:
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
 
-opentelemetry-collector:
-  enabled: false # Deprecated: set to `true` only if using legacy OTEL mode instead of direct push
-  mode: daemonset
-  image:
-    repository: otel/opentelemetry-collector-contrib
-    pullPolicy: IfNotPresent
-  presets:
-    logsCollection:
-      enabled: true
-      includeCollectorLogs: true
-    kubernetesAttributes:
-      enabled: true
-      extractAllPodLabels: true
-    kubernetesEvents:
-      enabled: true
-  configMap:
-    create: false
-    existingName: otel-collector-config
-  affinity: {}
-  tolerations:
-    - operator: "Exists"
-      # This single toleration with operator: Exists and no key/value/effect
-      # means "tolerate all taints" - the collector will run on every node
-      # regardless of any taints, including GPU nodes, spot instances,
-      # preemptible nodes, dedicated nodes, etc.
-
-
 dcgm-exporter:
   enabled: false # set to `true` if deploying an EKS or rolling your own DCGM metrics collection
   namespaceOverride: "kubetorch"
