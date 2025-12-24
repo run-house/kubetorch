@@ -596,7 +596,7 @@ async def test_selector_only():
                     containers=[
                         client.V1Container(
                             name="worker",
-                            image="ghcr.io/run-house/kubetorch:simplify-service-managers",  # image with kt + rsync installed
+                            image="ghcr.io/run-house/kubetorch:log-streaming-byo-manifest",  # image with kt + rsync installed
                             image_pull_policy="Always",
                             command=["kubetorch", "server", "start"],
                             resources=client.V1ResourceRequirements(requests={"cpu": "100m", "memory": "256Mi"}),
@@ -658,8 +658,24 @@ async def test_selector_only():
         result = remote_fn(5, 10, sleep_time=5)
         assert result == 15, f"Expected 15, got {result}"
 
+        # 5. Test event streaming by scaling up during a function call
+        import threading
+
+        def scale_after_delay():
+            time.sleep(1)  # Wait for websocket to connect
+            apps_v1.patch_namespaced_deployment_scale(
+                name=pool_name, namespace=namespace, body={"spec": {"replicas": 2}}
+            )
+
+        scale_thread = threading.Thread(target=scale_after_delay)
+        scale_thread.start()
+
+        # Call function with long sleep - events happen during the call
+        result = remote_fn(5, 10, sleep_time=2)
+        scale_thread.join()
+        assert result == 15
+
     finally:
-        # Clean up user-created deployment (not managed by kubetorch)
         try:
             apps_v1.delete_namespaced_deployment(name=pool_name, namespace=namespace)
         except client.ApiException:

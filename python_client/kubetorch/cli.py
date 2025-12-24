@@ -2396,7 +2396,7 @@ def kt_pool(
         False,
         "--watchers",
         "-w",
-        help="Show pod watcher debug info (IPs being tracked for each pool)",
+        help="Show pod watcher metadata",
     ),
 ):
     """
