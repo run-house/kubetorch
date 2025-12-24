@@ -650,18 +650,143 @@ class HTTPClient:
                 except (asyncio.TimeoutError, Exception):
                     pass
 
+    async def _stream_events_websocket(
+        self,
+        stop_event: Union[threading.Event, asyncio.Event],
+        port: int,
+        log_config: LoggingConfig,
+        host: str = "localhost",
+        start_time_ns: int = None,
+    ):
+        """Stream K8s events using Loki's websocket tail endpoint.
+
+        Events are pushed by the controller's event watcher with labels:
+        - job="kubetorch-events"
+        - name=<resource_name>
+        - kind=<Pod|Deployment|etc>
+        - event_type=<Normal|Warning>
+        - reason=<OOMKilled|Scheduled|etc>
+        """
+        websocket = None
+        shown_messages = set()
+
+        # Use provided start time or current time (only show events from now)
+        if start_time_ns is None:
+            start_time_ns = int(time.time() * 1e9)
+
+        try:
+            namespace = self.compute.namespace
+            # Query events for resources matching this service name
+            event_query = f'{{job="kubetorch-events", namespace="{namespace}", name=~"{self.service_name}.*"}}'
+            encoded_query = urllib.parse.quote_plus(event_query)
+            # Include start time to only get events from call start (not old OOMs etc)
+            uri = f"ws://{host}:{port}/loki/{namespace}/api/v1/tail?query={encoded_query}&start={start_time_ns}"
+
+            stop_time = None
+            websocket = await websockets.connect(
+                uri,
+                close_timeout=10,
+                ping_interval=20,
+                ping_timeout=10,
+            )
+            try:
+                while True:
+                    is_stop_set = stop_event.is_set() if hasattr(stop_event, "is_set") else stop_event.is_set()
+                    if is_stop_set and stop_time is None:
+                        stop_time = time.time() + log_config.grace_period
+
+                    if stop_time is not None and time.time() > stop_time:
+                        break
+
+                    try:
+                        timeout = log_config.grace_poll_timeout if stop_time is not None else log_config.poll_timeout
+                        message = await asyncio.wait_for(websocket.recv(), timeout=timeout)
+                        data = json.loads(message)
+
+                        if data.get("streams"):
+                            for stream in data["streams"]:
+                                labels = stream["stream"]
+                                event_type = labels.get("event_type", "Normal")
+                                reason = labels.get("reason", "")
+                                resource_name = labels.get("name", "")
+                                resource_kind = labels.get("kind", "")
+
+                                # Skip Normal events unless log level includes info
+                                log_level = log_config.level.lower() if log_config.level else "info"
+                                if log_level in ["warning", "error"] and event_type == "Normal":
+                                    continue
+
+                                for value in stream["values"]:
+                                    # Filter by timestamp (skip events before call started)
+                                    ts_ns = int(value[0])
+                                    if ts_ns < start_time_ns:
+                                        continue
+
+                                    try:
+                                        event_data = json.loads(value[1])
+                                        msg = event_data.get("message", value[1])
+                                    except json.JSONDecodeError:
+                                        msg = value[1]
+
+                                    # Skip expected probe failures
+                                    if reason == "Unhealthy" and (
+                                        "HTTP probe failed with statuscode: 503" in msg or "Startup probe failed" in msg
+                                    ):
+                                        continue
+
+                                    # Skip noisy events
+                                    ignore_patterns = ("queue-proxy", "failed to get private k8s service endpoints:")
+                                    if any(p in msg.lower() for p in ignore_patterns):
+                                        continue
+
+                                    # Deduplicate by message content
+                                    if msg in shown_messages:
+                                        continue
+                                    shown_messages.add(msg)
+
+                                    # Format and print
+                                    is_multi_pod = len(self.compute.pods()) > 1
+                                    pod_info = (
+                                        f" | {resource_name} |" if is_multi_pod and resource_kind == "Pod" else ""
+                                    )
+                                    if event_type == "Normal":
+                                        print(f'[EVENT]{pod_info} reason={reason} "{msg}"', flush=True)
+                                    else:
+                                        print(
+                                            f'[EVENT]{pod_info} type={event_type} reason={reason} "{msg}"', flush=True
+                                        )
+
+                    except asyncio.TimeoutError:
+                        continue
+                    except websockets.exceptions.ConnectionClosed:
+                        break
+            finally:
+                if websocket:
+                    try:
+                        await asyncio.wait_for(websocket.close(), timeout=1.0)
+                    except (asyncio.TimeoutError, Exception):
+                        pass
+        except Exception as e:
+            logger.debug(f"Event stream error (may be expected if no events): {e}")
+
     def _run_log_stream(self, request_id, stop_event, host, port, log_config: LoggingConfig = None):
-        """Helper to run log streaming in an event loop"""
+        """Helper to run log and event streaming in an event loop"""
         # Set request_id in this thread's context so any logs printed here
         # (e.g., nested service logs) are captured with the correct request_id
         request_id_ctx_var.set(request_id)
 
+        async def run_streams():
+            # Run log and event streams in parallel
+            await asyncio.gather(
+                self._stream_logs_websocket(request_id, stop_event, host=host, port=port, log_config=log_config),
+                self._stream_events_websocket(stop_event, host=host, port=port, log_config=log_config),
+                return_exceptions=True,  # Don't fail if one stream errors
+            )
+
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(
-                self._stream_logs_websocket(request_id, stop_event, host=host, port=port, log_config=log_config)
-            )
+            loop.run_until_complete(run_streams())
         finally:
             loop.close()
 
