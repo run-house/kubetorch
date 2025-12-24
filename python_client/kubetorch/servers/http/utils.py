@@ -859,12 +859,13 @@ def filename_contains_suffix(filename: str):
 
 
 def generate_profiler_output_filename(filename: str, file_suffix: str, service_name: str, request_id: str) -> str:
+    file_suffix = file_suffix if "." in file_suffix else f".{file_suffix}"
     if filename:
         if filename_contains_suffix(filename):
             return filename
-        return f"{filename}.{file_suffix}"
+        return f"{filename}{file_suffix}"
     else:
-        return f"{service_name}_{request_id}.{file_suffix}"  # added request id to prevent collisions. The running ts will be a part of the file metadata.
+        return f"{service_name}_{request_id}{file_suffix}"  # added request id to prevent collisions. The running ts will be a part of the file metadata.
 
 
 def parse_profiler_output(call_output: dict, profiler: ProfilerConfig, service_name: str, request_id: str):
