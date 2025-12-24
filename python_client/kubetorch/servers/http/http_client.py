@@ -791,6 +791,13 @@ class HTTPClient:
         try:
             loop.run_until_complete(run_streams())
         finally:
+            # Cancel all pending tasks to prevent "Task was destroyed but it is pending!" warnings
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            # Wait for all tasks to be cancelled
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             loop.close()
 
     # ----------------- Metrics Helpers ----------------- #
@@ -1013,7 +1020,12 @@ class HTTPClient:
 
         base_url = service_url()
         base_host, base_port = extract_host_port(base_url)
-        await self._stream_logs_websocket(request_id, stop_event, host=base_host, port=base_port, log_config=log_config)
+        # Run log and event streams in parallel (same as sync version in _run_log_stream)
+        await asyncio.gather(
+            self._stream_logs_websocket(request_id, stop_event, host=base_host, port=base_port, log_config=log_config),
+            self._stream_events_websocket(stop_event, host=base_host, port=base_port, log_config=log_config),
+            return_exceptions=True,  # Don't fail if one stream errors
+        )
 
     async def stream_metrics_async(self, request_id, stop_event, metrics_config):
         """Async GPU/CPU metrics streaming (uses httpx.AsyncClient)."""
@@ -1121,13 +1133,22 @@ class HTTPClient:
                 try:
                     await asyncio.wait_for(log_task, timeout=timeout)
                 except asyncio.TimeoutError:
-                    if logging_config.shutdown_grace_period == 0:
-                        # Only cancel if we're not explicitly waiting for shutdown
-                        log_task.cancel()
-                        try:
-                            await log_task
-                        except asyncio.CancelledError:
-                            pass
+                    # Always cancel on timeout to prevent "Task was destroyed but it is pending!" warnings
+                    log_task.cancel()
+                    try:
+                        await log_task
+                    except asyncio.CancelledError:
+                        pass
+            # Clean up metrics task
+            if monitoring_task:
+                try:
+                    await asyncio.wait_for(monitoring_task, timeout=0.5)
+                except asyncio.TimeoutError:
+                    monitoring_task.cancel()
+                    try:
+                        await monitoring_task
+                    except asyncio.CancelledError:
+                        pass
 
     def post(self, endpoint, json=None, headers=None):
         return self._make_request("post", endpoint, json=json, headers=headers)
