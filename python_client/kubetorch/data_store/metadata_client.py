@@ -304,7 +304,7 @@ class MetadataClient:
 
     def list_keys(self, prefix: str = "") -> dict:
         """
-        List all keys matching a prefix, combining virtual keys and filesystem contents.
+        List all keys matching a prefix, combining locally-published keys and filesystem contents.
 
         Args:
             prefix: Key prefix to match (default: empty string for root)
@@ -312,10 +312,8 @@ class MetadataClient:
         Returns:
             dict with "prefix" and "items" list, where each item has:
             - name: Item name (relative to prefix)
-            - is_virtual: True if published via locale="local" (not in filesystem)
             - is_directory: True if directory
-            - pod_name: Pod name where virtual key is stored (if virtual)
-            - pod_namespace: Namespace of pod (if virtual)
+            - locale: Where the data lives - "store" for central store, or pod name for local data
         """
         try:
             encoded_prefix = quote(prefix, safe="")
