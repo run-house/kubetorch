@@ -10,7 +10,7 @@ kubetorchConfig:
 
 kubetorchController:
   image: ghcr.io/run-house/kubetorch-controller
-  tag: v0.1.0
+  tag: 0.3.0
   imagePullPolicy: Always
 
   port: 8081  # Port the controller listens on
@@ -69,7 +69,7 @@ nvidia-device-plugin:
       effect: "NoSchedule"
 
 dataStore:
-  image: ghcr.io/run-house/kubetorch-data-store:v1
+  image: ghcr.io/run-house/kubetorch-data-store:0.3.0
   imagePullPolicy: Always
   # serviceAccount: kubetorch-service-account  # Optional: use specific service account for Workload Identity
   maxConnections: 500  # Maximum concurrent rsync connections (increase for many worker pods)
