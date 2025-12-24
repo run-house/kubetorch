@@ -1,5 +1,9 @@
+import asyncio
+
 import kubetorch as kt
 import pytest
+
+from kubetorch.utils import capture_stdout
 
 from .assets.test_distributed.distributed_test_class import DistributedTestClass
 
@@ -21,13 +25,25 @@ from .utils import get_test_fn_name
 
 
 @pytest.mark.level("minimal")
-def test_spmd_distributed_fn():
+@pytest.mark.asyncio
+async def test_spmd_distributed_fn():
     """Test generic SPMD distributed with function."""
     compute = kt.Compute(cpus="0.5", memory="512Mi").distribute(workers=2, num_proc=2)
     remote_fn = kt.fn(verify_distributed_env, name=get_test_fn_name()).to(compute)
 
-    results = remote_fn()
+    # Test with stream_logs=True and verify logs from subprocesses appear in stdout
+    out = ""
+    with capture_stdout() as stdout:
+        results = remote_fn(stream_logs=True)
+        await asyncio.sleep(4)  # wait for logs to stream from subprocesses via queue
+        out = out + str(stdout)
+
     assert len(results) == 4  # 2 workers * 2 processes
+
+    # Verify log streaming works for distributed functions
+    # We should see output from all 4 ranks (2 workers * 2 processes)
+    for rank in range(4):
+        assert f"DISTRIBUTED_PRINT rank={rank}" in out, f"Missing print output for rank {rank}"
 
     # Sort results by rank since they may come back in any order
     results = sorted(results, key=lambda r: int(r["rank"]))
@@ -41,7 +57,7 @@ def test_spmd_distributed_fn():
         assert result["pod_ips"] is not None
 
     # Test workers="any" - returns results from all local processes on coordinator only
-    results_any = remote_fn(workers="any")
+    results_any = remote_fn(workers="any", stream_logs=True)
     assert len(results_any) == 2  # num_proc=2 on coordinator
     for result in results_any:
         assert result["rank"] in ["0", "1"]  # Only coordinator's processes
@@ -51,41 +67,52 @@ def test_spmd_distributed_fn():
         assert result["pod_ips"] is not None
 
     # Test with worker indices (indices refer to worker nodes, not ranks)
-    results_idx = remote_fn(workers=[0])  # Select first worker node only
+    results_idx = remote_fn(workers=[0], stream_logs=True)  # Select first worker node only
     assert len(results_idx) == 2  # 2 processes on worker 0
     for result in results_idx:
         assert int(result["rank"]) in [0, 1]  # Worker 0 has ranks 0 and 1
         assert result["node_rank"] == "0"
 
     # Test with string indices
-    results_str_idx = remote_fn(workers=["1"])  # Select second worker node
+    results_str_idx = remote_fn(workers=["1"], stream_logs=True)  # Select second worker node
     assert len(results_str_idx) == 2  # 2 processes on worker 1
     for result in results_str_idx:
         assert int(result["rank"]) in [2, 3]  # Worker 1 has ranks 2 and 3
         assert result["node_rank"] == "1"
 
     # Test with both worker nodes
-    results_both = remote_fn(workers=[0, 1])  # Select both worker nodes
+    results_both = remote_fn(workers=[0, 1], stream_logs=True)  # Select both worker nodes
     assert len(results_both) == 4  # All 4 processes
     ranks = [int(r["rank"]) for r in results_both]
     assert sorted(ranks) == [0, 1, 2, 3]
 
 
 @pytest.mark.level("minimal")
-def test_spmd_distributed_cls():
+@pytest.mark.asyncio
+async def test_spmd_distributed_cls():
     """Test generic SPMD distributed with class."""
     remote_cls = kt.cls(DistributedTestClass, name=get_test_fn_name()).to(
         kt.Compute(cpus="0.5", memory="512Mi").distribute(workers=2, num_proc=2)
     )
 
-    # Test multiple calls to verify state persistence
-    first_call = remote_cls.increment_and_return()
+    # Test with stream_logs=True and verify logs from subprocesses appear in stdout
+    out = ""
+    with capture_stdout() as stdout:
+        first_call = remote_cls.increment_and_return(stream_logs=True)
+        await asyncio.sleep(4)  # wait for logs to stream from subprocesses via queue
+        out = out + str(stdout)
+
     assert len(first_call) == 4
     for result in first_call:
         assert result["call_count"] == 1
         assert result["world_size"] == "4"
 
-    second_call = remote_cls.increment_and_return()
+    # Verify log streaming works for distributed class methods
+    # We should see output from all 4 ranks (2 workers * 2 processes)
+    for rank in range(4):
+        assert f"DISTRIBUTED_CLS_PRINT rank={rank}" in out, f"Missing print output for rank {rank}"
+
+    second_call = remote_cls.increment_and_return(stream_logs=True)
     assert len(second_call) == 4
     for result in second_call:
         assert result["call_count"] == 2
@@ -95,7 +122,7 @@ def test_spmd_distributed_cls():
     remote_cls_redeployed = kt.cls(DistributedTestClass, name=get_test_fn_name()).to(compute)
 
     # State should be reset after redeployment
-    reset_call = remote_cls_redeployed.increment_and_return()
+    reset_call = remote_cls_redeployed.increment_and_return(stream_logs=True)
     assert len(reset_call) == 4
     for result in reset_call:
         assert result["call_count"] == 1  # Should be 1 again, not 3
@@ -105,7 +132,7 @@ def test_spmd_distributed_cls():
     import time
 
     def make_concurrent_slow_call():
-        return remote_cls_redeployed.slow_increment_with_timing(delay=2)
+        return remote_cls_redeployed.slow_increment_with_timing(delay=2, stream_logs=True)
 
     # Make 3 concurrent calls with 2-second delays - this should test multithreading
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
@@ -166,13 +193,13 @@ def test_spmd_distributed_cls():
     assert len(thread_ids) > 1, f"Expected multiple thread IDs, only got: {thread_ids}"
 
     # Test worker selection with indices (selecting worker node 1 only)
-    results_subset = remote_cls_redeployed.increment_and_return(workers=[1])
+    results_subset = remote_cls_redeployed.increment_and_return(workers=[1], stream_logs=True)
     assert len(results_subset) == 2  # 2 processes on worker 1
     ranks = [int(r["rank"]) for r in results_subset]
     assert all(rank in [2, 3] for rank in ranks)  # Worker 1 has ranks 2 and 3
 
     # Test workers="any" - returns results from all local processes on coordinator only
-    results_any = remote_cls_redeployed.increment_and_return(workers="any")
+    results_any = remote_cls_redeployed.increment_and_return(workers="any", stream_logs=True)
     assert len(results_any) == 2  # num_proc=2 on coordinator
     for result in results_any:
         assert result["rank"] in ["0", "1"]  # Only coordinator's processes
@@ -180,15 +207,15 @@ def test_spmd_distributed_cls():
 
     # Test invalid worker index (should raise error)
     with pytest.raises(Exception, match="Worker index 10 out of range"):
-        remote_cls_redeployed.increment_and_return(workers=[10])  # Only have workers 0 and 1
+        remote_cls_redeployed.increment_and_return(workers=[10], stream_logs=True)  # Only have workers 0 and 1
 
     # Test invalid worker specification
     with pytest.raises(Exception, match="Invalid worker specification"):
-        remote_cls_redeployed.increment_and_return(workers=["not-an-index-or-ip"])
+        remote_cls_redeployed.increment_and_return(workers=["not-an-index-or-ip"], stream_logs=True)
 
     # Test exception handling
     with pytest.raises(Exception, match="Test exception") as exc_info:
-        remote_cls.raise_exception("Test exception from SPMD")
+        remote_cls.raise_exception("Test exception from SPMD", stream_logs=True)
 
     assert exc_info.value.remote_traceback is not None
 

@@ -31,14 +31,20 @@ class LogCapture:
     1. Pushes structured logs to log store (async batched)
     2. Forwards logs to original stdout/stderr (kubectl logs + user handlers)
     3. Collects logs from subprocesses via a multiprocessing.Queue
+
+    Can also run in "queue mode" for subprocesses, where logs are pushed to a queue
+    instead of being buffered and sent to Loki.
     """
 
     def __init__(
         self,
-        log_store_url: str,
-        labels: Dict[str, str],
+        log_store_url: str = None,
+        labels: Dict[str, str] = None,
         batch_size: int = 100,
         flush_interval: float = 1.0,
+        # Queue mode: push to queue instead of Loki (for subprocesses)
+        output_queue: mp.Queue = None,
+        get_request_id_fn=None,
     ):
         """
         Initialize log capture.
@@ -48,13 +54,20 @@ class LogCapture:
             labels: Base labels for all logs (service, pod_name, namespace)
             batch_size: Number of log entries to batch before pushing
             flush_interval: Seconds between automatic flushes
+            output_queue: If provided, push logs to this queue instead of Loki (subprocess mode)
+            get_request_id_fn: Function to get current request_id (required for subprocess mode)
         """
         self.log_store_url = log_store_url
-        self.labels = labels
+        self.labels = labels or {}
         self.batch_size = batch_size
         self.flush_interval = flush_interval
 
-        # Buffer for log store push
+        # Queue mode for subprocesses
+        self._output_queue = output_queue
+        self._get_request_id_fn = get_request_id_fn
+        self._queue_mode = output_queue is not None
+
+        # Buffer for log store push (not used in queue mode)
         self._buffer = []
         self._buffer_lock = threading.Lock()
 
@@ -62,10 +75,17 @@ class LogCapture:
         self._original_stdout = sys.stdout
         self._original_stderr = sys.stderr
 
-        # Queue for subprocess log collection (multiprocessing-safe)
-        self._subprocess_queue: mp.Queue = mp.Queue()
+        # Queue for subprocess log collection (multiprocessing-safe) - only in main process mode
+        # Use Manager queue to avoid context mismatch issues between fork/spawn
+        # (PyTorch CUDA changes start method to 'spawn' after LogCapture init)
+        if self._queue_mode:
+            self._subprocess_queue = None
+            self._manager = None
+        else:
+            self._manager = mp.Manager()
+            self._subprocess_queue = self._manager.Queue()
 
-        # Background threads
+        # Background threads (not used in queue mode)
         self._stop_event = threading.Event()
         self._flush_thread: Optional[threading.Thread] = None
         self._subprocess_collector_thread: Optional[threading.Thread] = None
@@ -93,16 +113,19 @@ class LogCapture:
         # Redirect root logger to use our interceptor
         self._setup_logging_handler()
 
-        # Start background flush thread
-        self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
-        self._flush_thread.start()
+        # In queue mode (subprocess), we don't need background threads
+        if not self._queue_mode:
+            # Start background flush thread
+            self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
+            self._flush_thread.start()
 
-        # Start subprocess queue collector
-        self._subprocess_collector_thread = threading.Thread(target=self._collect_subprocess_logs, daemon=True)
-        self._subprocess_collector_thread.start()
+            # Start subprocess queue collector
+            self._subprocess_collector_thread = threading.Thread(target=self._collect_subprocess_logs, daemon=True)
+            self._subprocess_collector_thread.start()
+
+            logger.debug(f"LogCapture started - pushing to {self.log_store_url}")
 
         self._started = True
-        logger.info(f"LogCapture started - pushing to {self.log_store_url}")
 
     def stop(self):
         """Stop log capture and flush remaining logs."""
@@ -110,9 +133,19 @@ class LogCapture:
             return
 
         self._stop_event.set()
-        self._flush_now()
+        if not self._queue_mode:
+            self._flush_now()
         sys.stdout = self._original_stdout
         sys.stderr = self._original_stderr
+
+        # Shutdown manager if we created one
+        if self._manager is not None:
+            try:
+                self._manager.shutdown()
+            except Exception:
+                pass
+            self._manager = None
+
         self._started = False
 
     def flush(self):
@@ -145,7 +178,7 @@ class LogCapture:
         name: str = "print_redirect",
         asctime: Optional[str] = None,
     ):
-        """Add a log entry to the buffer.
+        """Add a log entry to the buffer (or queue in subprocess mode).
 
         Args:
             message: The log message text
@@ -155,6 +188,21 @@ class LogCapture:
             name: Logger name ("print_redirect" for stdout/stderr, logger name for logging)
             asctime: Formatted timestamp (auto-generated if not provided)
         """
+        # In queue mode, push directly to queue for main process to handle
+        if self._queue_mode:
+            try:
+                self._output_queue.put_nowait(
+                    {
+                        "message": message,
+                        "level": level,
+                        "request_id": request_id,
+                        "extra_labels": extra_labels,
+                    }
+                )
+            except Exception:
+                pass  # Don't block on queue errors
+            return
+
         timestamp_ns = time.time_ns()
 
         # Generate asctime if not provided
@@ -435,3 +483,24 @@ def stop_log_capture():
     if _log_capture is not None:
         _log_capture.stop()
         _log_capture = None
+
+
+def create_subprocess_log_capture(output_queue: mp.Queue) -> Optional[LogCapture]:
+    """
+    Create a LogCapture instance for use in a subprocess.
+
+    In subprocess mode, logs are pushed to the output_queue instead of Loki.
+    The main process's LogCapture will collect from this queue and push to Loki.
+
+    Args:
+        output_queue: Queue to push log entries to (from main process's LogCapture)
+
+    Returns:
+        LogCapture instance in queue mode, or None if queue is None
+    """
+    if output_queue is None:
+        return None
+
+    log_capture = LogCapture(output_queue=output_queue)
+    log_capture.start()
+    return log_capture

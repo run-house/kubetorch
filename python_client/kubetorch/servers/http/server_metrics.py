@@ -119,7 +119,7 @@ class HeartbeatManager:
     async def start(self):
         """Start the heartbeat manager"""
         self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-        logger.info("Heartbeat started - tracking activity metrics")
+        logger.debug("Heartbeat started - tracking activity metrics")
 
     async def stop(self):
         """Stop the heartbeat manager"""

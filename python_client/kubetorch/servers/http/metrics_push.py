@@ -94,7 +94,7 @@ class MetricsPusher:
         self._push_thread = threading.Thread(target=self._push_loop, daemon=True)
         self._push_thread.start()
         self._started = True
-        logger.info(f"MetricsPusher started - pushing to {self.pushgateway_url}")
+        logger.debug(f"MetricsPusher started - pushing to {self.pushgateway_url}")
 
     def stop(self):
         """Stop the metrics pusher and push final metrics."""

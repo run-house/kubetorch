@@ -1237,18 +1237,19 @@ class Module:
                                         else:
                                             # streaming pre server setup logs, before we have the pod name
                                             formatter = base_formatter
-
-                                        # Add service name prefix if configured
-                                        prefix = f"({self.service_name}) " if self.logging_config.include_name else ""
-                                        formatted_line = (
-                                            f"{formatter.start_color}{prefix}{log_line}{formatter.reset_color}"
-                                        )
+                                            message = log_line  # Use raw log line for dedup
 
                                         # Check for duplicates if dedup is enabled
                                         if seen_log_messages is not None:
                                             if message in seen_log_messages:
                                                 continue
                                             seen_log_messages.add(message)
+
+                                        # Add service name prefix if configured
+                                        prefix = f"({self.service_name}) " if self.logging_config.include_name else ""
+                                        formatted_line = (
+                                            f"{formatter.start_color}{prefix}{log_line}{formatter.reset_color}"
+                                        )
 
                                         print(formatted_line, flush=True)
                     except asyncio.TimeoutError:
@@ -1276,7 +1277,7 @@ class Module:
                 except (asyncio.TimeoutError, Exception):
                     pass
 
-    def _wait_for_http_health(self, timeout=60, retry_interval=0.1, backoff=2, max_interval=10):
+    def _wait_for_http_health(self, timeout=60, retry_interval=0.2, backoff=1.5, max_interval=2):
         """Wait for the HTTP server to be ready by checking the /health endpoint.
 
         Args:
@@ -1285,7 +1286,7 @@ class Module:
         """
         import time
 
-        logger.info(f"Waiting for HTTP server to be ready for service {self.service_name}")
+        logger.info(f"Polling {self.service_name} service health endpoint")
         start_time = time.time()
 
         while time.time() - start_time < timeout:
@@ -1297,7 +1298,7 @@ class Module:
                     timeout=5,  # timeout per health check attempt
                 )
                 if response.status_code == 200:
-                    logger.info(f"HTTP server is ready for service {self.service_name}")
+                    logger.info(f"Service {self.service_name} ready")
                     return
                 else:
                     logger.debug(f"Health check returned status {response.status_code}, retrying...")
@@ -1318,7 +1319,7 @@ class Module:
         # If we get here, we've timed out
         logger.warning(f"HTTP health check timed out after {timeout}s for service {self.service_name}")
 
-    async def _wait_for_http_health_async(self, timeout=60, retry_interval=0.1, backoff=2, max_interval=10):
+    async def _wait_for_http_health_async(self, timeout=60, retry_interval=0.2, backoff=1.5, max_interval=2):
         """Async version of _wait_for_http_health. Wait for the HTTP server to be ready by checking the /health endpoint.
 
         Args:
@@ -1327,7 +1328,7 @@ class Module:
         """
         import asyncio
 
-        logger.info(f"Waiting for HTTP server to be ready for service {self.service_name}")
+        logger.debug(f"Waiting for HTTP server to be ready for service {self.service_name}")
         start_time = time.time()
 
         while time.time() - start_time < timeout:
@@ -1339,7 +1340,7 @@ class Module:
                     timeout=5,  # add timeout per health check attempt to allow retries
                 )
                 if response.status_code == 200:
-                    logger.info(f"HTTP server is ready for service {self.service_name}")
+                    logger.info(f"Service {self.service_name} ready")
                     return
                 else:
                     logger.debug(f"Health check returned status {response.status_code}, retrying...")

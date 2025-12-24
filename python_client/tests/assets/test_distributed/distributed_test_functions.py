@@ -6,6 +6,10 @@ import os
 
 def verify_distributed_env():
     """Generic function to verify distributed environment variables are set."""
+    import logging
+
+    logger = logging.getLogger(__name__)
+
     env_info = {
         "rank": os.environ.get("RANK"),
         "world_size": os.environ.get("WORLD_SIZE"),
@@ -13,6 +17,12 @@ def verify_distributed_env():
         "node_rank": os.environ.get("NODE_RANK"),
         "pod_ips": os.environ.get("POD_IPS"),
     }
+
+    # Test logging and print output for log streaming verification
+    rank = env_info["rank"]
+    print(f"DISTRIBUTED_PRINT rank={rank}")
+    logger.info(f"DISTRIBUTED_LOG rank={rank}")
+
     return env_info
 
 

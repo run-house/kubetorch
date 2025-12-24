@@ -21,8 +21,9 @@ from kubetorch.servers.http.http_server import (
     request_id_ctx_var,
     run_callable_internal_sync,
 )
-
+from .log_capture import create_subprocess_log_capture, get_subprocess_queue
 from .utils import clear_debugging_sessions, is_running_in_kubernetes
+
 
 # Try to import Monarch components at module level if available
 # This helps avoid threading issues with Monarch's Rust bindings
@@ -506,10 +507,11 @@ class RemoteWorkerPool:
 class DistributedProcessPool:
     """Unified pool managing distributed processes with single router thread."""
 
-    def __init__(self, process_class, num_processes, max_threads_per_proc=10, **process_kwargs):
+    def __init__(self, process_class, num_processes, max_threads_per_proc=10, log_queue=None, **process_kwargs):
         self.process_class = process_class
         self.num_processes = num_processes
         self.max_threads_per_proc = max_threads_per_proc
+        self.log_queue = log_queue  # Queue for subprocess log collection (from LogCapture)
         self.process_kwargs = process_kwargs  # Additional kwargs to pass to process constructor
 
         # Processes and queues
@@ -555,6 +557,7 @@ class DistributedProcessPool:
             request_queue=request_queue,
             response_queue=self.response_queue,  # Shared response queue
             max_threads=self.max_threads_per_proc,
+            log_queue=self.log_queue,  # For subprocess log capture
             **self.process_kwargs,  # Pass additional framework-specific settings
         )
         process.start()
@@ -1061,7 +1064,7 @@ class DistributedSupervisor:
 class DistributedProcess(multiprocessing.Process):
     """Base class for distributed processes that run callables in subprocesses."""
 
-    def __init__(self, local_rank, request_queue, response_queue, max_threads=4, **kwargs):
+    def __init__(self, local_rank, request_queue, response_queue, max_threads=4, log_queue=None, **kwargs):
         super().__init__()
         # We don't need the cache miss / reload here because these processes are destroyed and recreated
         # with each .to call.
@@ -1070,6 +1073,7 @@ class DistributedProcess(multiprocessing.Process):
         self._response_queue = response_queue
         self._max_threads = max_threads
         self._executor = None
+        self._log_queue = log_queue  # Queue for sending logs back to main process
         # Store any additional framework-specific settings
         self._settings = kwargs
 
@@ -1197,6 +1201,10 @@ class DistributedProcess(multiprocessing.Process):
 
     def run(self):
         """Main process loop with thread pool for concurrent request handling."""
+        # Set up subprocess log capture to push logs to main process via queue
+        # Uses LogCapture in queue mode - same capture logic, different emit target
+        log_capture = create_subprocess_log_capture(self._log_queue)
+
         # Create thread pool for handling requests
         self._executor = ThreadPoolExecutor(max_workers=self._max_threads)
 
@@ -1230,6 +1238,8 @@ class DistributedProcess(multiprocessing.Process):
             # Cleanup
             logger.info("Received shutdown signal, cleaning up distributed environment...")
             self.proc_cleanup()
+            if log_capture:
+                log_capture.stop()
             logger.info("Exiting gracefully.")
 
 
@@ -1354,6 +1364,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                 process_class=self.process_class,
                 num_processes=num_proc,
                 max_threads_per_proc=self.max_threads_per_proc,
+                log_queue=get_subprocess_queue(),
                 **self.process_kwargs,  # Pass any additional settings
             )
 
@@ -2398,6 +2409,7 @@ class MonarchDistributed(DistributedSupervisor):
                 process_class=MonarchProcess,
                 num_processes=1,  # One process per node for Monarch
                 max_threads_per_proc=self.max_threads,
+                log_queue=get_subprocess_queue(),
             )
 
             # Start the process
@@ -2751,6 +2763,7 @@ class RayDistributed(DistributedSupervisor):
                 process_class=RayProcess,
                 num_processes=1,  # Ray only needs one process
                 max_threads_per_proc=self.max_threads,
+                log_queue=get_subprocess_queue(),
             )
             self.process_pool.start()
 

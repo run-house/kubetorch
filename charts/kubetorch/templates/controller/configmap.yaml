@@ -25,7 +25,7 @@ data:
             # -------------------------------------------------------
             location {{ .Values.kubetorchController.nginx.healthRoute }} {
                 access_log off;
-                return 200 '{"status":"ok","version":"{{ .Chart.Version }}","config":{"log_streaming_enabled":{{ .Values.kubetorchConfig.logStreamingEnabled }},"metrics_enabled":{{ .Values.kubetorchConfig.metricsEnabled }}}}';
+                return 200 '{"status":"ok","version":"{{ .Chart.Version }}","config":{"log_streaming_enabled":{{ .Values.logStreaming.enabled }},"metrics_enabled":{{ .Values.metrics.enabled }}}}';
                 add_header Content-Type text/plain;
             }
 

@@ -588,7 +588,7 @@ class BaseServiceManager:
         dryrun: bool = False,
     ):
         """Create or update service."""
-        logger.info(f"Deploying {manifest['kind']} service with name: {service_name}")
+        logger.info(f"Deploying {service_name}")
         manifest = self._preprocess_manifest_for_launch(manifest)
 
         # Update manifest with service name and deployment timestamp

@@ -496,7 +496,7 @@ class RsyncClient:
         # Log user-friendly success message
         if synced_items:
             items_str = ", ".join(synced_items)
-            logger.info(f"{items_str} successfully synced")
+            logger.info(f"Synced {items_str}")
         else:
             logger.debug("Rsync operation completed successfully")
 

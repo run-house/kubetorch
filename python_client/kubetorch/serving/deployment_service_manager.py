@@ -126,7 +126,7 @@ class DeploymentServiceManager(BaseServiceManager):
             try:
                 self.controller_client.create_service(namespace=self.namespace, body=service, params=kwargs)
                 if not dryrun:
-                    logger.info(f"Created service {service_name} in namespace {self.namespace}")
+                    logger.debug(f"Created service {service_name} in namespace {self.namespace}")
             except Exception as e:
                 if http_conflict(e):
                     logger.info(f"Service {service_name} already exists")
@@ -153,7 +153,7 @@ class DeploymentServiceManager(BaseServiceManager):
                         namespace=self.namespace, body=headless_service, params=kwargs
                     )
                     if not kwargs.get("dry_run"):
-                        logger.info(f"Created headless service {service_name}-headless in namespace {self.namespace}")
+                        logger.debug(f"Created headless service {service_name}-headless in namespace {self.namespace}")
                 except Exception as e:
                     if http_conflict(e):
                         logger.info(f"Headless service {service_name}-headless already exists")
@@ -166,7 +166,7 @@ class DeploymentServiceManager(BaseServiceManager):
                 body=deployment,
             )
 
-            logger.info(f"Created Deployment {deployment['metadata']['name']} in namespace {self.namespace}")
+            logger.debug(f"Created Deployment {deployment['metadata']['name']} in namespace {self.namespace}")
             return created_deployment
 
         except Exception as e:
@@ -259,7 +259,7 @@ class DeploymentServiceManager(BaseServiceManager):
         sleep_interval = 2
         start_time = time.time()
 
-        logger.info(f"Checking Deployment {service_name} pod readiness (timeout: {launch_timeout} seconds)")
+        logger.debug(f"Checking Deployment {service_name} pod readiness (timeout: {launch_timeout} seconds)")
 
         iteration = 0
         while (time.time() - start_time) < launch_timeout:
@@ -282,7 +282,7 @@ class DeploymentServiceManager(BaseServiceManager):
                     logger.debug(f"Deployment {service_name}: {ready_replicas}/{desired_replicas} replicas ready")
 
                 if ready_replicas >= desired_replicas and desired_replicas > 0:
-                    logger.info(f"Deployment {service_name} pod(s) are now ready with {ready_replicas} replicas")
+                    logger.info(f"Pods ready ({ready_replicas}/{desired_replicas} replicas)")
                     return True
 
                 # Check for pod-level issues
