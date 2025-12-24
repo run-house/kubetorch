@@ -1,12 +1,25 @@
 # Data Store Client Design
 
-This directory contains the client-side implementation of the kubetorch data store - a key-value store interface for transferring data to and from Kubernetes clusters.
+This directory contains the client-side implementation of the kubetorch data store - a distributed key-value system for ML workloads on Kubernetes.
 
 ## Overview
 
-The data store provides a unified `put()`/`get()` API for two fundamentally different data types:
-- **Filesystem data**: Files/directories transferred via rsync
+The data store solves two critical gaps in Kubernetes for machine learning:
+
+1. **Fast deployment**: Sync code and data to your cluster instantly via rsync - no container rebuilds
+2. **In-cluster data sharing**: Peer-to-peer data transfer between pods with automatic caching and discovery - the "object store" functionality that Ray users miss
+
+The unified `put()`/`get()` API handles two data types:
+- **Filesystem data**: Files/directories transferred via rsync (P2P or to/from central store)
 - **GPU data**: CUDA tensors/state dicts transferred via NCCL broadcast
+
+**Key capabilities:**
+- **External sync**: Push/pull files to/from cluster (like rsync but integrated)
+- **Zero-copy P2P**: `locale="local"` publishes data in-place, consumers fetch directly via P2P
+- **Scalable broadcast**: Tree-based propagation for distributing data to thousands of pods
+- **GPU tensor transfer**: NCCL-based point-to-point and broadcast for tensors/state dicts
+- **Automatic caching**: Every getter can become a source for subsequent getters
+- **Metadata server**: Centralized discovery with distributed data flow
 
 ## Architecture
 
