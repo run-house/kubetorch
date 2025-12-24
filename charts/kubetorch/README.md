@@ -76,7 +76,7 @@ A Helm chart for kubetorch
 | kubetorchController.resources.memory.request | string | `"1Gi"` |  |
 | kubetorchController.servicePort | int | `8080` |  |
 | kubetorchController.storage.size | string | `"1Gi"` |  |
-| kubetorchController.tag | string | `"v0.1.0"` |  |
+| kubetorchController.tag | string | `"update-pod-watchers"` |  |
 | kubetorchController.tolerations | list | `[]` |  |
 | kubetorchController.workers | int | `8` |  |
 | logStreaming.enabled | bool | `true` |  |
