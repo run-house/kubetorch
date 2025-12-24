@@ -401,7 +401,7 @@ def teardown_test_resources(test_hash):
     default_namespace = config.namespace
     # Try to teardown from both namespaces
     for ns in [default_namespace, test_namespace]:
-        result = subprocess.run(f"kt teardown -p {test_hash} -n {ns} -y", shell=True, capture_output=True, text=True)
+        result = subprocess.run(f"kt teardown -p {test_hash} -n {ns} -y -f", shell=True, capture_output=True, text=True)
         if result.returncode != 0:
             if "403" in result.stderr or "Forbidden" in result.stderr:
                 # Namespace not configured in controller RBAC (may happen in local dev)

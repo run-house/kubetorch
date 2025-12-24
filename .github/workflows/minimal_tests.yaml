@@ -792,6 +792,52 @@ jobs:
             echo "Namespace $NAMESPACE does not exist, kt config remains unchanged"
           fi
 
+      - name: Configure test namespace RBAC
+        run: |
+          TEST_NS="kt-test-$TEST_HASH"
+          echo "Creating test namespace $TEST_NS and configuring RBAC..."
+          kubectl create namespace $TEST_NS --dry-run=client -o yaml | kubectl apply -f -
+
+          # Use controller-ns output or fallback to 'kubetorch' (service account setup)
+          CONTROLLER_NS="${{ steps.controller-ns.outputs.NAMESPACE }}"
+          CONTROLLER_NS="${CONTROLLER_NS:-kubetorch}"
+
+          # Create Role for the test namespace
+          kubectl apply -f - <<EOF
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: kubetorch-controller-role-$TEST_NS
+            namespace: $TEST_NS
+          rules:
+            - apiGroups: [""]
+              resources: ["persistentvolumeclaims", "pods", "services", "configmaps", "secrets", "events"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            - apiGroups: [""]
+              resources: ["pods/exec", "pods/log"]
+              verbs: ["create", "get"]
+            - apiGroups: ["apps"]
+              resources: ["deployments", "deployments/status", "replicasets", "replicasets/status"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            - apiGroups: ["networking.k8s.io"]
+              resources: ["ingresses"]
+              verbs: ["get", "list", "watch"]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: kubetorch-controller-rolebinding-$TEST_NS
+            namespace: $TEST_NS
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: kubetorch-controller-role-$TEST_NS
+          subjects:
+            - kind: ServiceAccount
+              name: kubetorch-controller
+              namespace: $CONTROLLER_NS
+          EOF
+
       - name: Run Teardown Commands
         run: |
           for suffix in -minimal -mon -cli -pod -dist -python -secret -decl -app; do

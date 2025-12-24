@@ -603,9 +603,9 @@ class ControllerClient:
         """Delete a Pod"""
         params = {}
         if grace_period_seconds is not None:
-            params["gracePeriodSeconds"] = str(grace_period_seconds)
+            params["grace_period_seconds"] = str(grace_period_seconds)
         if propagation_policy is not None:
-            params["propagationPolicy"] = propagation_policy
+            params["propagation_policy"] = propagation_policy
         return self.delete(f"/api/v1/namespaces/{namespace}/pods/{name}", params=params, ignore_not_found=True)
 
     def get_pod_logs(
@@ -681,9 +681,9 @@ class ControllerClient:
         """Delete a ConfigMap"""
         params = {}
         if grace_period_seconds is not None:
-            params["gracePeriodSeconds"] = str(grace_period_seconds)
+            params["grace_period_seconds"] = str(grace_period_seconds)
         if propagation_policy:
-            params["propagationPolicy"] = propagation_policy
+            params["propagation_policy"] = propagation_policy
         return self.delete(f"/api/v1/namespaces/{namespace}/configmaps/{name}", params=params)
 
     # Custom Resource Definitions (CRDs)
@@ -720,9 +720,9 @@ class ControllerClient:
         """Delete a custom resource"""
         params = {}
         if grace_period_seconds is not None:
-            params["gracePeriodSeconds"] = str(grace_period_seconds)
+            params["grace_period_seconds"] = str(grace_period_seconds)
         if propagation_policy:
-            params["propagationPolicy"] = propagation_policy
+            params["propagation_policy"] = propagation_policy
         return self.delete(f"/apis/{group}/{version}/namespaces/{namespace}/{plural}/{name}", params=params)
 
     def list_namespaced_custom_object(
@@ -764,9 +764,9 @@ class ControllerClient:
         """Delete a ReplicaSet"""
         params = {}
         if grace_period_seconds is not None:
-            params["gracePeriodSeconds"] = str(grace_period_seconds)
+            params["grace_period_seconds"] = str(grace_period_seconds)
         if propagation_policy:
-            params["propagationPolicy"] = propagation_policy
+            params["propagation_policy"] = propagation_policy
         return self.delete(f"/apis/apps/v1/namespaces/{namespace}/replicasets/{name}", params=params)
 
     def list_cluster_custom_object(
