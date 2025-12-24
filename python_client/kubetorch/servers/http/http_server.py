@@ -1250,8 +1250,30 @@ async def ws_reload(websocket: WebSocket):
             os.environ["KT_SERVICE_NAME"] = service_name
             logger.info(f"Set KT_SERVICE_NAME to {service_name} for selector-only mode")
 
+        # Update KT_SERVICE and LogCapture labels for log streaming
+        # This is critical for selector-only mode where pods are created without KT_SERVICE
+        if service_name and os.getenv("KT_SERVICE", "unknown") == "unknown":
+            os.environ["KT_SERVICE"] = service_name
+            # Update LogCapture labels so logs are correctly labeled for streaming
+            try:
+                from log_capture import get_log_capture
+            except ImportError:
+                from .log_capture import get_log_capture
+            log_capture = get_log_capture()
+            if log_capture and log_capture.labels.get("service") == "unknown":
+                log_capture.labels["service"] = service_name
+                logger.info(f"Updated LogCapture service label to {service_name} for selector-only mode")
+
         if namespace and not os.getenv("POD_NAMESPACE"):
             os.environ["POD_NAMESPACE"] = namespace
+            # Also update LogCapture namespace label
+            try:
+                from log_capture import get_log_capture
+            except ImportError:
+                from .log_capture import get_log_capture
+            log_capture = get_log_capture()
+            if log_capture:
+                log_capture.labels["namespace"] = namespace
             logger.info(f"Set POD_NAMESPACE to {namespace} for selector-only mode")
 
         # Set up callable env vars from module config

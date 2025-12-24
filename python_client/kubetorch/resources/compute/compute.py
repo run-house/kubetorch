@@ -2205,6 +2205,10 @@ class Compute:
         ]
 
     def pods(self):
+        # For selector-only mode, use the user's pod selector to find pods
+        if self.selector_only and self._pod_selector:
+            label_selector = ",".join(f"{k}={v}" for k, v in self._pod_selector.items())
+            return self.service_manager.get_pods_for_service(self.service_name, label_selector=label_selector)
         return self.service_manager.get_pods_for_service(self.service_name)
 
     # ------------------------------- Volumes ------------------------------ #
