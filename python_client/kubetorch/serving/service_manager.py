@@ -60,7 +60,7 @@ class ServiceManager:
     # Manifest Navigation (config-driven)
     # =========================================================================
 
-    def _get_pod_template_path(self) -> List[str]:
+    def get_pod_template_path(self) -> List[str]:
         """Get the path to the pod template in the manifest."""
         path = self.config.get("pod_template_path")
         if path is None:
@@ -69,7 +69,7 @@ class ServiceManager:
 
     def pod_spec(self, manifest: dict) -> dict:
         """Get the pod spec from a manifest."""
-        template_path = self._get_pod_template_path()
+        template_path = self.get_pod_template_path()
         current = manifest
         for key in template_path:
             current = current.get(key, {})
@@ -275,7 +275,7 @@ class ServiceManager:
         path: List[str] = None,
     ) -> None:
         """Apply template metadata updates."""
-        template_path = path or self._get_pod_template_path()
+        template_path = path or self.get_pod_template_path()
 
         # Navigate to template metadata, handling both dict keys and list indices
         current = manifest
@@ -323,7 +323,7 @@ class ServiceManager:
 
         # Update template metadata
         if self.config.get("pod_template_path"):
-            template_path = self._get_pod_template_path()
+            template_path = self.get_pod_template_path()
             current = updated
             for key in template_path:
                 if isinstance(key, int):
@@ -404,11 +404,36 @@ class ServiceManager:
         module: dict = None,
         create_headless_service: bool = False,
         endpoint: Optional[Endpoint] = None,
+        pod_selector: Optional[Dict[str, str]] = None,
     ) -> Tuple[dict, dict]:
-        """Create or update service.
+        """Create or update a Kubernetes service and register it with the controller.
+
+        Deploys the provided manifest to the cluster and registers the resource with the
+        kubetorch controller for pod tracking and routing.
+
+        Args:
+            service_name (str): Name of the service to create or update.
+            module_name (str): Name of the module being deployed.
+            manifest (dict, optional): Kubernetes manifest dict defining the workload.
+            deployment_timestamp (str, optional): ISO timestamp for the deployment.
+                If not provided, current time is used.
+            dryrun (bool, optional): If True, skip actual deployment and resource registration.
+                Defaults to False.
+            dockerfile (str, optional): Dockerfile content for image building.
+            module (dict, optional): Module metadata to store with the resource registration.
+            create_headless_service (bool, optional): If `True`, create a headless K8s Service
+                for distributed pod discovery. Defaults to `False`.
+            endpoint (Endpoint, optional): Custom endpoint configuration for routing.
+                Use for custom URLs or subset routing.
+            pod_selector (Dict[str, str], optional): Custom label selector for resource
+                registration. If provided, the controller watches pods matching this
+                selector instead of the default kubetorch labels. Used with ``from_manifest()``
+                when providing a custom selector with an existing K8s manifest.
 
         Returns:
-            Tuple of (created_service, updated_manifest)
+            Tuple[dict, dict]: A tuple of (created_service, updated_manifest) where
+                created_service is the K8s resource returned by the controller and
+                updated_manifest is the manifest with applied labels and timestamps.
         """
         logger.info(f"Deploying {manifest.get('kind', self.resource_type)} service with name: {service_name}")
 
@@ -432,6 +457,7 @@ class ServiceManager:
             module=module,
             create_headless_service=create_headless_service,
             endpoint=endpoint,
+            pod_selector=pod_selector,
         )
 
         return created_service, updated_manifest
@@ -512,6 +538,9 @@ class ServiceManager:
 
         return False
 
+    def _load_pool_metadata(self):
+        return {"username": globals.config.username}
+
     def _apply_and_register_pool(
         self,
         manifest: dict,
@@ -522,8 +551,10 @@ class ServiceManager:
         module: dict = None,
         create_headless_service: bool = False,
         endpoint: Optional[Endpoint] = None,
+        pod_selector: Optional[Dict[str, str]] = None,
     ) -> dict:
-        """Create or update resource via controller."""
+        """Create or update resource via controller. First applies the manifest to create the relevant pod(s), then
+        registers the resource with the kubetorch controller."""
         pod_spec = self.pod_spec(manifest)
         server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
 
@@ -531,7 +562,7 @@ class ServiceManager:
         annotations = manifest.get("metadata", {}).get("annotations", {})
 
         try:
-            # Step 1: Apply the manifest via controller
+            # Step 1: Apply the manifest via controller to create k8s resources
             manifest_replicas = manifest.get("spec", {}).get("replicas", "NOT_SET")
             logger.debug(f"Applying manifest for {service_name}: replicas={manifest_replicas}")
             apply_response = self.controller_client.apply(
@@ -548,23 +579,27 @@ class ServiceManager:
                 f"Applied {manifest.get('kind', self.resource_type)} {service_name} in namespace {self.namespace}"
             )
 
-            # Step 2: Register pool via controller (creates K8s Services)
+            # Step 2: Register resource with the controller
             if not dry_run:
-                # Pool selector tracks all pods
-                pool_selector = {
-                    serving_constants.KT_SERVICE_LABEL: service_name,
-                    serving_constants.KT_MODULE_LABEL: clean_module_name,
-                }
+                # Use custom pod_selector if provided, otherwise use KT labels for pods created by kubetorch
+                if pod_selector:
+                    pool_selector_for_specifier = pod_selector
+                else:
+                    pool_selector_for_specifier = {
+                        serving_constants.KT_SERVICE_LABEL: service_name,
+                        serving_constants.KT_MODULE_LABEL: clean_module_name,
+                    }
                 specifier = {
                     "type": "label_selector",
-                    "selector": pool_selector,
+                    "selector": pool_selector_for_specifier,
                 }
 
-                # Resolve service config
-                service_config = self._resolve_service_config(endpoint, service_name, pool_selector)
+                # Resolve service config (uses same selector as pool specifier for routing)
+                service_config = self._resolve_service_config(endpoint, service_name, pool_selector_for_specifier)
 
                 # Get resource kind for pool registration
                 resource_kind = self.config.get("resource_kind") or manifest.get("kind")
+                pool_metadata = self._load_pool_metadata()
 
                 pool_response = self.controller_client.register_pool(
                     name=service_name,
@@ -574,7 +609,7 @@ class ServiceManager:
                     server_port=server_port,
                     labels=labels,
                     annotations=annotations,
-                    pool_metadata={"username": globals.config.username},
+                    pool_metadata=pool_metadata,
                     dockerfile=dockerfile,
                     module=module,
                     resource_kind=resource_kind,
@@ -583,7 +618,7 @@ class ServiceManager:
                 )
 
                 if pool_response.get("status") not in ("success", "warning", "partial"):
-                    raise Exception(f"Pool registration failed: {pool_response.get('message')}")
+                    raise Exception(f"Resource registration failed: {pool_response.get('message')}")
 
                 logger.info(f"Registered {service_name} to kubetorch controller in namespace {self.namespace}")
 
@@ -783,7 +818,7 @@ class ServiceManager:
         service_name = created_service.get("metadata", {}).get("name")
         namespace = created_service.get("metadata", {}).get("namespace")
 
-        template_path = self._get_pod_template_path()
+        template_path = self.get_pod_template_path()
         current = created_service
         try:
             for key in template_path:

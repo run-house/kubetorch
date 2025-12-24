@@ -2410,7 +2410,7 @@ def kt_pool(
     if watchers:
         watcher_data = controller.get_watchers()
         if not watcher_data:
-            console.print("[yellow]No pools with label_selector specifiers found[/yellow]")
+            console.print("[yellow]No pools with BYO manifests found[/yellow]")
             raise typer.Exit()
 
         table = Table(

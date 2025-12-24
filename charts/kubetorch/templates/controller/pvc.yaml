@@ -10,7 +10,7 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: {{ .Values.controller.storage.size | default "1Gi" }}
-  {{- if .Values.controller.storage.storageClassName }}
-  storageClassName: {{ .Values.controller.storage.storageClassName }}
+      storage: {{ .Values.kubetorchController.storage.size | default "1Gi" }}
+  {{- if .Values.kubetorchController.storage.storageClassName }}
+  storageClassName: {{ .Values.kubetorchController.storage.storageClassName }}
   {{- end }}

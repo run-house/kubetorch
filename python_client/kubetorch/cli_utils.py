@@ -789,8 +789,7 @@ def generate_logs_query(name: str, namespace: str, selected_pod: str, deployment
 
     if not selected_pod:
         if deployment_mode in ["knative", "deployment"] + SUPPORTED_TRAINING_JOBS:
-            # we need to get the pod names first since Loki doesn't have a service_name label
-            # Don't filter by container name to support BYO manifests with custom container names
+            # Query by service name and namespace (labels set by LogCapture)
             return f'{{service="{name}", namespace="{namespace}"}}'
         else:
             console.print(f"[red]Logs does not support deployment mode: {deployment_mode}[/red]")

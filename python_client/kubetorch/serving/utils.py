@@ -5,12 +5,14 @@ import time
 import warnings
 
 from pathlib import Path
+from typing import Dict, Optional
 
 import httpx
 
 from kubetorch import globals
 from kubetorch.logger import get_logger
 from kubetorch.servers.http.utils import is_running_in_kubernetes
+from kubetorch.serving.autoscaling import AutoscalingConfig
 from kubetorch.serving.constants import PROMETHEUS_SERVICE_NAME
 from kubetorch.utils import http_not_found
 
