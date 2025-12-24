@@ -72,6 +72,8 @@ spec:
           image: {{ $.Values.dataStore.image }}
           imagePullPolicy: {{ $.Values.dataStore.imagePullPolicy | default "IfNotPresent" }}
           env:
+            - name: POD_NAMESPACE
+              value: "{{ . }}" # Note: value is baked in from helm install, no need for downward API
             - name: LOKI_ENABLED
               value: "{{ $.Values.logStreaming.enabled }}"
           ports:
