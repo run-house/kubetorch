@@ -11,7 +11,7 @@ app = kt.app(image=image, **kwargs)
 
 
 def get_test_logger(name=None):
-    """Use a generic logger for testing that doesnt require a kubetorch dependency."""
+    """Use a generic logger for testing that doesn't require a kubetorch dependency."""
     logger = logging.getLogger(name or __name__)
 
     # Avoid adding handlers if they already exist

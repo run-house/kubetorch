@@ -19,7 +19,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def get_test_logger(name=None):
-    """Use a generic logger for testing that doesnt require a kubetorch dependency."""
+    """Use a generic logger for testing that doesn't require a kubetorch dependency."""
     logger = logging.getLogger(name or __name__)
 
     # Avoid adding handlers if they already exist

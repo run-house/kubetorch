@@ -622,7 +622,7 @@ def fetch_resources_for_teardown(
     username: Optional[str] = None,
     exact_match: bool = False,
 ) -> dict:
-    """Fetchs the resources for a given service.
+    """Fetches the resources for a given service.
 
     Returns a dictionary with the following keys:
     - services: {

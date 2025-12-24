@@ -42,7 +42,7 @@ class Secret:
         """
         name_prefix = (
             f"{config.username}-" if config.username else ""
-        )  # we need the username as prefix in case diffrent users will create the same provider secret
+        )  # we need the username as prefix in case different users will create the same provider secret
         self._name = name or f"{name_prefix}{provider}" or f"{name_prefix}{self._PROVIDER}"
         self._name = self._name.replace("_", "-")  # cleanup so the name will match k8 standards.
         self._namespace = kwargs.get("namespace", None) or config.namespace
@@ -126,7 +126,7 @@ class Secret:
         return values
 
     def _split_path_if_needed(self, path: str, filenames: list = None) -> Tuple[str, List[str]]:
-        """Split path into path and filesnames if a single file is specified as a full path"""
+        """Split path into path and filenames if a single file is specified as a full path"""
         updated_path = path
         is_default_path = updated_path == self._DEFAULT_PATH
         updated_filenames = getattr(self, "filenames", None) or filenames
