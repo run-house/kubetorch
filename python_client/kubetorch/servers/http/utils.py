@@ -13,7 +13,7 @@ import sys
 import time
 from contextvars import ContextVar
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import httpx
 
@@ -868,9 +868,15 @@ def generate_profiler_output_filename(filename: str, file_suffix: str, service_n
         return f"{service_name}_{request_id}{file_suffix}"  # added request id to prevent collisions. The running ts will be a part of the file metadata.
 
 
-def parse_profiler_output(call_output: dict, profiler: ProfilerConfig, service_name: str, request_id: str):
-    profiler_output = call_output.pop("profiler_output", None)
-    fn_output = call_output.pop("fn_output")
+def parse_profiler_output_helper(
+    single_call_output: dict,
+    profiler: ProfilerConfig,
+    service_name: str,
+    request_id: str,
+    file_name_sufix: str = None,
+):
+    profiler_output = single_call_output.pop("profiler_output", None)
+    fn_output = single_call_output.pop("fn_output")
 
     if not profiler_output:
         logger.warning(f"No profiling information found for service '{service_name}'.")
@@ -885,14 +891,15 @@ def parse_profiler_output(call_output: dict, profiler: ProfilerConfig, service_n
 
     if not profiler_output_path:
         profiler_output_path = str(Path.cwd())
+    file_suffix = f"_{file_name_sufix}.{profiler_output_suffix}" if file_name_sufix else f".{profiler_output_suffix}"
     profiler_output_filename = generate_profiler_output_filename(
         filename=profiler_output_filename,
-        file_suffix=profiler_output_suffix,
+        file_suffix=file_suffix,
         service_name=service_name,
         request_id=request_id,
     )
 
-    output_full_path = Path(profiler_output_path) / Path(profiler_output_filename)
+    output_full_path = Path(profiler_output_path) / Path(f"{profiler_output_filename}")
 
     with open(output_full_path, "w+") as output_file:
         if isinstance(profiler_output, str):
@@ -902,3 +909,50 @@ def parse_profiler_output(call_output: dict, profiler: ProfilerConfig, service_n
         logger.info(f"profiler output can be found in {output_full_path}")
 
     return fn_output, None
+
+
+def parse_profiler_output(
+    call_output: Union[dict, List[dict]],
+    profiler: ProfilerConfig,
+    service_name: str,
+    request_id: str,
+    distribution_type: str = None,
+):
+    filename_suffix = distribution_type if distribution_type else None
+    if isinstance(call_output, list):
+        fn_outputs = []
+        profiler_outputs = []  # in case profiler output is a table
+        output_index = 0
+        for output in call_output:
+            filename_suffix = f"{filename_suffix}_{output_index}"
+            fn_output, profiler_output = parse_profiler_output_helper(
+                single_call_output=output,
+                profiler=profiler,
+                service_name=service_name,
+                request_id=request_id,
+                file_name_sufix=filename_suffix,
+            )
+            output_index += 1
+            fn_outputs.append(fn_output)
+
+            if profiler.output_format == "table":
+                profiler_outputs.append(profiler_output)
+
+        if profiler.output_format == "table":
+            if profiler.consolidate_table:
+                # consolidate the distributed tables into one table
+                profiler_outputs = "\n\n".join(profiler_outputs)
+                return fn_outputs, profiler_outputs
+
+            return fn_outputs, profiler_outputs
+
+        return fn_outputs
+
+    fn_output = parse_profiler_output_helper(
+        call_output,
+        profiler=profiler,
+        service_name=service_name,
+        request_id=request_id,
+        file_name_sufix=filename_suffix,
+    )
+    return fn_output

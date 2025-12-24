@@ -1423,6 +1423,7 @@ def run_callable_internal_sync(
     # Process the call
     args = []
     kwargs = {}
+    profiler = None
     if params:
         if serialization == "pickle":
             # Handle pickle serialization - extract data from dictionary wrapper
@@ -1440,6 +1441,7 @@ def run_callable_internal_sync(
         # Default JSON handling
         args = params.get("args", [])
         kwargs = params.get("kwargs", {})
+        profiler = params.get("profiler", None)
 
     if method_name:
         if not hasattr(callable_obj, method_name):
@@ -1464,6 +1466,23 @@ def run_callable_internal_sync(
             result = asyncio.run(user_method(*args, **kwargs))
         else:
             result = user_method(*args, **kwargs)
+
+    elif profiler:
+        pickled_profiler = base64.b64decode(profiler.encode("utf-8"))
+        profiler = pickle.loads(pickled_profiler)
+
+        from kubetorch.servers.http.profiling import run_with_profile
+
+        request_id = request_id_ctx_var.get("-")
+        logger.debug(
+            f"Running {cls_or_fn_name} with profiler: {profiler} (callable_name={callable_name}, request_id={request_id})"
+        )
+
+        fn_output, profiler_output = run_with_profile(
+            user_method, *args, profiler=profiler, callable_name=callable_name, **kwargs
+        )
+        result = {"fn_output": fn_output, "profiler_output": profiler_output}
+
     else:
         logger.debug(f"Calling remote callable {callable_name}")
         if is_async_method:

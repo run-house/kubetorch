@@ -125,6 +125,7 @@ class ProfilerConfig:
         analyze_stack_traces: Should the profiler analyze Python and TorchScript stack traces. Relevant only to pytorch profiler.
         memory_timeline_output_type: memory_timeline file format. Relevant only to pytorch profiler, if the `output_format` is memory_timeline. Default: html,
         table_sort_by: Attribute used to sort table entries. Relevant only to pytorch profiler, if the `output_format` is table. Default: None,
+        consolidate_table: Consolidate distributed table outputs. If true, returns one string, representing all table outputs. Else, returns seprtate table, one for each distributed worker. Relevant only to pytorch profiler, if the `output_format` is table. Default: False,
         group_by_input_shape: Group entries by (event name, input shapes) rather than just event name. Relevant only to pytorch profiler, if ``analyze_stack_traces`` is ``True``. Default: False,
         group_by_stack_n: Group by top n stack trace entries. Relevant only to pytorch profiler, if ``analyze_stack_traces`` is ``True``. Default: 0
 
@@ -151,6 +152,7 @@ class ProfilerConfig:
         "self_cuda_memory_usage",
         "count",
     ] = None
+    consolidate_table: bool = False
     group_by_input_shape: bool = False
     group_by_stack_n: int = 0
 
