@@ -27,13 +27,7 @@ from kubetorch.servers.http.utils import (
     is_running_in_kubernetes,
 )
 from kubetorch.serving.utils import has_k8s_credentials, KubernetesCredentialsError
-from kubetorch.utils import (
-    extract_host_port,
-    get_container_name,
-    get_kt_install_url,
-    iso_timestamp_to_nanoseconds,
-    ServerLogsFormatter,
-)
+from kubetorch.utils import extract_host_port, get_kt_install_url, iso_timestamp_to_nanoseconds, ServerLogsFormatter
 
 logger = get_logger(__name__)
 
@@ -870,10 +864,9 @@ class Module:
             deployment_timestamp: Timestamp to filter logs after
         """
         try:
-            # Use the correct container name based on job type to exclude queue-proxy (e.g. Knative sidecars) container logs which
-            # are spammy with tons of healthcheck calls
-            container_name = get_container_name(self.compute.kind)
-            pod_query = f'{{k8s_container_name="{container_name}"}} | json | request_id="{request_id}"'
+            # Query using labels set by LogCapture (service, namespace, request_id)
+            pod_query = f'{{service="{self.service_name}", namespace="{self.namespace}", request_id="{request_id}"}}'
+            # Event query for K8s events (these come from a different source with different labels)
             event_query = f'{{service_name="unknown_service"}} | json | k8s_object_name=~"{self.service_name}.*" | k8s_namespace_name="{self.namespace}"'
 
             encoded_pod_query = urllib.parse.quote_plus(pod_query)
@@ -940,10 +933,9 @@ class Module:
             deployment_timestamp: Timestamp to filter logs after
         """
         try:
-            # Only use correct container to exclude queue-proxy (e.g. Knative sidecars) container logs which
-            # are spammy with tons of healthcheck calls
-            container_name = get_container_name(self.compute.kind)
-            pod_query = f'{{k8s_container_name="{container_name}"}} | json | request_id="{request_id}"'
+            # Query using labels set by LogCapture (service, namespace, request_id)
+            pod_query = f'{{service="{self.service_name}", namespace="{self.namespace}", request_id="{request_id}"}}'
+            # Event query for K8s events (these come from a different source with different labels)
             event_query = f'{{service_name="unknown_service"}} | json | k8s_object_name=~"{self.service_name}.*" | k8s_namespace_name="{self.namespace}"'
 
             encoded_pod_query = urllib.parse.quote_plus(pod_query)

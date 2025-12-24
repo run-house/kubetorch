@@ -257,7 +257,7 @@ def kt_check(
                 name="kubetorch-data-store",
                 namespace=namespace,
             )
-            q = f'{{k8s_pod_name="{pod_name}", k8s_container_name="kubetorch"}}'
+            q = f'{{pod="{pod_name}", namespace="{namespace}"}}'
             logs = load_logs_for_pod(query=q, print_pod_name=False, timeout=2.0, namespace=namespace)
             if logs is None:
                 fail("No logs found for pod", [pod_name])

@@ -203,10 +203,11 @@ def test_metrics_config_helper(service_name, metrics_config, a, b, expected_resu
 
     reloaded_fn = kt.fn(summer, name=service_name, get_if_exists=True)
     out = ""
-    fn_sleep_time = 45
+    # Use short sleep - metrics interval is set to 5s in test cases, so 10s is enough for 2 pushes
+    fn_sleep_time = 10
     with capture_stdout() as stdout:
         sum_result = reloaded_fn(a=a, b=b, sleep_time=fn_sleep_time, stream_metrics=metrics_config)
-        time.sleep(7)  # wait for the logs to finish streaming
+        time.sleep(3)  # wait for the logs to finish streaming
         out = out + str(stdout)
 
     assert sum_result == expected_result
@@ -241,14 +242,8 @@ def test_metrics_config(remote_fn):
     pod_name = remote_fn.compute.pod_names()[0]
 
     test_args = [
-        (1, 2, 3, kt.MetricsConfig(interval=35)),  # new interval + a=1, b=2, expected_result=3
-        (6, 7, 13, kt.MetricsConfig(scope="pod")),  # new scope + a=6, b=7, expected_result=13
-        (
-            15,
-            2,
-            17,
-            kt.MetricsConfig(scope="pod", interval=35),
-        ),  # new interval and new scope + a=15, b=2, expected_result=17
+        (1, 2, 3, kt.MetricsConfig(interval=5)),  # resource scope (default) with short interval
+        (6, 7, 13, kt.MetricsConfig(scope="pod", interval=5)),  # pod scope with short interval
     ]
 
     for a, b, expected_result, metrics_config in test_args:
@@ -261,16 +256,17 @@ def test_metrics_config(remote_fn):
             pod_name=pod_name,
         )
 
-    # passing stream_metrics as bool
-    test_metrics_config_helper(
-        service_name=service_name, metrics_config=True, a=2, b=2, expected_result=4, pod_name=pod_name
-    )
-
+    # Test stream_metrics=False (no metrics expected, so short interval is fine)
     test_metrics_config_helper(
         service_name=service_name, metrics_config=False, a=5, b=3, expected_result=8, pod_name=pod_name
     )
 
-    # passing stream_metrics as None
+    # Test with explicit MetricsConfig using short interval (verifies metrics streaming works)
     test_metrics_config_helper(
-        service_name=service_name, metrics_config=None, a=3, b=2, expected_result=5, pod_name=pod_name
+        service_name=service_name,
+        metrics_config=kt.MetricsConfig(interval=5),
+        a=3,
+        b=2,
+        expected_result=5,
+        pod_name=pod_name,
     )

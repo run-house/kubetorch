@@ -3,7 +3,10 @@ kubetorchConfig:
   # List of namespaces to allow deploying compute resources to
   deployment_namespaces:
     - "default"
-  otelEnabled: true # Allows OTEL on the server, necessary for enabling TTL
+  # Enable log streaming (captures pod logs for querying)
+  logStreamingEnabled: true
+  # Enable metrics collection (required for TTL/auto-scaling)
+  metricsEnabled: true
 
 kubetorchController:
   image: ghcr.io/run-house/kubetorch-controller
@@ -91,7 +94,7 @@ dataStore:
   affinity: {}
 
 logStreaming:
-  enabled: true # set to `false` to disable log streaming (OTEL collector and Loki in data store)
+  enabled: true # set to `false` to disable log streaming (Loki embedded in data store)
   retentionPeriod: 24h
   maxConcurrentTailRequests: 100
   port: 3100
@@ -130,7 +133,7 @@ metrics:
             target_label: pod
 
 opentelemetry-collector:
-  enabled: true # set to `false` to disable opentelemetry collector
+  enabled: false # Deprecated: set to `true` only if using legacy OTEL mode instead of direct push
   mode: daemonset
   image:
     repository: otel/opentelemetry-collector-contrib

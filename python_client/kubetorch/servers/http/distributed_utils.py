@@ -2461,10 +2461,23 @@ class MonarchDistributed(DistributedSupervisor):
             # Start in background
             self.allocator_proc = subprocess.Popen(
                 allocator_cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 start_new_session=True,
+                universal_newlines=True,
+                bufsize=1,
             )
+
+            # Start a thread to stream allocator logs (similar to Ray)
+            def stream_allocator_logs():
+                try:
+                    for line in self.allocator_proc.stdout:
+                        logger.info(f"[Allocator] {line.strip()}")
+                except Exception as e:
+                    logger.debug(f"Allocator log stream ended: {e}")
+
+            allocator_log_thread = threading.Thread(target=stream_allocator_logs, daemon=True)
+            allocator_log_thread.start()
 
             # Give it a moment to start
             import time
@@ -2475,8 +2488,7 @@ class MonarchDistributed(DistributedSupervisor):
             if self.allocator_proc.poll() is None:
                 logger.info(f"process_allocator started successfully (PID: {self.allocator_proc.pid})")
             else:
-                stderr = self.allocator_proc.stderr.read().decode() if self.allocator_proc.stderr else ""
-                logger.error(f"process_allocator failed to start: {stderr}")
+                logger.error("process_allocator failed to start")
                 self.allocator_proc = None
 
         except Exception as e:

@@ -2643,6 +2643,35 @@ def is_server_running(socket_path: str = DEFAULT_SOCKET_PATH) -> bool:
         return False
 
 
+def _forward_subprocess_output_to_log_capture(pipe, stream_name: str, source: str) -> None:
+    """
+    Read from subprocess pipe and forward to LogCapture.
+
+    Runs in a daemon thread to continuously forward logs.
+    """
+    try:
+        from kubetorch.servers.http.log_capture import get_log_capture
+    except ImportError:
+        # If LogCapture not available, just read and discard to prevent pipe blocking
+        for line in iter(pipe.readline, b""):
+            pass
+        return
+
+    for line in iter(pipe.readline, b""):
+        try:
+            text = line.decode("utf-8", errors="replace").rstrip()
+            if text:
+                log_capture = get_log_capture()
+                if log_capture:
+                    log_capture.add_log(
+                        message=text,
+                        level="ERROR" if stream_name == "stderr" else "INFO",
+                        extra_labels={"source": source},
+                    )
+        except Exception:
+            pass  # Don't crash the reader thread
+
+
 def start_server_if_needed(socket_path: str = DEFAULT_SOCKET_PATH) -> int:
     """
     Start the GPU data server if not already running.
@@ -2659,13 +2688,29 @@ def start_server_if_needed(socket_path: str = DEFAULT_SOCKET_PATH) -> int:
 
     # Start new server process
     import subprocess
+    import threading
 
     process = subprocess.Popen(
         [sys.executable, "-m", "kubetorch.data_store.pod_data_server"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         start_new_session=True,
     )
+
+    # Start daemon threads to forward subprocess output to LogCapture
+    # These threads will also ensure pipes don't fill up and block the subprocess
+    stdout_thread = threading.Thread(
+        target=_forward_subprocess_output_to_log_capture,
+        args=(process.stdout, "stdout", "pds"),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_forward_subprocess_output_to_log_capture,
+        args=(process.stderr, "stderr", "pds"),
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
 
     # Wait for server to be ready
     for _ in range(50):  # 5 seconds timeout

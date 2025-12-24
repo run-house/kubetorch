@@ -56,22 +56,20 @@ def ensure_structured_logging():
     import os
     import sys
 
-    from pythonjsonlogger import jsonlogger
-
     # First ensure logging is initialized - this is crucial!
     # If no handlers exist, we need to initialize the logging system
     root_logger = logging.getLogger()
 
-    # Create our JSON formatter
-    json_formatter = jsonlogger.JsonFormatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s - %(request_id)s - %(pod)s",
+    # Create a human-readable formatter for kubectl logs
+    # Loki labels are added separately by LogCapture when pushing to the log store
+    plain_formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Create our structured handler (we keep using sys.stdout so user and kt logs
-    # both appear in pod logs; our stdout wrapper will mirror to the original stream)
+    # Create our handler for stdout (kubectl logs)
     structured_handler = logging.StreamHandler(sys.stdout)
-    structured_handler.setFormatter(json_formatter)
+    structured_handler.setFormatter(plain_formatter)
     structured_handler.name = "kubetorch_structured"  # Name it so we can identify it
 
     # Set root logger level based on KT_LOG_LEVEL if it's set
@@ -127,6 +125,16 @@ def ensure_structured_logging():
         print_logger.addFilter(context_filter)
     except Exception:
         pass
+
+    # Ensure LogCapture's handler is also on the root logger
+    # (user's dictConfig might have removed it)
+    try:
+        from .log_capture import get_log_capture
+    except ImportError:
+        from log_capture import get_log_capture
+    log_capture = get_log_capture()
+    if log_capture:
+        log_capture.ensure_handler()
 
 
 request_id_ctx_var: ContextVar[str] = ContextVar("request_id", default="-")
@@ -457,22 +465,38 @@ def print_log_stream_client(message, last_timestamp, print_pod_name: bool = Fals
     formatter = ServerLogsFormatter()
     if message.get("streams"):
         for stream in message["streams"]:
-            pod_name = f'({stream.get("stream").get("pod")}) ' if print_pod_name else ""
+            stream_labels = stream.get("stream", {})
+            pod_name_value = stream_labels.get("pod")
+            pod_name = f"({pod_name_value}) " if print_pod_name and pod_name_value else ""
             for value in stream["values"]:
                 # Skip if we've already seen this timestamp
                 if last_timestamp is not None and value[0] <= last_timestamp:
                     continue
                 last_timestamp = value[0]
 
-                log_line = json.loads(value[1])
-                log_name = log_line.get("name")
+                # Parse JSON message from LogCapture
+                try:
+                    log_line = json.loads(value[1])
+                    log_name = log_line.get("name", "")
+                    log_message = log_line.get("message", "")
+                    log_level = log_line.get("levelname", "INFO")
+                    log_asctime = log_line.get("asctime", "")
+                except json.JSONDecodeError:
+                    # Fallback for plain text
+                    log_name = ""
+                    log_message = value[1]
+                    log_level = "INFO"
+                    log_asctime = ""
+
+                log_message = log_message.rstrip() if log_message else ""
+                if not log_message:
+                    continue
+
+                # Format differently for print statements vs logger output
                 if log_name == "print_redirect":
-                    message = log_line.get("message")
-                    print(f"{formatter.start_color}{pod_name}{message}{formatter.reset_color}")
+                    print(f"{formatter.start_color}{pod_name}{log_message}{formatter.reset_color}")
                 elif log_name != "uvicorn.access":
-                    formatted_log = (
-                        f"{pod_name}{log_line.get('asctime')} | {log_line.get('levelname')} | {log_line.get('message')}"
-                    )
+                    formatted_log = f"{pod_name}{log_asctime} | {log_level} | {log_message}"
                     print(f"{formatter.start_color}{formatted_log}{formatter.reset_color}")
     return last_timestamp
 
@@ -488,21 +512,31 @@ def print_log_stream_cli(message, last_timestamp, print_pod_name: bool = False):
                 if last_timestamp is not None and value[0] <= last_timestamp:
                     continue
                 last_timestamp = value[0]
-                log_line = value[1]
+
+                # Parse JSON message from LogCapture
                 try:
-                    log_line = json.loads(log_line)
-                    log_name = log_line.get("name")
-                    if log_name == "print_redirect":
-                        continue
-                        # the print output will be printed in line 250. We need the "print_redirect"
-                        # log type only for log streaming in the http client, so we could filter out
-                        # the print outputs for a specific request ID. For the CLI --follow option, we
-                        # print all logs, so at the moment we don't need to filter by request_id.
-                    elif log_name != "uvicorn.access":
-                        formatted_log = f"{pod_name}{log_line.get('asctime')} | {log_line.get('levelname')} | {log_line.get('message')}".strip()
-                        print(formatted_log)
+                    log_line = json.loads(value[1])
+                    log_name = log_line.get("name", "")
+                    log_message = log_line.get("message", "")
+                    log_level = log_line.get("levelname", "INFO")
+                    log_asctime = log_line.get("asctime", "")
                 except json.JSONDecodeError:
-                    print(f"{pod_name}{log_line}".strip())
+                    # Fallback for plain text
+                    log_name = ""
+                    log_message = value[1]
+                    log_level = "INFO"
+                    log_asctime = ""
+
+                log_message = log_message.rstrip() if log_message else ""
+                if not log_message:
+                    continue
+
+                # Format differently for print statements vs logger output
+                if log_name == "print_redirect":
+                    print(f"{pod_name}{log_message}")
+                elif log_name != "uvicorn.access":
+                    formatted_log = f"{pod_name}{log_asctime} | {log_level} | {log_message}"
+                    print(formatted_log.strip())
 
     return last_timestamp
 

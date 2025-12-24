@@ -68,20 +68,11 @@ echo "$uv_pip_cmd" > .kt/kt_pip_install_cmd
     {% set normalized_path = install_url.replace('\\', '/') %}
     {% set wheel_filename = normalized_path.split('/')[-1] %}
     $uv_pip_cmd "{{ wheel_filename }}[server]"
-    {% if install_otel %}
-      $uv_pip_cmd "{{ wheel_filename }}[otel]"
-    {% endif %}
   {% else %}
     $uv_pip_cmd -e "python_client[server]"
-    {% if install_otel %}
-      $uv_pip_cmd -e "python_client[otel]"
-    {% endif %}
   {% endif %}
 {% else %}
   $uv_pip_cmd "kubetorch[server]=={{ install_url }}"
-  {% if install_otel %}
-    $uv_pip_cmd "kubetorch[otel]=={{ install_url }}"
-  {% endif %}
 {% endif %}
 
 {% endif %}
