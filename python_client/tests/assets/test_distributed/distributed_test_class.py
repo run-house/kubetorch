@@ -18,10 +18,20 @@ class DistributedTestClass:
 
     def increment_and_return(self):
         """Test method to verify multiple calls work correctly."""
+        import logging
+
+        logger = logging.getLogger(__name__)
+
         self.call_count += 1
+        rank = os.environ.get("RANK", "unknown")
+
+        # Test logging and print output for log streaming verification
+        print(f"DISTRIBUTED_CLS_PRINT rank={rank} call_count={self.call_count}")
+        logger.info(f"DISTRIBUTED_CLS_LOG rank={rank} call_count={self.call_count}")
+
         return {
             "call_count": self.call_count,
-            "rank": os.environ.get("RANK", "unknown"),
+            "rank": rank,
             "world_size": os.environ.get("WORLD_SIZE", "unknown"),
         }
 

@@ -144,12 +144,27 @@ async def test_monitoring_with_custom_structlog():
     img = kt.Image().pip_install(["structlog"])
     compute = kt.Compute(cpus="0.1", image=img)
 
-    # Test initialization logs
+    # Test initialization logs and event streaming during launch
+    # stream_logs=True is passed explicitly to ensure launch logs stream in CI (where KT_STREAM_LOGS=FALSE)
     with capture_stdout() as stdout:
-        remote_worker = kt.cls(LoggingTestWorker).to(compute)
+        remote_worker = kt.cls(LoggingTestWorker).to(compute, stream_logs=True)
+        await asyncio.sleep(2)  # wait for launch logs and events to stream
         init_out = str(stdout)
 
+    # Verify initialization logs from the class are captured
     assert "LoggingTestWorker initialized" in init_out
+
+    # Verify K8s events are streamed during launch (events like Scheduled, Pulling, Started)
+    # These come from the controller's event watcher pushing to Loki
+    service_name = remote_worker.service_name
+    assert f"({service_name} events)" in init_out, f"Missing events prefix in launch output. Got: {init_out[:500]}"
+
+    # Check for at least one common K8s event reason (Scheduled, Pulling, Pulled, Created, or Started)
+    event_reasons = ["Scheduled", "Pulling", "Pulled", "Created", "Started"]
+    found_event = any(reason in init_out for reason in event_reasons)
+    assert (
+        found_event
+    ), f"No K8s event reasons found in launch output. Expected one of {event_reasons}. Got: {init_out[:500]}"
 
     # Test the main processing method
     out = ""

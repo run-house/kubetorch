@@ -40,8 +40,10 @@ LOG_CONFIG = {
     "handlers": {},
     "root": {"level": "INFO", "handlers": []},
     "loggers": {
-        "uvicorn": {"level": "INFO", "handlers": [], "propagate": True},
-        "uvicorn.access": {"level": "INFO", "handlers": [], "propagate": True},
+        # Suppress uvicorn startup messages ("Application startup complete", "Uvicorn running on...")
+        "uvicorn": {"level": "WARNING", "handlers": [], "propagate": True},
+        "uvicorn.error": {"level": "WARNING", "handlers": [], "propagate": True},
+        "uvicorn.access": {"level": "WARNING", "handlers": [], "propagate": True},
         "kubetorch": {"level": "INFO", "handlers": [], "propagate": True},
     },
 }

@@ -173,7 +173,7 @@ def cached_image_setup():
         return
 
     if not (cache_mismatch_index == len(lines) - 1 and cmd_mismatch):
-        logger.info("Running image setup.")
+        logger.debug("Running image setup.")
     else:
         logger.debug("Skipping image setup steps, no changes detected.")
 
@@ -270,7 +270,7 @@ def cached_image_setup():
             if is_app_cmd:
                 logger.info(f"Running app command: {command}")
             else:
-                logger.info(f"Running image setup step: {command}")
+                logger.info(f"Running: {command}")
 
             try:
                 # Use subprocess.Popen to capture output and redirect through StreamToLogger
@@ -596,9 +596,9 @@ def _load_callable_internal(
         # We don't reload the image in distributed subprocess/es, as we already did it in the
         # main process and we don't want to do it multiple times (in each subprocess).
         if _LAST_DEPLOYED:
-            logger.info("Patching image and code updates and reloading callable.")
+            logger.info("Patching image and code changes in-place.")
         else:
-            logger.info("Setting up image and loading callable.")
+            logger.info("Building image in-place and loading callable.")
         run_image_setup(deployed_time)
 
     distributed_config = os.environ["KT_DISTRIBUTED_CONFIG"]
@@ -632,7 +632,7 @@ def load_distributed_supervisor(deployed_as_of: Optional[str] = None):
     if DISTRIBUTED_SUPERVISOR is None or config_hash != DISTRIBUTED_SUPERVISOR.config_hash:
         from .distributed_utils import distributed_supervisor_factory
 
-        logger.info(f"Loading distributed supervisor with config: {distributed_config}")
+        logger.debug(f"Loading distributed supervisor with config: {distributed_config}")
         distributed_config = json.loads(distributed_config)
         # If we already have some distributed processes, we need to clean them up before creating a new supervisor.
         if DISTRIBUTED_SUPERVISOR:
