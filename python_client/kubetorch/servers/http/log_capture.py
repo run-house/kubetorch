@@ -14,6 +14,7 @@ Subprocess Log Capture:
 import logging
 import multiprocessing as mp
 import os
+import socket
 import sys
 import threading
 import time
@@ -466,9 +467,13 @@ def init_log_capture(
 
     # Get labels from environment
     if labels is None:
+        # For pod name, fall back to HOSTNAME which Kubernetes sets to pod name,
+        # or socket.gethostname() which reads /etc/hostname (also the pod name in K8s).
+        # This is important for selector-only (BYO manifest) mode where POD_NAME env var isn't configured.
+        pod_name = os.environ.get("POD_NAME") or os.environ.get("HOSTNAME") or socket.gethostname()
         labels = {
             "service": os.environ.get("KT_SERVICE", "unknown"),
-            "pod": os.environ.get("POD_NAME", "unknown"),
+            "pod": pod_name,
             "namespace": os.environ.get("POD_NAMESPACE", "default"),
         }
 

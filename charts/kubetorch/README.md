@@ -77,6 +77,8 @@ A Helm chart for kubetorch
 | kubetorchController.resources.cpu.request | string | `"200m"` |  |
 | kubetorchController.resources.memory.limit | string | `"2Gi"` |  |
 | kubetorchController.resources.memory.request | string | `"1Gi"` |  |
+| kubetorchController.servicePort | int | `8080` |  |
+| kubetorchController.storage.size | string | `"1Gi"` |  |
 | kubetorchController.tag | string | `"0.3.0"` |  |
 | kubetorchController.tolerations | list | `[]` |  |
 | kubetorchController.workers | int | `8` |  |

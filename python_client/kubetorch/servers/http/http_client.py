@@ -676,8 +676,22 @@ class HTTPClient:
 
         try:
             namespace = self.compute.namespace
-            # Query events for resources matching this service name
-            event_query = f'{{job="kubetorch-events", namespace="{namespace}", name=~"{self.service_name}.*"}}'
+            # Query events for resources matching this service name OR pod names
+            # This is needed for selector-only mode where pod names don't start with service name
+            name_patterns = [f"{self.service_name}.*"]
+            try:
+                # For selector-only mode, add wildcard patterns based on selector values
+                # This catches events for pods created after the websocket connects
+                if self.compute.selector_only and hasattr(self.compute, "_pod_selector") and self.compute._pod_selector:
+                    for value in self.compute._pod_selector.values():
+                        name_patterns.append(f"{value}.*")
+                pod_names = self.compute.pod_names()
+                if pod_names:
+                    name_patterns.extend(pod_names)
+            except Exception:
+                pass  # Fall back to just service name pattern
+            name_regex = "|".join(name_patterns)
+            event_query = f'{{job="kubetorch-events", namespace="{namespace}", name=~"{name_regex}"}}'
             encoded_query = urllib.parse.quote_plus(event_query)
             # Include start time to only get events from call start (not old OOMs etc)
             uri = f"ws://{host}:{port}/loki/{namespace}/api/v1/tail?query={encoded_query}&start={start_time_ns}"

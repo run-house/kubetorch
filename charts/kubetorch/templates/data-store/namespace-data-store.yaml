@@ -81,6 +81,11 @@ spec:
             - containerPort: 8080  # HTTP/WebSocket tunnel
             - containerPort: 8081  # Metadata server API
             - containerPort: 3100  # Loki log storage
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           volumeMounts:
             - name: data-store-storage
               mountPath: /data
