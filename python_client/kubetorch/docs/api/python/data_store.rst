@@ -1,11 +1,23 @@
 Data Store
 ==========
 
-The Data Store provides a key-value interface for transferring data to and from your Kubernetes cluster.
-It supports two data types:
+The Kubetorch Data Store is a intuitive and scalable distributed data system for Kubernetes, solving two critical gaps:
 
-- **Filesystem data**: Files and directories transferred via rsync
-- **GPU data**: CUDA tensors and state dicts transferred via NCCL broadcast
+1. **Out-of-cluster direct transfers**: Sync code and data up to your cluster instantly and scalably - no need for container rebuilds or bouncing off blob storage
+2. **In-cluster data transfer and caching**: fast peer-to-peer data transfer between pods with automatic caching and discovery, for filesystem and GPU data
+
+The unified APIs handle two types of data:
+- **Filesystem data**: Files/directories via distributed rsync (zero-copy P2P or to/from central store)
+- **GPU data**: CUDA tensors/state dicts via NCCL broadcast
+
+Key capabilities include:
+- External sync: Push/pull files to/from cluster
+- Zero-copy P2P: locale="local" publishes data in-place, consumers fetch directly
+- Scalable broadcast: Tree-based differential propagation for distributing to thousands of pods (no NFS thundering herd or "many small files" problems)
+- GPU transfers: Point-to-point and coordinated broadcasts for tensors/state dicts with Infiniband/RDMA support
+- Automatic caching: Every getter can become a source for subsequent getters
+- Automatic lifecycle management, with TTLs and cleanup built-in
+
 
 Python API
 ----------

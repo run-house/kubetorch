@@ -172,7 +172,7 @@ async def test_monitoring_with_custom_structlog():
 
     with capture_stdout() as stdout:
         results = remote_worker.process_with_logs(num_iterations)
-        await asyncio.sleep(1)  # Wait for logs to stream
+        await asyncio.sleep(2)  # Wait for logs to stream
         out = str(stdout)
 
     # Verify results
