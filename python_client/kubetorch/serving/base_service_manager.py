@@ -407,7 +407,10 @@ class BaseServiceManager:
                     namespace=namespace,
                     plural="services",
                     label_selector=label_selector,
+                    ignore_not_found=True,
                 )
+                if result is None:
+                    return
                 knative_services = result.get("items", [])
 
                 local_services = []
@@ -475,7 +478,10 @@ class BaseServiceManager:
                     namespace=namespace,
                     plural="rayclusters",
                     label_selector=label_selector,
+                    ignore_not_found=True,
                 )
+                if result is None:
+                    return
                 clusters = result.get("items", [])
 
                 local_services = []
@@ -520,7 +526,10 @@ class BaseServiceManager:
                         namespace=namespace,
                         plural=plural,
                         label_selector=label_selector,
+                        ignore_not_found=True,
                     )
+                    if result is None:
+                        continue
                     resources = result.get("items", [])
 
                     for resource in resources:
