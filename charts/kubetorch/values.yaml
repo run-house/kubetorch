@@ -10,8 +10,8 @@ kubetorchConfig:
 
 kubetorchController:
   image: ghcr.io/run-house/kubetorch-controller
-  tag: v0.1.0
-  imagePullPolicy: Always
+  tag: update-pod-watchers # TODO: update to latest OSS release version
+  imagePullPolicy: Always # TODO: change to IfNotPresent
 
   servicePort: 8080  # Port the controller service is exposed on (via nginx)
   port: 8081  # Internal port the controller listens on
@@ -72,8 +72,8 @@ nvidia-device-plugin:
       effect: "NoSchedule"
 
 dataStore:
-  image: ghcr.io/run-house/kubetorch-data-store:v1
-  imagePullPolicy: Always
+  image: ghcr.io/run-house/kubetorch-data-store:v1 # TODO: update to latest OSS release version
+  imagePullPolicy: Always  # TODO: change to IfNotPresent
   # serviceAccount: kubetorch-service-account  # Optional: use specific service account for Workload Identity
   maxConnections: 500  # Maximum concurrent rsync connections (increase for many worker pods)
   timeout: 600  # Connection timeout in seconds

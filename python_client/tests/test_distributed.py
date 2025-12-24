@@ -215,7 +215,7 @@ async def test_spmd_distributed_cls():
 
     # Test exception handling
     with pytest.raises(Exception, match="Test exception") as exc_info:
-        remote_cls.raise_exception("Test exception from SPMD", stream_logs=True)
+        remote_cls_redeployed.raise_exception("Test exception from SPMD")
 
     assert exc_info.value.remote_traceback is not None
 

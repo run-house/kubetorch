@@ -794,7 +794,6 @@ class ControllerClient:
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get(f"/apis/{group}/{version}/{plural}", params=params)
 
-    # Kubetorch Controller API endpoints - Pool Management
     def register_pool(
         self,
         name: str,
@@ -810,6 +809,7 @@ class ControllerClient:
         resource_kind: Optional[str] = None,
         resource_name: Optional[str] = None,
         create_headless_service: bool = False,
+        broadcast_reload: bool = False,
     ) -> Dict[str, Any]:
         """Register a compute pool via /controller/pool.
 
@@ -835,6 +835,7 @@ class ControllerClient:
             resource_kind (str, optional): K8s resource kind for teardown (e.g., "Deployment", "PyTorchJob")
             resource_name (str, optional): K8s resource name for teardown (defaults to pool name)
             create_headless_service (bool, optional): Whether to create a headless service for distributed pod discovery
+            broadcast_reload (bool, optional): Whether to broadcast reload to pods (for selector-only mode)
 
         Returns:
             Pool response with status, message, and service_url
@@ -863,6 +864,8 @@ class ControllerClient:
             body["resource_name"] = resource_name
         if create_headless_service:
             body["create_headless_service"] = create_headless_service
+        if broadcast_reload:
+            body["broadcast_reload"] = broadcast_reload
 
         return self.post("/controller/pool", json=body)
 
@@ -906,6 +909,10 @@ class ControllerClient:
     def list_pools(self, namespace: str) -> Dict[str, Any]:
         """List all compute pools."""
         return self.get(f"/controller/pools/{namespace}")
+
+    def get_watchers(self) -> Dict[str, Any]:
+        """Get pod watcher debug info (IPs being tracked for each pool)."""
+        return self.get("/controller/debug/watchers")
 
 
 @cache
