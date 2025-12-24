@@ -1024,6 +1024,12 @@ class Module:
                 )
             )
         finally:
+            # Cancel all pending tasks to prevent "Task was destroyed but it is pending!" warnings
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             loop.close()
 
     async def _run_log_stream_async(
