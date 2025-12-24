@@ -191,35 +191,35 @@ def test_kubernetes_secret_create_update_delete_custom_env_vars():
 
 @pytest.mark.skip("Skipping since CI is running on a GKE cluster")
 @pytest.mark.level("minimal")
-def test_secret_aws_propogated_to_pod_as_string():
+def test_secret_aws_propagated_to_pod_as_string():
     import kubetorch as kt
 
     provider = "aws"
     name = f"{create_random_name_prefix()}-custom-secret-{provider}"
     remote_fn = kt.fn(summer, name=name).to(kt.Compute(cpus=".01", secrets=[provider]))
-    # Check that the secret is propogated to Kubernetes
+    # Check that the secret is propagated to Kubernetes
     client = KubernetesSecretsClient()
     secret = client.load_secret(provider)
     assert secret
 
-    # Check that the secret is propogated to the pod
+    # Check that the secret is propagated to the pod
     for filename in AWSSecret._DEFAULT_FILENAMES:
         assert check_path_on_kubernetes_pods(f"{AWSSecret._DEFAULT_PATH}/{filename}", remote_fn.service_name)
 
 
 @pytest.mark.level("minimal")
-def test_secret_gcp_propogated_to_pod_as_string():
+def test_secret_gcp_propagated_to_pod_as_string():
     import kubetorch as kt
 
     provider = "gcp"
     name = f"{create_random_name_prefix()}-custom-secret-{provider}"
     remote_fn = kt.fn(summer, name=name).to(kt.Compute(cpus=".01", secrets=[provider]))
-    # Check that the secret is propogated to Kubernetes
+    # Check that the secret is propagated to Kubernetes
     client = KubernetesSecretsClient()
     secret = client.load_secret(f"{kt.config.username}-{provider}")
     assert secret
 
-    # Check that the secret is propogated to the pod
+    # Check that the secret is propagated to the pod
     is_ci_env = os.getenv("CI", False)
     if is_ci_env:
         assert check_env_vars_on_kubernetes_pods(GCPSecret._DEFAULT_ENV_VARS, remote_fn.service_name)
@@ -229,7 +229,7 @@ def test_secret_gcp_propogated_to_pod_as_string():
 
 
 @pytest.mark.level("minimal")
-def test_secret_gcp_propogated_to_pod_as_object():
+def test_secret_gcp_propagated_to_pod_as_object():
     import kubetorch as kt
 
     provider = "gcp"  # switch to aws if running on a gke cluster
@@ -238,12 +238,12 @@ def test_secret_gcp_propogated_to_pod_as_object():
     gcp_secret = kt.secret(provider=provider, override=True)
     remote_fn = kt.fn(summer, name=name).to(kt.Compute(cpus=".1", secrets=[gcp_secret]))
 
-    # Check that the secret is propogated to Kubernetes
+    # Check that the secret is propagated to Kubernetes
     client = KubernetesSecretsClient()
     secret = client.load_secret(f"{kt.config.username}-{provider}")
     assert secret
 
-    # Check that the secret is propogated to the pod
+    # Check that the secret is propagated to the pod
     is_ci_env = os.getenv("CI", False)
     if is_ci_env:
         assert check_env_vars_on_kubernetes_pods(GCPSecret._DEFAULT_ENV_VARS, remote_fn.service_name)
@@ -253,7 +253,7 @@ def test_secret_gcp_propogated_to_pod_as_object():
 
 
 @pytest.mark.level("minimal")
-def test_secret_huggingface_propogated_to_pod():
+def test_secret_huggingface_propagated_to_pod():
     import kubetorch as kt
 
     provider = "huggingface"
@@ -263,12 +263,12 @@ def test_secret_huggingface_propogated_to_pod():
 
     assert remote_fn("HF_TOKEN")
 
-    # Check that the secret is propogated to Kubernetes
+    # Check that the secret is propagated to Kubernetes
     client = KubernetesSecretsClient()
     loaded_secret = client.load_secret(f"{kt.config.username}-{provider}")
     assert loaded_secret
 
-    # Check that the secret is propogated to the pod (check env_vars)
+    # Check that the secret is propagated to the pod (check env_vars)
     env_vars = check_env_vars_on_kubernetes_pods(HuggingFaceSecret._DEFAULT_ENV_VARS, remote_fn.service_name)
     if env_vars:
         assert env_vars
@@ -282,7 +282,7 @@ def test_secret_huggingface_propogated_to_pod():
 
 
 @pytest.mark.level("minimal")
-def test_secret_custom_env_vars_propogated_to_pod():
+def test_secret_custom_env_vars_propagated_to_pod():
     import kubetorch as kt
 
     CUSTOM_ENV_VAR = "CUSTOM_ENV_VAR"
@@ -303,7 +303,7 @@ def test_secret_custom_env_vars_propogated_to_pod():
 
     assert remote_fn(CUSTOM_ENV_VAR) == CUSTOM_ENV_VAR_VALUE
 
-    # Check that the secret is propogated to Kubernetes
+    # Check that the secret is propagated to Kubernetes
     client = KubernetesSecretsClient()
     loaded_secret = client.load_secret(secret_name)
     assert loaded_secret
@@ -311,7 +311,7 @@ def test_secret_custom_env_vars_propogated_to_pod():
     # Make another call to ensure pod is running before checking env vars
     assert remote_fn(CUSTOM_ENV_VAR) == CUSTOM_ENV_VAR_VALUE
 
-    # Check that the secret is propogated to the pod (check env_vars)
+    # Check that the secret is propagated to the pod (check env_vars)
     env_var_names = [CUSTOM_ENV_VAR]
     env_vars = check_env_vars_on_kubernetes_pods(env_var_names, remote_fn.service_name)
     assert env_vars
