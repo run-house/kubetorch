@@ -31,16 +31,13 @@ def mock_service_manager():
         """
     }
 
-    # Patch all the service manager classes that could be instantiated
-    with patch(
-        "kubetorch.resources.compute.compute.KnativeServiceManager",
-        return_value=mock_instance,
-    ) as mock_knative, patch(
-        "kubetorch.resources.compute.compute.DeploymentServiceManager",
-        return_value=mock_instance,
+    # Patch the manifest building functions that are imported in compute.py
+    with patch("kubetorch.resources.compute.compute.build_knative_manifest", return_value={},) as mock_knative, patch(
+        "kubetorch.resources.compute.compute.build_deployment_manifest",
+        return_value={},
     ) as mock_deployment, patch(
-        "kubetorch.resources.compute.compute.RayClusterServiceManager",
-        return_value=mock_instance,
+        "kubetorch.resources.compute.compute.build_raycluster_manifest",
+        return_value={},
     ) as mock_ray:
 
         yield {

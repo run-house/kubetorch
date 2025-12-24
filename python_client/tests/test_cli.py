@@ -47,7 +47,7 @@ def remote_fn_for_teardown(secret: kt.Secret = None):
 
 def validate_logs_fn_service_info(list_output: str, service_name: str, compute_type: str):
     table_column_names = [
-        "SERVICE",
+        "RESOURCE",
         "TYPE",
         "STATUS",
         "# OF PODS",
@@ -81,16 +81,26 @@ def validate_logs_fn_service_info(list_output: str, service_name: str, compute_t
 def validate_teardown_output(teardown_output: str, service_name: str, force_delete: bool = False):
 
     assert "Force deleting resources..." if force_delete else "Deleting resources..." in teardown_output
-    assert f"✓ Deleted deployment {service_name}\n✓ Deleted service {service_name}" in teardown_output
+    assert f"✓ Deleted deployment {service_name}" in teardown_output
+    assert f"✓ Deleted cached data for {service_name}" in teardown_output
 
-    if force_delete:
-        time.sleep(5)
+    # Wait for K8s deletion to propagate before checking kt list
+    # Use retry with backoff since deletion can take varying amounts of time
+    max_retries = 10
+    wait_time = 3
+    for i in range(max_retries):
+        list_result = runner.invoke(app, ["list"], color=False, env={"COLUMNS": "200"})
+        assert list_result.exit_code == 0
 
-    list_result = runner.invoke(app, ["list"], color=False, env={"COLUMNS": "200"})
+        if service_name not in list_result.stdout:
+            # Service successfully removed from list
+            return
 
-    # make sure that the service is not displayed in kt list after it has been deleted
-    assert list_result.exit_code == 0
-    assert service_name not in list_result.stdout
+        # Service still showing, wait and retry
+        time.sleep(wait_time)
+
+    # If we get here, service is still showing after all retries
+    raise AssertionError(f"Service {service_name} still appears in kt list after {max_retries * wait_time}s")
 
 
 runner = CliRunner()

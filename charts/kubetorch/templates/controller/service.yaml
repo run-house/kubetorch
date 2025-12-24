@@ -8,6 +8,6 @@ spec:
     app: kubetorch-controller
   ports:
     - name: http
-      port: 8080
+      port: {{ .Values.kubetorchController.servicePort | default 8080 }}
       targetPort: 8080
   type: ClusterIP
