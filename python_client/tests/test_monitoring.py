@@ -147,7 +147,7 @@ async def test_monitoring_with_custom_structlog():
     # Test initialization logs and event streaming during launch
     # stream_logs=True is passed explicitly to ensure launch logs stream in CI (where KT_STREAM_LOGS=FALSE)
     with capture_stdout() as stdout:
-        remote_worker = kt.cls(LoggingTestWorker).to(compute, stream_logs=True)
+        remote_worker = kt.cls(LoggingTestWorker).to(compute)
         await asyncio.sleep(2)  # wait for launch logs and events to stream
         init_out = str(stdout)
 
