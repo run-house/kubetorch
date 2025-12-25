@@ -18,6 +18,12 @@ kubetorchController:
   connectionPoolSize: 20  # K8s API connection pool size per worker
   replicas: 1  # Number of controller replica pods
 
+  # Event watcher configuration (streams K8s events to Loki for client-side display)
+  eventWatcher:
+    enabled: true  # flip to `false` to disable K8s event watching
+    batchSize: 10  # Number of events to batch before pushing to Loki
+    flushInterval: 1.0  # Max seconds between flushes (lower = faster delivery)
+
   resources:
     cpu:
       request: "200m"   # Minimum guaranteed CPU (0.2 cores)
