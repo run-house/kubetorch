@@ -197,7 +197,7 @@ async def remote_cls():
         cpus=".1",
         image=kt.images.Debian()
         .pip_install(["pytest", "pytest-asyncio", "typer", "rich"])
-        .run_bash("uv pip install --system --break-system-packages numpy"),
+        .run_bash("uv pip install --system --break-system-packages numpy && uv cache clean"),
         env_vars={"OMP_NUM_THREADS": 1},
         annotations={"test-annotation": "test_value"},
         tolerations=[
