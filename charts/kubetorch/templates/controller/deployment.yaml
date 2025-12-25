@@ -72,6 +72,13 @@ spec:
               value: {{ .Values.kubetorchController.workers | quote }}
             - name: CONNECTION_POOL_SIZE
               value: {{ .Values.kubetorchController.connectionPoolSize | quote }}
+            # Event watcher configuration
+            - name: EVENT_WATCH_ENABLED
+              value: {{ .Values.kubetorchController.eventWatcher.enabled | quote }}
+            - name: EVENT_BATCH_SIZE
+              value: {{ .Values.kubetorchController.eventWatcher.batchSize | quote }}
+            - name: EVENT_FLUSH_INTERVAL
+              value: {{ .Values.kubetorchController.eventWatcher.flushInterval | quote }}
           ports:
             - containerPort: {{ .Values.kubetorchController.port }}
               name: controller
