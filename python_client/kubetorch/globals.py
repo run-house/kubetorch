@@ -433,9 +433,10 @@ class ControllerClient:
                         continue
 
                     # Log 404 at debug level (often expected - resource/CRD not found)
+                    # Log 409 at debug level (often expected - resource/CRD already exists)
                     # Log other errors at error level
-                    if status == 404:
-                        logger.debug(f"{method} {url} returned 404: {error_message}")
+                    if status == 404 or status == 409:
+                        logger.debug(f"{method} {url} returned {status}: {error_message}")
                     else:
                         logger.error(f"{method} {url} failed with status {response.status_code}: {error_message}")
 
