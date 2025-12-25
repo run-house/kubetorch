@@ -56,6 +56,9 @@ A Helm chart for kubetorch
 | kubetorchConfig.serviceAccountAnnotations | object | `{}` |  |
 | kubetorchController.affinity | object | `{}` |  |
 | kubetorchController.connectionPoolSize | int | `20` |  |
+| kubetorchController.eventWatcher.batchSize | int | `10` |  |
+| kubetorchController.eventWatcher.enabled | bool | `true` |  |
+| kubetorchController.eventWatcher.flushInterval | float | `1` |  |
 | kubetorchController.image | string | `"ghcr.io/run-house/kubetorch-controller"` |  |
 | kubetorchController.imagePullPolicy | string | `"Always"` |  |
 | kubetorchController.nginx.healthRoute | string | `"/health"` |  |
