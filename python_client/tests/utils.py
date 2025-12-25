@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -305,9 +306,10 @@ def slow_iteration(array_len: int = 5):
     return final_res
 
 
-def log_n_messages(msg: str = "Hello from cluster logs!", n: int = 10):
+def log_n_messages(msg: str = "Hello from cluster logs!", n: int = 10, sleep_time: int = 1):
     for i in range(n):
         logger.info(f"{msg} {i}")
+    time.sleep(sleep_time)
     return f"{msg} was logged {n} times"
 
 
