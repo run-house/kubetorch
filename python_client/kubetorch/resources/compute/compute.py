@@ -2005,8 +2005,6 @@ class Compute:
 
             return {"metadata": {"name": service_name, "namespace": self.namespace}, "spec": {"template": {}}}
 
-        # Finalize pod spec with launch time env vars
-        self._update_launch_env_vars(service_name, pointer_env_vars, metadata_env_vars, launch_id)
         self._upload_secrets_list()
 
         setup_script = self._get_setup_script(install_url, startup_rsync_command)
@@ -2030,6 +2028,11 @@ class Compute:
             create_headless_service=bool(self.distributed_config),
             endpoint=getattr(self, "_endpoint_config", None),
             pod_selector=getattr(self, "_pod_selector", None),
+            pointer_env_vars=pointer_env_vars,
+            metadata_env_vars=metadata_env_vars,
+            launch_id=launch_id,
+            deployment_mode=self.deployment_mode,
+            distributed_config=self.distributed_config,
         )
         self._manifest = updated_manifest
 
@@ -2083,59 +2086,6 @@ class Compute:
         )
 
         return service_template
-
-    def _update_launch_env_vars(self, service_name, pointer_env_vars, metadata_env_vars, launch_id):
-        kt_env_vars = {
-            **pointer_env_vars,
-            **metadata_env_vars,
-            "KT_LAUNCH_ID": launch_id,
-            "KT_SERVICE_NAME": service_name,
-            "KT_SERVICE_DNS": (
-                f"{service_name}-headless.{self.namespace}.svc.cluster.local"
-                if self.distributed_config
-                else f"{service_name}.{self.namespace}.svc.cluster.local"
-            ),
-            "KT_DEPLOYMENT_MODE": self.deployment_mode,
-        }
-        if "OTEL_SERVICE_NAME" not in self.config_env_vars.keys():
-            kt_env_vars["OTEL_SERVICE_NAME"] = service_name
-
-        # Ensure cluster config env vars are set
-        if globals.config.cluster_config:
-            if globals.config.cluster_config.get("log_streaming_enabled", True):
-                kt_env_vars["KT_LOG_STREAMING_ENABLED"] = True
-            if globals.config.cluster_config.get("metrics_enabled", True):
-                kt_env_vars["KT_METRICS_ENABLED"] = True
-
-        # Ensure all environment variable values are strings for Kubernetes compatibility
-        kt_env_vars = self._serialize_env_vars(kt_env_vars)
-
-        updated_env_vars = set()
-        for env_var in self._container_env():
-            if env_var["name"] in kt_env_vars:
-                env_var["value"] = kt_env_vars[env_var["name"]]
-                updated_env_vars.add(env_var["name"])
-        for key, val in kt_env_vars.items():
-            if key not in updated_env_vars:
-                self._container_env().append({"name": key, "value": val})
-
-    def _serialize_env_vars(self, env_vars: Dict) -> Dict:
-        import json
-
-        serialized_vars = {}
-        for key, value in env_vars.items():
-            if value is None:
-                serialized_vars[key] = "null"
-            elif isinstance(value, (dict, list)):
-                try:
-                    serialized_vars[key] = json.dumps(value)
-                except (TypeError, ValueError):
-                    serialized_vars[key] = str(value)
-            elif isinstance(value, (bool, int, float)):
-                serialized_vars[key] = str(value)
-            else:
-                serialized_vars[key] = value
-        return serialized_vars
 
     def _extract_secrets(self, secrets, namespace):
         if is_running_in_kubernetes():
