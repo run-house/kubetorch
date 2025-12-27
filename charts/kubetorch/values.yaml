@@ -10,7 +10,7 @@ kubetorchConfig:
 
 kubetorchController:
   image: ghcr.io/run-house/kubetorch-controller
-  tag: update-pod-watchers # TODO: update to latest OSS release version
+  tag: controller-updates # TODO: update to latest OSS release version
   imagePullPolicy: Always # TODO: change to IfNotPresent
 
   servicePort: 8080  # Port the controller service is exposed on (via nginx)

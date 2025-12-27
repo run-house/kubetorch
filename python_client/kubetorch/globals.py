@@ -9,7 +9,7 @@ import time
 
 from dataclasses import dataclass
 from functools import cache
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import requests
 
@@ -794,6 +794,48 @@ class ControllerClient:
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get(f"/apis/{group}/{version}/{plural}", params=params)
 
+    def _build_pool_config(
+        self,
+        specifier: Dict[str, Any],
+        server_port: int = 32300,
+        service: Optional[Dict[str, Any]] = None,
+        dockerfile: Optional[str] = None,
+        module: Optional[Dict[str, Any]] = None,
+        pool_metadata: Optional[Dict[str, Any]] = None,
+        labels: Optional[Dict[str, Any]] = None,
+        annotations: Optional[Dict[str, Any]] = None,
+        resource_kind: Optional[str] = None,
+        resource_name: Optional[str] = None,
+        create_headless_service: bool = False,
+        broadcast_reload: bool = False,
+    ) -> Dict[str, Any]:
+        """Build pool configuration dict for register_pool or deploy requests."""
+        pool_config = {
+            "specifier": specifier,
+            "server_port": server_port,
+        }
+        if service is not None:
+            pool_config["service"] = service
+        if dockerfile is not None:
+            pool_config["dockerfile"] = dockerfile
+        if module is not None:
+            pool_config["module"] = module
+        if pool_metadata is not None:
+            pool_config["pool_metadata"] = pool_metadata
+        if labels is not None:
+            pool_config["labels"] = labels
+        if annotations is not None:
+            pool_config["annotations"] = annotations
+        if resource_kind is not None:
+            pool_config["resource_kind"] = resource_kind
+        if resource_name is not None:
+            pool_config["resource_name"] = resource_name
+        if create_headless_service:
+            pool_config["create_headless_service"] = create_headless_service
+        if broadcast_reload:
+            pool_config["broadcast_reload"] = broadcast_reload
+        return pool_config
+
     def register_pool(
         self,
         name: str,
@@ -843,29 +885,21 @@ class ControllerClient:
         body = {
             "name": name,
             "namespace": namespace,
-            "specifier": specifier,
-            "server_port": server_port,
+            **self._build_pool_config(
+                specifier=specifier,
+                server_port=server_port,
+                service=service,
+                dockerfile=dockerfile,
+                module=module,
+                pool_metadata=pool_metadata,
+                labels=labels,
+                annotations=annotations,
+                resource_kind=resource_kind,
+                resource_name=resource_name,
+                create_headless_service=create_headless_service,
+                broadcast_reload=broadcast_reload,
+            ),
         }
-        if service is not None:
-            body["service"] = service
-        if dockerfile is not None:
-            body["dockerfile"] = dockerfile
-        if module is not None:
-            body["module"] = module
-        if pool_metadata is not None:
-            body["pool_metadata"] = pool_metadata
-        if labels is not None:
-            body["labels"] = labels
-        if annotations is not None:
-            body["annotations"] = annotations
-        if resource_kind is not None:
-            body["resource_kind"] = resource_kind
-        if resource_name is not None:
-            body["resource_name"] = resource_name
-        if create_headless_service:
-            body["create_headless_service"] = create_headless_service
-        if broadcast_reload:
-            body["broadcast_reload"] = broadcast_reload
 
         return self.post("/controller/pool", json=body)
 
@@ -906,6 +940,105 @@ class ControllerClient:
         }
         return self.post("/controller/apply", json=body)
 
+    def deploy(
+        self,
+        service_name: str,
+        namespace: str,
+        resource_type: str,
+        resource_manifest: Dict[str, Any],
+        specifier: Dict[str, Any],
+        service: Optional[Dict[str, Any]] = None,
+        dockerfile: Optional[str] = None,
+        module: Optional[Dict[str, Any]] = None,
+        pool_metadata: Optional[Dict[str, Any]] = None,
+        server_port: int = 32300,
+        labels: Optional[Dict[str, Any]] = None,
+        annotations: Optional[Dict[str, Any]] = None,
+        resource_kind: Optional[str] = None,
+        resource_name: Optional[str] = None,
+        create_headless_service: bool = False,
+    ) -> Dict[str, Any]:
+        """Unified deployment endpoint that combines apply + register_pool in a single call.
+
+        This is the recommended endpoint for standard kubetorch deployments.
+        For special cases (selector-only, BYO manifests), use apply() and register_pool() separately.
+
+        Args:
+            service_name: Name of the service
+            namespace: Kubernetes namespace
+            resource_type: Type of resource (deployment, knative, raycluster, etc.)
+            resource_manifest: The full K8s manifest to apply
+            specifier: Pool specifier dict (e.g., {"type": "label_selector", "selector": {...}})
+            service: Optional service configuration for routing
+            dockerfile: Optional dockerfile instructions for rebuilding workers
+            module: Optional application to deploy onto a pool
+            pool_metadata: Optional metadata (username, etc.)
+            server_port: Port for the K8s service (default: 32300)
+            labels: Labels for the K8s service
+            annotations: Annotations for the K8s service
+            resource_kind: K8s resource kind for teardown (e.g., "Deployment", "PyTorchJob")
+            resource_name: K8s resource name for teardown (defaults to service_name)
+            create_headless_service: Whether to create a headless service for distributed pod discovery
+
+        Returns:
+            Deploy response with status, message, created resource, and pool info
+        """
+        body = {
+            "service_name": service_name,
+            "namespace": namespace,
+            "resource_type": resource_type,
+            "resource_manifest": resource_manifest,
+            "pool_config": self._build_pool_config(
+                specifier=specifier,
+                server_port=server_port,
+                service=service,
+                dockerfile=dockerfile,
+                module=module,
+                pool_metadata=pool_metadata,
+                labels=labels,
+                annotations=annotations,
+                resource_kind=resource_kind,
+                resource_name=resource_name,
+                create_headless_service=create_headless_service,
+            ),
+        }
+
+        return self.post("/controller/deploy", json=body)
+
+    def list_services_batch(
+        self,
+        namespace: str,
+        operations: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """List multiple service types in a single HTTP request.
+
+        This reduces network overhead when discovering services across different resource types.
+
+        Args:
+            namespace: Kubernetes namespace to search
+            operations: List of list operation dicts. Each operation should have:
+                - "type": Operation type (e.g., "list_deployments", "list_pools", etc.)
+                - Additional fields specific to the operation type
+
+        Returns:
+            Dict mapping operation types to their results
+
+        Example:
+            operations = [
+                {"type": "list_deployments", "label_selector": "..."},
+                {"type": "list_pools"},
+                {"type": "list_knative_services", "label_selector": "..."},
+            ]
+            results = controller_client.list_services_batch("default", operations)
+            # Returns: {
+            #   "deployments": {"items": [...]},
+            #   "pools": {"pools": [...]},
+            #   "knative_services": {"items": [...]}
+            # }
+        """
+        body = {"namespace": namespace, "operations": operations}
+        return self.post("/controller/services", json=body)
+
     def list_pools(self, namespace: str) -> Dict[str, Any]:
         """List all compute pools."""
         return self.get(f"/controller/pools/{namespace}")
@@ -913,6 +1046,33 @@ class ControllerClient:
     def get_watchers(self) -> Dict[str, Any]:
         """Get pod watcher debug info (IPs being tracked for each pool)."""
         return self.get("/controller/debug/watchers")
+
+    def check_service_ready(
+        self,
+        namespace: str,
+        service_name: str,
+        resource_type: str,
+        timeout: int = 300,
+    ) -> Dict[str, Any]:
+        """Check if service is ready using server-side long polling.
+
+        Args:
+            namespace: Kubernetes namespace
+            service_name: Name of the service
+            resource_type: Type of resource (deployment, knative, raycluster, etc.)
+            timeout: Maximum time to wait in seconds (default: 300)
+
+        Returns:
+            Dict with "ready" (bool), "message" (str), and optional "details" (dict)
+        """
+        return self.get(
+            f"/controller/check-ready/{namespace}/{service_name}",
+            params={
+                "resource_type": resource_type,
+                "timeout": timeout,
+            },
+            timeout=timeout + 10,
+        )
 
 
 @cache
