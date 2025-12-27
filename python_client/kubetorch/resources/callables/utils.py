@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import Callable, Optional, Type, Union
 
+from kubetorch.globals import ProfilerConfig
+
 from kubetorch.logger import get_logger
 
 logger = get_logger(__name__)
@@ -201,3 +203,13 @@ def get_names_for_reload_fallbacks(name: str, prefixes: list[str] = []):
         potential_names.append(name)
 
     return potential_names
+
+
+def update_http_call_body(*args, profiler: ProfilerConfig = None, **kwargs):
+    body = {"args": list(args), "kwargs": kwargs}
+    if not profiler:
+        return body
+    else:
+        body["profiler"] = profiler
+
+    return body
