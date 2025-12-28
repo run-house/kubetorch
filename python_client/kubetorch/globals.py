@@ -540,7 +540,6 @@ class ControllerClient:
 
     def delete_deployment(self, namespace: str, name: str) -> Dict[str, Any]:
         """Delete a Deployment"""
-        print(f"calling server with deletion of namespace {namespace} and name {name}")
         return self.delete(f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}", ignore_not_found=True)
 
     def patch_deployment(self, namespace: str, name: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -803,3 +802,6 @@ def controller_client() -> ControllerClient:
         health_endpoint=DEFAULT_NGINX_HEALTH_ENDPOINT,
     )
     return ControllerClient(base_url=base_url)
+
+
+# added a comment to trigger CI

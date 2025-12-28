@@ -144,7 +144,7 @@ jobs:
       - name: Run base minimal tests
         run: |
           cd python_client
-          pytest -v --durations=100 --level minimal -m "not gpu_test" -k "not distributed and not monitoring and not cli and not deploy" --ignore=tests/test_deployment_fixtures.py --ignore=tests/test_pod_from_pod.py --ignore=tests/test_python_path.py --ignore=tests/test_secret.py --ignore=tests/test_declarative.py --ignore=tests/test_app.py
+          pytest -v --durations=100 --level minimal -m "not gpu_test" -k "not distributed and not monitoring and not cli and not deploy" --ignore=tests/test_deployment_fixtures.py --ignore=tests/test_pod_from_pod.py --ignore=tests/test_python_path.py --ignore=tests/test_secret.py --ignore=tests/test_declarative.py --ignore=tests/test_app.py --ignore tests/test_byo_manifest.py
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
@@ -738,9 +738,84 @@ jobs:
         env:
           KT_STREAM_LOGS: false
           KT_STREAM_METRICS: false
+
+  manifest-tests:
+    concurrency:
+      group: manifest-${{ github.ref }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
+
+      - name: Install Additional Dependencies
+        uses: ./.github/workflows/install_additional_dependencies
+
+      - name: Install Ray
+        run: |
+          uv pip install --system ray
+
+      - name: Setup authentications
+        uses: ./.github/workflows/gke_authentications
+        with:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+
+      - name: Setup Test Cluster
+        uses: ./.github/workflows/setup_test_cluster
+        with:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials ${{ secrets.CI_CLUSTER_NAME }} \
+            --region ${{ secrets.CI_CLUSTER_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Set Python Source Root
+        run: echo "PYTHONPATH=$(pwd)/python_client" >> $GITHUB_ENV
+
+      - name: Set Test Hash
+        run: |
+          TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)-dist"
+          echo "TEST_HASH=$TEST_HASH" >> $GITHUB_ENV
+
+      - name: Update kt config with controller test namespace, if exists
+        shell: bash
+        run: |
+          BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
+          NAMESPACE=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9]#-#g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-63)
+          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+
+          # Check if namespace exists
+          if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+            echo "Namespace $NAMESPACE exists, setting kt config"
+            kt config set namespace "$NAMESPACE"
+            kt config set install_namespace "$NAMESPACE"
+          else
+            echo "Namespace $NAMESPACE does not exist, kt config remains unchanged"
+          fi
+
+      - name: Run manifest tests
+        run: |
+          cd python_client
+          pytest -v tests/test_byo_manifest.py --durations=25 --level minimal -m "not gpu_test"
+        timeout-minutes: 60
+        env:
+          KT_STREAM_LOGS: true
+          KT_STREAM_METRICS: false
+
+
   cleanup:
     if: ${{ always() }}
-    needs: [base-minimal-tests, cli-tests, distributed-tests, monitoring-tests, pod-from-pod-tests, python-path-tests, secret-tests, declarative-tests, app-tests]
+    needs: [base-minimal-tests, cli-tests, distributed-tests, monitoring-tests, pod-from-pod-tests, python-path-tests, secret-tests, declarative-tests, app-tests, manifest-tests]
     runs-on: ubuntu-latest
     permissions:
       id-token: write

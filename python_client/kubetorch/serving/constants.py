@@ -10,7 +10,6 @@ DEFAULT_DEBUG_PORT = 5678
 
 # Namespaces
 KUBETORCH_NAMESPACE = "kubetorch"
-RUNHOUSE_NAMESPACE = "runhouse"
 DEFAULT_NAMESPACE = "default"
 
 # Images
