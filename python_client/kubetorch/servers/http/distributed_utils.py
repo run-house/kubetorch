@@ -1052,8 +1052,6 @@ class DistributedSupervisor:
         method_name: Optional[str] = None,
         params: Optional[Dict] = None,
         distributed_subcall: bool = False,
-        debug_port: int = False,
-        debug_mode: str = None,
         deployed_as_of: Optional[str] = None,
     ):
         # if intercept_call is True, this method should be overridden by subclasses to handle distributing and/or
@@ -1136,8 +1134,6 @@ class DistributedProcess(multiprocessing.Process):
             deployed_as_of = request["deployed_as_of"]
             request_id = request["request_id"]
             distributed_env_vars = request["distributed_env_vars"]
-            debug_port = request["debug_port"]
-            debug_mode = request["debug_mode"]
             serialization = request["serialization"]
 
             # Set the request ID in the context for this thread
@@ -1162,8 +1158,6 @@ class DistributedProcess(multiprocessing.Process):
                     method_name=method_name,
                     params=params,
                     serialization=serialization,
-                    debug_port=debug_port,
-                    debug_mode=debug_mode,
                 )
 
                 # Reset the request ID after the call is complete
@@ -1438,14 +1432,18 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         method_name: Optional[str] = None,
         params: Optional[Dict] = None,
         distributed_subcall: bool = False,
-        debug_port: int = False,
-        debug_mode: str = None,
         deployed_as_of: Optional[str] = None,
     ):
         # Get the request ID from the headers
         request_id = request.headers.get("X-Request-ID", "-")
         serialization = request.headers.get("X-Serialization", "json")
         params = params or {}
+        debug_mode, debug_port = None, None
+
+        debugger: dict = params.get("debugger", None)
+        if debugger:
+            debug_mode = debugger.get("mode")
+            debug_port = debugger.get("port")
 
         # If deployed_as_of is None and we're the coordinator, generate a consistent timestamp
         # to use across all workers to prevent reload inconsistencies
@@ -2545,8 +2543,6 @@ class MonarchDistributed(DistributedSupervisor):
         method_name: Optional[str] = None,
         params: Optional[Dict] = None,
         distributed_subcall: bool = False,
-        debug_port: int = False,
-        debug_mode: str = None,
         deployed_as_of: Optional[str] = None,
     ):
         """Monarch distributed call - executes on controller node (rank 0)."""
@@ -2606,6 +2602,12 @@ class MonarchDistributed(DistributedSupervisor):
         self.distributed_env_vars["NODE_RANK"] = "0"  # Controller is always rank 0
 
         logger.debug("Sending call to Monarch subprocess (controller)")
+
+        debug_mode, debug_port = None, None
+        debugger: dict = params.get("debugger", None)
+        if debugger:
+            debug_mode = debugger.get("mode")
+            debug_port = debugger.get("pod")
 
         # Monarch uses only one process per node, call index 0
         result = self.process_pool.call(
@@ -2802,13 +2804,17 @@ class RayDistributed(DistributedSupervisor):
         method_name: Optional[str] = None,
         params: Optional[Dict] = None,
         distributed_subcall: bool = False,
-        debug_port: int = False,
-        debug_mode: str = None,
         deployed_as_of: Optional[str] = None,
     ):
         """Ray distributed call - only executes on head node."""
         request_id = request.headers.get("X-Request-ID", "-")
         serialization = request.headers.get("X-Serialization", "json")
+
+        debug_mode, debug_port = None, None
+        debugger: dict = params.get("debugger", None)
+        if debugger:
+            debug_mode = debugger.get("mode")
+            debug_port = debugger.get("port")
 
         # If deployed_as_of is None, generate a consistent timestamp
         # to use across all workers to prevent reload inconsistencies

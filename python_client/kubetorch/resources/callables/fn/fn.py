@@ -1,6 +1,6 @@
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.module import Module
-from kubetorch.resources.callables.utils import extract_pointers, prepare_notebook_fn
+from kubetorch.resources.callables.utils import build_call_body, extract_pointers, prepare_notebook_fn
 
 logger = get_logger(__name__)
 
@@ -42,10 +42,13 @@ class Fn(Module):
         stream_metrics = kwargs.pop("stream_metrics", None)
         debug = kwargs.pop("debug", None)
         pdb = kwargs.pop("pdb", None)  # Keep for backward compatibility
+        serialization = kwargs.pop("serialization", self.serialization)
 
         # debug takes precedence over pdb
         if debug is None and pdb is not None:
             debug = pdb
+
+        body = build_call_body(*args, **kwargs, debug=debug, pdb=pdb)
 
         # Resolve stream_logs using module's property if not explicitly set
         stream_logs = stream_logs if stream_logs is not None else self.stream_logs
@@ -61,10 +64,8 @@ class Fn(Module):
             self.logging_config,
             stream_metrics=stream_metrics,
             headers=self.request_headers,
-            body={"args": list(args), "kwargs": kwargs},
-            debug=debug,
-            pdb=pdb,  # Keep for backward compatibility
-            serialization=kwargs.pop("serialization", self.serialization),
+            body=body,
+            serialization=serialization,
         )
         return response
 
@@ -75,10 +76,13 @@ class Fn(Module):
         stream_metrics = kwargs.pop("stream_metrics", None)
         debug = kwargs.pop("debug", None)
         pdb = kwargs.pop("pdb", None)  # Keep for backward compatibility
+        serialization = kwargs.pop("serialization", self.serialization)
 
         # debug takes precedence over pdb
         if debug is None and pdb is not None:
             debug = pdb
+
+        body = build_call_body(*args, **kwargs, debug=debug, pdb=pdb)
 
         # Resolve stream_logs using module's property if not explicitly set
         stream_logs = stream_logs if stream_logs is not None else self.stream_logs
@@ -94,10 +98,8 @@ class Fn(Module):
             self.logging_config,
             stream_metrics=stream_metrics,
             headers=self.request_headers,
-            body={"args": list(args), "kwargs": kwargs},
-            debug=debug,
-            pdb=pdb,  # Keep for backward compatibility
-            serialization=kwargs.pop("serialization", self.serialization),
+            body=body,
+            serialization=serialization,
         )
         return response
 
