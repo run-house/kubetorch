@@ -64,7 +64,7 @@ def test_autodown_deployment():
     service = controller.get_service(name=remote_fn.service_name, namespace=namespace)
     assert service
 
-    # Get the env vars on the service pod and check that KT_OTEL_ENABLED is True
+    # Get the env vars on the service pod and check that KT_METRICS_ENABLED is True
     pods_response = controller.list_pods(
         namespace=namespace,
         label_selector=f"kubetorch.com/service={remote_fn.service_name}",
@@ -74,7 +74,7 @@ def test_autodown_deployment():
 
     pod = pods[0]
     container = next((x for x in pod["spec"]["containers"] if x["name"] == "kubetorch"), None)
-    kt_otel_env = next((env for env in container["env"] if env["name"] == "KT_OTEL_ENABLED"), None)
+    kt_otel_env = next((env for env in container["env"] if env["name"] == "KT_METRICS_ENABLED"), None)
     assert kt_otel_env["value"] == "True"
 
     # Check that the service has the autodown annotation
@@ -129,7 +129,7 @@ def test_autodown_raycluster():
     service = controller.get_service(name=remote_fn.service_name, namespace=namespace)
     assert service
 
-    # Get the env vars on the service pod and check that KT_OTEL_ENABLED is True
+    # Get the env vars on the service pod and check that KT_METRICS_ENABLED is True
     pods_response = controller.list_pods(
         namespace=namespace,
         label_selector=f"kubetorch.com/service={remote_fn.service_name}",
@@ -139,7 +139,7 @@ def test_autodown_raycluster():
 
     pod = pods[0]
     container = next((x for x in pod["spec"]["containers"] if x["name"] == "kubetorch"), None)
-    kt_otel_env = next((env for env in container["env"] if env["name"] == "KT_OTEL_ENABLED"), None)
+    kt_otel_env = next((env for env in container["env"] if env["name"] == "KT_METRICS_ENABLED"), None)
     assert kt_otel_env["value"] == "True"
 
     # Check that the service has the autodown annotation
@@ -179,7 +179,7 @@ def test_autodown_custom_image():
     service = controller.get_service(name=remote_fn.service_name, namespace=namespace)
     assert service
 
-    # Get the env vars on the service pod and check that KT_OTEL_ENABLED is True
+    # Get the env vars on the service pod and check that KT_METRICS_ENABLED is True
     pods_response = controller.list_pods(
         namespace=namespace,
         label_selector=f"kubetorch.com/service={remote_fn.service_name}",
@@ -189,10 +189,10 @@ def test_autodown_custom_image():
 
     pod = pods[0]
     container = next((x for x in pod["spec"]["containers"] if x["name"] == "kubetorch"), None)
-    kt_otel_env = next((env for env in container["env"] if env["name"] == "KT_OTEL_ENABLED"), None)
+    kt_otel_env = next((env for env in container["env"] if env["name"] == "KT_METRICS_ENABLED"), None)
     assert kt_otel_env["value"] == "True"
 
     # Check that the service has the autodown annotation
     assert service["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] is not None
-    assert service["metadata"]["labels"]["KT_OTEL_ENABLED"] == "True"
+    assert service["metadata"]["labels"]["KT_METRICS_ENABLED"] == "True"
     assert service["metadata"]["annotations"][serving_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
