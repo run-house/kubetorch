@@ -809,7 +809,7 @@ jobs:
           pytest -v tests/test_byo_manifest.py --durations=25 --level minimal -m "not gpu_test"
         timeout-minutes: 60
         env:
-          KT_STREAM_LOGS: true
+          KT_STREAM_LOGS: false
           KT_STREAM_METRICS: false
 
 
