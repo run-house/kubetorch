@@ -1991,7 +1991,6 @@ class Compute:
                     specifier=specifier,
                     pool_metadata={"username": globals.config.username},
                     module=module,
-                    broadcast_reload=True,
                 )
                 status = pool_response.get("status")
                 message = pool_response.get("message", "")

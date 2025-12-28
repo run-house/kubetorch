@@ -2392,6 +2392,12 @@ def kt_pool(
         "-n",
         "--namespace",
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show detailed module, specifier, labels, and annotations",
+    ),
     watchers: bool = typer.Option(
         False,
         "--watchers",
@@ -2454,48 +2460,57 @@ def kt_pool(
     table = Table(
         show_header=True,
         border_style="bright_black",
-        expand=True,
     )
 
     table.add_column("Pool Name", style="bold magenta", no_wrap=True)
     table.add_column("User", style="green", no_wrap=True)
-    table.add_column("Module Metadata", style="yellow", overflow="fold")
     table.add_column("Resource", style="cyan", no_wrap=True)
-    table.add_column("Specifier", style="cyan", no_wrap=True)
-    table.add_column("Labels", style="white", overflow="fold")
-    table.add_column("Annotations", style="white", overflow="fold")
-    table.add_column("Created (UTC)", style="white", no_wrap=True)
-    table.add_column("Updated (UTC)", style="white", no_wrap=True)
-    table.add_column("Last Deployed (UTC)", style="white", no_wrap=True)
+    table.add_column("Last Deployed", style="white", no_wrap=True)
 
     for p in pools:
         metadata = p.get("pool_metadata") or {}
-        module = p.get("module") or {}
         user = metadata.get("username", "-")
-
-        # Build resource string (e.g., "Deployment/my-app")
         resource_kind = p.get("resource_kind") or "-"
-        resource_name = p.get("resource_name") or "-"
-        resource = f"{resource_kind}/{resource_name}" if resource_kind != "-" else "-"
-        specifier = p.get("specifier", {})
-
-        labels = p.get("labels") or {}
-        annotations = p.get("annotations") or {}
 
         table.add_row(
             p.get("name", "-"),
             user,
-            json.dumps(module, indent=2),
-            resource,
-            json.dumps(specifier, indent=2),
-            json.dumps(labels, indent=2),
-            json.dumps(annotations, indent=2),
-            fmt(p.get("created_at", "-")),
-            fmt(p.get("updated_at", "-")),
+            resource_kind,
             fmt(p.get("last_deployed_at", "-")),
         )
 
     console.print(table)
+
+    # Show detailed JSON for each pool only in verbose mode
+    if verbose:
+        console.print()
+        console.rule("[bold]Pool Details[/bold]", style="bright_black")
+        for p in pools:
+            pool_name = p.get("name", "-")
+            module = p.get("module") or {}
+            specifier = p.get("specifier", {})
+            labels = p.get("labels") or {}
+            annotations = p.get("annotations") or {}
+
+            console.print()
+            console.print(
+                Panel.fit(
+                    f"[bold magenta]{pool_name}[/bold magenta]",
+                    border_style="magenta",
+                )
+            )
+            if module:
+                console.print("  [white]Module:[/white]")
+                console.print(Syntax(json.dumps(module, indent=2), "json", theme="monokai", line_numbers=False))
+            if specifier:
+                console.print("  [white]Specifier:[/white]")
+                console.print(Syntax(json.dumps(specifier, indent=2), "json", theme="monokai", line_numbers=False))
+            if labels:
+                console.print("  [white]Labels:[/white]")
+                console.print(Syntax(json.dumps(labels, indent=2), "json", theme="monokai", line_numbers=False))
+            if annotations:
+                console.print("  [white]Annotations:[/white]")
+                console.print(Syntax(json.dumps(annotations, indent=2), "json", theme="monokai", line_numbers=False))
 
 
 @server_app.command("start", hidden=True)
