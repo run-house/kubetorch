@@ -469,7 +469,7 @@ def test_integration_full_stack():
     try:
         # Deploy with resources - (pass Secret object instead of string to avoid provider inference)
         remote_fn = kt.fn(get_env_var, name=service_name).to(
-            kt.Compute(cpus=".01", gpu_anti_affinity=True, secrets=[secret], volumes=[vol])
+            kt.Compute(cpus=".01", gpu_anti_affinity=True, secrets=[secret], volumes=[vol], launch_timeout=300)
         )
 
         assert remote_fn("TEST_KEY") == "test_val"

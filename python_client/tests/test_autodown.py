@@ -1,5 +1,6 @@
 import os
 
+import kubetorch.globals
 import kubetorch.serving.constants as serving_constants
 import pytest
 
@@ -40,7 +41,7 @@ def test_autodown_annotation():
     # Check that the namespace is in the watch namespaces
     cronjob_configmap = controller.get_config_map(
         name=serving_constants.TTL_CONTROLLER_CONFIGMAP_NAME,
-        namespace=serving_constants.KUBETORCH_NAMESPACE,
+        namespace=kubetorch.globals.config.install_namespace,
     )
     assert namespace in cronjob_configmap["data"]["WATCH_NAMESPACES"].split(",")
 
@@ -97,7 +98,7 @@ def test_autodown_deployment():
     # Check that the namespace is in the watch namespaces
     cronjob_configmap = controller.get_config_map(
         name=serving_constants.TTL_CONTROLLER_CONFIGMAP_NAME,
-        namespace=serving_constants.KUBETORCH_NAMESPACE,
+        namespace=kubetorch.globals.config.install_namespace,
     )
     assert namespace in cronjob_configmap["data"]["WATCH_NAMESPACES"].split(",")
 

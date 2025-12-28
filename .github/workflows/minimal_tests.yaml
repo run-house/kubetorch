@@ -783,24 +783,56 @@ jobs:
 
       - name: Set Test Hash
         run: |
-          TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)-dist"
+          TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)-manifest"
           echo "TEST_HASH=$TEST_HASH" >> $GITHUB_ENV
 
-      - name: Update kt config with controller test namespace, if exists
+      - name: Derive controller namespace from branch
         shell: bash
+        id: controller-ns
         run: |
           BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
           PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
-          NAMESPACE=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9]#-#g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-63)
-          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+          NAMESPACE=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]' \
+            | sed 's#[^a-z0-9]#-#g' \
+            | sed 's/--*/-/g' \
+            | sed 's/^-//;s/-$//' \
+            | cut -c1-63)
 
-          # Check if namespace exists
-          if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
-            echo "Namespace $NAMESPACE exists, setting kt config"
-            kt config set namespace "$NAMESPACE"
-            kt config set install_namespace "$NAMESPACE"
+          echo "NAMESPACE=$NAMESPACE" >> "$GITHUB_OUTPUT"
+
+      - name: Update kt config with controller namespace, if exists
+        shell: bash
+        run: |
+          CONTROLLER_NS="${{ steps.controller-ns.outputs.NAMESPACE }}"
+
+          if kubectl get namespace "$CONTROLLER_NS" >/dev/null 2>&1; then
+            echo "Controller namespace $CONTROLLER_NS exists, setting kt config"
+            kt config set namespace "$CONTROLLER_NS"
+            kt config set install_namespace "$CONTROLLER_NS"
           else
-            echo "Namespace $NAMESPACE does not exist, kt config remains unchanged"
+            echo "Controller namespace $CONTROLLER_NS does not exist, kt config unchanged"
+          fi
+
+
+      - name: Ensure Kueue LocalQueue exists in controller namespace
+        shell: bash
+        run: |
+          CONTROLLER_NS="${{ steps.controller-ns.outputs.NAMESPACE }}"
+
+          if kubectl get namespace "$CONTROLLER_NS" >/dev/null 2>&1; then
+            echo "Ensuring LocalQueue gpu-queue in $CONTROLLER_NS"
+
+            kubectl apply -f - <<EOF
+          apiVersion: kueue.x-k8s.io/v1beta2
+          kind: LocalQueue
+          metadata:
+            name: gpu-queue
+            namespace: "$CONTROLLER_NS"
+          spec:
+            clusterQueue: gpu-cluster-queue
+          EOF
+          else
+            echo "Controller namespace $CONTROLLER_NS does not exist, skipping LocalQueue"
           fi
 
       - name: Run manifest tests
@@ -915,7 +947,7 @@ jobs:
 
       - name: Run Teardown Commands
         run: |
-          for suffix in -minimal -mon -cli -pod -dist -python -secret -decl -app; do
+          for suffix in -minimal -mon -cli -pod -dist -python -secret -decl -app -manifest; do
             echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --force"
             kt teardown --prefix ${TEST_HASH}${suffix} --force || true
             echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} --force"

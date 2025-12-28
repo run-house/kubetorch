@@ -302,8 +302,9 @@ class DeploymentServiceManager(BaseServiceManager):
                     )
 
             except Exception as e:
-                logger.error(f"Error checking Deployment readiness: {e}")
-                raise
+                if not http_not_found(e):
+                    logger.error(f"Error checking Deployment readiness: {e}")
+                    raise
 
             if iteration % 10 == 0:
                 elapsed = int(time.time() - start_time)

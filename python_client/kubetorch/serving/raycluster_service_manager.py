@@ -461,7 +461,8 @@ class RayClusterServiceManager(BaseServiceManager):
             except RuntimeError as e:
                 raise e
             except Exception as e:
-                logger.error(f"Error checking RayCluster readiness: {e}")
+                if not http_not_found(e):
+                    logger.error(f"Error checking RayCluster readiness: {e}")
 
             time.sleep(sleep_interval)
 
