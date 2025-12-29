@@ -31,6 +31,7 @@ _websocket_server = None
 _websocket_connection = None
 _server_thread = None
 _event_loop = None
+_server_future = None
 
 
 class WebSocketIO:
@@ -173,10 +174,10 @@ async def _handle_websocket_client(websocket, ws_io: WebSocketIO):
 
 def _run_websocket_server(port: int, ws_io: WebSocketIO, server_ready: threading.Event):
     """Run the WebSocket server in a background thread."""
-    global _websocket_server, _event_loop
+    global _websocket_server, _event_loop, _server_future
 
     async def run():
-        global _websocket_server
+        global _websocket_server, _server_future
         try:
             _websocket_server = await websockets.serve(
                 lambda ws: _handle_websocket_client(ws, ws_io),
@@ -186,8 +187,9 @@ def _run_websocket_server(port: int, ws_io: WebSocketIO, server_ready: threading
             logger.info(f"PDB WebSocket server listening on port {port}")
             server_ready.set()
 
-            # Keep running until closed
-            await asyncio.Future()
+            # Keep running until closed - store the future so cleanup() can cancel it
+            _server_future = asyncio.get_event_loop().create_future()
+            await _server_future
         except asyncio.CancelledError:
             pass
         except OSError as e:
@@ -195,6 +197,7 @@ def _run_websocket_server(port: int, ws_io: WebSocketIO, server_ready: threading
             server_ready.set()
             raise
         finally:
+            _server_future = None
             if _websocket_server:
                 _websocket_server.close()
                 await _websocket_server.wait_closed()
@@ -301,13 +304,20 @@ def start_debugger(port: int, timeout: int = 300):
 
 def cleanup():
     """Clean up any running WebSocket server."""
-    global _websocket_server, _event_loop, _websocket_connection
+    global _websocket_server, _event_loop, _websocket_connection, _server_future, _server_thread
 
-    if _event_loop and _websocket_server:
+    if _event_loop and _server_future:
         try:
-            _event_loop.call_soon_threadsafe(_event_loop.stop)
+            # Cancel the future that keeps the server running - this triggers graceful shutdown
+            _event_loop.call_soon_threadsafe(_server_future.cancel)
         except Exception:
             pass
 
+    # Wait for the server thread to finish (with timeout to avoid blocking forever)
+    if _server_thread and _server_thread.is_alive():
+        _server_thread.join(timeout=5.0)
+
     _websocket_server = None
     _websocket_connection = None
+    _server_future = None
+    _server_thread = None
