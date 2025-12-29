@@ -1143,6 +1143,15 @@ class Module:
                                     ts_ns = int(value[0])
                                     if start_timestamp is not None and ts_ns < start_timestamp:
                                         continue
+
+                                    # Skip stale events based on configurable freshness window
+                                    # This prevents delayed events from appearing long after they occurred
+                                    freshness_window = self.logging_config.event_freshness_window
+                                    if freshness_window > 0:
+                                        event_age_sec = (time.time() * 1e9 - ts_ns) / 1e9
+                                        if event_age_sec > freshness_window:
+                                            continue
+
                                     log_line = value[1]
                                     if is_event:
                                         event_type = labels.get("event_type", "Normal")

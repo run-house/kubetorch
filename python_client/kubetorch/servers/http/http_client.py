@@ -720,6 +720,14 @@ class HTTPClient:
                                     if ts_ns < start_time_ns:
                                         continue
 
+                                    # Skip stale events based on configurable freshness window
+                                    # This prevents delayed events from appearing long after they occurred
+                                    freshness_window = log_config.event_freshness_window
+                                    if freshness_window > 0:
+                                        event_age_sec = (time.time() * 1e9 - ts_ns) / 1e9
+                                        if event_age_sec > freshness_window:
+                                            continue
+
                                     try:
                                         event_data = json.loads(value[1])
                                         msg = event_data.get("message", value[1])
