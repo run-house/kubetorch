@@ -143,15 +143,18 @@ def _ensure_pf(service_name: str, namespace: str, remote_port: int, health_endpo
     from kubetorch.resources.compute.utils import find_available_port
     from kubetorch.serving.utils import wait_for_port_forward
 
+    # Cache key includes port to support multiple ports per service
+    cache_key = f"{service_name}:{remote_port}"
+
     # Fast path: check without lock first
-    h = _port_forwards.get(service_name)
+    h = _port_forwards.get(cache_key)
     if h and h.process.poll() is None:
         return h
 
     # Slow path: need to create port forward
     with _pf_lock:
         # Double-check pattern: check again inside the lock
-        h = _port_forwards.get(service_name)
+        h = _port_forwards.get(cache_key)
         if h and h.process.poll() is None:
             return h
 
@@ -199,7 +202,7 @@ def _ensure_pf(service_name: str, namespace: str, remote_port: int, health_endpo
 
         h = PFHandle(process=proc, port=local_port, base_url=f"http://localhost:{local_port}")
         # Store in cache while still holding the lock
-        _port_forwards[service_name] = h
+        _port_forwards[cache_key] = h
         return h
 
 
@@ -208,8 +211,11 @@ async def _ensure_pf_async(service_name: str, namespace: str, remote_port: int, 
     from kubetorch.resources.compute.utils import find_available_port
     from kubetorch.serving.utils import wait_for_port_forward
 
+    # Cache key includes port to support multiple ports per service
+    cache_key = f"{service_name}:{remote_port}"
+
     # Fast path: check without lock first
-    h = _port_forwards.get(service_name)
+    h = _port_forwards.get(cache_key)
     if h and h.process.poll() is None:
         return h
 
@@ -221,7 +227,7 @@ async def _ensure_pf_async(service_name: str, namespace: str, remote_port: int, 
     # Slow path: need to create port forward
     async with _pf_async_lock:
         # Double-check pattern: check again inside the lock
-        h = _port_forwards.get(service_name)
+        h = _port_forwards.get(cache_key)
         if h and h.process.poll() is None:
             return h
 
@@ -276,7 +282,7 @@ async def _ensure_pf_async(service_name: str, namespace: str, remote_port: int, 
         h = await loop.run_in_executor(None, create_port_forward)
 
         # Store in cache while still holding the lock
-        _port_forwards[service_name] = h
+        _port_forwards[cache_key] = h
         return h
 
 
@@ -304,8 +310,9 @@ def service_url(
 
     # if the process died between creation and use, recreate once
     if h.process.poll() is not None:
+        cache_key = f"{service_name}:{remote_port}"
         with _pf_lock:
-            _port_forwards.pop(service_name, None)
+            _port_forwards.pop(cache_key, None)
         h = _ensure_pf(service_name, namespace, remote_port, health_endpoint)
     return h.base_url
 
@@ -331,13 +338,14 @@ async def service_url_async(
 
     # if the process died between creation and use, recreate once
     if h.process.poll() is not None:
+        cache_key = f"{service_name}:{remote_port}"
         # Ensure async lock is created
         global _pf_async_lock
         if _pf_async_lock is None:
             _pf_async_lock = asyncio.Lock()
 
         async with _pf_async_lock:
-            _port_forwards.pop(service_name, None)
+            _port_forwards.pop(cache_key, None)
         h = await _ensure_pf_async(service_name, namespace, remote_port, health_endpoint)
     return h.base_url
 

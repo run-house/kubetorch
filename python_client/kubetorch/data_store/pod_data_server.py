@@ -1401,21 +1401,23 @@ class PodDataServer:
             self._mds_base_url = f"http://{service_name}.{self._namespace}.svc.cluster.local:{DATA_STORE_METADATA_PORT}"
         return self._mds_base_url
 
-    def _mds_publish_gpu(self, key: str) -> bool:
-        """Publish GPU data key to metadata server."""
-        from urllib.parse import quote
-
+    def _mds_publish_gpu(self, keys: Union[str, List[str]]) -> bool:
+        """Publish GPU data key(s) to metadata server. Accepts single key or list."""
         import requests
 
         if not self._pod_ip or not self._pod_name or not self._namespace:
             logger.error("Missing POD_IP, POD_NAME, or KT_NAMESPACE environment variables")
             return False
 
-        encoded_key = quote(key, safe="")
-        url = f"{self._get_mds_base_url()}/api/v1/keys/{encoded_key}/gpu/publish"
+        # Normalize to list
+        key_list = [keys] if isinstance(keys, str) else keys
+
+        # Use existing endpoint with keys in body (path key is ignored when keys provided)
+        url = f"{self._get_mds_base_url()}/api/v1/keys/_/gpu/publish"
 
         try:
             payload = {
+                "keys": key_list,
                 "ip": self._pod_ip,
                 "pod_name": self._pod_name,
                 "namespace": self._namespace,
@@ -1424,34 +1426,42 @@ class PodDataServer:
                 "gpu_server_socket": self.socket_path,
             }
 
-            response = requests.post(url, json=payload, timeout=10)
+            response = requests.post(url, json=payload, timeout=30)
             response.raise_for_status()
             return True
         except requests.RequestException as e:
-            logger.error(f"Failed to publish GPU key '{key}' to MDS: {e}")
+            logger.error(f"Failed to publish {len(key_list)} GPU key(s) to MDS: {e}")
             return False
 
-    def _mds_get_gpu_source(self, key: str) -> Optional[dict]:
-        """Get GPU data source info from metadata server."""
-        from urllib.parse import quote
-
+    def _mds_get_gpu_source(self, keys: Union[str, List[str]]) -> Dict[str, Optional[dict]]:
+        """Get GPU data source info from metadata server. Supports batch lookup."""
         import requests
 
-        encoded_key = quote(key, safe="")
-        url = f"{self._get_mds_base_url()}/api/v1/keys/{encoded_key}/gpu/source"
+        key_list = [keys] if isinstance(keys, str) else keys
+
+        # Use batch endpoint with placeholder path key
+        url = f"{self._get_mds_base_url()}/api/v1/keys/_/gpu/source"
+        payload = {"keys": key_list}
 
         try:
-            response = requests.get(url, timeout=10)
-            if response.status_code == 404:
-                return None
+            response = requests.post(url, json=payload, timeout=30)
             response.raise_for_status()
             data = response.json()
-            if data.get("found") is False:
-                return None
-            return data
+
+            # Always returns {"sources": {key: info, ...}}
+            sources = data.get("sources", {})
+            results = {}
+            for key in key_list:
+                source_info = sources.get(key)
+                if source_info and source_info.get("found"):
+                    results[key] = source_info
+                else:
+                    results[key] = None
+            return results
+
         except requests.RequestException as e:
-            logger.error(f"Failed to get GPU source for key '{key}': {e}")
-            return None
+            logger.error(f"Failed to get GPU sources for {len(key_list)} key(s): {e}")
+            return {k: None for k in key_list}
 
     # ==================== Broadcast WebSocket Support ====================
 
@@ -1711,45 +1721,59 @@ class PodDataServer:
 
     def _handle_put_tensor(self, message: dict) -> dict:
         """
-        Handle put_tensor command - register tensor locally + publish to MDS.
+        Handle put_tensor command - register tensor(s) locally + publish to MDS.
 
+        Supports both single tensor (key/ipc_handle/...) and batch (tensors list).
         If broadcast config is provided, joins the broadcast group via WebSocket.
-        Pod Data Server is always the coordinator for its pod.
         """
-        key = message["key"]
-        ipc_handle = _deserialize_ipc_handle(message["ipc_handle"])
-        shape = tuple(message["shape"])
-        dtype = message["dtype"]
-        device = message["device"]
         pid = message.get("pid", 0)
-        broadcast = message.get("broadcast")  # Optional broadcast config
+        broadcast = message.get("broadcast")
 
-        # Step 1: Register tensor locally
+        # Normalize to list: batch mode uses 'tensors', single mode uses top-level fields
+        if "tensors" in message:
+            tensor_infos = message["tensors"]
+        else:
+            tensor_infos = [
+                {
+                    "key": message["key"],
+                    "ipc_handle": message["ipc_handle"],
+                    "shape": message["shape"],
+                    "dtype": message["dtype"],
+                    "device": message["device"],
+                }
+            ]
+
+        # Step 1: Register all tensors locally (single lock acquisition)
+        keys = []
         with self._lock:
-            self._registered[key] = RegisteredTensor(
-                key=key,
-                ipc_handle=ipc_handle,
-                shape=shape,
-                dtype=dtype,
-                device=device,
-                pid=pid,
-            )
+            for info in tensor_infos:
+                key = info["key"]
+                keys.append(key)
+                ipc_handle = _deserialize_ipc_handle(info["ipc_handle"])
+                shape = tuple(info["shape"])
+                dtype = info["dtype"]
+                device = info["device"]
+
+                self._registered[key] = RegisteredTensor(
+                    key=key,
+                    ipc_handle=ipc_handle,
+                    shape=shape,
+                    dtype=dtype,
+                    device=device,
+                    pid=pid,
+                )
 
             # Track PID for cleanup
             if pid not in self._pid_keys:
                 self._pid_keys[pid] = []
-            if key not in self._pid_keys[pid]:
-                self._pid_keys[pid].append(key)
+            for key in keys:
+                if key not in self._pid_keys[pid]:
+                    self._pid_keys[pid].append(key)
 
-        # Step 2: If broadcast, join via WebSocket; otherwise publish to MDS
+        # Step 2: If broadcast, join via WebSocket; otherwise publish all keys to MDS
         if broadcast:
-            # Use unified tensors list format (single tensor as list of one)
             tensors = [
-                {
-                    "key": key,
-                    "shape": list(shape),
-                    "dtype": dtype,
-                }
+                {"key": info["key"], "shape": list(info["shape"]), "dtype": info["dtype"]} for info in tensor_infos
             ]
             return self._join_broadcast_via_websocket(
                 tensors=tensors,
@@ -1759,12 +1783,12 @@ class PodDataServer:
                 broadcast_world_size=broadcast.get("world_size"),
             )
         else:
-            # Point-to-point: just publish to MDS
-            if not self._mds_publish_gpu(key):
+            # Point-to-point: publish all keys to MDS in single batch call
+            if not self._mds_publish_gpu(keys):
                 return {"status": "error", "error": "Failed to publish to MDS"}
 
-            logger.info(f"put_tensor: registered and published '{key}'")
-            return {"status": "ok", "key": key}
+            logger.info(f"put_tensor: registered and published {len(keys)} key(s)")
+            return {"status": "ok", "keys": keys, "count": len(keys)}
 
     def _handle_get_tensor(self, message: dict) -> dict:
         """
@@ -1802,14 +1826,17 @@ class PodDataServer:
                 broadcast_world_size=broadcast.get("world_size"),
             )
 
-        # Point-to-point: Lookup source for each key and group by source
+        # Point-to-point: Batch lookup all sources from MDS, then group by source
         from typing import Tuple
 
         source_groups: Dict[Tuple[str, int], List] = {}
         missing_keys = []
 
+        # Single batch lookup for all keys
+        all_sources = self._mds_get_gpu_source(keys)
+
         for i, key in enumerate(keys):
-            source_info = self._mds_get_gpu_source(key)
+            source_info = all_sources.get(key)
             if source_info is None:
                 missing_keys.append(key)
                 continue
@@ -2314,51 +2341,63 @@ class PodDataServerClient:
 
     def put_tensor(
         self,
-        key: str,
-        tensor,
+        keys: Union[str, List[str]],
+        tensors: Union[Any, List[Any]],
         pid: Optional[int] = None,
         broadcast: Optional[dict] = None,
     ) -> dict:
         """
-        High-level put: Register tensor + publish to MDS (or join broadcast).
+        High-level put: Register tensor(s) + publish to MDS (or join broadcast).
 
-        Pod Data Server handles everything - just pass the tensor.
+        Supports both single tensor and batch mode.
 
         Args:
-            key: Storage key
-            tensor: CUDA tensor to publish
+            keys: Storage key(s) - single string or list
+            tensors: CUDA tensor(s) to publish - single tensor or list
             pid: PID of the registering process (defaults to current)
-            broadcast: Optional broadcast config dict with:
-                - group_id: Broadcast group identifier (required)
-                - timeout: Timeout for quorum formation (default 600s)
-                - world_size: Expected number of participants (optional)
+            broadcast: Optional broadcast config dict
 
         Returns:
             Server response dict
         """
         _get_torch()  # Ensure torch is available
 
-        if not tensor.is_cuda:
-            raise ValueError("Tensor must be on a CUDA device")
+        # Normalize to lists
+        if isinstance(keys, str):
+            keys = [keys]
+            tensors = [tensors]
+        elif not isinstance(tensors, list):
+            tensors = [tensors]
 
-        # Get IPC handle
-        ipc_handle = _get_ipc_handle(tensor)
-        serializable_handle = _serialize_ipc_handle(ipc_handle)
+        if len(keys) != len(tensors):
+            raise ValueError(f"Number of keys ({len(keys)}) must match tensors ({len(tensors)})")
+
+        # Build tensor info list
+        tensor_infos = []
+        current_pid = pid or os.getpid()
+        for key, tensor in zip(keys, tensors):
+            if not tensor.is_cuda:
+                raise ValueError(f"Tensor for key '{key}' must be on a CUDA device")
+            tensor_infos.append(
+                {
+                    "key": key,
+                    "ipc_handle": _serialize_ipc_handle(_get_ipc_handle(tensor)),
+                    "shape": list(tensor.shape),
+                    "dtype": str(tensor.dtype),
+                    "device": tensor.device.index,
+                }
+            )
 
         message = {
             "command": "put_tensor",
-            "key": key,
-            "ipc_handle": serializable_handle,
-            "shape": list(tensor.shape),
-            "dtype": str(tensor.dtype),
-            "device": tensor.device.index,
-            "pid": pid or os.getpid(),
+            "tensors": tensor_infos,
+            "pid": current_pid,
         }
         if broadcast:
             message["broadcast"] = broadcast
 
-        # Longer timeout for broadcast operations
-        timeout = 300.0 if broadcast else 30.0
+        # Longer timeout for broadcast or batch operations
+        timeout = 300.0 if broadcast else max(30.0, len(keys) * 0.1)
         return self._send_message(message, timeout=timeout)
 
     def get_tensor(

@@ -640,7 +640,7 @@ class GPUTestHelper:
             self._published_state_dicts[key] = state_dict
 
             # Publish without broadcast - each tensor gets its own key
-            kt.put(key=key, data=state_dict, verbose=True)
+            kt.put(key=key, src=state_dict, verbose=True)
 
             return {
                 "success": True,
