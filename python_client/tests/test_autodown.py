@@ -29,13 +29,20 @@ def test_autodown_annotation():
 
     assert remote_fn(1, 2) == 3
 
-    # Check that the service was created
-    service = controller.get_service(name=remote_fn.service_name, namespace=namespace)
-    assert service
+    # For Knative, check the Knative Service resource (CRD) for annotations
+    # Knative manages its own K8s Service which doesn't have our annotations
+    knative_service = controller.get_namespaced_custom_object(
+        group="serving.knative.dev",
+        version="v1",
+        namespace=namespace,
+        plural="services",
+        name=remote_fn.service_name,
+    )
+    assert knative_service
 
-    # Check that the service has the autodown annotation
-    assert service["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] is not None
-    assert service["metadata"]["annotations"][serving_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
+    # Check that the Knative service has the autodown annotation
+    assert knative_service["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] is not None
+    assert knative_service["metadata"]["annotations"][serving_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
 
     # Check that the namespace is in the watch namespaces
     cronjob_configmap = controller.get_config_map(

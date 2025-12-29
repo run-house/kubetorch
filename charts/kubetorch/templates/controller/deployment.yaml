@@ -73,7 +73,7 @@ spec:
             - name: WORKERS
               value: {{ .Values.kubetorchController.workers | quote }}
             - name: CONNECTION_POOL_SIZE
-              value: {{ .Values.controller.connectionPoolSize | quote }}
+              value: {{ .Values.kubetorchController.connectionPoolSize | quote }}
             - name: KUBETORCH_DB_PATH
               value: "/data/kubetorch.db"
           ports:

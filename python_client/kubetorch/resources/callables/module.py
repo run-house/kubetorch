@@ -26,6 +26,7 @@ from kubetorch.servers.http.utils import (
     generate_unique_request_id,
     is_running_in_kubernetes,
 )
+from kubetorch.serving.constants import DEFAULT_K8S_SERVICE_PORT
 from kubetorch.serving.utils import has_k8s_credentials, KubernetesCredentialsError
 from kubetorch.utils import (
     ColoredFormatter,
@@ -161,8 +162,12 @@ class Module:
             if not self._compute.endpoint:
                 return self._compute._wait_for_endpoint()
             return self._compute.endpoint
-        # URL format when using the NGINX proxy
-        return f"http://localhost:{self._compute.client_port()}/{self.namespace}/{self.service_name}"
+
+        if self._compute._endpoint_config and self._compute._endpoint_config.url:
+            return self._compute._endpoint_config.get_proxied_url(self._compute.client_port())
+
+        # URL format when using the NGINX proxy: /{namespace}/{service}:{port}/{path}
+        return f"http://localhost:{self._compute.client_port()}/{self.namespace}/{self.service_name}:{DEFAULT_K8S_SERVICE_PORT}"
 
     @property
     def request_headers(self):
@@ -226,27 +231,33 @@ class Module:
     ):
         """Reload an existing callable by its service name."""
         import kubetorch as kt
-        from kubetorch import globals
+        from kubetorch.serving.service_manager import ServiceManager
 
-        controller_client = globals.controller_client()
-
+        controller_client = kt.globals.controller_client()
         namespace = namespace or config.namespace
         if isinstance(reload_prefixes, str):
             reload_prefixes = [reload_prefixes]
         potential_names = get_names_for_reload_fallbacks(name=name, prefixes=reload_prefixes)
 
-        # Use unified service discovery from BaseServiceManager
-        from kubetorch.serving.service_manager import BaseServiceManager
-
-        all_services = BaseServiceManager.discover_services_static(namespace=namespace)
+        all_services = ServiceManager.discover_services(namespace=namespace)
 
         # Create name-to-service lookup for efficient searching
-        service_dict = {svc["name"]: svc for svc in all_services}
+        # Prefer non-selector services over selector pools (which don't have env vars)
+        service_dict = {}
+        for svc in all_services:
+            name = svc["name"]
+            if name not in service_dict or service_dict[name].get("template_type") == "selector":
+                # Add if new, or replace selector pool with actual K8s resource
+                service_dict[name] = svc
 
         # Try to find the first matching service across all service types
         for candidate in potential_names:
             service_info = service_dict.get(candidate)
             if service_info is None:
+                continue
+
+            # Skip selector-based pools - they don't have template for reload
+            if service_info.get("template_type") == "selector":
                 continue
 
             compute = kt.Compute.from_template(service_info)
@@ -917,8 +928,21 @@ class Module:
             # Query using labels set by LogCapture (service, namespace, request_id)
             pod_query = f'{{service="{self.service_name}", namespace="{self.namespace}", request_id="{request_id}"}}'
             # Event query for K8s events pushed by controller's event watcher
-            # Matches all events for resources with names starting with service name (pods, deployments, replicasets)
-            event_query = f'{{job="kubetorch-events", namespace="{self.namespace}", name=~"{self.service_name}.*"}}'
+            # Include service name pattern AND actual pod names for selector-only mode
+            name_patterns = [f"{self.service_name}.*"]
+            try:
+                # For selector-only mode, add wildcard patterns based on selector values
+                # This catches events for pods created after the websocket connects
+                if self.compute.selector_only and hasattr(self.compute, "_pod_selector") and self.compute._pod_selector:
+                    for value in self.compute._pod_selector.values():
+                        name_patterns.append(f"{value}.*")
+                pod_names = self.compute.pod_names()
+                if pod_names:
+                    name_patterns.extend(pod_names)
+            except Exception:
+                pass
+            name_regex = "|".join(name_patterns)
+            event_query = f'{{job="kubetorch-events", namespace="{self.namespace}", name=~"{name_regex}"}}'
 
             encoded_pod_query = urllib.parse.quote_plus(pod_query)
             encoded_event_query = urllib.parse.quote_plus(event_query)
@@ -987,8 +1011,21 @@ class Module:
             # Query using labels set by LogCapture (service, namespace, request_id)
             pod_query = f'{{service="{self.service_name}", namespace="{self.namespace}", request_id="{request_id}"}}'
             # Event query for K8s events pushed by controller's event watcher
-            # Matches all events for resources with names starting with service name (pods, deployments, replicasets)
-            event_query = f'{{job="kubetorch-events", namespace="{self.namespace}", name=~"{self.service_name}.*"}}'
+            # Include service name pattern AND actual pod names for selector-only mode
+            name_patterns = [f"{self.service_name}.*"]
+            try:
+                # For selector-only mode, add wildcard patterns based on selector values
+                # This catches events for pods created after the websocket connects
+                if self.compute.selector_only and hasattr(self.compute, "_pod_selector") and self.compute._pod_selector:
+                    for value in self.compute._pod_selector.values():
+                        name_patterns.append(f"{value}.*")
+                pod_names = self.compute.pod_names()
+                if pod_names:
+                    name_patterns.extend(pod_names)
+            except Exception:
+                pass
+            name_regex = "|".join(name_patterns)
+            event_query = f'{{job="kubetorch-events", namespace="{self.namespace}", name=~"{name_regex}"}}'
 
             encoded_pod_query = urllib.parse.quote_plus(pod_query)
             encoded_event_query = urllib.parse.quote_plus(event_query)
