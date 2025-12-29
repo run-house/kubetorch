@@ -151,6 +151,9 @@ def _ensure_pf(service_name: str, namespace: str, remote_port: int, health_endpo
     # Cache key includes port to support multiple ports per service
     cache_key = f"{service_name}:{remote_port}"
 
+    # Cache key includes port to support multiple ports per service
+    cache_key = f"{service_name}:{remote_port}"
+
     # Fast path: check without lock first
     h = _port_forwards.get(cache_key)
     if h and h.process.poll() is None:
@@ -215,6 +218,9 @@ async def _ensure_pf_async(service_name: str, namespace: str, remote_port: int, 
     """Async version of _ensure_pf for use in async contexts."""
     from kubetorch.provisioning.utils import wait_for_port_forward
     from kubetorch.resources.compute.utils import find_available_port
+
+    # Cache key includes port to support multiple ports per service
+    cache_key = f"{service_name}:{remote_port}"
 
     # Cache key includes port to support multiple ports per service
     cache_key = f"{service_name}:{remote_port}"
