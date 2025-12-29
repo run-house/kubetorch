@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
+import kubetorch
 from kubetorch.constants import MAX_USERNAME_LENGTH
 from kubetorch.globals import config as kt_config
 from kubetorch.logger import get_logger
@@ -286,8 +287,12 @@ def http_not_found(e: Exception) -> bool:
     status = get_http_status(e)
     if status == 404:
         return True
-    # Fallback to string matching for edge cases
+
     err_str = str(e).lower()
+    not_found = "404" in err_str or "not found" in err_str
+    if any([isinstance(e, kt_exception) for kt_exception in kubetorch.EXCEPTION_REGISTRY.values()]):
+        return isinstance(e, kubetorch.ControllerRequestError) and not_found
+    # Fallback to string matching for edge cases
     return "404" in err_str or "not found" in err_str
 
 
