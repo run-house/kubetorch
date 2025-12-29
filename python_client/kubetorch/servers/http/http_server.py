@@ -602,6 +602,15 @@ def _load_callable_internal(
         run_image_setup(deployed_time)
 
     distributed_config = os.environ["KT_DISTRIBUTED_CONFIG"]
+    deployment_mode = os.environ.get("KT_DEPLOYMENT_MODE", "deployment")
+
+    # For RayCluster deployments, we need to start Ray even if there's no explicit distributed config.
+    # This ensures workers can connect to the head node's GCS.
+    if distributed_config in ["null", "None"] and deployment_mode == "raycluster" and not distributed_subprocess:
+        logger.info("RayCluster deployment detected without distributed config, starting Ray for worker connectivity")
+        distributed_config = json.dumps({"distribution_type": "ray"})
+        os.environ["KT_DISTRIBUTED_CONFIG"] = distributed_config
+
     if distributed_config not in ["null", "None"] and not distributed_subprocess:
         logger.debug(f"Loading distributed supervisor: {distributed_config}")
         callable_obj = load_distributed_supervisor(deployed_as_of=deployed_as_of)

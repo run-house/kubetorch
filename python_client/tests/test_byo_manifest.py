@@ -12,6 +12,20 @@ from .utils import summer
 
 QUEUE_LABEL = serving_constants.KUEUE_QUEUE_NAME_LABEL
 
+
+def _kueue_available() -> bool:
+    """Check if Kueue is installed in the cluster."""
+    try:
+        from kubernetes import client, config
+
+        config.load_kube_config()
+        api = client.ApiextensionsV1Api()
+        crds = api.list_custom_resource_definition()
+        return any("kueue.x-k8s.io" in crd.metadata.name for crd in crds.items)
+    except Exception:
+        return False
+
+
 TRAINING_JOB_CONFIG = {
     "PyTorchJob": {
         "replica_specs_key": "pytorchReplicaSpecs",
@@ -213,6 +227,9 @@ async def test_byo_manifest_with_overrides(kind):
 @pytest.mark.asyncio
 async def test_byo_manifest_pytorchjob_ddp():
     """Test BYO manifest PyTorchJob running a PyTorch DDP job with Kueue queue integration."""
+    if not _kueue_available():
+        pytest.skip("Kueue not installed - required for queue-based job admission")
+
     import kubetorch as kt
 
     # Create PyTorchJob manifest for distributed training
