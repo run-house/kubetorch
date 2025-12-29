@@ -32,6 +32,7 @@ on:
 
 env:
   CI: true
+  KUBETORCH_IGNORE_VERSION_MISMATCH: "1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
