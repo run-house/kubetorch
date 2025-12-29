@@ -1289,6 +1289,47 @@ class Compute:
                             del self.pod_spec["affinity"]
 
     @property
+    def safe_to_evict(self) -> Optional[bool]:
+        """Whether pods can be evicted by the cluster autoscaler.
+
+        Returns:
+            True if pods can be evicted, False if protected from eviction,
+            None if not explicitly set.
+        """
+        annotations = self.pod_template.get("metadata", {}).get("annotations", {})
+        value = annotations.get("cluster-autoscaler.kubernetes.io/safe-to-evict")
+        if value is None:
+            return None
+        return value.lower() == "true"
+
+    @safe_to_evict.setter
+    def safe_to_evict(self, value: bool):
+        """Set whether pods can be evicted by the cluster autoscaler.
+
+        Args:
+            value: True to allow eviction (e.g., for checkpointed training that
+                   can resume after interruption), False to prevent eviction
+                   (e.g., for jobs where pod loss would fail the entire run).
+        """
+        annotation_value = "true" if value else "false"
+
+        # Set on primary pod template
+        template_metadata = self.pod_template.setdefault("metadata", {})
+        annotations = template_metadata.setdefault("annotations", {})
+        annotations["cluster-autoscaler.kubernetes.io/safe-to-evict"] = annotation_value
+
+        # Also set on worker replica pod template if present (ex: for training jobs)
+        if hasattr(self.service_manager, "replica_specs_key") and hasattr(self.service_manager, "worker_replica"):
+            spec = self._manifest.get("spec", {})
+            replica_specs = spec.get(self.service_manager.replica_specs_key, {})
+            worker_spec = replica_specs.get(self.service_manager.worker_replica, {})
+            worker_template = worker_spec.get("template", {})
+            if worker_template:
+                worker_metadata = worker_template.setdefault("metadata", {})
+                worker_annotations = worker_metadata.setdefault("annotations", {})
+                worker_annotations["cluster-autoscaler.kubernetes.io/safe-to-evict"] = annotation_value
+
+    @property
     def concurrency(self):
         return self.pod_spec.get("containerConcurrency")
 

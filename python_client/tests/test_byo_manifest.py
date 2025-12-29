@@ -197,6 +197,10 @@ async def test_byo_manifest_with_overrides(kind):
     compute.image = image
     compute.gpu_anti_affinity = True
 
+    # Protect distributed training jobs from autoscaler eviction
+    if kind in ["PyTorchJob", "TFJob", "MXJob", "XGBoostJob"]:
+        compute.safe_to_evict = False
+
     service_name = f"{kt.config.username}-byo-{kind.lower()}"
     compute.service_name = service_name
 
@@ -260,6 +264,10 @@ async def test_byo_manifest_pytorchjob_ddp():
     compute.image = image
     compute.launch_timeout = 600  # 10 minutes for large image pulls
     compute.distributed_config = {"quorum_workers": 3}
+
+    # Prevent cluster autoscaler from evicting pods during distributed training
+    # Pod eviction breaks quorum and fails the job
+    compute.safe_to_evict = False
 
     # Set Kueue queue for GPU scheduling (if Kueue is installed)
     # This adds the kueue.x-k8s.io/queue-name label and sets runPolicy.suspend = True
