@@ -415,7 +415,8 @@ class TrainJobServiceManager(BaseServiceManager):
             except RuntimeError:
                 raise
             except Exception as e:
-                logger.error(f"Error checking {resource_kind} readiness: {e}")
+                if not http_not_found(e):
+                    logger.error(f"Error checking {resource_kind} readiness: {e}")
 
             time.sleep(sleep_interval)
 

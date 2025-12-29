@@ -1,6 +1,7 @@
 import copy
 import os
 
+import kubetorch.globals
 import kubetorch.serving.constants as serving_constants
 
 import pytest
@@ -31,7 +32,7 @@ def _get_basic_manifest(kind: str):
     """Generate a minimal manifest for the given kind with test values."""
     base_metadata = {
         "name": "",
-        "namespace": "default",
+        "namespace": kubetorch.globals.config.namespace,
         "labels": {"test-label": "test-app"},
         "annotations": {"test-annotation": "original-value"},
     }

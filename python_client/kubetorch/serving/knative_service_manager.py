@@ -396,8 +396,9 @@ class KnativeServiceManager(BaseServiceManager):
                 if latest_revision:
                     check_revision_for_errors(latest_revision, self.namespace)
 
-            except Exception:
-                raise
+            except Exception as e:
+                if not http_not_found(e):
+                    raise
 
             if iteration % 10 == 0:
                 elapsed = int(time.time() - start_time)
