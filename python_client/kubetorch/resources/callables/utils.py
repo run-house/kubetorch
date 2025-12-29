@@ -131,22 +131,30 @@ def locate_working_dir(start_dir=None):
         "requirements.txt",
     ]
 
-    dir_with_target = _find_directory_containing_any_file(start_dir, target_files, searched_dirs=set())
+    dir_with_target, matched_file = _find_directory_containing_any_file(start_dir, target_files, searched_dirs=set())
     found_project_dir = dir_with_target is not None
-    return (dir_with_target if found_project_dir else start_dir), found_project_dir
+    working_dir = dir_with_target if found_project_dir else start_dir
+
+    return working_dir, found_project_dir, matched_file
 
 
 def _find_directory_containing_any_file(dir_path, files, searched_dirs=None):
-    if Path(dir_path) == Path.home() or dir_path == Path("/"):
-        return None
+    """Find the nearest parent directory containing any of the specified files.
 
-    if any(Path(dir_path, file).exists() for file in files):
-        return str(dir_path)
+    Returns:
+        tuple: (directory_path, matched_file) or (None, None) if not found.
+    """
+    if Path(dir_path) == Path.home() or dir_path == Path("/"):
+        return None, None
+
+    for file in files:
+        if Path(dir_path, file).exists():
+            return str(dir_path), file
 
     searched_dirs.add(dir_path)
     parent_path = Path(dir_path).parent
     if parent_path in searched_dirs:
-        return None
+        return None, None
     return _find_directory_containing_any_file(parent_path, files, searched_dirs=searched_dirs)
 
 
