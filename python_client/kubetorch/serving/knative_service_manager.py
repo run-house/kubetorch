@@ -232,11 +232,15 @@ class KnativeServiceManager(BaseServiceManager):
             # First try to get the service to find the latest revision
             service = self.get_resource(service_name)
             status = service.get("status", {})
-            latest_ready_revision = status.get("latestReadyRevisionName")
 
-            if latest_ready_revision:
+            # Prefer latestReadyRevisionName, but fall back to latestCreatedRevisionName
+            # This is important for detecting image pull errors - when image pull fails,
+            # there's no "ready" revision, only a "created" one with failing pods
+            revision_name = status.get("latestReadyRevisionName") or status.get("latestCreatedRevisionName")
+
+            if revision_name:
                 # Look for pods with the revision label
-                label_selector = f"serving.knative.dev/revision={latest_ready_revision}"
+                label_selector = f"serving.knative.dev/revision={revision_name}"
                 return super().get_pods_for_service(service_name, label_selector=label_selector, **kwargs)
 
         except Exception as e:
