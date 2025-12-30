@@ -453,12 +453,13 @@ def test_all_list_operations_structure():
 @pytest.mark.level("minimal")
 def test_integration_full_stack():
     """Test end-to-end: service + secret + volume"""
+    from tests.conftest import get_test_hash
     from tests.utils import get_env_var, get_test_fn_name
 
     secret_client = KubernetesSecretsClient()
     service_name = get_test_fn_name()
-    secret_name = f"{service_name}-sec"
-    volume_name = f"{service_name}-vol"
+    secret_name = f"{get_test_hash()}-{service_name}-sec"
+    volume_name = f"{get_test_hash()}-{service_name}-vol"
 
     secret = Secret(name=secret_name, values={"TEST_KEY": "test_val"}, env_vars={"TEST_KEY": "TEST_KEY"})
     secret_client.create_secret(secret)
