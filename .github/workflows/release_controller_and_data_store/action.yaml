@@ -1,0 +1,63 @@
+name: "Release Controller and Date store in GHCR"
+description: "Builds and pushes a new controller and data store images, with tag which equals to the new kubetorch oss version."
+
+inputs:
+  gh_helm_token:
+    description: "GitHub token for authenticating to GHCR"
+    required: true
+  slack_bot_token:
+    description: "Slack bot token for sending release notifications"
+    required: true
+  slack_channel_id:
+    description: "Slack channel ID for posting the notification"
+    required: true
+  kt_version:
+    description: "New kubetorch OSS version"
+    required: true
+  gh_token:
+    description: "github access token"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Login to GHCR
+      shell: bash
+      run: |
+        echo "${{ inputs.gh_helm_token }}" | helm registry login ghcr.io \
+          --username run-house --password-stdin
+
+    - name: Clone Kubetorch Internal
+      shell: bash
+      run: |
+        git clone --branch main --single-branch \
+          https://x-access-token:${{ inputs.gh_token }}@github.com/run-house/kubetorch-internal.git
+
+    - name: Build and push controller docker image
+      shell: bash
+      run: |
+        chmod +x services/kubetorch_controller_stable/build_and_push.sh
+        GITHUB_TOKEN="${{ inputs.gh_helm_token }}" \
+        GITHUB_USERNAME="${{ github.actor }}" \
+        services/kubetorch_controller_stable/build_and_push.sh "${{ inputs.kt_version }}"
+
+    - name: Build and push data store docker image
+      shell: bash
+      run: |
+        chmod +x services/data_store/build_and_push.sh
+        GITHUB_TOKEN="${{ inputs.gh_helm_token }}" \
+        GITHUB_USERNAME="${{ github.actor }}" \
+        services/data_store/build_and_push.sh "${{ inputs.kt_version }}"
+
+    - name: Post to Runhouse Slack channel
+      uses: slackapi/slack-github-action@v1.24.0
+      with:
+        channel-id: ${{ inputs.slack_channel_id }}
+        slack-message: |
+          [*kubetorch*] Updated Controller and Data Store images in GHCR with version *v${{ inputs.kt_version }}* 🖼️
+          Run by: *${{ github.actor }}*
+      env:
+        SLACK_BOT_TOKEN: ${{ inputs.slack_bot_token }}

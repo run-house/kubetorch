@@ -44,6 +44,14 @@ on:
           - "yes"
           - "no"
         default: "yes"
+      build_platform_images:
+        description: 'Push controller and data store images to ghcr?'
+        required: false
+        type: choice
+        options:
+          - "yes"
+          - "no"
+        default: "yes"
 
 
 jobs:
@@ -86,6 +94,16 @@ jobs:
         with:
           kt_version: ${{ github.event.inputs.kt_version }}
           dest_repo_token: ${{ secrets.KUBETORCH_DOCS_TOKEN }}
+
+      - name: build_controller_and_data_store_images_in_ghcr
+        if: ${{ github.event.inputs.build_platform_images == 'yes' }}
+        uses: ./.github/workflows/release_controller_and_data_store
+        with:
+          gh_helm_token: ${{ secrets.GH_HELM_TOKEN }}
+          slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+          slack_channel_id: ${{ secrets.CHANNEL_ID }}
+          kt_version: ${{ github.event.inputs.kt_version }}
+          gh_token: ${{ secrets.GITHUB_TOKEN }}
 
   helm_upgrade_ci:
     runs-on: ubuntu-latest
