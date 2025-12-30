@@ -549,9 +549,24 @@ class ControllerClient:
         """Get a Deployment"""
         return self.get(f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}", ignore_not_found=ignore_not_found)
 
-    def delete_deployment(self, namespace: str, name: str) -> Dict[str, Any]:
+    def delete_deployment(
+        self,
+        namespace: str,
+        name: str,
+        grace_period_seconds: Optional[int] = None,
+        propagation_policy: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Delete a Deployment"""
-        return self.delete(f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}", ignore_not_found=True)
+        params = {}
+        if grace_period_seconds is not None:
+            params["grace_period_seconds"] = grace_period_seconds
+        if propagation_policy is not None:
+            params["propagation_policy"] = propagation_policy
+        return self.delete(
+            f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}",
+            params=params if params else None,
+            ignore_not_found=True,
+        )
 
     def patch_deployment(self, namespace: str, name: str, body: Dict[str, Any]) -> Dict[str, Any]:
         """Patch a Deployment"""
@@ -791,7 +806,6 @@ class ControllerClient:
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get(f"/apis/{group}/{version}/{plural}", params=params)
 
-    # Kubetorch Controller API endpoints - Pool Management
     def register_pool(
         self,
         name: str,
@@ -903,6 +917,10 @@ class ControllerClient:
     def list_pools(self, namespace: str) -> Dict[str, Any]:
         """List all compute pools."""
         return self.get(f"/controller/pools/{namespace}")
+
+    def get_watchers(self) -> Dict[str, Any]:
+        """Get pod watcher debug info (IPs being tracked for each pool)."""
+        return self.get("/controller/debug/watchers")
 
 
 @cache

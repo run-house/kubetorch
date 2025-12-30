@@ -88,6 +88,7 @@ pytest = ">=8.3.5"
 pytest-asyncio = "*"
 fastapi = "*"
 uv = "*"
+kubernetes = "*"
 
 [tool.poetry.scripts]
 kubetorch = "kubetorch.cli:app"

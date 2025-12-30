@@ -10,7 +10,7 @@ kubetorchConfig:
 
 kubetorchController:
   image: ghcr.io/run-house/kubetorch-controller
-  tag: 0.3.0
+  tag: 0.4.0
   imagePullPolicy: Always
 
   servicePort: 8080  # Port the controller service is exposed on (via nginx)
