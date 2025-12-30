@@ -11,6 +11,7 @@ import pty
 import re
 import select
 import subprocess
+import time
 from pathlib import Path
 from typing import List, Optional, Union
 from urllib.parse import urlparse
@@ -26,6 +27,15 @@ from kubetorch.utils import http_to_ws
 from .websocket_tunnel import TunnelManager
 
 logger = get_logger(__name__)
+
+# Rsync error codes that are transient and should be retried
+# 12 = Error in rsync protocol data stream (connection dropped)
+# 23 = Partial transfer due to error
+# 30 = Timeout in data send/receive
+# 35 = Timeout waiting for daemon connection (could be transient of data store slow to respond)
+RETRYABLE_RSYNC_CODES = {12, 23, 30, 35}
+RSYNC_MAX_RETRIES = 3
+RSYNC_RETRY_DELAY = 2  # seconds
 
 
 class RsyncClient:
@@ -333,7 +343,25 @@ class RsyncClient:
         return rsync_cmd
 
     def run_rsync_command(self, rsync_cmd: str, create_target_dir: bool = True):
-        """Execute rsync command with proper error handling."""
+        """Execute rsync command with retry logic for transient errors."""
+        last_error = None
+        for attempt in range(RSYNC_MAX_RETRIES):
+            try:
+                return self._run_rsync_command_once(rsync_cmd, create_target_dir)
+            except RsyncError as e:
+                last_error = e
+                if e.returncode in RETRYABLE_RSYNC_CODES and attempt < RSYNC_MAX_RETRIES - 1:
+                    logger.warning(
+                        f"Rsync failed with transient error (code {e.returncode}), "
+                        f"retrying in {RSYNC_RETRY_DELAY}s (attempt {attempt + 1}/{RSYNC_MAX_RETRIES})"
+                    )
+                    time.sleep(RSYNC_RETRY_DELAY)
+                else:
+                    raise
+        raise last_error
+
+    def _run_rsync_command_once(self, rsync_cmd: str, create_target_dir: bool = True):
+        """Execute rsync command with proper error handling (single attempt)."""
         logger.debug(f"Executing rsync command: {rsync_cmd}")
         backup_rsync_cmd = rsync_cmd
 
