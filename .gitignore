@@ -92,3 +92,4 @@ kubetorch_ui/yarn-error.log*
 
 # Ignore Claude code settings
 **/CLAUDE*.md
+.claude/
