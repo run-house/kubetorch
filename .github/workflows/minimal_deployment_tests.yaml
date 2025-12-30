@@ -106,6 +106,7 @@ jobs:
         timeout-minutes: 60
         env:
           TEST_COMPUTE_TYPE: ${{ matrix.compute_type }}
+          SERVICE_NAME_PREFIX: "fixture-${{ matrix.compute_type }}"
           KT_STREAM_LOGS: false
           KT_STREAM_METRICS: false
 

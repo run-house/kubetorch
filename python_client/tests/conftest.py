@@ -134,11 +134,12 @@ async def remote_fn(request):
 
     from .utils import summer
 
-    compute_type = os.getenv("TEST_COMPUTE_TYPE", "deployment")
+    compute_type = os.getenv("TEST_COMPUTE_TYPE", "ray")
     compute = get_compute(compute_type)
     compute.image = compute.image.pip_install(["tqdm"])
 
-    name = f"{compute_type}-summer"
+    service_name_prefix = os.getenv("SERVICE_NAME_PREFIX", compute_type)
+    name = f"{service_name_prefix}-summer"
     fn = await kt.fn(summer, name=name).to_async(compute)
     return fn
 
@@ -152,7 +153,8 @@ async def remote_async_fn(request):
     compute_type = os.getenv("TEST_COMPUTE_TYPE", "deployment")
     compute = get_compute(compute_type)
 
-    name = f"{compute_type}-async-summer"
+    service_name_prefix = os.getenv("SERVICE_NAME_PREFIX", compute_type)
+    name = f"{service_name_prefix}-async-summer"
     fn = await kt.fn(async_simple_summer, name=name).to_async(compute)
     fn.async_ = True
     return fn
@@ -230,7 +232,8 @@ async def remote_cls():
             allowed_serialization=["json", "pickle"],
         ).distribute("ray", workers=2)
 
-    name = f"{compute_type}-slow-cls"
+    service_name_prefix = os.getenv("SERVICE_NAME_PREFIX", compute_type)
+    name = f"{service_name_prefix}-slow-cls"
     remote_cls = await kt.cls(SlowNumpyArray, name=name).to_async(compute=compute, init_args={"size": 10})
     return remote_cls
 
