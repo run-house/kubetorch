@@ -130,7 +130,7 @@ class Module:
         if self._remote_pointers:
             return self._remote_pointers
 
-        source_dir, _ = locate_working_dir(self.pointers[0])
+        source_dir, _, _ = locate_working_dir(self.pointers[0])
         relative_module_path = Path(self.pointers[0]).expanduser().relative_to(source_dir)
         source_dir_name = Path(source_dir).name
         if self.compute.working_dir is not None:
@@ -578,15 +578,24 @@ class Module:
             )
 
     def _get_rsync_dirs_and_dockerfile(self, install_url, use_editable, init_args):
-        source_dir, has_kt_dir = locate_working_dir(self.pointers[0])
+        source_dir, has_kt_dir, matched_file = locate_working_dir(self.pointers[0])
         rsync_dirs = [str(source_dir)]
         if not has_kt_dir:
             # Use the source file (.py) instead of directory
             source_file = Path(f"{self.pointers[0]}/{self.pointers[1]}.py")
             rsync_dirs = [str(source_file)]
-            logger.info(f"Package root not found; syncing file {source_file}")
+            logger.info(f"No project markers found, syncing file {source_file}")
         else:
-            logger.info(f"Package root identified at {source_dir}; syncing directory")
+            source_dir_name = Path(source_dir).name
+            if self.compute.working_dir:
+                remote_path = f"{self.compute.working_dir}/{source_dir_name}"
+                logger.info(
+                    f"Syncing project directory {source_dir} -> {remote_path} (working directory detected via {matched_file})"
+                )
+            else:
+                logger.info(
+                    f"Syncing project directory {source_dir} -> ./{source_dir_name} (working directory detected via {matched_file})"
+                )
 
         if install_url.endswith(".whl") or (use_editable and install_url != str(source_dir)):
             rsync_dirs.append(install_url)
