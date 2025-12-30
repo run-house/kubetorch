@@ -102,6 +102,9 @@ logStreaming:
   enabled: true # set to `false` to disable live log streaming
   retentionPeriod: 24h
   maxConcurrentTailRequests: 100
+  maxGlobalStreamsPerUser: 50000
+  ingestionRateMb: 10
+  ingestionBurstSizeMb: 20
   port: 3100
 
 metrics:

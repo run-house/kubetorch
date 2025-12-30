@@ -38,6 +38,9 @@ data:
     limits_config:
       retention_period: {{ $.Values.logStreaming.retentionPeriod }}
       max_concurrent_tail_requests: {{ $.Values.logStreaming.maxConcurrentTailRequests }}
+      max_global_streams_per_user: {{ $.Values.logStreaming.maxGlobalStreamsPerUser | default 50000 }}
+      ingestion_rate_mb: {{ $.Values.logStreaming.ingestionRateMb | default 10 }}
+      ingestion_burst_size_mb: {{ $.Values.logStreaming.ingestionBurstSizeMb | default 20 }}
 
     compactor:
       working_directory: /tmp/loki/compactor
