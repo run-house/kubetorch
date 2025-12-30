@@ -890,9 +890,14 @@ class DistributedSupervisor:
             with self._workers_lock:
                 return list(self._current_workers)
 
-    def start_dns_monitoring(self):
+    def start_dns_monitoring(self, initial_workers=None):
         """Start DNS monitoring if not already running.
-        Should be called by coordinator nodes only."""
+        Should be called by coordinator nodes only.
+
+        Args:
+            initial_workers: Optional list of worker IPs to use as initial set.
+                           If not provided, will query DNS (may cause race conditions).
+        """
         # Skip if monitoring is disabled (e.g., for Ray)
         if not self.monitor_members:
             logger.debug("DNS monitoring disabled for this supervisor")
@@ -902,8 +907,12 @@ class DistributedSupervisor:
             if self._dns_monitor_thread and self._dns_monitor_thread.is_alive():
                 return  # Already running
 
-            # Initialize with current workers
-            self._current_workers = set(self.pod_ips())
+            # Initialize with provided workers or query DNS
+            # Using provided workers avoids race conditions from multiple DNS queries
+            if initial_workers is not None:
+                self._current_workers = set(initial_workers)
+            else:
+                self._current_workers = set(self.pod_ips())
             logger.debug(f"Starting DNS monitor with {len(self._current_workers)} workers")
 
             self._dns_monitor_running = True
@@ -922,6 +931,9 @@ class DistributedSupervisor:
     def _monitor_worker_membership(self):
         """Monitor DNS for worker membership changes."""
         check_interval = 3  # Start with 3 second checks (faster initial detection)
+        # Track consecutive missing workers to handle transient DNS inconsistencies
+        consecutive_missing = {}  # IP -> count of consecutive misses
+        required_confirmations = 2  # Require 2 consecutive misses before declaring removed
 
         while self._dns_monitor_running:
             try:
@@ -934,20 +946,39 @@ class DistributedSupervisor:
                 current_ips = set(self._get_pod_ips_fast())
 
                 with self._workers_lock:
-                    if current_ips != self._current_workers:
-                        added = current_ips - self._current_workers
-                        removed = self._current_workers - current_ips
+                    # Check for workers that appear to be missing
+                    potentially_removed = self._current_workers - current_ips
+                    added = current_ips - self._current_workers
 
+                    # Update consecutive miss counts
+                    confirmed_removed = set()
+                    for ip in potentially_removed:
+                        consecutive_missing[ip] = consecutive_missing.get(ip, 0) + 1
+                        if consecutive_missing[ip] >= required_confirmations:
+                            confirmed_removed.add(ip)
+                            logger.error(
+                                f"Worker {ip} confirmed removed after {consecutive_missing[ip]} consecutive DNS misses"
+                            )
+
+                    # Reset counts for IPs that are back
+                    for ip in list(consecutive_missing.keys()):
+                        if ip in current_ips:
+                            if consecutive_missing[ip] > 0:
+                                logger.debug(f"Worker {ip} reappeared in DNS after {consecutive_missing[ip]} misses")
+                            del consecutive_missing[ip]
+
+                    # Only report changes for confirmed removals or additions
+                    if confirmed_removed or added:
                         change = {
                             "timestamp": time.time(),
                             "added": added,
-                            "removed": removed,
+                            "removed": confirmed_removed,
                             "previous": self._current_workers.copy(),
                             "current": current_ips.copy(),
                         }
 
-                        if removed:
-                            logger.error(f"Workers REMOVED from cluster: {removed}")
+                        if confirmed_removed:
+                            logger.error(f"Workers REMOVED from cluster (confirmed): {confirmed_removed}")
                         if added:
                             logger.warning(f"Workers ADDED to cluster: {added}")
 
@@ -956,7 +987,8 @@ class DistributedSupervisor:
                         for event in self._change_subscribers:
                             event.set()
 
-                        self._current_workers = current_ips
+                        # Only update current workers when we have confirmed changes
+                        self._current_workers = (self._current_workers - confirmed_removed) | added
 
                 time.sleep(check_interval)
 
@@ -983,35 +1015,57 @@ class DistributedSupervisor:
 
         Args:
             force_dns_check: If True, immediately query DNS to check for changes
-                            instead of relying on the monitoring thread
+                            instead of relying on the monitoring thread.
+                            Uses multiple DNS queries to confirm removal.
         """
         # Skip if monitoring is disabled (e.g., for Ray)
         if not self.monitor_members:
             return
         # Force an immediate DNS check if requested
         if force_dns_check:
-            # Use fast DNS query for immediate check
-            current_ips = set(self._get_pod_ips_fast())
+            # Use multiple DNS queries to confirm workers are actually gone
+            # This handles transient DNS inconsistencies
+            required_confirmations = 2
+            confirmation_delay = 0.5  # seconds between checks
+
+            potentially_removed = None
+            for i in range(required_confirmations):
+                current_ips = set(self._get_pod_ips_fast())
+                with self._workers_lock:
+                    missing = self._current_workers - current_ips
+                    if not missing:
+                        # All workers present, no issue
+                        return
+                    if potentially_removed is None:
+                        potentially_removed = missing
+                    else:
+                        # Only keep workers that are consistently missing
+                        potentially_removed = potentially_removed & missing
+
+                if i < required_confirmations - 1:
+                    time.sleep(confirmation_delay)
+
+            # After confirmations, check if any workers are confirmed removed
             with self._workers_lock:
-                if current_ips != self._current_workers:
+                if potentially_removed:
                     added = current_ips - self._current_workers
-                    removed = self._current_workers - current_ips
 
                     # Import here to avoid circular dependency
                     from kubetorch.servers.http.utils import WorkerMembershipChanged
 
-                    # Update current workers
-                    self._current_workers = current_ips
-
                     # Log the change
-                    if removed:
-                        logger.error(f"Workers REMOVED from cluster (forced check): {removed}")
+                    logger.error(
+                        f"Workers REMOVED from cluster (confirmed after {required_confirmations} checks): {potentially_removed}"
+                    )
                     if added:
                         logger.warning(f"Workers ADDED to cluster (forced check): {added}")
 
+                    # Update current workers
+                    self._current_workers = (self._current_workers - potentially_removed) | added
+
                     raise WorkerMembershipChanged(
                         added_ips=added,
-                        removed_ips=removed,
+                        removed_ips=potentially_removed,
                         previous_ips=self._current_workers.copy(),
                         current_ips=current_ips,
                     )
@@ -1484,13 +1538,11 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
             if should_monitor:
                 # Now that we have quorum, start DNS monitoring
                 # Start monitoring (idempotent - won't start if already running)
-                self.start_dns_monitoring()
+                # Pass the already-discovered worker_ips to avoid DNS race conditions
+                self.start_dns_monitoring(initial_workers=worker_ips)
 
                 # Subscribe to membership changes
                 change_event = self.subscribe_to_membership_changes()
-
-                # Check for any pending changes after starting monitor
-                self.check_for_membership_changes(force_dns_check=True)
             else:
                 logger.debug("Skipping DNS monitoring for workers='ready' call")
 
