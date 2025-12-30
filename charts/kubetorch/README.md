@@ -82,7 +82,10 @@ A Helm chart for kubetorch
 | kubetorchController.tolerations | list | `[]` |  |
 | kubetorchController.workers | int | `8` |  |
 | logStreaming.enabled | bool | `true` |  |
+| logStreaming.ingestionBurstSizeMb | int | `20` |  |
+| logStreaming.ingestionRateMb | int | `10` |  |
 | logStreaming.maxConcurrentTailRequests | int | `100` |  |
+| logStreaming.maxGlobalStreamsPerUser | int | `50000` |  |
 | logStreaming.port | int | `3100` |  |
 | logStreaming.retentionPeriod | string | `"24h"` |  |
 | metrics.enabled | bool | `true` |  |
