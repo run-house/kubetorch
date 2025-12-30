@@ -60,7 +60,8 @@ async def test_fn_sync_reload_by_name_with_prefixes(remote_fn):
 
     # Note: Different way to load function and using a list of prefixes
     compute_type = os.getenv("TEST_COMPUTE_TYPE")
-    compute_prefix = f"{username_prefix}-{compute_type}"
+    service_name_prefix = os.getenv("SERVICE_NAME_PREFIX", compute_type)
+    compute_prefix = f"{username_prefix}-{service_name_prefix}"
     reloaded_fn = kt.fn(summer, reload_prefixes=[branch_prefix, username_prefix, compute_prefix])
     assert reloaded_fn(2, 2) == 4
 
@@ -367,7 +368,8 @@ async def test_async_to():
     compute_type = os.getenv("TEST_COMPUTE_TYPE", "deployment")
     compute = get_compute(compute_type)
 
-    name = f"{compute_type}-summer"
+    service_name_prefix = os.getenv("SERVICE_NAME_PREFIX", compute_type)
+    name = f"{service_name_prefix}-summer-async-to"
     fn = await kt.fn(summer, name=name).to_async(compute)
 
     # check running function normally

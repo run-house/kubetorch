@@ -106,6 +106,7 @@ jobs:
         timeout-minutes: 60
         env:
           TEST_COMPUTE_TYPE: ${{ matrix.compute_type }}
+          SERVICE_NAME_PREFIX: "fixture-${{ matrix.compute_type }}"
           KT_STREAM_LOGS: false
           KT_STREAM_METRICS: false
 
@@ -210,7 +211,7 @@ jobs:
 
       - name: Run Teardown Commands
         run: |
-          for suffix in -deploy -knative -ray; do
+          for suffix in -fixture-deploy -fixture-knative -fixture-ray; do
             echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --force"
             kt teardown --prefix ${TEST_HASH}${suffix} --force || true
             echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} --force"

@@ -68,7 +68,7 @@ async def async_simple_summer(a, b, return_times=False):
 
     if return_times:
         start_time = time.time()
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
         return start_time, time.time()
 
     await asyncio.sleep(0.1)
