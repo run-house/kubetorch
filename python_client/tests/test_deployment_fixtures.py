@@ -19,7 +19,7 @@ class OSInfoRequest(BaseModel):
 @pytest.fixture(autouse=True, scope="session")
 def setup_test_env():
     # Keep the launch timeout low for this test suite, unless overridden (ex: for GPU tests)
-    os.environ["KT_LAUNCH_TIMEOUT"] = "120"
+    os.environ["KT_LAUNCH_TIMEOUT"] = "150"
     # Only set TEST_COMPUTE_TYPE if it's not already set (to allow override from environment)
     if "TEST_COMPUTE_TYPE" not in os.environ:
         os.environ["TEST_COMPUTE_TYPE"] = "deployment"

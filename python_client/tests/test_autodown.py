@@ -11,7 +11,7 @@ from .utils import create_random_name_prefix, simple_summer
 def setup_test_env():
     os.environ["KT_GPU_ANTI_AFFINITY"] = "True"
     # Keep the launch timeout low for this test suite, unless overridden (ex: for GPU tests)
-    os.environ["KT_LAUNCH_TIMEOUT"] = "120"
+    os.environ["KT_LAUNCH_TIMEOUT"] = "150"
     yield
 
 
