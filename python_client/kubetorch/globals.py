@@ -80,6 +80,10 @@ class LoggingConfig:
             Set to 0 for no blocking (default), or a few seconds (e.g., 3.0) if you
             need to ensure wrap-up logs from the remote compute are captured.
             Default: 0
+        event_freshness_window: Maximum age in seconds for events to be displayed.
+            Events older than this are filtered out to prevent stale events from
+            appearing long after they occurred (e.g., due to delayed delivery).
+            Set to 0 to disable freshness filtering. (Default: 60)
     """
 
     stream_logs: bool = None
@@ -91,6 +95,7 @@ class LoggingConfig:
     poll_timeout: float = 1.0
     grace_poll_timeout: float = 0.5
     shutdown_grace_period: float = 0
+    event_freshness_window: float = 60
 
 
 @dataclass
