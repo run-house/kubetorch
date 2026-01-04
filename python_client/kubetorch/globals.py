@@ -300,7 +300,7 @@ def service_url(
     - If running in-cluster:  {scheme}://{svc}.{ns}.svc.cluster.local:{remote_port}{path}
     - Else: ensure a single kubectl port-forward (cached) and return http://localhost:<port>{path}
     """
-    from kubetorch.servers.http.utils import is_running_in_kubernetes
+    from kubetorch.serving.utils import is_running_in_kubernetes
 
     if is_running_in_kubernetes():
         return f"http://{service_name}.{namespace}.svc.cluster.local:{remote_port}"
@@ -332,7 +332,7 @@ async def service_url_async(
     - If running in-cluster:  {scheme}://{svc}.{ns}.svc.cluster.local:{remote_port}{path}
     - Else: ensure a single kubectl port-forward (cached) and return http://localhost:<port>{path}
     """
-    from kubetorch.servers.http.utils import is_running_in_kubernetes
+    from kubetorch.serving.utils import is_running_in_kubernetes
 
     if is_running_in_kubernetes():
         return f"http://{service_name}.{namespace}.svc.cluster.local:{remote_port}"

@@ -28,7 +28,7 @@ import os
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
 
 from kubetorch.logger import get_logger
-from kubetorch.servers.http.utils import is_running_in_kubernetes
+from kubetorch.serving.utils import is_running_in_kubernetes
 
 if TYPE_CHECKING:
     from .types import BroadcastWindow

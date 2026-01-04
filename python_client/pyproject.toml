@@ -92,7 +92,7 @@ uv = "*"
 [tool.poetry.scripts]
 kubetorch = "kubetorch.cli:app"
 kt = "kubetorch.cli:app"
-kt_pdb = "kubetorch.servers.http.pdb:main"
+kt_pdb = "kubetorch.serving.pdb:main"
 
 [build-system]
 requires = ["poetry-core"]

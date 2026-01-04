@@ -906,7 +906,7 @@ class TerminationCheckMiddleware(BaseHTTPMiddleware):
 
                 # Return PodTerminatedError
                 from kubetorch import PodTerminatedError
-                from kubetorch.servers.http.http_server import package_exception
+                from kubetorch.serving.http_server import package_exception
 
                 pod_name = os.environ.get("POD_NAME", "unknown")
                 exc = PodTerminatedError(
