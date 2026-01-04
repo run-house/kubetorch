@@ -9,6 +9,69 @@ The HTTP server (`http_server.py`) is the main entry point for the KubeTorch pod
 - Metrics collection for TTL and monitoring
 - Health checks and lifecycle management
 
+## Execution Supervisor Hierarchy
+
+All user code runs in isolated subprocesses via the supervisor system:
+
+```
+ExecutionSupervisor (base - ProcessPool only)
+│   - Local subprocess execution
+│   - No remote workers, no DNS, no quorum
+│   - Used for non-distributed mode (default)
+│
+└── DistributedSupervisor (adds distributed capabilities)
+    │   - DNS-based pod discovery with quorum
+    │   - Worker membership monitoring
+    │   - RemoteWorkerPool for cross-pod execution (created lazily when needed)
+    │
+    ├── SPMDDistributedSupervisor
+    │   - Multi-process local execution (num_proc configurable)
+    │   - Tree topology for large clusters (>100 workers)
+    │   - Framework-specific process classes (PyTorch, JAX, TensorFlow)
+    │
+    ├── RayDistributed
+    │   - Ray GCS server management
+    │   - Head-node only execution pattern
+    │   - Disables DNS monitoring (Ray manages membership)
+    │
+    └── MonarchDistributed
+        - process_allocator service management
+        - Single controller pattern like Ray
+        - Disables DNS monitoring (Monarch manages actors)
+```
+
+### Execution Flow
+
+```
+HTTP POST /{callable_name}
+    ↓
+run_callable() in http_server.py
+    ↓
+load_callable()
+    ├─→ Creates ExecutionSupervisor via supervisor_factory()
+    ├─→ Default: "local" for non-distributed mode
+    └─→ Distributed: "pytorch", "ray", "monarch", etc.
+    ↓
+SUPERVISOR.call_distributed()
+    ├─→ Local: Routes to subprocess via ProcessPool
+    └─→ Distributed: Coordinates across local processes + remote workers
+```
+
+### Subprocess Isolation Benefits
+
+All user code runs in subprocesses (ProcessPool + ProcessWorker):
+- **Module isolation**: User code cannot corrupt main HTTP server
+- **Clean reload**: On redeployment, terminate subprocess and recreate
+- **Consistent pattern**: Same ProcessPool for local and distributed modes
+
+### Redeployment
+
+When user code changes:
+1. Controller triggers reload via `/pool` endpoint (or `/_reload_image`)
+2. Supervisor's `cleanup()` terminates subprocesses
+3. Supervisor's `setup()` creates fresh subprocesses
+4. New subprocess imports fresh modules
+
 ## Log Streaming (`log_capture.py`)
 
 ### Architecture

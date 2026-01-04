@@ -36,7 +36,6 @@ try:
     from server_metrics import get_inactivity_ttl_annotation
     from utils import (
         clear_debugging_sessions,
-        collect_reload_modules,
         deep_breakpoint,
         DEFAULT_ALLOWED_SERIALIZATION,
         ensure_structured_logging,
@@ -51,7 +50,6 @@ except ImportError:
     from .server_metrics import get_inactivity_ttl_annotation
     from .utils import (
         clear_debugging_sessions,
-        collect_reload_modules,
         deep_breakpoint,
         DEFAULT_ALLOWED_SERIALIZATION,
         ensure_structured_logging,
@@ -80,7 +78,7 @@ if kt_log_level:
 _CACHED_CALLABLES = {}
 _LAST_DEPLOYED = 0
 _CACHED_IMAGE = []
-DISTRIBUTED_SUPERVISOR = None
+SUPERVISOR = None
 APP_PROCESS = None
 _CALLABLE_LOAD_LOCK = threading.Lock()  # Lock for thread-safe callable loading
 
@@ -417,8 +415,8 @@ def cached_image_setup():
                 logger.debug(f"New dependencies found: {imported_changed_deps}, forcing reload")
 
                 # Don't clear the callable cache here - let load_callable_from_env handle it to preserve __kt_cached_state__
-                if DISTRIBUTED_SUPERVISOR:
-                    DISTRIBUTED_SUPERVISOR.cleanup()
+                if SUPERVISOR:
+                    SUPERVISOR.cleanup()
 
                 # Remove changed modules from sys.modules to override fresh imports
                 modules_to_remove = []
@@ -502,7 +500,6 @@ async def run_in_executor_with_context(executor, func, *args):
     This wrapper captures the current request_id from the context before running
     the function in a thread pool executor, then sets it in the new thread.
     """
-    import asyncio
 
     # Capture the current request_id before switching threads
     current_request_id = request_id_ctx_var.get("-")
@@ -611,11 +608,19 @@ def _load_callable_internal(
         distributed_config = json.dumps({"distribution_type": "ray"})
         os.environ["KT_DISTRIBUTED_CONFIG"] = distributed_config
 
+    # Default to local supervisor for non-distributed mode (subprocess isolation)
+    # This provides clean module isolation and simple reload semantics (terminate and recreate subprocess)
+    if distributed_config in ["null", "None"] and not distributed_subprocess:
+        logger.debug("Using local supervisor for subprocess isolation")
+        distributed_config = json.dumps({"distribution_type": "local"})
+        os.environ["KT_DISTRIBUTED_CONFIG"] = distributed_config
+
     if distributed_config not in ["null", "None"] and not distributed_subprocess:
-        logger.debug(f"Loading distributed supervisor: {distributed_config}")
-        callable_obj = load_distributed_supervisor(deployed_as_of=deployed_as_of)
-        logger.debug("Distributed supervisor loaded successfully.")
+        logger.debug(f"Loading supervisor: {distributed_config}")
+        callable_obj = load_supervisor(deployed_as_of=deployed_as_of)
+        logger.debug("Supervisor loaded successfully.")
     else:
+        # Only called from subprocesses now
         logger.debug(f"Loading callable from environment: {callable_name}")
         callable_obj = load_callable_from_env()
         logger.debug("Callable loaded successfully.")
@@ -626,8 +631,8 @@ def _load_callable_internal(
     return callable_obj
 
 
-def load_distributed_supervisor(deployed_as_of: Optional[str] = None):
-    global DISTRIBUTED_SUPERVISOR
+def load_supervisor(deployed_as_of: Optional[str] = None):
+    global SUPERVISOR
 
     if os.environ["KT_FILE_PATH"] not in sys.path:
         sys.path.insert(0, os.environ["KT_FILE_PATH"])
@@ -638,26 +643,26 @@ def load_distributed_supervisor(deployed_as_of: Optional[str] = None):
     # we create a new supervisor if it doesn't exist or if the config has changed.
     # We don't create a supervisor if this is a distributed subprocess.
     config_hash = hash(str(distributed_config))
-    if DISTRIBUTED_SUPERVISOR is None or config_hash != DISTRIBUTED_SUPERVISOR.config_hash:
+    if SUPERVISOR is None or config_hash != SUPERVISOR.config_hash:
         from kubetorch.serving.supervisor_factory import supervisor_factory
 
         logger.debug(f"Loading distributed supervisor with config: {distributed_config}")
         distributed_config = json.loads(distributed_config)
         # If we already have some distributed processes, we need to clean them up before creating a new supervisor.
-        if DISTRIBUTED_SUPERVISOR:
-            DISTRIBUTED_SUPERVISOR.cleanup()
-        DISTRIBUTED_SUPERVISOR = supervisor_factory(**distributed_config)
-        DISTRIBUTED_SUPERVISOR.config_hash = config_hash
+        if SUPERVISOR:
+            SUPERVISOR.cleanup()
+        SUPERVISOR = supervisor_factory(**distributed_config)
+        SUPERVISOR.config_hash = config_hash
     try:
         # If there are any errors during setup, we catch and log them, and then undo the setup
         # so that the distributed supervisor is not left in a broken state (and otherwise can still fail
-        # when we call DISTRIBUTED_SUPERVISOR.cleanup() in lifespan).
-        DISTRIBUTED_SUPERVISOR.setup(deployed_as_of=deployed_as_of)
+        # when we call SUPERVISOR.cleanup() in lifespan).
+        SUPERVISOR.setup(deployed_as_of=deployed_as_of)
     except Exception as e:
         logger.error(f"Failed to set up distributed supervisor with config {distributed_config}: {e}")
-        DISTRIBUTED_SUPERVISOR = None
+        SUPERVISOR = None
         raise e
-    return DISTRIBUTED_SUPERVISOR
+    return SUPERVISOR
 
 
 def patch_sys_path():
@@ -675,83 +680,21 @@ def patch_sys_path():
 
 
 def load_callable_from_env():
-    """Load and cache callable objects from env, preserving state if __kt_cached_state__ is available."""
+    """Load callable from environment variables.
+
+    This function is called from subprocesses (via ProcessWorker) to load the user's
+    callable. Since subprocesses are terminated and recreated on redeployment,
+    we don't need complex module reload logic - just a fresh import.
+    """
     cls_or_fn_name = os.environ["KT_CLS_OR_FN_NAME"]
     module_name = os.environ["KT_MODULE_NAME"]
 
-    # Check if we have an existing cached callable and extract state if available
-    cached_state = None
-    existing_callable = _CACHED_CALLABLES.get(cls_or_fn_name, None)
-
-    if existing_callable and hasattr(existing_callable, "__kt_cached_state__"):
-        try:
-            logger.info(f"Extracting cached state from {cls_or_fn_name} via __kt_cached_state__")
-            cached_state = existing_callable.__kt_cached_state__()
-            if cached_state is not None and not isinstance(cached_state, dict):
-                logger.warning(
-                    f"__kt_cached_state__ returned non-dict type: {type(cached_state)}. Ignoring cached state."
-                )
-                cached_state = None
-        except Exception as e:
-            # This could happen if modules were removed from sys.modules during image setup
-            # and the callable's __kt_cached_state__ method depends on them
-            logger.warning(
-                f"Failed to extract cached state from {cls_or_fn_name} (possibly due to module reloading): {e}. "
-                f"Proceeding without cached state."
-            )
-            cached_state = None
-
-    # Now that we have the state, clean up the old callable to free memory
-    if existing_callable:
-        logger.debug(f"Deleting existing callable: {cls_or_fn_name}")
-        _CACHED_CALLABLES.pop(cls_or_fn_name, None)
-        del existing_callable
-        # Garbage collect to ensure everything cleaned up (especially GPU memory)
-        import gc
-
-        gc.collect()
-
     patch_sys_path()
 
-    # If we're inside a distributed subprocess or the main process of a non-distributed call,
-    # we load and instantiate the callable.
+    # Load the module
     try:
-        # Try regular package import first
-        if module_name in sys.modules:
-            # Clear any existing debugging sessions when reloading modules
-            clear_debugging_sessions()
-
-            # Find all user modules under kt_home_dir to reload
-            kt_home_dir = (
-                Path(os.environ.get("KT_DIRECTORY")).expanduser().resolve()
-                if "KT_DIRECTORY" in os.environ
-                else Path.cwd()
-            )
-            kt_home_dir_str = str(kt_home_dir) + os.sep
-
-            # Collect all user modules and reload in order from children to parents
-            modules_to_reload_sorted = collect_reload_modules(kt_home_dir_str)
-            logger.info(f"Reloading imported usermodules under {kt_home_dir_str}")
-            logger.debug(f"Modules to reload: {modules_to_reload_sorted}")
-            for name in modules_to_reload_sorted:
-                if name in sys.modules:
-                    try:
-                        importlib.reload(sys.modules[name])
-                    except (ImportError, ValueError, TypeError) as e:
-                        logger.debug(f"Could not reload module {name}: {e}. Deleting and reimporting instead.")
-                        try:
-                            del sys.modules[name]
-                            importlib.import_module(name)
-                        except Exception as reimport_error:
-                            logger.error(f"Failed to reimport module {name} after reload failure: {reimport_error}")
-
-            module = sys.modules.get(module_name)
-            if module is None:
-                logger.debug(f"Module {module_name} not found after reload, reimporting")
-                module = importlib.import_module(module_name)
-        else:
-            logger.debug(f"Importing module {module_name}")
-            module = importlib.import_module(module_name)
+        logger.debug(f"Importing module {module_name}")
+        module = importlib.import_module(module_name)
         logger.debug(f"Module {module_name} loaded")
 
         # Ensure our structured logging is in place after user module import
@@ -791,21 +734,7 @@ def load_callable_from_env():
             init_kwargs = json.loads(os.environ["KT_INIT_ARGS"])
             logger.info(f"Setting init_args {init_kwargs}")
 
-        # Add cached state if available
-        # Allow user to manually set "kt_cached_state" to override/disable cache
-        if cached_state is not None and "kt_cached_state" not in init_kwargs:
-            # Check if the class's __init__ accepts kt_cached_state parameter
-            sig = inspect.signature(callable_obj.__init__)
-            if "kt_cached_state" in sig.parameters:
-                logger.info(f"Passing cached state to {cls_or_fn_name}.__init__")
-                init_kwargs["kt_cached_state"] = cached_state
-            else:
-                raise ValueError(
-                    f"Class {cls_or_fn_name} has __kt_cached_state__ method but __init__ does not accept "
-                    f"'kt_cached_state' parameter. Please add 'kt_cached_state=None' to __init__ signature."
-                )
-
-        # Instantiate with combined arguments
+        # Instantiate with arguments
         if init_kwargs:
             callable_obj = callable_obj(**init_kwargs)
         else:
@@ -891,7 +820,6 @@ class TerminationCheckMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Run the actual request in the background
-        import asyncio
 
         request_task = asyncio.create_task(call_next(request))
 
@@ -987,11 +915,11 @@ async def lifespan(app: FastAPI):
             # Clean up distributed supervisor to ensure child processes are terminated
             # This is important because SIGTERM is not propagated to child processes automatically
             # This runs synchronously and may take 1-2 seconds, but existing requests are already interrupted
-            global DISTRIBUTED_SUPERVISOR
-            if DISTRIBUTED_SUPERVISOR:
+            global SUPERVISOR
+            if SUPERVISOR:
                 logger.info("Cleaning up distributed supervisor and child processes...")
                 try:
-                    DISTRIBUTED_SUPERVISOR.cleanup()
+                    SUPERVISOR.cleanup()
                 except Exception as e:
                     logger.error(f"Error cleaning up distributed supervisor: {e}")
 
@@ -1064,8 +992,8 @@ async def lifespan(app: FastAPI):
 
         # Clean up during normal shutdown so we don't leave any hanging processes, which can cause pods to hang
         # indefinitely. Skip if already cleaned up by SIGTERM handler.
-        if DISTRIBUTED_SUPERVISOR and not getattr(app.state, "terminating", False):
-            DISTRIBUTED_SUPERVISOR.cleanup()
+        if SUPERVISOR and not getattr(app.state, "terminating", False):
+            SUPERVISOR.cleanup()
 
         # Clear any remaining debugging sessions
         clear_debugging_sessions()
@@ -1140,7 +1068,6 @@ class ErrorResponse(BaseModel):
 
 # Factor out the exception packaging so we can use it in the handler below and also inside distributed subprocesses
 def package_exception(exc: Exception):
-    import asyncio
     import concurrent
 
     error_type = exc.__class__.__name__
@@ -1218,7 +1145,7 @@ def _reload_image(
 
 @app.post("/{cls_or_fn_name}", response_class=JSONResponse)
 @app.post("/{cls_or_fn_name}/{method_name}", response_class=JSONResponse)
-async def run_callable(
+def run_callable(
     request: Request,
     cls_or_fn_name: str,
     method_name: Optional[str] = None,
@@ -1227,157 +1154,38 @@ async def run_callable(
     deployed_as_of: Optional[str] = Header(None, alias="X-Deployed-As-Of"),
     serialization: str = Header("json", alias="X-Serialization"),
 ):
+    """Execute a callable through the supervisor.
+
+    All calls are routed through the supervisor which executes user code in
+    isolated subprocesses. This provides clean module isolation and simple
+    reload semantics (terminate and recreate subprocess on redeployment).
+
+    This is a sync endpoint - Starlette automatically runs it in a thread pool,
+    which handles context variable propagation.
+    """
     if cls_or_fn_name != os.environ["KT_CLS_OR_FN_NAME"]:
         raise HTTPException(
             status_code=404,
             detail=f"Callable '{cls_or_fn_name}' not found in metadata configuration. Found '{os.environ['KT_CLS_OR_FN_NAME']}' instead",
         )
 
-    # NOTE: The distributed replica processes (e.g. PyTorchProcess:run) rely on this running here even though
-    # they will reconstruct the callable themselves, because they skip image reloading as a performance optimization.
-    # Run load_callable in executor since it may do file I/O and other blocking operations
-    callable_obj = await run_in_executor_with_context(None, load_callable, deployed_as_of)
+    # Load supervisor (runs image setup if needed)
+    load_callable(deployed_as_of)
 
-    # If this is a distributed call (and not a subcall from a different distributed replica),
-    # and the type of distribution which requires a special call method (e.g. SIMD), use the
-    # distributed supervisor to handle the call
-    if DISTRIBUTED_SUPERVISOR and DISTRIBUTED_SUPERVISOR.intercept_call():
-        # Run the blocking distributed call in executor to avoid blocking the event loop
-        result = await run_in_executor_with_context(
-            None,
-            DISTRIBUTED_SUPERVISOR.call_distributed,
-            request,
-            cls_or_fn_name,
-            method_name,
-            params,
-            distributed_subcall,
-            deployed_as_of,
-        )
-        clear_debugging_sessions()
-        return result
-
-    # If this is not a distributed call, or the distribution type does not require special handling,
-    # run the callable directly
-    result = await run_callable_internal(
-        callable_obj=callable_obj,
-        cls_or_fn_name=cls_or_fn_name,
-        method_name=method_name,
-        params=params,
-        serialization=serialization,
+    # Route call through supervisor to subprocess
+    result = SUPERVISOR.call(
+        request,
+        cls_or_fn_name,
+        method_name,
+        params,
+        distributed_subcall,
+        deployed_as_of,
     )
-    return result
-
-
-async def run_callable_internal(
-    callable_obj: Callable,
-    cls_or_fn_name: str,
-    method_name: Optional[str] = None,
-    params: Optional[Union[Dict, str]] = Body(default=None),
-    serialization: str = "json",
-):
-    # Check if serialization is allowed
-    allowed_serialization = os.getenv("KT_ALLOWED_SERIALIZATION", DEFAULT_ALLOWED_SERIALIZATION).split(",")
-    if serialization not in allowed_serialization:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Serialization format '{serialization}' not allowed. Allowed formats: {allowed_serialization}",
-        )
-
-    # Process the call
-    args = []
-    kwargs = {}
-    debug_port, debug_mode = None, None
-
-    if params:
-        if serialization == "pickle":
-            # Handle pickle serialization - extract data from dictionary wrapper
-            if isinstance(params, dict) and "data" in params:
-                encoded_data = params.pop("data")
-                pickled_data = base64.b64decode(encoded_data.encode("utf-8"))
-                param_args = pickle.loads(pickled_data)
-                # data is unpickled in the format {"args": args, "kwargs": kwargs}
-                params.update(param_args)
-            elif isinstance(params, str):
-                # Fallback for direct string
-                pickled_data = base64.b64decode(params.encode("utf-8"))
-                params = pickle.loads(pickled_data)
-
-        # Default JSON handling
-        args = params.get("args", [])
-        kwargs = params.get("kwargs", {})
-        debugger: dict = params.pop("debugger", None)
-        if debugger:
-            debug_mode = debugger.get("mode")
-            debug_port = debugger.get("port")
-
-    if method_name:
-        if not hasattr(callable_obj, method_name):
-            raise HTTPException(
-                status_code=404,
-                detail=f"Method '{method_name}' not found in class '{cls_or_fn_name}'",
-            )
-        user_method = getattr(callable_obj, method_name)
-    else:
-        user_method = callable_obj
-
-    import inspect
-
-    # Check if the user method is async
-    is_async_method = inspect.iscoroutinefunction(user_method)
-
-    callable_name = f"{cls_or_fn_name}.{method_name}" if method_name else cls_or_fn_name
-    if debug_port:
-        logger.info(f"Debugging remote callable {callable_name} on port {debug_port}")
-
-        # Run debugger + user code in thread pool to avoid blocking the event loop.
-        # This keeps health checks and other requests responsive while debugging.
-        def debug_and_run():
-            deep_breakpoint(debug_port, debug_mode)
-            # If using the debugger, step in here ("s") to enter your function/class method.
-            if is_async_method:
-                # Create new event loop for async method in this thread
-                return asyncio.run(user_method(*args, **kwargs))
-            else:
-                return user_method(*args, **kwargs)
-
-        result = await run_in_executor_with_context(None, debug_and_run)
-    else:
-        logger.debug(f"Calling remote callable {callable_name}")
-        if is_async_method:
-            result = await user_method(*args, **kwargs)
-        else:
-            # Run sync method in thread pool to avoid blocking
-            # Use lambda to properly pass both args and kwargs
-            result = await run_in_executor_with_context(None, lambda: user_method(*args, **kwargs))
-
-    # Handle case where sync method returns an awaitable (e.g., from an async framework)
-    # This is less common but can happen with some async libraries
-    if isinstance(result, Awaitable):
-        result = await result
-
-    # Serialize response based on format
-    if serialization == "pickle":
-        try:
-            pickled_result = pickle.dumps(result)
-            encoded_result = base64.b64encode(pickled_result).decode("utf-8")
-            result = {"data": encoded_result}
-        except Exception as e:
-            logger.error(f"Failed to pickle result: {str(e)}")
-            raise SerializationError(f"Result could not be serialized with pickle: {str(e)}")
-    else:
-        # Default JSON serialization
-        try:
-            json.dumps(result)
-        except (TypeError, ValueError) as e:
-            logger.error(f"Result is not JSON serializable: {str(e)}")
-            raise SerializationError(f"Result could not be serialized to JSON: {str(e)}")
-
     clear_debugging_sessions()
-
     return result
 
 
-def run_callable_internal_sync(
+def execute_callable(
     callable_obj: Callable,
     cls_or_fn_name: str,
     method_name: Optional[str] = None,
@@ -1385,8 +1193,6 @@ def run_callable_internal_sync(
     serialization: str = "json",
 ):
     """Synchronous wrapper for run_callable_internal, used by distributed subprocesses."""
-    import asyncio
-    import inspect
 
     # Check if serialization is allowed
     allowed_serialization = os.getenv("KT_ALLOWED_SERIALIZATION", DEFAULT_ALLOWED_SERIALIZATION).split(",")

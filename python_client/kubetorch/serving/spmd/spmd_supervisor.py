@@ -1,5 +1,4 @@
 import copy
-import multiprocessing
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -8,19 +7,23 @@ from typing import Dict, Optional
 import httpx
 from starlette.responses import JSONResponse
 
-from kubetorch.serving.execution_supervisor import ExecutionSupervisor
+from kubetorch.serving.distributed_supervisor import DistributedSupervisor
 from kubetorch.serving.http_server import logger
-from kubetorch.serving.log_capture import get_subprocess_queue
-from kubetorch.serving.process_pool import ProcessPool
 from kubetorch.serving.process_worker import ProcessWorker
 from kubetorch.serving.remote_worker_pool import RemoteWorkerPool
 
 
-class SPMDDistributedSupervisor(ExecutionSupervisor):
-    """Base class for SPMD (Single Program Multiple Data) distributed supervisors.
+class SPMDDistributedSupervisor(DistributedSupervisor):
+    """SPMD (Single Program Multiple Data) distributed supervisor.
 
-    This class provides common functionality for frameworks that follow the SPMD pattern
+    This class provides distributed execution for frameworks that follow the SPMD pattern
     where the same program runs on multiple processes with different data partitions.
+
+    Features:
+    - Multi-process local execution (configurable num_proc)
+    - Remote worker coordination via RemoteWorkerPool
+    - Tree topology for large clusters (>100 workers)
+    - DNS-based worker discovery with quorum support
     """
 
     def __init__(
@@ -28,90 +31,38 @@ class SPMDDistributedSupervisor(ExecutionSupervisor):
         process_class=None,
         num_proc=None,
         port=None,
-        restart_procs=True,
-        max_threads_per_proc=10,
-        quorum_timeout=300,
-        quorum_workers=None,
-        monitor_members=True,
         tree_fanout=50,
         tree_minimum=100,
-        **process_kwargs,
+        **kwargs,
     ):
+        """Initialize SPMD supervisor.
+
+        Args:
+            process_class: ProcessWorker subclass for framework-specific execution.
+            num_proc: Number of local processes ("auto" to detect from process_class).
+            port: Port for distributed communication (framework-specific).
+            tree_fanout: Max children per node in tree topology (default 50).
+            tree_minimum: Min cluster size to use tree topology (default 100).
+            **kwargs: Arguments passed to DistributedSupervisor (quorum_*, monitor_members, etc.)
+        """
+        # Map num_proc to num_processes for parent class
         super().__init__(
-            quorum_workers=quorum_workers,
-            quorum_timeout=quorum_timeout,
-            monitor_members=monitor_members,
+            process_class=process_class or ProcessWorker,
+            num_processes=num_proc or "auto",
+            **kwargs,
         )
-        self.process_class = process_class or ProcessWorker
-        self.num_proc = num_proc or "auto"
         self.port = port
-        self.restart_procs = restart_procs
-        self.max_threads_per_proc = max_threads_per_proc
-        self.process_pool = None
-        self.remote_worker_pool = None  # Pool for async HTTP calls to remote workers
-        self.process_kwargs = process_kwargs  # Additional settings to pass to process class
         self.tree_fanout = tree_fanout
         self.tree_minimum = tree_minimum
 
-    def setup(self, deployed_as_of: Optional[str] = None):
-        # Set multiprocessing to spawn if not already
-        if multiprocessing.get_start_method() != "spawn":
-            multiprocessing.set_start_method("spawn", force=True)
+    # Use num_proc as alias for num_processes for backward compatibility
+    @property
+    def num_proc(self):
+        return self.num_processes
 
-        # Get number of processes
-        if self.num_proc == "auto":
-            num_proc = self.process_class.get_auto_num_processes()
-        else:
-            num_proc = self.num_proc
-
-        if self.restart_procs:
-            logger.debug("restart_procs is True, restarting distributed processes")
-            self.cleanup()
-
-        # If the number of processes has changed, we need to clean up the old ones and recreate them
-        if self.process_pool is None or len(self.process_pool) != num_proc:
-            if self.process_pool:
-                logger.debug(
-                    f"Number of processes changed from {len(self.process_pool)} to {num_proc}, restarting processes."
-                )
-                self.cleanup()
-
-            logger.debug("Setting up distributed environment")
-            self.process_pool = ProcessPool(
-                process_class=self.process_class,
-                num_processes=num_proc,
-                max_threads_per_proc=self.max_threads_per_proc,
-                log_queue=get_subprocess_queue(),
-                **self.process_kwargs,  # Pass any additional settings
-            )
-
-            # Start all processes (now handled internally by the pool)
-            self.process_pool.start()
-
-            self.remote_worker_pool = RemoteWorkerPool(quorum_timeout=self.quorum_timeout)
-            self.remote_worker_pool.start()
-            logger.debug("Finished setting up distributed processes")
-
-    def cleanup(self):
-        # Cleanup the processes
-        logger.debug(f"Cleaning up {self.__class__.__name__} distributed processes")
-
-        # Stop DNS monitoring first
-        super().cleanup()
-
-        if self.process_pool:
-            self.process_pool.stop()
-            self.process_pool = None
-
-        if self.remote_worker_pool:
-            self.remote_worker_pool.stop()
-            self.remote_worker_pool = None
-
-        logger.debug(f"Finished cleaning up {self.__class__.__name__} distributed processes")
-
-    @staticmethod
-    def intercept_call():
-        return True
+    @num_proc.setter
+    def num_proc(self, value):
+        self.num_processes = value
 
     def get_tree_children(self, sorted_ips: list, my_ip: str, fanout: int = 100):
         """Calculate children nodes in a self-organizing tree based on IP indexing.
@@ -148,7 +99,7 @@ class SPMDDistributedSupervisor(ExecutionSupervisor):
             )
         return children
 
-    def call_distributed(
+    def call(
         self,
         request,
         cls_or_fn_name: str,
@@ -164,12 +115,8 @@ class SPMDDistributedSupervisor(ExecutionSupervisor):
         serialization = request.headers.get("X-Serialization", "json")
         params = params or {}
 
-        # If deployed_as_of is None and we're the coordinator, generate a consistent timestamp
-        # to use across all workers to prevent reload inconsistencies
-        if not distributed_subcall and deployed_as_of is None:
-            from datetime import datetime, timezone
-
-            deployed_as_of = datetime.now(timezone.utc).isoformat()
+        # Note: If deployed_as_of is None, we pass it as-is.
+        # Workers will correctly skip reload when deployed_as_of is None.
 
         # Get all the pods in the service, and use the first one as the master.
         # Set the env vars based on whether this is a master or worker
@@ -428,8 +375,12 @@ class SPMDDistributedSupervisor(ExecutionSupervisor):
         if subcall_ips:
             logger.debug(f"Have {len(subcall_ips)} remote workers to call")
             if not self.remote_worker_pool:
-                raise RuntimeError("RemoteWorkerPool not initialized. This is required for distributed execution.")
-            logger.debug(f"Using existing RemoteWorkerPool to call {len(subcall_ips)} workers")
+                # Create RemoteWorkerPool lazily when first needed
+                # This avoids spawning unnecessary processes for single-pod distributed jobs
+                logger.info(f"Creating RemoteWorkerPool to call {len(subcall_ips)} remote workers")
+                self.remote_worker_pool = RemoteWorkerPool(quorum_timeout=self.quorum_timeout)
+                self.remote_worker_pool.start(max_workers=min(len(subcall_ips) + 50, 200))
+            logger.debug(f"Using RemoteWorkerPool to call {len(subcall_ips)} workers")
 
             def call_remote_workers():
                 nonlocal worker_exception
@@ -488,33 +439,23 @@ class SPMDDistributedSupervisor(ExecutionSupervisor):
         else:
             logger.debug(f"No remote workers to call (subcall_ips is empty or None: {subcall_ips})")
 
-        # Check if we need to initialize RemoteWorkerPool for tree topology workers
+        # Verify RemoteWorkerPool is running if we have remote workers
+        # (It should have been created lazily above when subcall_ips was first checked)
         if subcall_ips:
             if not self.remote_worker_pool:
-                # Initialize RemoteWorkerPool if not already done (needed for tree topology workers)
-                logger.warning(
-                    f"INITIALIZING RemoteWorkerPool for tree worker at {this_pod_ip} to call {len(subcall_ips)} children"
+                # Should not happen - pool is created lazily above
+                raise RuntimeError(
+                    f"RemoteWorkerPool not available for worker at {this_pod_ip}. "
+                    "This is required for distributed execution with subcall_ips."
                 )
-                self.remote_worker_pool = RemoteWorkerPool(quorum_timeout=self.quorum_timeout)
-                self.remote_worker_pool.start(
-                    max_workers=min(len(subcall_ips) + 50, 200)
-                )  # Size for expected children plus buffer
-                logger.warning(f"RemoteWorkerPool initialized successfully for {this_pod_ip}")
             elif (
                 not hasattr(self.remote_worker_pool, "process")
                 or not self.remote_worker_pool.process
                 or not self.remote_worker_pool.process.is_alive()
             ):
-                # Pool exists but not started/alive
+                # Pool exists but not started/alive - restart it
                 logger.warning(f"RemoteWorkerPool exists but not running for {this_pod_ip}, starting it now")
                 self.remote_worker_pool.start(max_workers=min(len(subcall_ips) + 50, 200))
-
-        if subcall_ips and not self.remote_worker_pool:
-            # RemoteWorkerPool should always be initialized at this point
-            raise RuntimeError(
-                f"RemoteWorkerPool not available for worker at {this_pod_ip}. "
-                "This is required for distributed execution with subcall_ips."
-            )
 
         # Submit local process calls
         def call_local_processes():

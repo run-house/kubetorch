@@ -3,7 +3,7 @@ import os
 from bdb import BdbQuit
 from concurrent.futures import ThreadPoolExecutor
 
-from kubetorch.serving.http_server import load_callable, logger, package_exception, run_callable_internal_sync
+from kubetorch.serving.http_server import execute_callable, load_callable, logger, package_exception
 from kubetorch.serving.log_capture import create_subprocess_log_capture
 from kubetorch.serving.utils import clear_debugging_sessions, request_id_ctx_var
 
@@ -103,7 +103,7 @@ class ProcessWorker(multiprocessing.Process):
                     reload_cleanup_fn=self.framework_cleanup,
                 )
 
-                result = run_callable_internal_sync(
+                result = execute_callable(
                     callable_obj=callable_obj,
                     cls_or_fn_name=os.environ["KT_CLS_OR_FN_NAME"],
                     method_name=method_name,

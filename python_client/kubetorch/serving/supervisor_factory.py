@@ -1,3 +1,4 @@
+from kubetorch.serving.execution_supervisor import ExecutionSupervisor
 from kubetorch.serving.monarch_supervisor import MonarchDistributed
 from kubetorch.serving.process_worker import ProcessWorker
 from kubetorch.serving.ray_supervisor import RayDistributed
@@ -9,27 +10,41 @@ from kubetorch.serving.spmd.tensorflow_process import TensorflowProcess
 
 def supervisor_factory(distribution_type, *args, **kwargs):
     """
-    Factory function to create a distributed supervisor based on the specified type.
+    Factory function to create an execution supervisor based on the specified type.
 
     Args:
-        distribution_type (str): The type of distributed supervisor to create.
-                                Options include 'ray', 'monarch', 'pytorch', 'jax', 'tensorflow', or None for generic SPMD.
+        distribution_type (str): The type of supervisor to create.
+            Options:
+            - 'local': Local subprocess execution (no remote workers)
+            - 'ray': Ray distributed (head node only)
+            - 'monarch': Monarch distributed (single controller)
+            - 'pytorch': PyTorch SPMD distributed
+            - 'jax': JAX SPMD distributed
+            - 'tensorflow'/'tf': TensorFlow SPMD distributed
+            - 'spmd' or None: Generic SPMD distributed
+
         *args: Positional arguments to pass to the supervisor constructor.
         **kwargs: Keyword arguments to pass to the supervisor constructor.
                  Common kwargs include:
-                 - quorum_timeout: Timeout in seconds for workers to become ready (default 30 for SPMD, 300 for Ray/Monarch)
+                 - restart_procs: Whether to restart processes on setup (default True)
+                 - max_threads_per_proc: Max threads per subprocess (default 10)
+                 - quorum_timeout: Timeout for workers to become ready (default 300s)
+                 - quorum_workers: Number of workers to wait for
 
     Returns:
-        ExecutionSupervisor: An instance of the specified distributed supervisor.
+        ExecutionSupervisor: An instance of the specified supervisor.
     """
+    # Local execution - subprocess isolation without remote workers
+    if distribution_type == "local":
+        return ExecutionSupervisor(*args, **kwargs)
+
+    # Single-controller frameworks (manage their own cluster membership)
     if distribution_type == "ray":
-        # Ray uses its own supervisor, not SPMD
         return RayDistributed(*args, **kwargs)
     elif distribution_type == "monarch":
-        # Monarch is similar to Ray - single controller framework
         return MonarchDistributed(*args, **kwargs)
 
-    # All other types use SPMDDistributedSupervisor with different process classes
+    # SPMD frameworks with different process classes
     if distribution_type == "pytorch":
         return SPMDDistributedSupervisor(process_class=PyTorchProcess, *args, **kwargs)
     elif distribution_type == "jax":
@@ -37,7 +52,7 @@ def supervisor_factory(distribution_type, *args, **kwargs):
     elif distribution_type == "tensorflow" or distribution_type == "tf":
         return SPMDDistributedSupervisor(process_class=TensorflowProcess, *args, **kwargs)
     elif distribution_type is None or distribution_type == "spmd":
-        # Default to base ProcessWorker - no framework-specific dependencies
+        # Default SPMD with base ProcessWorker - no framework-specific dependencies
         return SPMDDistributedSupervisor(process_class=ProcessWorker, *args, **kwargs)
     else:
-        raise ValueError(f"Unsupported distributed type: {distribution_type}")
+        raise ValueError(f"Unsupported distribution type: {distribution_type}")
