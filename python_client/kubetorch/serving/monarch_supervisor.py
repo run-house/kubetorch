@@ -1,4 +1,3 @@
-import multiprocessing
 import os
 import queue
 import subprocess
@@ -8,13 +7,9 @@ from typing import Dict, Optional
 
 from starlette.responses import JSONResponse
 
-from kubetorch.serving.execution_supervisor import ExecutionSupervisor
-
+from kubetorch.serving.distributed_supervisor import DistributedSupervisor
 from kubetorch.serving.http_server import load_callable, logger, package_exception, request_id_ctx_var
-from kubetorch.serving.process_pool import ProcessPool
 from kubetorch.serving.process_worker import ProcessWorker
-from kubetorch.serving.remote_worker_pool import RemoteWorkerPool
-from .log_capture import get_subprocess_queue
 
 # Try to import Monarch components at module level if available
 # This helps avoid threading issues with Monarch's Rust bindings
@@ -360,63 +355,48 @@ class MonarchProcess(ProcessWorker):
 
 
 # Similar to Ray, Monarch needs special handling as a single-controller framework
-class MonarchDistributed(ExecutionSupervisor):
-    """Monarch distributed supervisor for single-controller actor framework."""
+class MonarchDistributed(DistributedSupervisor):
+    """Monarch distributed supervisor for single-controller actor framework.
+
+    Monarch manages its own actor allocation, so DNS monitoring is disabled.
+    This supervisor handles:
+    - Starting process_allocator service
+    - Setting up subprocess for user code execution
+    - Coordinating with Monarch's actor framework
+    """
 
     def __init__(
         self,
-        restart_procs=True,
         max_threads=4,
-        quorum_timeout=300,
-        quorum_workers=None,
         **kwargs,
     ):
-        # Monarch doesn't use DNS monitoring like SPMD frameworks
+        """Initialize Monarch supervisor.
+
+        Args:
+            max_threads: Maximum threads per process (default 4).
+            **kwargs: Arguments passed to DistributedSupervisor.
+        """
+        # Monarch manages its own membership, disable DNS monitoring
+        # Force num_processes=1 since Monarch uses one process per node
         super().__init__(
-            quorum_workers=quorum_workers,
-            quorum_timeout=quorum_timeout,
-            monitor_members=False,  # Disable DNS monitoring like Ray
+            process_class=MonarchProcess,
+            num_processes=1,
+            max_threads_per_proc=max_threads,
+            monitor_members=False,  # Monarch manages its own membership
+            **kwargs,
         )
-        self.restart_procs = restart_procs
-        self.max_threads = max_threads
-        self.process_pool = None
-        self.remote_worker_pool = None
+        self.allocator_proc = None
 
     def setup(self, deployed_as_of: Optional[str] = None):
         """Setup Monarch distributed environment."""
-        # Set multiprocessing to spawn
-        if multiprocessing.get_start_method() != "spawn":
-            multiprocessing.set_start_method("spawn", force=True)
-
         # Start process_allocator service (like Ray starts its server)
         self._start_allocator_service()
 
-        if self.restart_procs:
-            logger.debug("restart_procs is True, restarting Monarch processes")
-            self.cleanup()
-
-        if self.process_pool is None:
-            logger.debug("Setting up Monarch distributed environment")
-
-            # Create process pool with MonarchProcess
-            logger.info("Creating ProcessPool with MonarchProcess class")
-            self.process_pool = ProcessPool(
-                process_class=MonarchProcess,
-                num_processes=1,  # One process per node for Monarch
-                max_threads_per_proc=self.max_threads,
-                log_queue=get_subprocess_queue(),
-            )
-
-            # Start the process
-            logger.info("Starting MonarchProcess pool...")
-            self.process_pool.start()
-            logger.info(f"Started MonarchProcess pool: {self.process_pool}")
-
-            # Create remote worker pool for coordination
-            self.remote_worker_pool = RemoteWorkerPool(quorum_timeout=self.quorum_timeout)
-            self.remote_worker_pool.start()
-
-            logger.debug("Finished setting up Monarch distributed processes")
+        # Call parent setup to create ProcessPool
+        # Note: Monarch doesn't use RemoteWorkerPool - it handles distributed
+        # coordination via its own process_allocator service
+        super().setup(deployed_as_of)
+        logger.debug("Finished setting up Monarch distributed processes")
 
     def _start_allocator_service(self):
         """Start the process_allocator service if available."""
@@ -506,34 +486,21 @@ class MonarchDistributed(ExecutionSupervisor):
         """Cleanup Monarch distributed environment."""
         logger.debug("Cleaning up Monarch distributed processes")
 
-        # Stop DNS monitoring (though it's disabled for Monarch)
-        super().cleanup()
-
         # Stop process_allocator if we started it
-        if hasattr(self, "allocator_proc") and self.allocator_proc:
+        if self.allocator_proc:
             try:
                 self.allocator_proc.terminate()
                 self.allocator_proc.wait(timeout=5)
                 logger.info("Stopped process_allocator")
             except Exception as e:
                 logger.debug(f"Error stopping process_allocator: {e}")
+            self.allocator_proc = None
 
-        if self.process_pool:
-            self.process_pool.stop()
-            self.process_pool = None
-
-        if self.remote_worker_pool:
-            self.remote_worker_pool.stop()
-            self.remote_worker_pool = None
-
+        # Call parent cleanup for ProcessPool
+        super().cleanup()
         logger.debug("Finished cleaning up Monarch distributed processes")
 
-    @staticmethod
-    def intercept_call():
-        """Monarch intercepts calls like Ray."""
-        return True
-
-    def call_distributed(
+    def call(
         self,
         request,
         cls_or_fn_name: str,
@@ -545,7 +512,7 @@ class MonarchDistributed(ExecutionSupervisor):
         deployed_as_of: Optional[str] = None,
     ):
         """Monarch distributed call - executes on controller node (rank 0)."""
-        logger.info("MonarchDistributed.call_distributed called")
+        logger.info("MonarchDistributed.call called")
 
         # Ensure setup has been called
         if self.process_pool is None:
@@ -555,11 +522,8 @@ class MonarchDistributed(ExecutionSupervisor):
         request_id = request.headers.get("X-Request-ID", "-")
         serialization = request.headers.get("X-Serialization", "json")
 
-        # If deployed_as_of is None, generate a consistent timestamp
-        if deployed_as_of is None:
-            from datetime import datetime, timezone
-
-            deployed_as_of = datetime.now(timezone.utc).isoformat()
+        # Note: If deployed_as_of is None, we pass it as-is.
+        # Workers will correctly skip reload when deployed_as_of is None.
 
         # Start DNS monitoring for worker discovery
         self.start_dns_monitoring()

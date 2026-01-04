@@ -1,323 +1,165 @@
-import os
-import queue
-import threading
-import time
+"""Execution supervisor base class with ProcessPool-based subprocess execution.
+
+This module provides the ExecutionSupervisor class which handles local execution
+of callable functions/classes in isolated subprocesses. This provides:
+- Clean module isolation (user code runs in subprocess)
+- Simple reload semantics (terminate and recreate subprocess)
+- Consistent execution pattern across all modes
+
+For distributed execution with remote workers, see DistributedSupervisor.
+"""
+
+import multiprocessing
 from typing import Dict, Optional
 
+from starlette.responses import JSONResponse
+
 from kubetorch.serving.http_server import logger
-from kubetorch.serving.utils import is_running_in_kubernetes
+from kubetorch.serving.log_capture import get_subprocess_queue
+from kubetorch.serving.process_pool import ProcessPool
+from kubetorch.serving.process_worker import ProcessWorker
 
 
 class ExecutionSupervisor:
-    def __init__(self, quorum_workers=None, quorum_timeout=300, monitor_members=True):
-        """
-        Base class for distributed supervisors. This class should be subclassed for specific distributed
-        environments like PyTorch or Ray.
+    """Base class for execution supervisors using subprocess isolation.
+
+    This class provides local execution via ProcessPool with one or more subprocesses.
+    It handles:
+    - Creating and managing a pool of worker subprocesses
+    - Routing calls to subprocesses
+    - Clean restart semantics for redeployment
+
+    Subclass DistributedSupervisor for distributed execution with remote workers.
+    """
+
+    def __init__(
+        self,
+        process_class=None,
+        num_processes: int = 1,
+        max_threads_per_proc: int = 10,
+        restart_procs: bool = True,
+        **process_kwargs,
+    ):
+        """Initialize execution supervisor.
 
         Args:
-            config: Optional configuration object for the distributed environment.
+            process_class: The ProcessWorker subclass to use for subprocesses.
+                          Defaults to ProcessWorker.
+            num_processes: Number of local subprocesses to run. Defaults to 1.
+                          Can also be "auto" to use process_class.get_auto_num_processes().
+            max_threads_per_proc: Maximum threads per subprocess. Defaults to 10.
+            restart_procs: Whether to restart processes on setup. Defaults to True.
+            **process_kwargs: Additional kwargs passed to process class constructor.
         """
-        # Set after creation by the factory function
-        self.quorum_workers = quorum_workers
-        self.quorum_timeout = quorum_timeout
-        self.monitor_members = monitor_members
+        self.process_class = process_class or ProcessWorker
+        self.num_processes = num_processes
+        self.max_threads_per_proc = max_threads_per_proc
+        self.restart_procs = restart_procs
+        self.process_kwargs = process_kwargs
 
-        self.config_hash = None
-
-        # DNS monitoring state
-        self._dns_monitor_thread = None
-        self._dns_monitor_running = False
-        self._current_workers = set()
-        self._workers_lock = threading.Lock()
-        self._membership_changes = queue.Queue()
-        self._change_subscribers = []
-        self._last_dns_check = 0
-        self._dns_check_interval = 5  # seconds
-
-    def pod_ips(self):
-        """Get pod IPs from DNS, waiting for quorum if specified.
-
-        Will wait up to quorum_timeout seconds for quorum_workers to appear in DNS.
-        If quorum_workers is not specified, returns immediately after first DNS query.
-        """
-        # Primarily for testing
-        if not is_running_in_kubernetes():
-            return os.environ["LOCAL_IPS"].split(",")
-
-        # Use DNS-based service discovery instead of Kubernetes API
-        # Always compute headless service DNS for distributed mode to ensure we get pod IPs
-        # (KT_SERVICE_DNS may have been set before distributed config was applied)
-        service_name = os.environ.get("KT_SERVICE_NAME")
-        namespace = os.environ.get("POD_NAMESPACE")
-
-        if not service_name:
-            raise RuntimeError("KT_SERVICE_NAME environment variable not found")
-        if not namespace:
-            raise RuntimeError("POD_NAMESPACE environment variable not found")
-
-        # Kubernetes headless service DNS name for distributed pod discovery
-        # Format: <service-name>-headless.<namespace>.svc.cluster.local
-        service_dns = f"{service_name}-headless.{namespace}.svc.cluster.local"
-
-        import socket
-        import time
-
-        start_time = time.time()
-        max_wait = self.quorum_timeout if self.quorum_timeout else 0
-        expected_workers = self.quorum_workers
-
-        pod_ips = []
-        last_count = 0
-
-        while True:
-            try:
-                # DNS lookup returns all pod IPs for the headless service
-                # getaddrinfo returns list of (family, type, proto, canonname, sockaddr)
-                addr_info = socket.getaddrinfo(service_dns, None, socket.AF_INET)
-
-                # Extract unique IP addresses from the results
-                pod_ips = sorted(list(set([addr[4][0] for addr in addr_info])))
-
-                if not pod_ips:
-                    logger.debug(f"No pod IPs found for service {service_dns}")
-                else:
-                    logger.debug(f"Found {len(pod_ips)} pod IPs via DNS for {service_dns}: {pod_ips}")
-
-            except socket.gaierror as e:
-                logger.debug(f"DNS lookup failed for {service_dns}: {e}")
-                pod_ips = []
-
-            # Check if we should wait for more workers
-            elapsed = time.time() - start_time
-
-            # If we have the expected count, we're done
-            if expected_workers and len(pod_ips) >= expected_workers:
-                logger.info(f"Found {len(pod_ips)}/{expected_workers} workers after {elapsed:.1f}s")
-                return pod_ips
-
-            # If no expected count is set, return immediately with whatever we found
-            if not expected_workers:
-                if pod_ips:
-                    logger.debug(f"{len(pod_ips)} workers found, no quorum set")
-                    return pod_ips
-                # No pods found yet and no quorum to wait for - wait briefly and retry once
-                if elapsed >= 5.0:
-                    logger.debug(f"No workers found after {elapsed:.1f}s, no quorum set")
-                    return pod_ips
-
-            # If timeout is reached, return what we have
-            if elapsed >= max_wait:
-                if expected_workers:
-                    logger.warning(f"Only found {len(pod_ips)}/{expected_workers} workers after {elapsed:.1f}s timeout")
-                else:
-                    logger.info(f"Found {len(pod_ips)} workers after {elapsed:.1f}s")
-                return pod_ips
-
-            # Log progress if count changed
-            if len(pod_ips) != last_count:
-                if expected_workers:
-                    logger.info(f"{len(pod_ips)}/{expected_workers} workers found, waiting for quorum...")
-                last_count = len(pod_ips)
-
-            # Wait before retrying
-            time.sleep(2)
-
-    def _get_pod_ips_fast(self):
-        """Get pod IPs from DNS without waiting for quorum - for monitoring only."""
-        # Primarily for testing
-        if not is_running_in_kubernetes():
-            return os.environ["LOCAL_IPS"].split(",")
-
-        # Use DNS-based service discovery
-        # Always compute headless service DNS for distributed mode to ensure we get pod IPs
-        # (KT_SERVICE_DNS may have been set before distributed config was applied)
-        service_name = os.environ.get("KT_SERVICE_NAME")
-        namespace = os.environ.get("POD_NAMESPACE")
-
-        if not service_name or not namespace:
-            return []
-
-        service_dns = f"{service_name}-headless.{namespace}.svc.cluster.local"
-
-        import socket
-
-        try:
-            # Single DNS lookup, no retries, no waiting
-            addr_info = socket.getaddrinfo(service_dns, None, socket.AF_INET)
-            # Extract unique IP addresses
-            pod_ips = sorted(list(set([addr[4][0] for addr in addr_info])))
-            return pod_ips
-        except socket.gaierror:
-            # DNS lookup failed, return current known workers
-            with self._workers_lock:
-                return list(self._current_workers)
-
-    def start_dns_monitoring(self):
-        """Start DNS monitoring if not already running.
-        Should be called by coordinator nodes only."""
-        # Skip if monitoring is disabled (e.g., for Ray)
-        if not self.monitor_members:
-            logger.debug("DNS monitoring disabled for this supervisor")
-            return
-
-        with self._workers_lock:
-            if self._dns_monitor_thread and self._dns_monitor_thread.is_alive():
-                return  # Already running
-
-            # Initialize with current workers
-            self._current_workers = set(self.pod_ips())
-            logger.debug(f"Starting DNS monitor with {len(self._current_workers)} workers")
-
-            self._dns_monitor_running = True
-            self._dns_monitor_thread = threading.Thread(
-                target=self._monitor_worker_membership, daemon=True, name="DNSMonitor"
-            )
-            self._dns_monitor_thread.start()
-
-    def stop_dns_monitoring(self):
-        """Stop DNS monitoring thread."""
-        self._dns_monitor_running = False
-        if self._dns_monitor_thread:
-            self._dns_monitor_thread.join(timeout=2)
-            self._dns_monitor_thread = None
-
-    def _monitor_worker_membership(self):
-        """Monitor DNS for worker membership changes."""
-        check_interval = 3  # Start with 3 second checks (faster initial detection)
-
-        while self._dns_monitor_running:
-            try:
-                # Note that we start this after the delay, because we're doing a DNS check at
-                # the start of call_distributed anyway. This thread is only for the recurring checks
-                # as the call runs.
-                time.sleep(check_interval)
-
-                # Query DNS for current workers - use a faster version
-                current_ips = set(self._get_pod_ips_fast())
-
-                with self._workers_lock:
-                    if current_ips != self._current_workers:
-                        added = current_ips - self._current_workers
-                        removed = self._current_workers - current_ips
-
-                        change = {
-                            "timestamp": time.time(),
-                            "added": added,
-                            "removed": removed,
-                            "previous": self._current_workers.copy(),
-                            "current": current_ips.copy(),
-                        }
-
-                        if removed:
-                            logger.error(f"Workers REMOVED from cluster: {removed}")
-                        if added:
-                            logger.warning(f"Workers ADDED to cluster: {added}")
-
-                        # Queue change and notify subscribers
-                        self._membership_changes.put(change)
-                        for event in self._change_subscribers:
-                            event.set()
-
-                        self._current_workers = current_ips
-
-                time.sleep(check_interval)
-
-            except Exception as e:
-                logger.error(f"DNS monitor error: {e}")
-                time.sleep(3)
-
-    def subscribe_to_membership_changes(self):
-        """Subscribe to worker membership changes.
-        Returns an event that will be set when changes occur."""
-        event = threading.Event()
-        with self._workers_lock:
-            self._change_subscribers.append(event)
-        return event
-
-    def unsubscribe_from_membership_changes(self, event):
-        """Unsubscribe from worker membership changes."""
-        with self._workers_lock:
-            if event in self._change_subscribers:
-                self._change_subscribers.remove(event)
-
-    def check_for_membership_changes(self, force_dns_check=False):
-        """Check for membership changes and raise exception if any occurred.
-
-        Args:
-            force_dns_check: If True, immediately query DNS to check for changes
-                            instead of relying on the monitoring thread
-        """
-        # Skip if monitoring is disabled (e.g., for Ray)
-        if not self.monitor_members:
-            return
-        # Force an immediate DNS check if requested
-        if force_dns_check:
-            # Use fast DNS query for immediate check
-            current_ips = set(self._get_pod_ips_fast())
-            with self._workers_lock:
-                if current_ips != self._current_workers:
-                    added = current_ips - self._current_workers
-                    removed = self._current_workers - current_ips
-
-                    # Import here to avoid circular dependency
-                    from kubetorch.serving.utils import WorkerMembershipChanged
-
-                    # Update current workers
-                    self._current_workers = current_ips
-
-                    # Log the change
-                    if removed:
-                        logger.error(f"Workers REMOVED from cluster (forced check): {removed}")
-                    if added:
-                        logger.warning(f"Workers ADDED to cluster (forced check): {added}")
-
-                    raise WorkerMembershipChanged(
-                        added_ips=added,
-                        removed_ips=removed,
-                        previous_ips=self._current_workers.copy(),
-                        current_ips=current_ips,
-                    )
-
-        # Check queued changes from monitoring thread
-        try:
-            change = self._membership_changes.get_nowait()
-
-            # Import here to avoid circular dependency
-            from kubetorch.serving.utils import WorkerMembershipChanged
-
-            raise WorkerMembershipChanged(
-                added_ips=change["added"],
-                removed_ips=change["removed"],
-                previous_ips=change["previous"],
-                current_ips=change["current"],
-            )
-        except queue.Empty:
-            pass  # No changes
+        self.process_pool: Optional[ProcessPool] = None
+        self.config_hash: Optional[int] = None  # Used by factory to detect config changes
 
     def setup(self, deployed_as_of: Optional[str] = None):
-        # This method should be overridden by subclasses to set up the distributed environment
-        raise NotImplementedError("setup() must be implemented by subclasses")
+        """Set up execution environment with process pool.
+
+        Args:
+            deployed_as_of: Deployment timestamp for cache invalidation.
+        """
+        # Set multiprocessing to spawn if not already
+        if multiprocessing.get_start_method() != "spawn":
+            multiprocessing.set_start_method("spawn", force=True)
+
+        # Determine actual number of processes
+        if self.num_processes == "auto":
+            num_proc = self.process_class.get_auto_num_processes()
+        else:
+            num_proc = self.num_processes
+
+        # Restart processes if requested
+        if self.restart_procs and self.process_pool:
+            logger.debug("restart_procs is True, restarting processes")
+            self.cleanup()
+
+        # Create new pool if needed or if size changed
+        if self.process_pool is None or len(self.process_pool) != num_proc:
+            if self.process_pool:
+                logger.debug(f"Number of processes changed from {len(self.process_pool)} to {num_proc}")
+                self.cleanup()
+
+            logger.debug(f"Setting up process pool with {num_proc} processes")
+            self.process_pool = ProcessPool(
+                process_class=self.process_class,
+                num_processes=num_proc,
+                max_threads_per_proc=self.max_threads_per_proc,
+                log_queue=get_subprocess_queue(),
+                **self.process_kwargs,
+            )
+            self.process_pool.start()
+            logger.debug("Process pool started successfully")
 
     def cleanup(self):
-        """Base cleanup - stop DNS monitoring. Subclasses should call super().cleanup()"""
-        self.stop_dns_monitoring()
-        # Subclasses should override and call super().cleanup() to add their own cleanup
+        """Clean up process pool."""
+        if self.process_pool:
+            logger.debug("Cleaning up process pool")
+            self.process_pool.stop()
+            self.process_pool = None
+            logger.debug("Process pool stopped")
 
-    def intercept_call(self):
-        # This method should be overridden by subclasses to indicate whether to intercept calls
-        raise NotImplementedError("intercept_call() must be implemented by subclasses")
-
-    def call_distributed(
+    def call(
         self,
         request,
         cls_or_fn_name: str,
         method_name: Optional[str] = None,
         params: Optional[Dict] = None,
         distributed_subcall: bool = False,
-        debug_port: int = False,
+        debug_port: int = None,
         debug_mode: str = None,
         deployed_as_of: Optional[str] = None,
     ):
-        # if intercept_call is True, this method should be overridden by subclasses to handle distributing and/or
-        # supervising the distributed execution
-        raise NotImplementedError("call_distributed() must be implemented by subclasses")
+        """Execute a call through the subprocess pool.
+
+        For local execution (non-distributed), this routes the call to the first
+        subprocess. For distributed execution, subclasses override this method
+        to coordinate across multiple processes and remote workers.
+
+        Args:
+            request: The HTTP request object.
+            cls_or_fn_name: Name of the callable.
+            method_name: Method name to call (for class instances).
+            params: Parameters for the call.
+            distributed_subcall: Whether this is a subcall from another node.
+            debug_port: Port for debugger connection.
+            debug_mode: Debug mode setting.
+            deployed_as_of: Deployment timestamp.
+
+        Returns:
+            The result of the callable execution.
+        """
+        request_id = request.headers.get("X-Request-ID", "-")
+        serialization = request.headers.get("X-Serialization", "json")
+
+        # Note: If deployed_as_of is None, we pass it as-is to subprocesses.
+        # The subprocess's load_callable() will correctly skip reload when None.
+
+        # For local execution, route to the first (and typically only) subprocess
+        logger.debug(f"Routing call to subprocess: {cls_or_fn_name}.{method_name}")
+        result = self.process_pool.call(
+            idx=0,
+            method_name=method_name,
+            params=params,
+            deployed_as_of=deployed_as_of,
+            request_id=request_id,
+            distributed_env_vars={},  # No distributed env vars for local execution
+            debug_port=debug_port,
+            debug_mode=debug_mode,
+            serialization=serialization,
+        )
+
+        # Handle exceptions from subprocess
+        if isinstance(result, JSONResponse):
+            return result
+        if isinstance(result, Exception):
+            raise result
+
+        return result
