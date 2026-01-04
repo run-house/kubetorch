@@ -639,14 +639,14 @@ def load_distributed_supervisor(deployed_as_of: Optional[str] = None):
     # We don't create a supervisor if this is a distributed subprocess.
     config_hash = hash(str(distributed_config))
     if DISTRIBUTED_SUPERVISOR is None or config_hash != DISTRIBUTED_SUPERVISOR.config_hash:
-        from .distributed_utils import distributed_supervisor_factory
+        from kubetorch.serving.supervisor_factory import supervisor_factory
 
         logger.debug(f"Loading distributed supervisor with config: {distributed_config}")
         distributed_config = json.loads(distributed_config)
         # If we already have some distributed processes, we need to clean them up before creating a new supervisor.
         if DISTRIBUTED_SUPERVISOR:
             DISTRIBUTED_SUPERVISOR.cleanup()
-        DISTRIBUTED_SUPERVISOR = distributed_supervisor_factory(**distributed_config)
+        DISTRIBUTED_SUPERVISOR = supervisor_factory(**distributed_config)
         DISTRIBUTED_SUPERVISOR.config_hash = config_hash
     try:
         # If there are any errors during setup, we catch and log them, and then undo the setup
