@@ -11,7 +11,7 @@ from urllib.parse import quote
 import requests
 
 from kubetorch.logger import get_logger
-from kubetorch.servers.http.utils import is_running_in_kubernetes
+from kubetorch.serving.utils import is_running_in_kubernetes
 
 from .types import BroadcastWindow, Lifespan
 

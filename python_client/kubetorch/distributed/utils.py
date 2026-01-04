@@ -11,7 +11,7 @@ import time
 from typing import List, Optional
 
 from kubetorch.logger import get_logger
-from kubetorch.servers.http.utils import is_running_in_kubernetes
+from kubetorch.serving.utils import is_running_in_kubernetes
 
 logger = get_logger(__name__)
 

@@ -77,6 +77,6 @@ echo "$uv_pip_cmd" > .kt/kt_pip_install_cmd
 
 {% endif %}
 
-$python_bin -m uvicorn kubetorch.servers.http.http_server:app \
+$python_bin -m uvicorn kubetorch.serving.http_server:app \
     --host 0.0.0.0 \
     --port {{ server_port }}

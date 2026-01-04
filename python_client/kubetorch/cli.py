@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from kubetorch.servers.http.utils import is_running_in_kubernetes
+from kubetorch.serving.utils import is_running_in_kubernetes
 from kubetorch.utils import http_not_found
 
 from .cli_utils import (
@@ -57,7 +57,7 @@ import kubetorch.provisioning.constants as provisioning_constants
 
 from kubetorch import globals
 from kubetorch.config import ENV_MAPPINGS
-from kubetorch.servers.http.utils import DEFAULT_DEBUG_PORT
+from kubetorch.serving.utils import DEFAULT_DEBUG_PORT
 
 from .constants import BULLET_UNICODE, DEFAULT_TAIL_LENGTH, KT_MOUNT_FOLDER
 

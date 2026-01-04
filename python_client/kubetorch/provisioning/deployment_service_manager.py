@@ -12,7 +12,7 @@ from kubetorch.resources.compute.utils import (
     check_replicaset_events_for_errors,
     ServiceTimeoutError,
 )
-from kubetorch.servers.http.utils import load_template
+from kubetorch.serving.utils import load_template
 from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)

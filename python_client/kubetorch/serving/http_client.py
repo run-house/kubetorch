@@ -17,7 +17,7 @@ from kubetorch.logger import get_logger
 
 from kubetorch.provisioning.constants import DEFAULT_NGINX_PORT
 
-from kubetorch.servers.http.utils import (
+from kubetorch.serving.utils import (
     _deserialize_response,
     _serialize_body,
     generate_unique_request_id,

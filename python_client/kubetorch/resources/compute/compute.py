@@ -23,7 +23,7 @@ from kubetorch.resources.compute.utils import _get_sync_package_paths, _run_bash
 from kubetorch.resources.images.image import Image, ImageSetupStepType
 from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecretsClient
 from kubetorch.resources.volumes.volume import Volume
-from kubetorch.servers.http.utils import is_running_in_kubernetes, load_template
+from kubetorch.serving.utils import is_running_in_kubernetes, load_template
 
 from kubetorch.utils import extract_host_port, load_head_node_pod
 
@@ -2025,7 +2025,7 @@ class Compute:
 
     def _get_setup_script(self, install_url, startup_rsync_command):
         # Load the setup script template
-        from kubetorch.servers.http.utils import _get_rendered_template
+        from kubetorch.serving.utils import _get_rendered_template
 
         setup_script = _get_rendered_template(
             provisioning_constants.KT_SETUP_TEMPLATE_FILE,

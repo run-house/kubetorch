@@ -5,7 +5,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from kubetorch.servers.http.http_server import app
+from kubetorch.serving.http_server import app
 
 from .utils import _update_metadata_env_vars, load_callable_from_test_dir
 
@@ -33,7 +33,7 @@ def setup_kt_directory(test_dir):
     yield test_inputs
 
     # Clean up the DISTRIBUTED_SUPERVISOR and cached callables if they exist
-    from kubetorch.servers.http import http_server
+    from kubetorch.serving import http_server
 
     if http_server.DISTRIBUTED_SUPERVISOR:
         http_server.DISTRIBUTED_SUPERVISOR.cleanup()

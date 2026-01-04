@@ -17,7 +17,7 @@ import kubetorch.provisioning.constants as provisioning_constants
 from kubetorch import globals
 from kubetorch.logger import get_logger
 from kubetorch.resources.compute.utils import find_available_port, RsyncError
-from kubetorch.servers.http.utils import is_running_in_kubernetes
+from kubetorch.serving.utils import is_running_in_kubernetes
 
 from .key_utils import parse_key, ParsedKey
 from .metadata_client import MetadataClient

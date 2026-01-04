@@ -11,7 +11,7 @@ import httpx
 from kubetorch import globals
 from kubetorch.logger import get_logger
 from kubetorch.provisioning.constants import PROMETHEUS_SERVICE_NAME
-from kubetorch.servers.http.utils import is_running_in_kubernetes
+from kubetorch.serving.utils import is_running_in_kubernetes
 from kubetorch.utils import http_not_found
 
 logger = get_logger(__name__)
