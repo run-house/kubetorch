@@ -12,7 +12,7 @@ from kubetorch.logger import get_logger
 from kubetorch.resources.callables.module import Module
 from kubetorch.resources.compute.compute import Compute
 from kubetorch.resources.compute.utils import ServiceTimeoutError
-from kubetorch.servers.http.utils import is_running_in_kubernetes
+from kubetorch.serving.utils import is_running_in_kubernetes
 from kubetorch.utils import get_kt_install_url
 
 logger = get_logger(__name__)

@@ -21,12 +21,8 @@ from kubetorch.resources.compute.utils import (
     load_configmaps,
     VersionMismatchError,
 )
-from kubetorch.servers.http.http_client import HTTPClient
-from kubetorch.servers.http.utils import (
-    clean_and_validate_k8s_name,
-    generate_unique_request_id,
-    is_running_in_kubernetes,
-)
+from kubetorch.serving.http_client import HTTPClient
+from kubetorch.serving.utils import clean_and_validate_k8s_name, generate_unique_request_id, is_running_in_kubernetes
 from kubetorch.utils import (
     ColoredFormatter,
     extract_host_port,

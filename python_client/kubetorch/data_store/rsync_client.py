@@ -21,7 +21,7 @@ import kubetorch.provisioning.constants as provisioning_constants
 from kubetorch import globals
 from kubetorch.logger import get_logger
 from kubetorch.resources.compute.utils import _get_rsync_exclude_options, RsyncError
-from kubetorch.servers.http.utils import is_running_in_kubernetes
+from kubetorch.serving.utils import is_running_in_kubernetes
 from kubetorch.utils import http_to_ws
 
 from .websocket_tunnel import TunnelManager

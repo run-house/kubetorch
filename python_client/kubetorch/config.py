@@ -49,7 +49,7 @@ class KubetorchConfig:
     def current_context(self):
         """Get the namespace from the current kubernetes context."""
         try:
-            from kubetorch.servers.http.utils import is_running_in_kubernetes
+            from kubetorch.serving.utils import is_running_in_kubernetes
 
             if is_running_in_kubernetes():
                 try:
