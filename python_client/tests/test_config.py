@@ -44,8 +44,8 @@ def test_config_set_invalid_username():
     config.set("username", "01-test-user")
     assert config.username == "test-user"
 
-    with pytest.raises(ValueError):
-        config.set("username", "test.user-2")
+    config.set("username", "test.user-2")
+    assert config.username == "test-user-2"
 
     with pytest.raises(ValueError):
         config.set("username", "usern@me")

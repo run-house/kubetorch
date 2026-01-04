@@ -41,7 +41,7 @@ def validate_username(username):
         return username
     # Kubernetes requires service names to follow DNS-1035 label standards
     original_username = username  # if an exception is raised because the username is invalid, we want to print the original provided name
-    username = username.lower().replace("_", "-").replace("/", "-")
+    username = username.lower().replace("_", "-").replace("/", "-").replace(".", "-")
     # Make sure the first character is a letter
     if not re.match(r"^[a-z]", username):
         # Strip out all the characters before the first letter with a regex
