@@ -132,7 +132,7 @@ class GPUTransferManager:
 
         self.namespace = namespace or globals.config.namespace
 
-        from kubetorch.serving.constants import DATA_STORE_METADATA_PORT
+        from kubetorch.provisioning.constants import DATA_STORE_METADATA_PORT
 
         from .metadata_client import MetadataClient
 

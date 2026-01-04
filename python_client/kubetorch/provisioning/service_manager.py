@@ -2,11 +2,11 @@
 from kubetorch.logger import get_logger
 
 # Import all service managers for backward compatibility and centralized access
-from kubetorch.serving.base_service_manager import BaseServiceManager
-from kubetorch.serving.deployment_service_manager import DeploymentServiceManager
-from kubetorch.serving.knative_service_manager import KnativeServiceManager
-from kubetorch.serving.raycluster_service_manager import RayClusterServiceManager
-from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+from kubetorch.provisioning.base_service_manager import BaseServiceManager
+from kubetorch.provisioning.deployment_service_manager import DeploymentServiceManager
+from kubetorch.provisioning.knative_service_manager import KnativeServiceManager
+from kubetorch.provisioning.raycluster_service_manager import RayClusterServiceManager
+from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
 
 # Export all service managers
 __all__ = [

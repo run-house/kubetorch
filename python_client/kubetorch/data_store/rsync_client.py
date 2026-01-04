@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import List, Optional, Union
 from urllib.parse import urlparse
 
-import kubetorch.serving.constants as serving_constants
+import kubetorch.provisioning.constants as provisioning_constants
 
 from kubetorch import globals
 from kubetorch.logger import get_logger
@@ -59,7 +59,7 @@ class RsyncClient:
     def get_rsync_pod_url(self) -> str:
         """Get the data store pod service URL."""
         # Service is in the same namespace as the data
-        return f"rsync://{serving_constants.DATA_STORE_SERVICE_NAME}.{self.namespace}.svc.cluster.local:{serving_constants.REMOTE_RSYNC_PORT}/data/{self.namespace}/{self.service_name}/"
+        return f"rsync://{provisioning_constants.DATA_STORE_SERVICE_NAME}.{self.namespace}.svc.cluster.local:{provisioning_constants.REMOTE_RSYNC_PORT}/data/{self.namespace}/{self.service_name}/"
 
     def get_base_rsync_url(self, local_port: int) -> str:
         """Get the base rsync URL for local connections."""
@@ -67,7 +67,7 @@ class RsyncClient:
 
     def get_websocket_info(self, local_port: Optional[int] = None) -> tuple:
         """Get websocket connection info for rsync tunnel."""
-        rsync_local_port = local_port or serving_constants.LOCAL_NGINX_PORT
+        rsync_local_port = local_port or provisioning_constants.LOCAL_NGINX_PORT
         base_url = globals.service_url()
 
         ws_url = f"{http_to_ws(base_url)}/rsync/{self.namespace}/"

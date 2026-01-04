@@ -10,10 +10,10 @@ For full Kueue integration testing, install Kueue and the resources from:
 """
 
 import kubetorch as kt
-import kubetorch.serving.constants as serving_constants
+import kubetorch.provisioning.constants as provisioning_constants
 import pytest
 
-QUEUE_LABEL = serving_constants.KUEUE_QUEUE_NAME_LABEL
+QUEUE_LABEL = provisioning_constants.KUEUE_QUEUE_NAME_LABEL
 
 
 @pytest.mark.level("unit")

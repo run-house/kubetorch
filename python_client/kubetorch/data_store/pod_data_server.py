@@ -1395,7 +1395,7 @@ class PodDataServer:
         if self._mds_base_url is None:
             if not self._namespace:
                 raise RuntimeError("KT_NAMESPACE environment variable not set")
-            from kubetorch.serving.constants import DATA_STORE_METADATA_PORT
+            from kubetorch.provisioning.constants import DATA_STORE_METADATA_PORT
 
             service_name = "kubetorch-data-store"
             self._mds_base_url = f"http://{service_name}.{self._namespace}.svc.cluster.local:{DATA_STORE_METADATA_PORT}"

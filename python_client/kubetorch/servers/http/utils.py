@@ -22,7 +22,7 @@ import yaml
 
 from kubetorch.constants import LOCALHOST
 from kubetorch.logger import get_logger
-from kubetorch.serving.constants import DEFAULT_DEBUG_PORT
+from kubetorch.provisioning.constants import DEFAULT_DEBUG_PORT
 from kubetorch.utils import ServerLogsFormatter
 
 logger = get_logger(__name__)

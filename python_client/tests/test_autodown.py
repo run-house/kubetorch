@@ -1,7 +1,7 @@
 import os
 
 import kubetorch.globals
-import kubetorch.serving.constants as serving_constants
+import kubetorch.provisioning.constants as provisioning_constants
 import pytest
 
 from .utils import create_random_name_prefix, simple_summer
@@ -35,12 +35,12 @@ def test_autodown_annotation():
     assert service
 
     # Check that the service has the autodown annotation
-    assert service["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] is not None
-    assert service["metadata"]["annotations"][serving_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
+    assert service["metadata"]["labels"][provisioning_constants.KT_MODULE_LABEL] is not None
+    assert service["metadata"]["annotations"][provisioning_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
 
     # Check that the namespace is in the watch namespaces
     cronjob_configmap = controller.get_config_map(
-        name=serving_constants.TTL_CONTROLLER_CONFIGMAP_NAME,
+        name=provisioning_constants.TTL_CONTROLLER_CONFIGMAP_NAME,
         namespace=kubetorch.globals.config.install_namespace,
     )
     assert namespace in cronjob_configmap["data"]["WATCH_NAMESPACES"].split(",")
@@ -79,25 +79,25 @@ def test_autodown_deployment():
     assert kt_otel_env["value"] == "True"
 
     # Check that the service has the autodown annotation
-    assert service["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] is not None
-    assert service["metadata"]["annotations"][serving_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
+    assert service["metadata"]["labels"][provisioning_constants.KT_MODULE_LABEL] is not None
+    assert service["metadata"]["annotations"][provisioning_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
 
     # Check that the new app and deployment-id labels exist on the pod
     pod_labels = pod["metadata"]["labels"]
-    assert pod_labels.get(serving_constants.KT_APP_LABEL) == remote_fn.service_name
-    assert pod_labels.get(serving_constants.KT_DEPLOYMENT_ID_LABEL) is not None
-    assert pod_labels.get(serving_constants.KT_DEPLOYMENT_ID_LABEL).startswith(remote_fn.service_name)
+    assert pod_labels.get(provisioning_constants.KT_APP_LABEL) == remote_fn.service_name
+    assert pod_labels.get(provisioning_constants.KT_DEPLOYMENT_ID_LABEL) is not None
+    assert pod_labels.get(provisioning_constants.KT_DEPLOYMENT_ID_LABEL).startswith(remote_fn.service_name)
 
     # Check that the Deployment also has the new labels
     deployment = controller.get_deployment(name=remote_fn.service_name, namespace=namespace)
     deployment_labels = deployment["metadata"]["labels"]
-    assert deployment_labels.get(serving_constants.KT_APP_LABEL) == remote_fn.service_name
-    assert deployment_labels.get(serving_constants.KT_DEPLOYMENT_ID_LABEL) is not None
-    assert deployment_labels.get(serving_constants.KT_DEPLOYMENT_ID_LABEL).startswith(remote_fn.service_name)
+    assert deployment_labels.get(provisioning_constants.KT_APP_LABEL) == remote_fn.service_name
+    assert deployment_labels.get(provisioning_constants.KT_DEPLOYMENT_ID_LABEL) is not None
+    assert deployment_labels.get(provisioning_constants.KT_DEPLOYMENT_ID_LABEL).startswith(remote_fn.service_name)
 
     # Check that the namespace is in the watch namespaces
     cronjob_configmap = controller.get_config_map(
-        name=serving_constants.TTL_CONTROLLER_CONFIGMAP_NAME,
+        name=provisioning_constants.TTL_CONTROLLER_CONFIGMAP_NAME,
         namespace=kubetorch.globals.config.install_namespace,
     )
     assert namespace in cronjob_configmap["data"]["WATCH_NAMESPACES"].split(",")
@@ -144,14 +144,14 @@ def test_autodown_raycluster():
     assert kt_otel_env["value"] == "True"
 
     # Check that the service has the autodown annotation
-    assert service["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] is not None
-    assert service["metadata"]["annotations"][serving_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
+    assert service["metadata"]["labels"][provisioning_constants.KT_MODULE_LABEL] is not None
+    assert service["metadata"]["annotations"][provisioning_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
 
     # Check that the new app and deployment-id labels exist on the pod
     pod_labels = pod["metadata"]["labels"]
-    assert pod_labels.get(serving_constants.KT_APP_LABEL) == remote_fn.service_name
-    assert pod_labels.get(serving_constants.KT_DEPLOYMENT_ID_LABEL) is not None
-    assert pod_labels.get(serving_constants.KT_DEPLOYMENT_ID_LABEL).startswith(remote_fn.service_name)
+    assert pod_labels.get(provisioning_constants.KT_APP_LABEL) == remote_fn.service_name
+    assert pod_labels.get(provisioning_constants.KT_DEPLOYMENT_ID_LABEL) is not None
+    assert pod_labels.get(provisioning_constants.KT_DEPLOYMENT_ID_LABEL).startswith(remote_fn.service_name)
 
 
 @pytest.mark.skip("Long running test, skipping for now")
@@ -194,6 +194,6 @@ def test_autodown_custom_image():
     assert kt_otel_env["value"] == "True"
 
     # Check that the service has the autodown annotation
-    assert service["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] is not None
+    assert service["metadata"]["labels"][provisioning_constants.KT_MODULE_LABEL] is not None
     assert service["metadata"]["labels"]["KT_METRICS_ENABLED"] == "True"
-    assert service["metadata"]["annotations"][serving_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
+    assert service["metadata"]["annotations"][provisioning_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl

@@ -15,14 +15,14 @@ import websockets
 from kubetorch.globals import config, LoggingConfig, MetricsConfig, service_url
 from kubetorch.logger import get_logger
 
+from kubetorch.provisioning.constants import DEFAULT_NGINX_PORT
+
 from kubetorch.servers.http.utils import (
     _deserialize_response,
     _serialize_body,
     generate_unique_request_id,
     request_id_ctx_var,
 )
-
-from kubetorch.serving.constants import DEFAULT_NGINX_PORT
 from kubetorch.utils import ColoredFormatter, extract_host_port, ServerLogsFormatter
 
 logger = get_logger(__name__)

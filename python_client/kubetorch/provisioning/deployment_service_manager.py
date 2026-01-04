@@ -2,8 +2,10 @@ import os
 import time
 from typing import List
 
-import kubetorch.serving.constants as serving_constants
+import kubetorch.provisioning.constants as provisioning_constants
 from kubetorch.logger import get_logger
+from kubetorch.provisioning.base_service_manager import BaseServiceManager
+from kubetorch.provisioning.utils import nested_override
 from kubetorch.resources.compute.utils import (
     check_pod_events_for_errors,
     check_pod_status_for_errors,
@@ -11,8 +13,6 @@ from kubetorch.resources.compute.utils import (
     ServiceTimeoutError,
 )
 from kubetorch.servers.http.utils import load_template
-from kubetorch.serving.base_service_manager import BaseServiceManager
-from kubetorch.serving.utils import nested_override
 from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)
@@ -49,7 +49,7 @@ class DeploymentServiceManager(BaseServiceManager):
 
         # Template labels (exclude kt template label)
         template_labels = labels.copy()
-        template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+        template_labels.pop(provisioning_constants.KT_TEMPLATE_LABEL, None)
 
         annotations = cls._get_annotations(
             service_annotations=None,
@@ -59,7 +59,7 @@ class DeploymentServiceManager(BaseServiceManager):
 
         # Create Deployment manifest
         deployment = load_template(
-            template_file=serving_constants.DEPLOYMENT_TEMPLATE_FILE,
+            template_file=provisioning_constants.DEPLOYMENT_TEMPLATE_FILE,
             template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
             name="",  # Will be set during launch
             namespace=namespace,
@@ -89,8 +89,8 @@ class DeploymentServiceManager(BaseServiceManager):
         )
 
         deployment["spec"].setdefault("selector", {}).setdefault("matchLabels", {})
-        deployment["spec"]["selector"]["matchLabels"][serving_constants.KT_SERVICE_LABEL] = service_name
-        deployment["spec"]["selector"]["matchLabels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
+        deployment["spec"]["selector"]["matchLabels"][provisioning_constants.KT_SERVICE_LABEL] = service_name
+        deployment["spec"]["selector"]["matchLabels"][provisioning_constants.KT_MODULE_LABEL] = clean_module_name
 
         return deployment
 
@@ -105,13 +105,13 @@ class DeploymentServiceManager(BaseServiceManager):
 
         # Service labels (exclude kt template label)
         service_labels = labels.copy()
-        service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+        service_labels.pop(provisioning_constants.KT_TEMPLATE_LABEL, None)
 
         dryrun = kwargs.get("dry_run")
         try:
             # Create regular service for client access
             service = load_template(
-                template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
+                template_file=provisioning_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
                 template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
                 name=service_name,
                 namespace=self.namespace,
@@ -136,7 +136,7 @@ class DeploymentServiceManager(BaseServiceManager):
             # Create headless service for distributed pod discovery (only if distributed)
             if self.is_distributed(manifest):
                 headless_service = load_template(
-                    template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
+                    template_file=provisioning_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
                     template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
                     name=f"{service_name}-headless",
                     namespace=self.namespace,

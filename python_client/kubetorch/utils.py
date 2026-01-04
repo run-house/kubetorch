@@ -308,7 +308,7 @@ def http_conflict(e: Exception) -> bool:
 
 def get_container_name(kind: str = None) -> str:
     """Get the container name for the service based on its kind."""
-    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+    from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
 
     if kind and kind in TrainJobServiceManager.SUPPORTED_KINDS:
         config = TrainJobServiceManager._get_config(kind)
