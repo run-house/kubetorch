@@ -28,9 +28,9 @@ from .cli_utils import (
     default_typer_values,
     follow_logs_in_cli,
     generate_logs_query,
-    get_deployment_mode,
     get_ingress_host,
     get_last_updated,
+    get_service_info,
     is_ingress_vpc_only,
     load_ingress,
     load_kubetorch_volumes_from_pods,
@@ -42,7 +42,6 @@ from .cli_utils import (
     SecretAction,
     service_name_argument,
     validate_config_key,
-    validate_pods_exist,
     VolumeAction,
 )
 
@@ -147,18 +146,12 @@ def kt_check(
         raise typer.Exit(1)
 
     # --------------------------------------------------
-    # 1. Determine mode
+    # 1. Determine mode and get pods (single API call)
     # --------------------------------------------------
-    name, deployment_mode = get_deployment_mode(name, namespace)
+    name, deployment_mode, pods, full_status = get_service_info(name, namespace, require_pods=False)
 
     console.print(f"[bold blue]Checking {deployment_mode} service...[/bold blue]")
-
-    # --------------------------------------------------
-    # 2. Get pods
-    # --------------------------------------------------
     console.print("[bold blue]Checking deployment pod...[/bold blue]")
-
-    pods = validate_pods_exist(name, namespace)  # returns dicts now, we assume it
 
     if not pods:
         if deployment_mode == "knative":
@@ -615,7 +608,7 @@ def kt_describe(
     args_placeholder = []
 
     try:
-        name, deployment_mode = get_deployment_mode(name, namespace)
+        name, deployment_mode, _, _ = get_service_info(name, namespace, require_pods=False)
     except Exception:
         console.print(f"[red] Failed to load service '{name}' in namespace '{namespace}'[/red]")
         raise typer.Exit(1)
@@ -793,7 +786,7 @@ def kt_list(
         pod_map = {}
         for svc in unified_services:
             if svc["template_type"] == "selector":
-                # For selector-based pools, use actual pods from K8s (found via selector)
+                # For selector-based resources, use actual pods from K8s (found via selector)
                 pod_map[svc["name"]] = svc["resource"].get("_pods", [])
             else:
                 pod_map[svc["name"]] = [
@@ -867,7 +860,7 @@ def kt_list(
                     except Exception as e:
                         logger.warning(f"Could not get resources from pod for {name}: {e}")
             elif kind == "selector":
-                # Selector-based pools: status based on actual pods found via selector
+                # Selector-based resources: status based on actual pods found via selector
                 num_pods = len(pods)
                 has_selector = bool(res.get("_selector"))
                 if num_pods > 0:
@@ -901,7 +894,7 @@ def kt_list(
                         memory = reqs.get("memory")
                         gpu = reqs.get("nvidia.com/gpu") or reqs.get("gpu")
                     except Exception as e:
-                        logger.warning(f"Failed to get resources for selector pool {name}: {e}")
+                        logger.warning(f"Failed to get resources for resource {name}: {e}")
                 elif has_selector:
                     display_status = "[yellow]No pods[/yellow]"
                 else:
@@ -1041,8 +1034,8 @@ def kt_port_forward(
         console.print(f"\n[red]Local port {local_port} is already in use.[/red]")
         raise typer.Exit(1)
 
-    name, _ = get_deployment_mode(name, namespace)
-    pods = validate_pods_exist(name, namespace)
+    # Single API call to get service info and pods
+    name, _, pods, _ = get_service_info(name, namespace, require_pods=True)
 
     if not pods:
         console.print(f"[red]No pods found for service {name}[/red]")
@@ -1403,11 +1396,8 @@ def kt_ssh(
     from kubetorch.provisioning.utils import pod_is_running
 
     try:
-        # Validate service exists and get deployment mode
-        name, deployment_mode = get_deployment_mode(name, namespace)
-
-        # Get and validate pods
-        pods = validate_pods_exist(name, namespace)
+        # Single API call to get service info and pods
+        name, deployment_mode, pods, _ = get_service_info(name, namespace, require_pods=True)
 
         # case when the user provides a specific pod to ssh into
         if pod:
@@ -2092,13 +2082,9 @@ def kt_logs(
     """
 
     console.print(f"Looking for service [blue]{name}[/blue]...")
-
-    # Validate service exists and get deployment mode
-    name, deployment_mode = get_deployment_mode(name, namespace)
+    name, deployment_mode, pods, _ = get_service_info(name, namespace, require_pods=True)
 
     try:
-        # Get pods using the correct label selector for the deployment mode
-        pods = validate_pods_exist(name, namespace)
         sorted_by_time = sorted(pods, key=lambda p: p.get("metadata", {}).get("creationTimestamp", "9999"))
 
         if pod:

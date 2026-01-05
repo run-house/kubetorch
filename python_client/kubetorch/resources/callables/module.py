@@ -245,7 +245,7 @@ class Module:
             if service_info is None:
                 continue
 
-            # Skip selector-based pools - they don't have template for reload
+            # Skip selector-based resources - they don't have template for reload
             if service_info.get("template_type") == "selector":
                 continue
 
@@ -654,7 +654,7 @@ class Module:
             # Generate dockerfile (module metadata sent via controller WebSocket)
             dockerfile = self._get_service_dockerfile()
 
-            # Build module spec for pool registration
+            # Build module spec for resource registration
             dispatch = self.compute.dispatch_method
 
             module_metadata = {
@@ -729,7 +729,7 @@ class Module:
             # Generate dockerfile (module metadata sent via controller WebSocket)
             dockerfile = self._get_service_dockerfile()
 
-            # Build module spec for pool registration
+            # Build module spec for resource registration
             dispatch = self.compute.dispatch_method
 
             module_metadata = {

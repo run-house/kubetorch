@@ -141,36 +141,82 @@ def service_name_argument(*args, required: bool = True, **kwargs):
     return typer.Argument(default, callback=_lowercase, *args, **kwargs)
 
 
-def get_deployment_mode(name: str, namespace: str) -> str:
-    """Validate service exists and return deployment mode."""
-    try:
-        original_name = name
-        deployment_mode = detect_deployment_mode(name, namespace)
-        # If service not found and not already prefixed with username, try with username prefix
-        if not deployment_mode and globals.config.username and not name.startswith(globals.config.username + "-"):
-            name = f"{globals.config.username}-{name}"
-            deployment_mode = detect_deployment_mode(name, namespace)
+def get_service_info(name: str, namespace: str, require_pods: bool = True):
+    """Get service info (mode, pods, status) from a single consolidated API call.
 
-        if not deployment_mode:
-            console.print(f"[red]Failed to load service [bold]{original_name}[/bold] in namespace {namespace}[/red]")
-            raise typer.Exit(1)
-        console.print(f"Found [green]{deployment_mode}[/green] service [blue]{name}[/blue]")
-        return name, deployment_mode
+    Uses the service_status endpoint which returns resource type, pods, and status
+    in one call instead of multiple separate K8s API calls.
 
-    except Exception as e:
-        console.print(f"[red]{e}[/red]")
+    Args:
+        name (str): Service name (will try with username prefix if not found)
+        namespace (str): Kubernetes namespace
+        require_pods (bool, optional): If True, exit with error if no pods found
+
+    Returns:
+        Tuple of (resolved_name, deployment_mode, pods, full_status)
+        - resolved_name: The actual service name (may have username prefix)
+        - deployment_mode: Resource type (deployment, knative, raycluster, etc.)
+        - pods: List of pod dicts with full K8s pod spec (converted from PodInfo)
+        - full_status: Complete service_status response
+    """
+    controller_client = globals.controller_client()
+    original_name = name
+
+    def try_get_status(svc_name):
+        try:
+            service_status = controller_client.service_status(namespace=namespace, name=svc_name)
+            if service_status and service_status.get("resource_type"):
+                return service_status
+        except Exception as e:
+            if http_not_found(e):
+                return None
+            logger.debug(f"Failed to load service status for {svc_name}: {e}")
+        return None
+
+    # Try the name as-is first
+    status = try_get_status(name)
+
+    # If not found and not already prefixed with username, try with username prefix
+    if not status and globals.config.username and not name.startswith(globals.config.username + "-"):
+        name = f"{globals.config.username}-{name}"
+        status = try_get_status(name)
+
+    if not status or not status.get("resource_type"):
+        console.print(f"[red]Failed to load service [bold]{original_name}[/bold] in namespace {namespace}[/red]")
         raise typer.Exit(1)
 
+    deployment_mode = status["resource_type"]
+    console.print(f"Found [green]{deployment_mode}[/green] service [blue]{name}[/blue]")
 
-def validate_pods_exist(name: str, namespace: str) -> list:
-    """Validate pods exist for service and return pod list."""
-    result = get_pods_for_service_cli(name, namespace)
-    pods = result.get("items", [])
-    if not pods:
+    # Convert PodInfo from `service_status` to full pod dicts for compatibility
+    pods_info = status.get("pods", [])
+
+    if require_pods and not pods_info:
         console.print(f"\n[red]No pods found for service {name} in namespace {namespace}[/red]")
         console.print(f"You can view the service's status using:\n [yellow]  kt status {name}[/yellow]")
         raise typer.Exit(1)
-    return pods
+
+    # Convert PodInfo to pod-like dicts for BC
+    pods = []
+    for pod_info in pods_info:
+        pods.append(
+            {
+                "metadata": {
+                    "name": pod_info.get("name"),
+                    "creationTimestamp": pod_info.get("created_at"),
+                },
+                "spec": {
+                    "nodeName": pod_info.get("node"),
+                },
+                "status": {
+                    "phase": pod_info.get("phase"),
+                    "podIP": pod_info.get("ip"),
+                    "conditions": [{"type": "Ready", "status": "True" if pod_info.get("ready") else "False"}],
+                },
+            }
+        )
+
+    return name, deployment_mode, pods, status
 
 
 @contextmanager
@@ -878,22 +924,6 @@ def get_ingress_host(ingress):
         return ingress.spec.rules[0].host
     except Exception:
         return None
-
-
-def detect_deployment_mode(name: str, namespace: str):
-    controller_client = globals.controller_client()
-    resources = controller_client.discover_resources(namespace=namespace, name_filter=name)
-    # extract resource_kind from the controller DB
-    for pool in resources.get("pools", []):
-        if pool.get("name") == name:
-            resource_kind = pool.get("resource_kind", "")
-            if resource_kind:
-                kind_lower = resource_kind.lower()
-                if kind_lower == "knativeservice":
-                    return "knative"
-                return kind_lower
-
-    return None
 
 
 def load_selected_pod(service_name, provided_pod, service_pods):

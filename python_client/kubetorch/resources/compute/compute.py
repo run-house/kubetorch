@@ -190,7 +190,7 @@ class Compute:
 
         if selector and not any([cpus, memory, disk_size, gpus, gpu_type, gpu_memory]):
             # Selector-only mode: user provides only a selector for existing pods
-            # No manifest is built - just register pool and create service
+            # No manifest is built - just register resource and create service
             self._namespace = namespace or globals.config.namespace
             return
 
@@ -285,7 +285,7 @@ class Compute:
                      Example: {"app": "my-workers", "team": "ml"}
             endpoint: Custom endpoint configuration for routing calls to pods.
                      Use ``Endpoint(url="...")`` for your own Service/Ingress, or
-                     ``Endpoint(selector={...})`` to route to a subset of pool pods.
+                     ``Endpoint(selector={...})`` to route to a subset of resource pods.
 
         Returns:
             Compute instance
@@ -313,10 +313,10 @@ class Compute:
                 endpoint=kt.Endpoint(url="my-svc.my-ns.svc.cluster.local:8080")
             )
 
-            # Route to subset of pool (e.g., head node only)
+            # Route to subset of resource (e.g., head node only)
             compute = kt.Compute.from_manifest(
                 manifest=ray_manifest,
-                selector={"app": "ray"},  # Pool: all ray pods
+                selector={"app": "ray"},  # resource: all ray pods
                 endpoint=kt.Endpoint(selector={"app": "ray", "role": "head"})  # Route: head only
             )
         """

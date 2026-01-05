@@ -846,6 +846,44 @@ class ControllerClient:
         """Get WebSocket connection debug info (connected pods for each pool)."""
         return self.get("/controller/debug/connections")
 
+    def service_status(self, namespace: str, name: str, resource_type: str = None) -> Dict[str, Any]:
+        """Get consolidated status for a service.
+
+        Returns all relevant info about a service in a single call:
+        - Main K8s resource (Deployment/Knative/RayCluster/etc.)
+        - Associated pods with their status
+        - K8s Service info
+        - Resource registration info
+        - Recent K8s events
+
+        Args:
+            namespace (str): Kubernetes namespace
+            name (str): Service name
+            resource_type (str, optional): Type of resource (deployment, knative, raycluster, etc.)
+                If not provided, auto-detected by the controller.
+
+        Returns:
+            ServiceStatusResponse with comprehensive service status including:
+            - ready: bool
+            - message: str
+            - resource: dict (full K8s resource)
+            - resource_type: str (detected or provided)
+            - pods: list of pod info
+            - events: list of recent events
+            - pool: pool info from controller database
+        """
+        params = {}
+        if resource_type is not None:
+            params["resource_type"] = resource_type
+        return self.get(
+            f"/controller/discover/{namespace}/{name}/status",
+            params=params if params else None,
+        )
+
+    def get_watchers(self) -> Dict[str, Any]:
+        """Get pod watcher debug info (IPs being tracked for each pool)."""
+        return self.get("/controller/debug/watchers")
+
     def discover_resources(
         self,
         namespace: str,
