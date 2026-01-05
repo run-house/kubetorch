@@ -805,6 +805,3 @@ def controller_client() -> ControllerClient:
         health_endpoint=DEFAULT_NGINX_HEALTH_ENDPOINT,
     )
     return ControllerClient(base_url=base_url)
-
-
-# added a comment to trigger CI
