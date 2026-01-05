@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import json
-import os
 import threading
 import time
 import urllib.parse
@@ -13,7 +12,7 @@ import httpx
 import requests
 import websockets
 
-from kubetorch.globals import config, DebugConfig, LoggingConfig, MetricsConfig, service_url
+from kubetorch.globals import config, LoggingConfig, MetricsConfig, service_url
 from kubetorch.logger import get_logger
 
 from kubetorch.servers.http.utils import (
@@ -23,7 +22,7 @@ from kubetorch.servers.http.utils import (
     request_id_ctx_var,
 )
 
-from kubetorch.serving.constants import DEFAULT_DEBUG_PORT, DEFAULT_NGINX_PORT
+from kubetorch.serving.constants import DEFAULT_NGINX_PORT
 from kubetorch.utils import ColoredFormatter, extract_host_port, ServerLogsFormatter
 
 logger = get_logger(__name__)
@@ -314,10 +313,8 @@ class HTTPClient:
         stream_logs: bool,
         stream_metrics: Union[bool, MetricsConfig, None],
         headers: dict,
-        pdb: Union[bool, int],
         serialization: str,
         logging_config: LoggingConfig,
-        debug: Union[bool, DebugConfig, None] = None,
     ):
         metrics_config = MetricsConfig()
         if isinstance(stream_metrics, MetricsConfig):
@@ -325,49 +322,6 @@ class HTTPClient:
             stream_metrics = True
         elif stream_metrics is None:
             stream_metrics = config.stream_metrics if config.stream_metrics is not None else True
-
-        # Handle debug parameter (new) or pdb parameter (backward compatibility)
-        # Add deprecation warning for pdb parameter
-        if pdb:
-            import warnings
-
-            warnings.warn(
-                "The 'pdb' parameter is deprecated and will be removed in a future version. "
-                "Please use 'debug' parameter instead.",
-                DeprecationWarning,
-                stacklevel=3,
-            )
-
-        # debug parameter takes precedence over pdb
-        if debug is not None:
-            if isinstance(debug, DebugConfig):
-                debug_port = debug.port
-                debug_mode = debug.mode
-            elif isinstance(debug, bool):
-                if debug:
-                    debug_port = DEFAULT_DEBUG_PORT
-                    # Get debug mode from environment, default to "pdb"
-                    debug_mode = os.getenv("KT_DEBUG_MODE", "pdb").lower()
-                else:
-                    debug_port = None
-                    debug_mode = None
-            else:
-                raise ValueError(
-                    f"debug parameter must be a bool or DebugConfig instance, got {type(debug).__name__}. "
-                    "Use debug=True or debug=kt.DebugConfig(port=..., mode=...) instead."
-                )
-        elif pdb:
-            # Backward compatibility with pdb parameter
-            debug_port = DEFAULT_DEBUG_PORT if isinstance(pdb, bool) else pdb
-            debug_mode = os.getenv("KT_DEBUG_MODE", "pdb").lower()
-        else:
-            debug_port = None
-            debug_mode = None
-
-        if debug_port:
-            endpoint += f"?debug_port={debug_port}"
-            if debug_mode:
-                endpoint += f"&debug_mode={debug_mode}"
 
         request_id = request_id_ctx_var.get("-")
         if request_id == "-":
@@ -399,10 +353,8 @@ class HTTPClient:
         stream_logs: bool,
         stream_metrics: Union[bool, MetricsConfig, None],
         headers: dict,
-        pdb: Union[bool, int],
         serialization: str,
         logging_config: LoggingConfig,
-        debug: Union[bool, DebugConfig, None] = None,
     ):
         """Async version of _prepare_request that uses asyncio.Event and tasks instead of threads"""
         metrics_config = MetricsConfig()
@@ -411,48 +363,6 @@ class HTTPClient:
             stream_metrics = True
         elif stream_metrics is None:
             stream_metrics = config.stream_metrics if config.stream_metrics is not None else True
-
-        # Handle debug parameter (new) or pdb parameter (backward compatibility)
-        # Add deprecation warning for pdb parameter
-        if pdb:
-            import warnings
-
-            warnings.warn(
-                "The 'pdb' parameter is deprecated and will be removed in a future version. "
-                "Please use 'debug' parameter instead.",
-                DeprecationWarning,
-                stacklevel=3,
-            )
-
-        # debug parameter takes precedence over pdb
-        if debug is not None:
-            if isinstance(debug, DebugConfig):
-                debug_port = debug.port
-                debug_mode = debug.mode
-            elif isinstance(debug, bool):
-                if debug:
-                    debug_port = DEFAULT_DEBUG_PORT
-                    debug_mode = os.getenv("KT_DEBUG_MODE", "pdb").lower()
-                else:
-                    debug_port = None
-                    debug_mode = None
-            else:
-                raise ValueError(
-                    f"debug parameter must be a bool or DebugConfig instance, got {type(debug).__name__}. "
-                    "Use debug=True or debug=kt.DebugConfig(port=..., mode=...) instead."
-                )
-        elif pdb:
-            # Backward compatibility with pdb parameter
-            debug_port = DEFAULT_DEBUG_PORT if isinstance(pdb, bool) else pdb
-            debug_mode = os.getenv("KT_DEBUG_MODE", "pdb").lower()
-        else:
-            debug_port = None
-            debug_mode = None
-
-        if debug_port:
-            endpoint += f"?debug_port={debug_port}"
-            if debug_mode:
-                endpoint += f"&debug_mode={debug_mode}"
 
         request_id = request_id_ctx_var.get("-")
         if request_id == "-":
@@ -1081,13 +991,16 @@ class HTTPClient:
         stream_metrics: Union[bool, MetricsConfig, None] = None,
         body: dict = None,
         headers: dict = None,
-        pdb: Union[bool, int] = None,
         serialization: str = "json",
-        debug: Union[bool, DebugConfig, None] = None,
     ):
-        (endpoint, headers, stop_event, log_thread, metrics_thread, _,) = self._prepare_request(
-            endpoint, stream_logs, stream_metrics, headers, pdb, serialization, logging_config, debug
-        )
+        (
+            endpoint,
+            headers,
+            stop_event,
+            log_thread,
+            metrics_thread,
+            _,
+        ) = self._prepare_request(endpoint, stream_logs, stream_metrics, headers, serialization, logging_config)
         try:
             json_data = _serialize_body(body, serialization)
             response = self.post(endpoint=endpoint, json=json_data, headers=headers)
@@ -1107,14 +1020,17 @@ class HTTPClient:
         stream_metrics: Union[bool, MetricsConfig, None] = None,
         body: dict = None,
         headers: dict = None,
-        pdb: Union[bool, int] = None,
         serialization: str = "json",
-        debug: Union[bool, DebugConfig, None] = None,
     ):
         """Async version of call_method."""
-        (endpoint, headers, stop_event, log_task, monitoring_task, _,) = self._prepare_request_async(
-            endpoint, stream_logs, stream_metrics, headers, pdb, serialization, logging_config, debug
-        )
+        (
+            endpoint,
+            headers,
+            stop_event,
+            log_task,
+            monitoring_task,
+            _,
+        ) = self._prepare_request_async(endpoint, stream_logs, stream_metrics, headers, serialization, logging_config)
         try:
             json_data = _serialize_body(body, serialization)
             response = await self.post_async(endpoint=endpoint, json=json_data, headers=headers)

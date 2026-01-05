@@ -1223,8 +1223,6 @@ async def run_callable(
     cls_or_fn_name: str,
     method_name: Optional[str] = None,
     distributed_subcall: bool = Query(False),
-    debug_port: Optional[int] = Query(None),
-    debug_mode: Optional[str] = Query(None),
     params: Optional[Union[Dict, str]] = Body(default=None),
     deployed_as_of: Optional[str] = Header(None, alias="X-Deployed-As-Of"),
     serialization: str = Header("json", alias="X-Serialization"),
@@ -1253,8 +1251,6 @@ async def run_callable(
             method_name,
             params,
             distributed_subcall,
-            debug_port,
-            debug_mode,
             deployed_as_of,
         )
         clear_debugging_sessions()
@@ -1268,8 +1264,6 @@ async def run_callable(
         method_name=method_name,
         params=params,
         serialization=serialization,
-        debug_port=debug_port,
-        debug_mode=debug_mode,
     )
     return result
 
@@ -1280,8 +1274,6 @@ async def run_callable_internal(
     method_name: Optional[str] = None,
     params: Optional[Union[Dict, str]] = Body(default=None),
     serialization: str = "json",
-    debug_port: Optional[int] = None,
-    debug_mode: Optional[str] = None,
 ):
     # Check if serialization is allowed
     allowed_serialization = os.getenv("KT_ALLOWED_SERIALIZATION", DEFAULT_ALLOWED_SERIALIZATION).split(",")
@@ -1294,6 +1286,8 @@ async def run_callable_internal(
     # Process the call
     args = []
     kwargs = {}
+    debug_port, debug_mode = None, None
+
     if params:
         if serialization == "pickle":
             # Handle pickle serialization - extract data from dictionary wrapper
@@ -1311,6 +1305,10 @@ async def run_callable_internal(
         # Default JSON handling
         args = params.get("args", [])
         kwargs = params.get("kwargs", {})
+        debugger: dict = params.pop("debugger", None)
+        if debugger:
+            debug_mode = debugger.get("mode")
+            debug_port = debugger.get("port")
 
     if method_name:
         if not hasattr(callable_obj, method_name):
@@ -1385,8 +1383,6 @@ def run_callable_internal_sync(
     method_name: Optional[str] = None,
     params: Optional[Union[Dict, str]] = None,
     serialization: str = "json",
-    debug_port: Optional[int] = None,
-    debug_mode: Optional[str] = None,
 ):
     """Synchronous wrapper for run_callable_internal, used by distributed subprocesses."""
     import asyncio
@@ -1403,6 +1399,8 @@ def run_callable_internal_sync(
     # Process the call
     args = []
     kwargs = {}
+    debug_port, debug_mode = None, None
+
     if params:
         if serialization == "pickle":
             # Handle pickle serialization - extract data from dictionary wrapper
@@ -1420,6 +1418,10 @@ def run_callable_internal_sync(
         # Default JSON handling
         args = params.get("args", [])
         kwargs = params.get("kwargs", {})
+        debugger: dict = params.pop("debugger", None)
+        if debugger:
+            debug_mode = debugger.get("mode")
+            debug_port = debugger.get("port")
 
     if method_name:
         if not hasattr(callable_obj, method_name):

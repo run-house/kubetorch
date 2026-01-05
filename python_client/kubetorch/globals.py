@@ -105,6 +105,9 @@ class DebugConfig:
     mode: Literal["pdb", "pdb-ui"] = "pdb"
     port: int = 5678  # DEFAULT_DEBUG_PORT
 
+    def to_dict(self):
+        return {"mode": self.mode, "port": self.port}
+
 
 @dataclass(frozen=True)
 class PFHandle:
