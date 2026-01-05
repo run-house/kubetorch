@@ -2,14 +2,14 @@
 
 ## Core Maintainers
 
-| Name | GitHub | Role | Affiliation |
-|------|--------|------|------|
-| Caroline Chen | @CarolineChen | Maintainer | Runhouse |
-| Josh Lewittes | @jlewitt1 | Maintainer | Runhouse |
-| Don Greenberg | @dongreenberg | Maintainer | Runhouse |
-| Sasha Belousov | @BelSasha | Maintainer | Runhouse |
-| Matt Kandler | @mkandler | Maintainer | Runhouse |
-| Paul Yang | @py-rh | Maintainer | Runhouse |
+| Name            | GitHub | Role | Affiliation |
+|-----------------|--------|------|------|
+| Caroline Chen   | @CarolineChen | Maintainer | Runhouse |
+| Josh Lewittes   | @jlewitt1 | Maintainer | Runhouse |
+| Donny Greenberg | @dongreenberg | Maintainer | Runhouse |
+| Sasha Belousov  | @BelSasha | Maintainer | Runhouse |
+| Matt Kandler    | @mkandler | Maintainer | Runhouse |
+| Paul Yang       | @py-rh | Maintainer | Runhouse |
 
 ## Governance
 
