@@ -1,5 +1,6 @@
 import copy
 import os
+import subprocess
 import time
 
 import kubetorch as kt
@@ -759,7 +760,7 @@ async def test_byo_manifest_with_endpoint_url():
         assert result == 15, f"Expected 15, got {result}"
 
     finally:
-        controller.delete_service(namespace=namespace, name=user_service_name, ignore_not_found=True)
+        subprocess.run(["kt", "teardown", user_service_name, "-n", namespace, "-y"])
 
 
 @pytest.mark.level("minimal")

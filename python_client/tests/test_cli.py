@@ -15,7 +15,7 @@ from kubetorch.resources.secrets.utils import get_k8s_identity_name
 
 from typer.testing import CliRunner
 
-from tests.utils import create_random_name_prefix, get_tests_namespace, random_string, strip_ansi
+from tests.utils import create_random_name_prefix, get_tests_namespace, remote_fn_for_teardown, strip_ansi
 from .conftest import get_test_hash
 
 
@@ -23,26 +23,6 @@ def strip_ansi_codes(text):
     """Remove ANSI escape sequences from text."""
     ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
     return ansi_escape.sub("", text)
-
-
-def remote_fn_for_teardown(secret: kt.Secret = None):
-    import kubetorch as kt
-
-    from .utils import summer
-
-    secrets = [secret] if secret else None
-
-    compute = kt.Compute(
-        cpus=".01",
-        gpu_anti_affinity=True,
-        launch_timeout=300,
-        allowed_serialization=["json", "pickle"],
-        secrets=secrets,
-        logging_config=kt.LoggingConfig(stream_logs=False),
-    )
-    name = f"td-summer-{random_string(3)}"
-    fn = kt.fn(summer, name=name).to(compute)
-    return fn
 
 
 def validate_logs_fn_service_info(list_output: str, service_name: str, compute_type: str):
@@ -78,12 +58,7 @@ def validate_logs_fn_service_info(list_output: str, service_name: str, compute_t
     assert re.search(service_expected_info, list_output, re.DOTALL)
 
 
-def validate_teardown_output(teardown_output: str, service_name: str, force_delete: bool = False):
-
-    assert "Force deleting resources..." if force_delete else "Deleting resources..." in teardown_output
-    assert f"✓ Deleted deployment {service_name}" in teardown_output
-    assert f"✓ Deleted cached data for {service_name}" in teardown_output
-
+def validate_service_not_in_kt_list(service_name: str):
     # Wait for K8s deletion to propagate before checking kt list
     # Use retry with backoff since deletion can take varying amounts of time
     max_retries = 10
@@ -103,7 +78,27 @@ def validate_teardown_output(teardown_output: str, service_name: str, force_dele
     raise AssertionError(f"Service {service_name} still appears in kt list after {max_retries * wait_time}s")
 
 
+def validate_teardown_output(
+    teardown_output: str,
+    service_name: str,
+    namespace: str = kt.config.namespace,
+    force_delete: bool = False,
+    prefix: str = None,
+):
+    force_prefix_info_msg = "Force deleting" if force_delete else "Deleting"
+    prefix_msg = f"all services with prefix {prefix}" if prefix else f"resources for service {service_name}"
+    deletion_msg = f"{force_prefix_info_msg} {prefix_msg} in {namespace} namespace..."
+    assert deletion_msg in teardown_output
+
+    force_prefix_deletion_msg = "Force deleted" if force_delete else "Deleted"
+    assert f"✓ {force_prefix_deletion_msg} {service_name}" in teardown_output
+    assert f"✓ Deleted cached data for {service_name}" in teardown_output
+
+    validate_service_not_in_kt_list(service_name=service_name)
+
+
 runner = CliRunner()
+
 
 ###############################
 ######## kt list tests ########
@@ -541,8 +536,6 @@ async def test_cli_kt_describe_basic(remote_logs_fn):
 ####################################
 ######## kt teardown tests #########
 ####################################
-
-
 @pytest.mark.level("minimal")
 def test_cli_kt_teardown_long_confirmation():
     remote_fn = remote_fn_for_teardown()
@@ -568,7 +561,7 @@ def test_cli_kt_teardown_prefix():
 
     assert teardown_result.exit_code == 0
     result_output = teardown_result.output
-    validate_teardown_output(teardown_output=result_output, service_name=service_name)
+    validate_teardown_output(teardown_output=result_output, service_name=service_name, prefix=service_name_prefix)
 
 
 @pytest.mark.level("minimal")
@@ -584,7 +577,7 @@ def test_cli_kt_teardown_namespace():
 
     assert teardown_result.exit_code == 0
     result_output = teardown_result.output
-    validate_teardown_output(teardown_output=result_output, service_name=service_name)
+    validate_teardown_output(teardown_output=result_output, service_name=service_name, namespace=kt.config.namespace)
 
 
 @pytest.mark.level("minimal")
@@ -624,10 +617,14 @@ def test_cli_kt_teardown_multiple_flags():
         assert teardown_result.exit_code == 0
         result_output = teardown_result.output
         force_delete: bool = "-f" in flag_combination
+        namespace = kt.config.namespace if "-n" in flag_combination else kt.config.namespace
+        prefix = f"{get_test_hash()}-td-" if "-p" in flag_combination else None
         validate_teardown_output(
             teardown_output=result_output,
             service_name=service_name,
             force_delete=force_delete,
+            namespace=namespace,
+            prefix=prefix,
         )
 
 
@@ -643,9 +640,9 @@ def test_cli_kt_teardown_wrong_usage():
     service_name = "noSuchService"
     teardown_result = runner.invoke(app, ["teardown", service_name, "-y"], color=False, env={"COLUMNS": "200"})
 
-    assert teardown_result.exit_code == 1
+    assert teardown_result.exit_code == 0
     output = teardown_result.output
-    assert f"Finding resources for service {service_name.lower()} in {kt.config.namespace} namespace..." in output
+    assert f"Deleting resources for service {service_name.lower()} in {kt.config.namespace} namespace..." in output
     assert f"Service {service_name.lower()} not found" in output
 
     # Part C: teardown service with non-existing prefix
@@ -667,9 +664,9 @@ def test_cli_kt_teardown_wrong_usage():
         env={"COLUMNS": "200"},
     )
 
-    assert teardown_result.exit_code == 1
+    assert teardown_result.exit_code == 0
     output = teardown_result.output
-    assert f"Finding resources for service {service_name.lower()} in {service_namespace}1 namespace..." in output
+    assert f"Deleting resources for service {service_name.lower()} in {service_namespace}1 namespace..." in output
     assert f"Service {service_name.lower()} not found"
 
 

@@ -8,6 +8,10 @@ metadata:
 spec:
   rayVersion: "2.8.0"
   enableInTreeAutoscaling: false
+  headServicePorts:
+    - name: gcs
+      port: 6379
+      targetPort: 6379
   headGroupSpec:
     rayStartParams:
       dashboard-host: "0.0.0.0"

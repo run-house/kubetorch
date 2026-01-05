@@ -415,6 +415,9 @@ def teardown_test_resources(test_hash):
             if "403" in result.stderr or "Forbidden" in result.stderr:
                 # Namespace not configured in controller RBAC (may happen in local dev)
                 logger.info(f"Skipping teardown for namespace {ns} (no RBAC permissions)")
+            elif "No services found" in result.stdout:
+                # No services to delete in the ns, continue
+                logger.debug(f"No services to delete in {ns} namespace")
             else:
                 # Unexpected error - log but continue with other namespace
                 logger.warning(f"Teardown failed for namespace {ns}: {result.stderr}")
@@ -519,3 +522,34 @@ def service_deployer_with_logs(service_name: str):
 
 def strip_ansi(s: str) -> str:
     return ANSI_RE.sub("", s)
+
+
+def remote_fn_for_teardown():
+    import kubetorch as kt
+
+    compute = kt.Compute(
+        cpus=".01",
+        gpu_anti_affinity=True,
+        launch_timeout=300,
+        allowed_serialization=["json", "pickle"],
+        logging_config=kt.LoggingConfig(stream_logs=False),
+    )
+
+    name = f"td-summer-{random_string(3)}"
+    fn = kt.fn(summer, name=name).to(compute)
+    return fn
+
+
+def remote_cls_for_teardown():
+    import kubetorch as kt
+
+    compute = kt.Compute(
+        cpus=".01",
+        gpu_anti_affinity=True,
+        launch_timeout=300,
+        allowed_serialization=["json", "pickle"],
+        logging_config=kt.LoggingConfig(stream_logs=False),
+    )
+    name = f"td-SlowNumpyArray-{random_string(3)}"
+    fn = kt.cls(SlowNumpyArray, name=name).to(compute)
+    return fn

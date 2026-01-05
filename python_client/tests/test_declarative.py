@@ -77,15 +77,15 @@ async def test_declarative_fn():
     assert result == get_pod_id_async.service_name
 
     # Uncomment to debug
-    # from kubetorch.cli import teardown
-    # teardown(tests.assets.decorated_modules.decorated_modules.__file__, yes=True)
+    # from kubetorch.cli import kt_teardown
+    # kt_teardown(tests.assets.decorated_modules.decorated_modules.__file__, yes=True)
 
     teardown_cmd = f"kt teardown {tests.assets.decorated_modules.decorated_modules.__file__} --yes"
     subprocess.run(teardown_cmd, shell=True, check=True)
     teardown_single = f"kt teardown {single_module_file} --yes"
     subprocess.run(teardown_single, shell=True, check=True)
 
-    time.sleep(1)
+    time.sleep(3)
 
     # Confirm that the service is no longer up
     with pytest.raises(Exception):

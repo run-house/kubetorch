@@ -8,11 +8,9 @@ from typing import List, Optional, Union
 
 import kubetorch.globals
 from kubetorch.logger import get_logger
-from kubetorch.provisioning.constants import KT_SERVICE_LABEL, KT_TEMPLATE_LABEL, KT_USERNAME_LABEL
 from kubetorch.resources.callables.utils import get_local_install_path, locate_working_dir
 from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecretsClient
 from kubetorch.serving.utils import StartupError
-from kubetorch.utils import http_not_found
 
 logger = get_logger(__name__)
 
@@ -248,153 +246,21 @@ def load_configmaps(
 
 
 # ----------------- Resource Deletion Utils ----------------- #
-def delete_configmaps(
-    configmaps: List[str],
-    namespace: str,
-    console: "Console" = None,
-    force: bool = False,
-):
-    """Delete the given list of configmaps."""
-
-    grace_period_seconds, propagation_policy = None, None
-    if force:
-        grace_period_seconds = 0
-        propagation_policy = "Foreground"
-
-    controller_client = kubetorch.globals.controller_client()
-    for cm in configmaps:
-        try:
-            controller_client.delete_config_map(
-                namespace=namespace,
-                name=cm,
-                grace_period_seconds=grace_period_seconds,
-                propagation_policy=propagation_policy,
-            )
-            if console:
-                console.print(f"✓ Deleted configmap [blue]{cm}[/blue]")
-        except Exception as e:
-            # Handle both ApiException (legacy) and HTTP errors from controller
-            if http_not_found(e):
-                if console:
-                    console.print(f"[yellow]Warning:[/yellow] ConfigMap {cm} not found")
-            else:
-                if console:
-                    console.print(f"[red]Error:[/red] Failed to delete configmap {cm}: {e}")
 
 
-def delete_knative_service(
-    name: str,
-    namespace,
-    console: "Console" = None,
-    force: bool = False,
-):
-    """Delete a Knative service."""
-
-    grace_period_seconds, propagation_policy = None, None
-    if force:
-        grace_period_seconds = 0
-        propagation_policy = "Foreground"
-
-    try:
-        kubetorch.globals.controller_client().delete_namespaced_custom_object(
-            group="serving.knative.dev",
-            version="v1",
-            namespace=namespace,
-            plural="services",
-            name=name,
-            grace_period_seconds=grace_period_seconds,
-            propagation_policy=propagation_policy,
-        )
-        if console:
-            console.print(f"✓ Deleted service [blue]{name}[/blue]")
-    except Exception as e:
-        if http_not_found(e):
-            if console:
-                console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
+def handle_controller_delete_error(service_name: str, controller_error: str, console=None):
+    if "404" in controller_error:
+        if service_name:
+            error_msg = f"Service {service_name.lower()} not found"
         else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
-
-
-def delete_resources_for_service(
-    configmaps: List[str],
-    name: str,
-    service_type: str = "knative",
-    namespace: str = None,
-    console: "Console" = None,
-    force: bool = False,
-):
-    """Delete the relevant k8s resource(s) based on service type.
-
-    Uses the same teardown path as the Python API (module.teardown() -> service_manager.teardown_service()).
-    """
-    from kubetorch.provisioning.service_manager import ServiceManager
-    from kubetorch.provisioning.utils import SUPPORTED_TRAINING_JOBS
-
-    if service_type == "selector":
-        # BYO (selector-based) compute mode:
-        # The user applied the Kubernetes manifest themselves (e.g., via kubectl, Helm, or ArgoCD).
-        # Kubetorch did not create or own the K8s resources, so teardown only removes
-        # Kubetorch controller state and associated metadata — not the underlying pods/deployments/services
-        msg = (
-            f"Resources for {name} were created outside Kubetorch. You are responsible for deleting "
-            "the actual Kubernetes resources (pods, deployments, services, etc.)."
-        )
-        # For selector-based pools, just delete the controller pool (no K8s resource to delete)
-        service_manager = ServiceManager(resource_type="selector", namespace=namespace)
-        service_manager.teardown_service(service_name=name, console=console, force=force)
-        if console:
-            console.print(f"[yellow]{msg}[/yellow]")
-        else:
-            logger.warning(msg)
+            error_msg = "No services found"
     else:
-        # manifest applied via kubetorch
-        supported_types = ["deployment", "raycluster", "knative"] + [k.lower() for k in SUPPORTED_TRAINING_JOBS]
-        if service_type in supported_types:
-            service_manager = ServiceManager(resource_type=service_type, namespace=namespace)
-        else:
-            msg = f"Unknown service type: {service_type}, skipping teardown"
-            if console:
-                console.print(f"[yellow]{msg}[/yellow]")
-            else:
-                logger.warning(msg)
-            return
+        error_msg = controller_error.split(":")[-1]
 
-        # Use the same teardown path as the Python API to tear down
-        service_manager.teardown_service(service_name=name, console=console, force=force)
-
-    # Delete configmaps
-    if configmaps:
-        delete_configmaps(
-            configmaps=configmaps,
-            namespace=namespace,
-            console=console,
-            force=force,
-        )
-
-    delete_cached_service_data(service_name=name, namespace=namespace, console=console)
-
-
-def delete_cached_service_data(
-    service_name: str,
-    namespace: str,
-    console: "Console" = None,
-):
-    """Delete service data from the data store (both filesystem and metadata)."""
-    try:
-        from kubetorch.data_store import DataStoreClient
-
-        client = DataStoreClient(namespace=namespace)
-        client.rm(key=service_name, recursive=True)
-
-        if console:
-            console.print(f"✓ Deleted cached data for [blue]{service_name}[/blue]")
-
-    except Exception as e:
-        if console:
-            console.print(f"[red]Failed to clean up cached service data: {e}[/red]")
-        else:
-            logger.debug(f"Failed to clean up cached data: {e}")
+    if console:
+        console.print(error_msg)
+    else:
+        logger.error(error_msg)
 
 
 def _collect_modules(target_str):
@@ -442,6 +308,7 @@ def fetch_resources_for_teardown(
     namespace: str,
     target: str,
     prefix: Optional[str] = None,
+    teardown_all: bool = False,
     username: Optional[str] = None,
     exact_match: bool = False,
 ) -> dict:
@@ -458,205 +325,42 @@ def fetch_resources_for_teardown(
     """
     from kubetorch.resources.callables.module import Module
 
-    resources = {"services": {}}
-    services = []
+    services = None
 
     if prefix in ["kt", "kubetorch", "knative"]:
         raise ValueError(f"Invalid prefix: {prefix} is reserved. Please delete these individually.")
     if prefix and username:
         raise ValueError("Cannot use both prefix and username flags together.")
 
-    # Initialize controller client
-    controller_client = kubetorch.globals.controller_client()
+    if not (target or teardown_all or prefix):
+        raise ValueError("Please provide a service name or use the --all or --prefix flags")
 
-    if username or prefix:
-        label_selector = f"{KT_USERNAME_LABEL}={username}" if username else None
-        prefix_filter = prefix if prefix else None
-
-        try:
-            discovered = controller_client.discover_resources(
-                namespace=namespace,
-                label_selector=label_selector,
-                prefix_filter=prefix_filter,
-            )
-
-            TYPE_MAP = {
-                "knative_services": "knative",
-                "deployments": "deployment",
-                "rayclusters": "raycluster",
-            }
-            for resource_type, svc_type in TYPE_MAP.items():
-                for item in discovered.get(resource_type, []):
-                    name = item.get("metadata", {}).get("name", "")
-                    if name:
-                        services.append((name, svc_type, None))
-
-            # Training jobs - get type from kind
-            for item in discovered.get("training_jobs", []):
-                name = item.get("metadata", {}).get("name", "")
-                kind = item.get("kind", "").lower()
-                if name:
-                    services.append((name, kind, "kubeflow.org"))
-
-            # Pools need lookup to determine type
-            for pool in discovered.get("pools", []):
-                name = pool.get("name", "")
-                if name:
-                    services.append((name, None, None))
-
-        except Exception as e:
-            logger.warning(f"Failed to discover resources: {e}")
-
-    else:
-        if not target:
-            raise ValueError("Please provide a service name or use the --all or --prefix flags")
-
+    if target:
         # Case when service_name is a module or file path (i.e. the `kt deploy` usage path)
         if ":" in target or ".py" in target or "." in target:
             to_down, _ = _collect_modules(target)
-            services = [(mod.service_name, None, None) for mod in to_down if isinstance(mod, Module)]
+            services = [mod.service_name for mod in to_down if isinstance(mod, Module)]
         else:
-            services = [(target, None, None)]
+            services = [target]
             # if the target is not prefixed with the username, add the username prefix
             username = kubetorch.globals.config.username
             if username and not exact_match and not target.startswith(username + "-"):
-                services.append((username + "-" + target, None, None))
+                services.append(username + "-" + target)
 
-    for service_name, type_hint, group_hint in services:
-        service_type = type_hint
-        service_group = group_hint
-        pool_selector = None
-
-        # Pools are handled via controller - we delete the pool from DB, controller handles K8s cleanup
-        # Skip pool lookup if we already have type info from discovery
-        if not service_type:  # Not found yet
-            try:
-                pool_info = controller_client.get_pool(namespace=namespace, name=service_name)
-                if pool_info:
-                    specifier = pool_info.get("specifier") or {}
-                    # Determine service type based on resource_kind AND whether it's KT-managed
-                    # KT-managed pools have the kubetorch.com/template label (applied via /apply)
-                    # Selector-only pools may have resource_kind (discovered from pods) but no template label
-                    resource_kind = pool_info.get("resource_kind")
-                    pool_labels = pool_info.get("labels") or {}
-                    is_kt_managed = KT_TEMPLATE_LABEL in pool_labels
-
-                    if resource_kind and is_kt_managed:
-                        # KT-managed resource: delete the K8s resource
-                        # Map resource_kind to service_type (lowercase)
-                        # Most kinds just need lowercasing: Deployment->deployment, RayCluster->raycluster
-                        # Training jobs: PyTorchJob->pytorchjob, TFJob->tfjob, etc.
-                        service_type = resource_kind.lower()
-                        # Handle Knative special case: KnativeService -> knative
-                        if service_type == "knativeservice":
-                            service_type = "knative"
-                    else:
-                        # Selector-only: user created K8s resource, only delete controller state
-                        service_type = "selector"
-                    pool_selector = specifier.get("selector")
-            except Exception as e:
-                logger.debug(f"Pool lookup for {service_name} failed: {e}")
-
-        # Check if it's a Knative service
-        if not service_type:
-            try:
-                service = controller_client.get_namespaced_custom_object(
-                    group="serving.knative.dev",
-                    version="v1",
-                    namespace=namespace,
-                    plural="services",
-                    name=service_name,
-                    ignore_not_found=True,
-                )
-                if (
-                    isinstance(service, dict)
-                    and service.get("kind") == "Service"
-                    and service.get("metadata", {}).get("name") == service_name
-                ):
-                    service_type = "knative"
-            except Exception:
-                pass
-
-        # Check if it's a Deployment (if not found as Knative service)
-        if not service_type:
-            try:
-                deployment = controller_client.get_deployment(
-                    namespace=namespace, name=service_name, ignore_not_found=True
-                )
-                if isinstance(deployment, dict) and deployment.get("kind") == "Deployment":
-                    service_type = "deployment"
-            except Exception:
-                pass
-
-        # Check if it's a RayCluster (if not found as Knative or Deployment)
-        if not service_type:
-            try:
-                raycluster = controller_client.get_namespaced_custom_object(
-                    group="ray.io",
-                    version="v1",
-                    namespace=namespace,
-                    plural="rayclusters",
-                    name=service_name,
-                    ignore_not_found=True,
-                )
-                if (
-                    isinstance(raycluster, dict)
-                    and raycluster.get("kind") == "RayCluster"
-                    and raycluster.get("metadata", {}).get("name") == service_name
-                ):
-                    service_type = "raycluster"
-            except Exception:
-                pass
-
-        # Check if it's a custom training job (PyTorchJob, TFJob, MXJob, XGBoostJob) if not found as other types
-        if not service_type:
-            from kubetorch.provisioning.utils import SUPPORTED_TRAINING_JOBS
-
-            for job_kind in SUPPORTED_TRAINING_JOBS:
-                try:
-                    plural = job_kind.lower() + "s"
-                    job_resource = controller_client.get_namespaced_custom_object(
-                        group="kubeflow.org",
-                        version="v1",
-                        namespace=namespace,
-                        plural=plural,
-                        name=service_name,
-                        ignore_not_found=True,
-                    )
-                    if job_resource:
-                        service_type = job_kind.lower()
-                        service_group = "kubeflow.org"
-                        break
-                except Exception:
-                    continue
-
-        # Get associated resources if service exists
-        configmaps = load_configmaps(service_name, namespace)
-        pods = []
-        try:
-            # For selector-based pools, use the pool selector to find pods
-            if pool_selector:
-                label_selector = ",".join(f"{k}={v}" for k, v in pool_selector.items())
-            else:
-                label_selector = f"{KT_SERVICE_LABEL}={service_name}"
-
-            pods_result = controller_client.list_pods(namespace=namespace, label_selector=label_selector)
-            # Handle dict response from ControllerClient
-            if pods_result:
-                pods = [pod["metadata"]["name"] for pod in pods_result.get("items", [])]
-        except Exception:
-            pass
-
-        # Only add the service to the resources if it has configmaps, pods, or we found the service
-        if service_type or configmaps or pods:
-            resources["services"][service_name] = {
-                "configmaps": configmaps,
-                "pods": pods,
-                "type": service_type or "unknown",
-                "group": service_group,
-            }
-
-    return resources
+    # Initialize controller client
+    controller_client = kubetorch.globals.controller_client()
+    try:
+        fetched_resources = controller_client.fetch_resources_for_teardown(
+            namespace=namespace,
+            name=services,
+            prefix=prefix,
+            teardown_all=teardown_all,
+            username=username,
+            exact_match=exact_match,
+        )
+        return fetched_resources
+    except Exception as e:
+        logger.warning(f"Failed to fetch resources for teardown: {e}")
 
 
 # ----------------- Image Builder Utils ----------------- #

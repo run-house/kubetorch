@@ -629,6 +629,20 @@ def test_allowed_serialization_as_env_env_var(monkeypatch):
     assert result_pickle_serialization == expected_result_pickle
 
 
+@pytest.mark.level("minimal")
+def test_module_teardown():
+    from tests.test_cli import validate_service_not_in_kt_list
+    from .utils import remote_cls_for_teardown, remote_fn_for_teardown
+
+    fn_to_delete = remote_fn_for_teardown()
+    fn_to_delete.teardown()
+    validate_service_not_in_kt_list(fn_to_delete.service_name)
+
+    cls_to_delete = remote_cls_for_teardown()
+    cls_to_delete.teardown()
+    validate_service_not_in_kt_list(cls_to_delete.service_name)
+
+
 @pytest.mark.level("unit")
 def test_compute_factory_cpus():
     import kubetorch as kt
