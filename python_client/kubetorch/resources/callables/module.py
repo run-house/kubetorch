@@ -176,7 +176,8 @@ class Module:
 
     @property
     def serialization(self):
-        """Default serialization format for this module."""
+        """Default serialization format for this module.
+        More info in the `Call Modes Guide <https://www.run.house/kubetorch/concepts/call-modes>`__."""
         return self._serialization
 
     @serialization.setter
