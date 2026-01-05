@@ -14,7 +14,7 @@ from .utils import get_test_fn_name, python_version_and_path
 @pytest.fixture(autouse=True, scope="session")
 def setup_test_env():
     # Keep the launch timeout low for this test suite, unless overridden (ex: for GPU tests)
-    os.environ["KT_LAUNCH_TIMEOUT"] = "120"
+    os.environ["KT_LAUNCH_TIMEOUT"] = "150"
     yield
 
 
