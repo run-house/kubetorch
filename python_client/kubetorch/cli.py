@@ -2387,7 +2387,6 @@ def kt_rm(
         raise typer.Exit(1)
 
 
-# TODO [JL, CC]: probably irrelevant long term, but helpful temporarily for debugging
 @app.command("pool", hidden=True)
 def kt_pool(
     namespace: str = typer.Option(
