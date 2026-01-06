@@ -523,10 +523,7 @@ class ServiceManager:
         """
         logger.info(f"Deploying {manifest.get('kind', self.resource_type)} service with name: {service_name}")
 
-        # Preprocess manifest
-        manifest = self._preprocess_manifest_for_launch(manifest)
-
-        # Apply launch-time env vars
+        # Apply launch-time env vars first (before syncing to workers)
         if pointer_env_vars is not None and metadata_env_vars is not None:
             manifest = self._apply_launchtime_env_vars(
                 manifest=manifest,
@@ -537,6 +534,9 @@ class ServiceManager:
                 deployment_mode=deployment_mode,
                 distributed_config=distributed_config,
             )
+
+        # Preprocess manifest (syncs worker pod specs from primary, including env vars)
+        manifest = self._preprocess_manifest_for_launch(manifest)
 
         # Update manifest with service name and deployment metadata
         clean_module_name = self._clean_module_name(module_name)
@@ -774,8 +774,13 @@ class ServiceManager:
 
                 # Check for non-timeout errors (pod failures, cluster failures, etc.)
                 details = response.get("details", {})
-                if details.get("error_type"):
+                error_type = details.get("error_type")
+                if error_type:
                     error_msg = response.get("message", "Service not ready")
+                    if error_type in ("replicaset_error", "pod_error", "resource_error"):
+                        from kubetorch import ResourceNotAvailableError
+
+                        raise ResourceNotAvailableError(error_msg)
                     raise RuntimeError(error_msg)
 
             except TimeoutError:

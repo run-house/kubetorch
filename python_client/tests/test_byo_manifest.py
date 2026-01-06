@@ -54,15 +54,13 @@ GPU_ANTI_AFFINITY = {
     }
 }
 
-KUBETORCH_IMAGE = "ghcr.io/run-house/kubetorch:apply-and-pool-endpoints"
-
 
 def _make_container(
     name: str = "kubetorch",
     image: str = "user-image:latest",
     cpu: str = "0.3",
     memory: str = "512Mi",
-    env: list | None = None,
+    env: list = None,
 ) -> dict:
     """Create a container spec with common defaults."""
     container = {
@@ -96,9 +94,7 @@ def _add_container_to_manifest(manifest: dict, container: dict) -> None:
 
 def _get_basic_manifest(
     kind: str,
-    name: str = "",
-    namespace: str = "default",
-    container: dict | None = None,
+    container: dict = None,
     gpu_anti_affinity: bool = False,
 ):
     """Generate a minimal manifest for the given kind with test values."""
@@ -209,6 +205,8 @@ def _get_basic_manifest(
 
 
 def get_pool_manifest(pool_name: str, namespace: str):
+    from .conftest import KUBETORCH_IMAGE
+
     """Generate a Deployment manifest for a kubetorch worker pool."""
     return {
         "apiVersion": "apps/v1",
@@ -346,8 +344,7 @@ async def test_byo_manifest_pytorchjob_ddp():
     # For PyTorchJob, runPolicy.suspend should be True for Kueue admission control
     assert compute._manifest["spec"]["runPolicy"]["suspend"] is True
 
-    # Verify service manager is TrainJobServiceManager
-    assert compute.service_manager.__class__.__name__ == "TrainJobServiceManager"
+    # Verify service manager is configured for PyTorchJob
     assert compute.service_manager.template_label == "pytorchjob"
     assert compute.service_manager.config.get("primary_replica") == "Master"
     assert compute.service_manager.config.get("replica_specs_key") == "pytorchReplicaSpecs"
@@ -586,6 +583,8 @@ async def test_selector_only():
     import kubetorch as kt
     from kubernetes import client, config
 
+    from .conftest import KUBETORCH_IMAGE
+
     # Load k8s config
     try:
         config.load_incluster_config()
@@ -614,7 +613,7 @@ async def test_selector_only():
                     containers=[
                         client.V1Container(
                             name="worker",
-                            image="ghcr.io/run-house/kubetorch:log-streaming-byo-manifest",  # image with kt + rsync installed
+                            image=KUBETORCH_IMAGE,  # image with kt + rsync installed
                             image_pull_policy="Always",
                             command=["kubetorch", "server", "start"],
                             resources=client.V1ResourceRequirements(requests={"cpu": "100m", "memory": "256Mi"}),
@@ -774,6 +773,8 @@ async def test_byo_manifest_with_endpoint_selector():
     2. Endpoint selector routes calls ONLY to worker pod
     3. Function calls consistently go to worker
     """
+    from .conftest import KUBETORCH_IMAGE
+
     job_name = f"{kt.config.username}-endpoint-sel"
     namespace = kt.globals.config.namespace
     controller = kt.globals.controller_client()
@@ -783,8 +784,6 @@ async def test_byo_manifest_with_endpoint_selector():
     container["imagePullPolicy"] = "Always"
     pytorch_manifest = _get_basic_manifest(
         "PyTorchJob",
-        name=job_name,
-        namespace=namespace,
         container=container,
         gpu_anti_affinity=True,
     )

@@ -4,7 +4,7 @@ import os
 import pytest
 
 TEST_SESSION_HASH = None
-KUBETORCH_IMAGE = "ghcr.io/run-house/kubetorch:fix-debug-config-and-imports"  # TODO update tag to "main"
+KUBETORCH_IMAGE = "ghcr.io/run-house/kubetorch:main"
 
 
 @pytest.fixture
