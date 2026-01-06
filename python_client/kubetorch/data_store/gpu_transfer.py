@@ -260,12 +260,12 @@ class GPUTransferManager:
 
             return response
 
-        # No broadcast - use put_tensor for each tensor (registers + publishes to MDS)
-        for tensor_key, tensor in tensors_to_register:
-            full_key = f"{key}/{tensor_key}" if tensor_key else key
-            response = gpu_client.put_tensor(key=full_key, tensor=tensor)
-            if response.get("status") != "ok":
-                raise RuntimeError(f"Failed to publish tensor '{full_key}': {response.get('error')}")
+        # No broadcast - batch register + publish all tensors in single call
+        full_keys = [f"{key}/{tensor_key}" if tensor_key else key for tensor_key, _ in tensors_to_register]
+        tensors = [tensor for _, tensor in tensors_to_register]
+        response = gpu_client.put_tensor(keys=full_keys, tensors=tensors)
+        if response.get("status") != "ok":
+            raise RuntimeError(f"Failed to publish tensors: {response.get('error')}")
 
         if verbose:
             if len(tensors_to_register) == 1:
