@@ -55,8 +55,8 @@ class DataStoreClient:
         Initialize the data store client.
 
         Args:
-            namespace: Kubernetes namespace (defaults to global config)
-            kubeconfig_path: Path to kubeconfig file (not used directly, for compatibility)
+            namespace (str, optional): Kubernetes namespace. (Default: global config namespace)
+            kubeconfig_path (str, optional): Path to kubeconfig file (not used directly, for compatibility). (Default: None)
         """
         self.namespace = namespace or globals.config.namespace
         self.metadata_client = MetadataClient(
@@ -81,17 +81,17 @@ class DataStoreClient:
         Upload files or directories to the cluster using a key-value store interface.
 
         Args:
-            key: Storage key(s). Can be a single key or list of keys.
-            src: Local file(s) or directory(s) to upload.
-            locale: Where data is stored ("store" or "local").
-            lifespan: How long data persists ("cluster" or "resource").
-            broadcast: Optional BroadcastWindow for coordinated transfers.
-            contents: If True, copy directory contents.
-            filter_options: Additional rsync filter options.
-            force: Force overwrite of existing files.
-            verbose: Show detailed progress.
-            start_rsyncd: For locale="local": Start rsync daemon (default: True).
-            base_path: For locale="local": Root path for rsync daemon (default: "/").
+            key (str or List[str]): Storage key(s). Can be a single key or list of keys.
+            src (str or Path or List[str or Path]): Local file(s) or directory(s) to upload.
+            locale (Locale): Where data is stored ("store" or "local"). (Default: "store")
+            lifespan (Lifespan): How long data persists ("cluster" or "resource"). (Default: "cluster")
+            broadcast (BroadcastWindow, optional): Optional BroadcastWindow for coordinated transfers. (Default: None)
+            contents (bool): If True, copy directory contents. (Default: False)
+            filter_options (str, optional): Additional rsync filter options. (Default: None)
+            force (bool): Force overwrite of existing files. (Default: False)
+            verbose (bool): Show detailed progress. (Default: False)
+            start_rsyncd (bool): For locale="local": Start rsync daemon. (Default: True)
+            base_path (str): For locale="local": Root path for rsync daemon. (Default: "/")
         """
         # Normalize keys to list
         keys = [key] if isinstance(key, str) else key

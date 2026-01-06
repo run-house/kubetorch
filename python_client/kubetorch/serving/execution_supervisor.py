@@ -43,12 +43,12 @@ class ExecutionSupervisor:
         """Initialize execution supervisor.
 
         Args:
-            process_class: The ProcessWorker subclass to use for subprocesses.
-                          Defaults to ProcessWorker.
-            num_processes: Number of local subprocesses to run. Defaults to 1.
-                          Can also be "auto" to use process_class.get_auto_num_processes().
-            max_threads_per_proc: Maximum threads per subprocess. Defaults to 10.
-            restart_procs: Whether to restart processes on setup. Defaults to True.
+            process_class (ProcessWorker): The ProcessWorker subclass to use for subprocesses.
+                If None, ProcessWorker will be used. (Default: None)
+            num_processes (int): Number of local subprocesses to run. Can also be "auto" to use
+                process_class.get_auto_num_processes(). (Default: 1)
+            max_threads_per_proc (int): Maximum threads per subprocess. (Default: 10)
+            restart_procs (bool): Whether to restart processes on setup. (Default: True)
             **process_kwargs: Additional kwargs passed to process class constructor.
         """
         self.process_class = process_class or ProcessWorker
@@ -64,7 +64,7 @@ class ExecutionSupervisor:
         """Set up execution environment with process pool.
 
         Args:
-            deployed_as_of: Deployment timestamp for cache invalidation.
+            deployed_as_of (str, optional): Deployment timestamp for cache invalidation. (Default: None)
         """
         # Set multiprocessing to spawn if not already
         if multiprocessing.get_start_method() != "spawn":

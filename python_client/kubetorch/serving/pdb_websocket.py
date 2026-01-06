@@ -226,8 +226,8 @@ def start_debugger(port: int, timeout: int = 300):
     PDB will then run normally, with I/O going through the WebSocket.
 
     Args:
-        port: Port for the WebSocket server
-        timeout: How long to wait for a client to connect (seconds)
+        port (int): Port for the WebSocket server.
+        timeout (int): How long to wait for a client to connect (seconds). (Default: 300)
     """
     global _server_thread
 

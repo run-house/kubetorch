@@ -27,10 +27,10 @@ class MetricsPusher:
         Initialize metrics pusher.
 
         Args:
-            pushgateway_url: URL for Prometheus Pushgateway (e.g., http://pushgateway:9091)
-            job_name: Job name for Prometheus metrics
-            push_interval: Seconds between automatic pushes
-            grouping_key: Additional grouping keys for Pushgateway
+            pushgateway_url (str): URL for Prometheus Pushgateway (e.g., http://pushgateway:9091).
+            job_name (str): Job name for Prometheus metrics.
+            push_interval (float): Seconds between automatic pushes. (Default: 15.0)
+            grouping_key (dict, optional): Additional grouping keys for Pushgateway. (Default: None)
         """
         try:
             from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram

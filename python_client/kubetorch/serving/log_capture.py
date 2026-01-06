@@ -51,12 +51,12 @@ class LogCapture:
         Initialize log capture.
 
         Args:
-            log_store_url: Base URL for log store (e.g., http://kubetorch-data-store.namespace:3100)
-            labels: Base labels for all logs (service, pod_name, namespace)
-            batch_size: Number of log entries to batch before pushing
-            flush_interval: Seconds between automatic flushes
-            output_queue: If provided, push logs to this queue instead of Loki (subprocess mode)
-            get_request_id_fn: Function to get current request_id (required for subprocess mode)
+            log_store_url (str): Base URL for log store (e.g., http://kubetorch-data-store.namespace:3100). (Default: None)
+            labels (Dict[str, str]): Base labels for all logs (service, pod_name, namespace). (Default: None)
+            batch_size (int): Number of log entries to batch before pushing. (Default: 100)
+            flush_interval (float): Seconds between automatic flushes. (Default: 1.0)
+            output_queue (mp.Queue): If provided, push logs to this queue instead of Loki (subprocess mode). (Default: None)
+            get_request_id_fn (Callable): Function to get current request_id (required for subprocess mode). (Default: None)
         """
         self.log_store_url = log_store_url
         self.labels = labels or {}

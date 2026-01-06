@@ -13,11 +13,11 @@ class Endpoint:
     This is separate from pool membership (which pods belong to the pool).
 
     Args:
-        url: User-provided URL to route calls to. When set, no K8s Service is created.
-            Example: "my-service.default.svc.cluster.local:8080"
-        selector: Custom selector for the K8s Service that kubetorch creates.
+        url (str, optional): User-provided URL to route calls to. When set, no K8s Service is created.
+            Example: "my-service.default.svc.cluster.local:8080". (Default: None)
+        selector (Optional[Dict[str, str]]): Custom selector for the K8s Service that kubetorch creates.
             Use this to route to a subset of pool pods.
-            Example: {"app": "ray", "ray.io/node-type": "head"}
+            Example: {"app": "ray", "ray.io/node-type": "head"}. (Default: None)
 
     Examples:
 
@@ -91,7 +91,7 @@ class Endpoint:
         For external URLs, returns the URL unchanged.
 
         Args:
-            proxy_port: The local port where the nginx proxy is listening.
+            proxy_port (int): The local port where the nginx proxy is listening.
 
         Returns:
             The URL to use from outside the cluster, or None if no URL is configured.

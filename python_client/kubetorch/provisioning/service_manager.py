@@ -36,9 +36,9 @@ class ServiceManager:
         """Initialize the service manager.
 
         Args:
-            resource_type: Type of resource (deployment, knative, raycluster, pytorchjob, etc.)
-            namespace: Kubernetes namespace
-            service_annotations: Optional annotations to apply to services
+            resource_type (str): Type of resource (deployment, knative, raycluster, pytorchjob, etc.).
+            namespace (str): Kubernetes namespace.
+            service_annotations (dict): Optional annotations to apply to services. (Default: None)
         """
         self.resource_type = resource_type.lower()
         self.namespace = namespace or globals.config.namespace
@@ -736,11 +736,11 @@ class ServiceManager:
         proxy timeout issues (e.g., nginx 60s gateway timeout).
 
         Args:
-            service_name: Name of the service
-            launch_timeout: Total timeout in seconds
+            service_name (str): Name of the service.
+            launch_timeout (int): Total timeout in seconds. (Default: 300)
 
         Returns:
-            True if ready, raises exception on timeout or error
+            True if ready. Raises exception on timeout or error.
         """
         import time
 
@@ -971,8 +971,8 @@ class ServiceManager:
         """Discover all Kubetorch services (Knative, Deployments, RayClusters, training jobs, selector pools).
 
         Args:
-            namespace: Kubernetes namespace to search
-            name_filter: Optional filter to match service names
+            namespace (str): Kubernetes namespace to search.
+            name_filter (str, optional): Filter to match service names. (Default: None)
 
         Returns:
             List of service dictionaries with normalized structure:

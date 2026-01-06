@@ -651,11 +651,11 @@ def load_logs_for_pod(
     """Get logs from Loki with fail-fast approach to avoid hanging.
 
     Args:
-        query: LogQL query string
-        uri: Direct URI to use (skips cluster checks)
-        print_pod_name: Whether to print pod name with each log
-        timeout: Connection timeout
-        namespace: Namespace to query logs from (required if uri not provided)
+        query (str): LogQL query string. (Default: None)
+        uri (str): Direct URI to use. Skips cluster checks. (Default: None)
+        print_pod_name (bool): Whether to print pod name with each log. (Default: False)
+        timeout (float): Connection timeout. (Default: 2.0)
+        namespace (str): Namespace to query logs from (required if uri not provided). (Default: None)
     """
     try:
         # If URI is provided, use it directly (skip cluster checks)

@@ -50,8 +50,8 @@ class RsyncClient:
         Initialize the rsync client.
 
         Args:
-            namespace: Kubernetes namespace (user namespace for data paths)
-            service_name: Optional service name for service-specific transfers
+            namespace (str): Kubernetes namespace (user namespace for data paths).
+            service_name (str, optional): Optional service name for service-specific transfers. (Default: None)
         """
         self.namespace = namespace  # Namespace for both service and data paths
         self.service_name = service_name or "store"

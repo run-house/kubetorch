@@ -36,8 +36,8 @@ class MetricsConfig:
     Configuration for streaming metrics during a Kubetorch service call.
 
     Attributes:
-        interval: Time between two consecutive metrics outputs, in seconds. Default: 30.
-        scope: Metrics aggregation level. Options: "pod", "resource". Default: "resource"
+        interval (int): Time between two consecutive metrics outputs, in seconds. (Default: 30)
+        scope (str): Metrics aggregation level. Options: "pod", "resource". (Default: "resource")
     """
 
     interval: int = 30  # polling interval in seconds
@@ -53,33 +53,28 @@ class LoggingConfig:
     (during `.to()` deployment).
 
     Attributes:
-        stream_logs: Whether log streaming is enabled for this service. When True, logs
+        stream_logs (bool): Whether log streaming is enabled for this service. When ``True``, logs
             from the remote compute are streamed back to the client during calls and
-            service startup. Individual calls can override this with stream_logs=False.
-            If None, falls back to global config.stream_logs setting. Default: True
-        level: Log level for the remote service. Controls which logs are emitted by
-            the service and available for streaming. Also controls client-side filtering.
-            Options: "debug", "info", "warning", "error". Default: "info"
-        include_system_logs: Whether to include framework logs (e.g., uvicorn.access).
-            Default: False (only show application logs)
-        include_events: Whether to include Kubernetes events during service startup.
-            Events include pod scheduling, image pulling, container starting, etc.
-            Default: True
-        grace_period: Seconds to continue streaming after request completes, to catch
-            any final logs that arrive late. Default: 2.0
-        include_name: Whether to prepend pod/service name to each log line.
-            Default: True
-        poll_timeout: Timeout in seconds for WebSocket receive during normal streaming.
-            Default: 1.0
-        grace_poll_timeout: Timeout in seconds for WebSocket receive during grace period.
-            Shorter timeout allows faster shutdown while still catching late logs.
-            Default: 0.5
-        shutdown_grace_period: Seconds to block the main thread after the HTTP call
+            service startup. Individual calls can override this with ``stream_logs=False``.
+            If None, falls back to global config.stream_logs setting. (Default: True)
+        level (str): Log level for the remote service. Controls which logs are emitted by the service and available
+            for streaming. Also controls client-side filtering. Options: "debug", "info", "warning", "error".
+            (Default: "info")
+        include_system_logs (bool): Whether to include framework logs (e.g., uvicorn.access). (Default: False)
+        include_events (bool): Whether to include Kubernetes events during service startup.
+            Events include pod scheduling, image pulling, container starting, etc. (Default: True)
+        grace_period (float): Seconds to continue streaming after request completes, to catch
+            any final logs that arrive late. (Default: 2.0)
+        include_name (bool): Whether to prepend pod/service name to each log line. (Default: True)
+        poll_timeout (float): Timeout in seconds for WebSocket receive during normal streaming. (Default: 1.0)
+        grace_poll_timeout (float): Timeout in seconds for WebSocket receive during grace period.
+            Shorter timeout allows faster shutdown while still catching late logs. (Default: 0.5)
+        shutdown_grace_period (float): Seconds to block the main thread after the HTTP call
             completes, waiting for the log streaming thread to finish. This prevents
             the Python interpreter from exiting before final logs are printed.
             Set to 0 for no blocking (default), or a few seconds (e.g., 3.0) if you
             need to ensure wrap-up logs from the remote compute are captured.
-            Default: 0
+            (Default: 0)
     """
 
     stream_logs: bool = None
@@ -98,8 +93,9 @@ class DebugConfig:
     """Configuration for debugging mode.
 
     Attributes:
-        mode: Debug mode - "pdb" (default, WebSocket PTY) or "pdb-ui" (web-based UI)
-        port: Debug port (default: 5678)
+        mode (str): Debug mode - "pdb" (WebSocket PTY) or "pdb-ui" (web-based UI). Options: "pdb", "pdb-ui".
+            (Default: "pdb")
+        port (int): Debug port. (Default: 5678)
     """
 
     mode: Literal["pdb", "pdb-ui"] = "pdb"
@@ -372,7 +368,7 @@ class ControllerClient:
         Initialize controller client.
 
         Args:
-            base_url: Base URL for the controller (e.g., "http://localhost:8080")
+            base_url (str): Base URL for the controller (e.g., "http://localhost:8080")
         """
         self.base_url = base_url.rstrip("/")
         self.session = requests.Session()
@@ -898,13 +894,13 @@ class ControllerClient:
         It does not create K8s Services (use register_pool for that).
 
         Args:
-            service_name: Name of the service
-            namespace: Kubernetes namespace
-            resource_type: Type of resource (deployment, knative, raycluster, etc.)
-            resource_manifest: The full K8s manifest to apply
+            service_name (str): Name of the service.
+            namespace (str): Kubernetes namespace.
+            resource_type (str): Type of resource (deployment, knative, raycluster, etc.).
+            resource_manifest (Dict[str, Any]): The full K8s manifest to apply.
 
         Returns:
-            Apply response with status, message, and created resource
+            Apply response with status, message, and created resource.
         """
         body = {
             "service_name": service_name,

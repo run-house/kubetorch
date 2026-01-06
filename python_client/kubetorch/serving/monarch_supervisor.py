@@ -373,7 +373,7 @@ class MonarchDistributed(DistributedSupervisor):
         """Initialize Monarch supervisor.
 
         Args:
-            max_threads: Maximum threads per process (default 4).
+            max_threads (int, optional): Maximum threads per process. (Default: 4)
             **kwargs: Arguments passed to DistributedSupervisor.
         """
         # Monarch manages its own membership, disable DNS monitoring
