@@ -85,6 +85,8 @@ class ProcessWorker(multiprocessing.Process):
             request_id = request["request_id"]
             distributed_env_vars = request["distributed_env_vars"]
             serialization = request["serialization"]
+            # Note: debug_port and debug_mode are passed via params["debugger"]
+            # and extracted inside execute_callable
 
             # Set the request ID in the context for this thread
             token = request_id_ctx_var.set(request_id)
@@ -107,6 +109,8 @@ class ProcessWorker(multiprocessing.Process):
                 if self._log_capture:
                     self._log_capture.ensure_handler()
 
+                # Note: debug_port and debug_mode are extracted from params["debugger"]
+                # inside execute_callable, so we don't pass them separately
                 result = execute_callable(
                     callable_obj=callable_obj,
                     cls_or_fn_name=os.environ["KT_CLS_OR_FN_NAME"],
