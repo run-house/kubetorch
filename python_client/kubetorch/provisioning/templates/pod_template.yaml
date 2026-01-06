@@ -61,39 +61,20 @@ containers:
 {{ setup_script | indent(8, true) }}
 
     env:
-      # Pod metadata available via the Kubernetes Downward API
-      - name: POD_NAME
-        valueFrom:
-          fieldRef:
-            fieldPath: metadata.name
-      - name: POD_NAMESPACE
-        valueFrom:
-          fieldRef:
-            fieldPath: metadata.namespace
-      - name: POD_IP
-        valueFrom:
-          fieldRef:
-            fieldPath: status.podIP
-      - name: POD_UUID
-        valueFrom:
-          fieldRef:
-            fieldPath: metadata.uid
-      - name: MODULE_NAME
-        valueFrom:
-          fieldRef:
-            fieldPath: metadata.labels['kubetorch.com/module']
+      # Note: POD_NAME, POD_NAMESPACE, POD_IP are derived in code without Downward API:
+      # - POD_NAME: from hostname (K8s sets hostname to pod name)
+      # - POD_NAMESPACE: from /var/run/secrets/kubernetes.io/serviceaccount/namespace
+      # - POD_IP: from resolving hostname
+      # See http_server.py _get_pod_name(), _get_pod_namespace(), _get_pod_ip()
+
+      # KT_SERVICE is set from labels for log streaming identification
       - name: KT_SERVICE
         valueFrom:
           fieldRef:
             fieldPath: metadata.labels['kubetorch.com/service']
-      - name: KUBETORCH_VERSION
-        valueFrom:
-          fieldRef:
-            fieldPath: metadata.labels['kubetorch.com/version']
-      - name: SERVICE_ACCOUNT_NAME
-        valueFrom:
-          fieldRef:
-            fieldPath: spec.serviceAccountName
+      # Install namespace for constructing controller URL
+      - name: KT_INSTALL_NAMESPACE
+        value: "{{ install_namespace }}"
       - name: UV_LINK_MODE
         value: "copy"  # Suppress the hardlink warning
       - name: KT_LOG_STREAMING_ENABLED
