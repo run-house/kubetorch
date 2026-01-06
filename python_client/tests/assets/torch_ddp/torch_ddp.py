@@ -3,7 +3,9 @@ def torch_ddp(epochs):
 
     from torch.nn.parallel import DistributedDataParallel as DDP
 
-    torch.distributed.init_process_group(backend="gloo")
+    # Only initialize if not already initialized (gloo doesn't handle repeated init/destroy well)
+    if not torch.distributed.is_initialized():
+        torch.distributed.init_process_group(backend="gloo")
     rank = torch.distributed.get_rank()
     print(f"Rank {rank} of {torch.distributed.get_world_size()} initialized")
 
@@ -21,5 +23,4 @@ def torch_ddp(epochs):
 
         print(f"Rank {rank}: Epoch {epoch}, Loss {loss.item()}")
 
-    torch.distributed.destroy_process_group()
     return "Success"

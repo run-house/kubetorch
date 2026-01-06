@@ -113,8 +113,6 @@ class ExecutionSupervisor:
         method_name: Optional[str] = None,
         params: Optional[Dict] = None,
         distributed_subcall: bool = False,
-        debug_port: int = None,
-        debug_mode: str = None,
         deployed_as_of: Optional[str] = None,
     ):
         """Execute a call through the subprocess pool.
@@ -129,8 +127,6 @@ class ExecutionSupervisor:
             method_name: Method name to call (for class instances).
             params: Parameters for the call.
             distributed_subcall: Whether this is a subcall from another node.
-            debug_port: Port for debugger connection.
-            debug_mode: Debug mode setting.
             deployed_as_of: Deployment timestamp.
 
         Returns:
@@ -138,6 +134,12 @@ class ExecutionSupervisor:
         """
         request_id = request.headers.get("X-Request-ID", "-")
         serialization = request.headers.get("X-Serialization", "json")
+
+        debug_mode, debug_port = None, None
+        debugger: dict = params.get("debugger", None) if params else None
+        if debugger:
+            debug_mode = debugger.get("mode")
+            debug_port = debugger.get("port")
 
         # Note: If deployed_as_of is None, we pass it as-is to subprocesses.
         # The subprocess's load_callable() will correctly skip reload when None.

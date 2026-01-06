@@ -106,14 +106,19 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         method_name: Optional[str] = None,
         params: Optional[Dict] = None,
         distributed_subcall: bool = False,
-        debug_port: int = False,
-        debug_mode: str = None,
         deployed_as_of: Optional[str] = None,
     ):
         # Get the request ID from the headers
         request_id = request.headers.get("X-Request-ID", "-")
         serialization = request.headers.get("X-Serialization", "json")
         params = params or {}
+
+        # Extract debugger config from params
+        debug_mode, debug_port = None, None
+        debugger: dict = params.get("debugger", None) if params else None
+        if debugger:
+            debug_mode = debugger.get("mode")
+            debug_port = debugger.get("port")
 
         # Note: If deployed_as_of is None, we pass it as-is.
         # Workers will correctly skip reload when deployed_as_of is None.
