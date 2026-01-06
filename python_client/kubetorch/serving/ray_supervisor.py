@@ -1,6 +1,6 @@
-import multiprocessing
 import os
 import subprocess
+import threading
 import time
 from concurrent.futures import as_completed, ThreadPoolExecutor
 from typing import Dict, Optional
@@ -8,12 +8,9 @@ from typing import Dict, Optional
 import httpx
 from starlette.responses import JSONResponse
 
-from kubetorch.serving.execution_supervisor import ExecutionSupervisor
+from kubetorch.serving.distributed_supervisor import DistributedSupervisor
 from kubetorch.serving.http_server import logger, patch_sys_path
-from kubetorch.serving.log_capture import get_subprocess_queue
-from kubetorch.serving.process_pool import ProcessPool
 from kubetorch.serving.process_worker import ProcessWorker
-from kubetorch.serving.remote_worker_pool import RemoteWorkerPool
 
 RAY_START_PROC = None
 
@@ -35,40 +32,40 @@ class RayProcess(ProcessWorker):
             logger.debug(f"Failed to shutdown Ray: {e}")
 
 
-class RayDistributed(ExecutionSupervisor):
+class RayDistributed(DistributedSupervisor):
+    """Ray distributed supervisor - only runs on head node (single controller).
+
+    Ray manages its own cluster membership, so DNS monitoring is disabled.
+    This supervisor handles:
+    - Starting Ray GCS server on head node
+    - Setting up subprocess for user code execution
+    - Coordinating image reloads across worker pods
+    """
+
     def __init__(
         self,
-        restart_procs=True,
         max_threads=4,
-        quorum_timeout=300,
-        quorum_workers=None,
-        monitor_members=False,
+        **kwargs,
     ):
-        """Ray distributed supervisor - only runs on head node (single controller).
+        """Initialize Ray supervisor.
 
         Args:
-            restart_procs: Whether to restart processes on each call
-            max_threads: Maximum threads per process
-            quorum_timeout: Timeout in seconds for Ray cluster nodes to become ready (default 300s/5min)
+            max_threads: Maximum threads per process (default 4).
+            **kwargs: Arguments passed to DistributedSupervisor.
         """
         # Ray manages its own membership, so we don't monitor DNS changes
+        # Force num_processes=1 since Ray only needs one process on head
         super().__init__(
-            quorum_timeout=quorum_timeout,
-            quorum_workers=quorum_workers,
-            monitor_members=monitor_members,
+            process_class=RayProcess,
+            num_processes=1,
+            max_threads_per_proc=max_threads,
+            monitor_members=False,  # Ray manages its own membership
+            **kwargs,
         )
-        self.restart_procs = restart_procs
         self.distributed_env_vars = None
-        self.process_pool = None  # Using pool even for single process for consistency
-        self.remote_worker_pool = None  # Pool for async HTTP calls to remote workers
-        self.max_threads = max_threads
-        self.quorum_timeout = quorum_timeout
 
     def setup(self, deployed_as_of: Optional[str] = None):
-        # Set multiprocessing to spawn if not already
-        if multiprocessing.get_start_method() != "spawn":
-            multiprocessing.set_start_method("spawn", force=True)
-
+        """Set up Ray distributed environment."""
         # Start the Ray server here, if we allow KubeRay to start it in the pod template
         # it's hard to wait for it start properly and we lose the ability to restart if needed.
         global RAY_START_PROC
@@ -104,8 +101,6 @@ class RayDistributed(ExecutionSupervisor):
                                 logger.info(f"[Ray] {line.strip()}")
                         except Exception as e:
                             logger.error(f"Error streaming Ray logs: {e}")
-
-                    import threading
 
                     log_thread = threading.Thread(target=stream_ray_logs, daemon=True)
                     log_thread.start()
@@ -146,59 +141,23 @@ class RayDistributed(ExecutionSupervisor):
             if env_var in os.environ:
                 self.distributed_env_vars[env_var] = os.environ[env_var]
 
-        # Cleanup will remove the process pool if found, so we need to check if it was previously initialized
-        previously_initialized = self.remote_worker_pool is not None
+        # Check if we need to reload other pods (only if previously initialized)
+        # Note: We check process_pool, not remote_worker_pool, since RemoteWorkerPool
+        # is now created lazily when there are actually remote workers to call.
+        previously_initialized = self.process_pool is not None
 
-        if self.restart_procs:
-            logger.debug("restart_procs is True, restarting Ray distributed process")
-            self.cleanup()
+        if self.restart_procs and previously_initialized:
+            pod_ips = self.pod_ips()
+            # Send reload requests to other pods if needed
+            self._reload_image_on_other_pods(pod_ips, this_pod_ip, deployed_as_of)
 
-            if previously_initialized:
-                pod_ips = self.pod_ips()
-                this_pod_ip = os.environ["POD_IP"]
+        # Call parent setup to create ProcessPool
+        # Note: Ray doesn't use RemoteWorkerPool - it handles distributed
+        # coordination via Ray's own GCS server
+        super().setup(deployed_as_of)
+        logger.debug("Finished setting up Ray distributed process")
 
-                # Send reload requests to other pods if needed
-                self._reload_image_on_other_pods(pod_ips, this_pod_ip, deployed_as_of)
-
-        if self.process_pool is None:
-            logger.debug("Setting up Ray distributed process")
-            self.process_pool = ProcessPool(
-                process_class=RayProcess,
-                num_processes=1,  # Ray only needs one process
-                max_threads_per_proc=self.max_threads,
-                log_queue=get_subprocess_queue(),
-            )
-            self.process_pool.start()
-
-            # # Start remote worker pool for async HTTP calls if needed
-            # Use a reasonable default max_workers since we don't know cluster size yet
-            self.remote_worker_pool = RemoteWorkerPool(quorum_timeout=self.quorum_timeout)
-            self.remote_worker_pool.start(max_workers=100)  # Default size
-
-            logger.debug("Finished setting up Ray distributed process and remote worker pool")
-
-    def cleanup(self):
-        """Clean up Ray distributed process."""
-        logger.debug("Cleaning up Ray distributed process")
-
-        # Stop DNS monitoring first
-        super().cleanup()
-
-        if self.process_pool:
-            self.process_pool.stop()
-            self.process_pool = None
-
-        if self.remote_worker_pool:
-            self.remote_worker_pool.stop()
-            self.remote_worker_pool = None
-
-        logger.debug("Finished cleaning up Ray distributed process")
-
-    @staticmethod
-    def intercept_call():
-        return True
-
-    def call_distributed(
+    def call(
         self,
         request,
         cls_or_fn_name: str,
@@ -213,12 +172,8 @@ class RayDistributed(ExecutionSupervisor):
         request_id = request.headers.get("X-Request-ID", "-")
         serialization = request.headers.get("X-Serialization", "json")
 
-        # If deployed_as_of is None, generate a consistent timestamp
-        # to use across all workers to prevent reload inconsistencies
-        if deployed_as_of is None:
-            from datetime import datetime, timezone
-
-            deployed_as_of = datetime.now(timezone.utc).isoformat()
+        # Note: If deployed_as_of is None, we pass it as-is.
+        # Workers will correctly skip reload when deployed_as_of is None.
 
         if not os.environ["POD_NAME"].endswith("-head"):
             # This should never happen, because the service only points to the head node, Raise an error if it does.

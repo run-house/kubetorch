@@ -7,7 +7,7 @@ from typing import Callable, Optional, Type, Union
 
 from kubetorch.globals import DebugConfig
 from kubetorch.logger import get_logger
-from kubetorch.serving.constants import DEFAULT_DEBUG_PORT
+from kubetorch.provisioning.constants import DEFAULT_DEBUG_PORT
 
 logger = get_logger(__name__)
 
