@@ -1,6 +1,5 @@
 import os
 
-
 # Mimic CI for this test suite even locally, to ensure that
 # resources are created with the branch name prefix
 os.environ["CI"] = "true"
@@ -274,21 +273,21 @@ def test_autoscaling_fn():
 
 @pytest.mark.level("minimal")
 def test_declarative_fn_freeze():
-    # if you run the test on a EKS cluster, use the following image_id:
-    # image_id="your-account.dkr.ecr.us-east-1.amazonaws.com/kubetorch-client:main"
-
     import kubetorch as kt
+    from kubetorch.utils import string_to_dict
 
-    # Note: provided image has kubetorch already installed, and service account updated with permissions to pull from ECR
-    remote_fn = kt.fn(summer, name=get_test_fn_name()).to(
+    from .conftest import KUBETORCH_IMAGE
+
+    # Note: use a function that will be baked into the image (here an arbitrary kubetorch utils helper)
+    remote_fn = kt.fn(string_to_dict, name=get_test_fn_name()).to(
         kt.Compute(
             cpus=".1",
-            image=kt.Image(image_id="us-east1-docker.pkg.dev/runhouse-test/kubetorch-images/kubetorch-client:main"),
+            image=kt.Image(image_id=KUBETORCH_IMAGE),
             freeze=True,
             gpu_anti_affinity=True,
         )
     )
-    assert remote_fn(1, 2) == 3
+    assert remote_fn('{"a": 1}') == {"a": 1}
 
 
 @pytest.mark.level("minimal")
@@ -598,12 +597,8 @@ def test_default_allowed_serialization(remote_logs_fn):
     result_valid_serialization = remote_logs_fn(msg=msg, n=n, serialization="json")
     assert result_valid_serialization == expected_result
 
-    result_invalid_serialization = remote_logs_fn(msg=msg, n=n, serialization="pickle")
-    assert isinstance(result_invalid_serialization, dict)
-    assert (
-        result_invalid_serialization.get("detail")
-        == "Serialization format 'pickle' not allowed. Allowed formats: ['json']"
-    )
+    with pytest.raises(Exception, match="Serialization format 'pickle' not allowed"):
+        remote_logs_fn(msg=msg, n=n, serialization="pickle")
 
 
 @pytest.mark.level("minimal")

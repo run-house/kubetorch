@@ -21,6 +21,7 @@ class ProcessWorker(multiprocessing.Process):
         self._max_threads = max_threads
         self._executor = None
         self._log_queue = log_queue  # Queue for sending logs back to main process
+        self._log_capture = None
         # Store any additional framework-specific settings
         self._settings = kwargs
 
@@ -83,8 +84,6 @@ class ProcessWorker(multiprocessing.Process):
             deployed_as_of = request["deployed_as_of"]
             request_id = request["request_id"]
             distributed_env_vars = request["distributed_env_vars"]
-            debug_port = request["debug_port"]
-            debug_mode = request["debug_mode"]
             serialization = request["serialization"]
 
             # Set the request ID in the context for this thread
@@ -103,14 +102,17 @@ class ProcessWorker(multiprocessing.Process):
                     reload_cleanup_fn=self.framework_cleanup,
                 )
 
+                # Re-add logging handler if user code's logging config removed it
+                # (e.g., structlog's dictConfig() can remove all root handlers)
+                if self._log_capture:
+                    self._log_capture.ensure_handler()
+
                 result = execute_callable(
                     callable_obj=callable_obj,
                     cls_or_fn_name=os.environ["KT_CLS_OR_FN_NAME"],
                     method_name=method_name,
                     params=params,
                     serialization=serialization,
-                    debug_port=debug_port,
-                    debug_mode=debug_mode,
                 )
 
                 # Reset the request ID after the call is complete
@@ -150,7 +152,7 @@ class ProcessWorker(multiprocessing.Process):
         """Main process loop with thread pool for concurrent request handling."""
         # Set up subprocess log capture to push logs to main process via queue
         # Uses LogCapture in queue mode - same capture logic, different emit target
-        log_capture = create_subprocess_log_capture(self._log_queue)
+        self._log_capture = create_subprocess_log_capture(self._log_queue)
 
         # Create thread pool for handling requests
         self._executor = ThreadPoolExecutor(max_workers=self._max_threads)
@@ -185,6 +187,6 @@ class ProcessWorker(multiprocessing.Process):
             # Cleanup
             logger.info("Received shutdown signal, cleaning up distributed environment...")
             self.proc_cleanup()
-            if log_capture:
-                log_capture.stop()
+            if self._log_capture:
+                self._log_capture.stop()
             logger.info("Exiting gracefully.")

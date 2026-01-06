@@ -197,6 +197,7 @@ class LogCapture:
                         "level": level,
                         "request_id": request_id,
                         "extra_labels": extra_labels,
+                        "name": name,
                     }
                 )
             except Exception:
@@ -302,12 +303,13 @@ class LogCapture:
         while not self._stop_event.is_set():
             try:
                 entry = self._subprocess_queue.get(timeout=0.5)
-                # Entry should have: message, level, request_id, extra_labels
+                # Entry should have: message, level, request_id, extra_labels, name
                 self.add_log(
                     message=entry.get("message", ""),
                     level=entry.get("level", "INFO"),
                     request_id=entry.get("request_id", "-"),
                     extra_labels=entry.get("extra_labels"),
+                    name=entry.get("name", "print_redirect"),
                 )
             except Empty:
                 continue
@@ -498,9 +500,15 @@ def create_subprocess_log_capture(output_queue: mp.Queue) -> Optional[LogCapture
     Returns:
         LogCapture instance in queue mode, or None if queue is None
     """
+    global _log_capture
+
     if output_queue is None:
         return None
 
     log_capture = LogCapture(output_queue=output_queue)
     log_capture.start()
+
+    # Set as global so get_log_capture() works in a subprocess (needed for ensure_handler calls)
+    _log_capture = log_capture
+
     return log_capture
