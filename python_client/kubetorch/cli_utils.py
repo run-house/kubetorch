@@ -36,7 +36,7 @@ from kubetorch.constants import MAX_PORT_TRIES
 from kubetorch.provisioning.utils import wait_for_port_forward
 
 from kubetorch.resources.compute.utils import is_port_available
-from kubetorch.servers.http.utils import stream_logs_websocket_helper, StreamType
+from kubetorch.serving.utils import stream_logs_websocket_helper, StreamType
 from kubetorch.utils import hours_to_ns, http_not_found
 
 from .constants import BULLET_UNICODE, CPU_RATE, DOUBLE_SPACE_UNICODE, GPU_RATE

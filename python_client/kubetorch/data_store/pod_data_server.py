@@ -2689,7 +2689,7 @@ def _forward_subprocess_output_to_log_capture(pipe, stream_name: str, source: st
     Runs in a daemon thread to continuously forward logs.
     """
     try:
-        from kubetorch.servers.http.log_capture import get_log_capture
+        from kubetorch.serving.log_capture import get_log_capture
     except ImportError:
         # If LogCapture not available, just read and discard to prevent pipe blocking
         for line in iter(pipe.readline, b""):

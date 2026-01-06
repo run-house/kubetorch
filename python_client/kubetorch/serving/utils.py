@@ -145,13 +145,13 @@ request_id_ctx_var: ContextVar[str] = ContextVar("request_id", default="-")
 def collect_reload_modules(kt_home_dir_str: str) -> list:
     """
     Collect user modules from sys.modules that should be reloaded. Returns sorted list of modules (children to parents)
-    with file under kt_home_dir and excludes kubetorch.servers.
+    with file under kt_home_dir and excludes kubetorch.serving.
     """
     modules_to_reload = []
 
     for mod_name, mod in sys.modules.items():
-        # Exclude kubetorch.servers (framework module that shouldn't be reloaded)
-        if mod_name == "kubetorch.servers" or mod_name.startswith("kubetorch.servers."):
+        # Exclude kubetorch.serving (framework module that shouldn't be reloaded)
+        if mod_name == "kubetorch.serving" or mod_name.startswith("kubetorch.serving."):
             continue
 
         if not hasattr(mod, "__file__") or not mod.__file__:
@@ -648,7 +648,7 @@ def clear_debugging_sessions():
 
     # Clear PDB WebSocket server
     try:
-        from kubetorch.servers.http import pdb_websocket
+        from kubetorch.serving import pdb_websocket
 
         pdb_websocket.cleanup()
     except Exception as e:
@@ -747,7 +747,7 @@ def deep_breakpoint(debug_port: int = DEFAULT_DEBUG_PORT, debug_mode: Optional[s
         # Note: websockets is already a required server dependency, no need to install
         from bdb import BdbQuit
 
-        from kubetorch.servers.http.pdb_websocket import start_debugger
+        from kubetorch.serving.pdb_websocket import start_debugger
 
         # start_debugger will print its own connection instructions and wait for client
         # It needs to be called directly so the frame calculation is correct

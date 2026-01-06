@@ -6,7 +6,7 @@ from typing import List, Optional
 import kubetorch.provisioning.constants as provisioning_constants
 from kubetorch.logger import get_logger
 from kubetorch.provisioning.base_service_manager import BaseServiceManager
-from kubetorch.servers.http.utils import load_template
+from kubetorch.serving.utils import load_template
 from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)

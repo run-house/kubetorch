@@ -207,7 +207,7 @@ def test_secret_list_and_delete_all():
 @pytest.mark.level("unit")
 def test_controller_client_initialization():
     """Test controller client initialization and base URL detection"""
-    from kubetorch.servers.http.utils import is_running_in_kubernetes
+    from kubetorch.serving.utils import is_running_in_kubernetes
 
     controller = kt.globals.controller_client()
 

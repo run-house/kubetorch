@@ -12,7 +12,7 @@ from kubetorch.provisioning import constants as provisioning_constants
 from kubetorch.provisioning.constants import KT_SERVICE_LABEL, KT_USERNAME_LABEL
 from kubetorch.resources.callables.utils import get_local_install_path, locate_working_dir
 from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecretsClient
-from kubetorch.servers.http.utils import StartupError
+from kubetorch.serving.utils import StartupError
 from kubetorch.utils import http_not_found
 
 logger = get_logger(__name__)

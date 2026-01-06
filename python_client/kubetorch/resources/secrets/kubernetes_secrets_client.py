@@ -11,7 +11,7 @@ from kubetorch.logger import get_logger
 from kubetorch.provisioning.constants import KT_USER_IDENTIFIER_LABEL, KT_USERNAME_LABEL
 from kubetorch.resources.secrets import Secret
 from kubetorch.resources.secrets.utils import get_k8s_identity_name
-from kubetorch.servers.http.utils import is_running_in_kubernetes
+from kubetorch.serving.utils import is_running_in_kubernetes
 from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)

@@ -13,7 +13,7 @@ from typing import Dict, Optional
 import httpx
 from starlette.responses import JSONResponse
 
-from kubetorch.servers.http.http_server import (
+from kubetorch.serving.http_server import (
     load_callable,
     logger,
     package_exception,
@@ -998,7 +998,7 @@ class DistributedSupervisor:
                     removed = self._current_workers - current_ips
 
                     # Import here to avoid circular dependency
-                    from kubetorch.servers.http.utils import WorkerMembershipChanged
+                    from kubetorch.serving.utils import WorkerMembershipChanged
 
                     # Update current workers
                     self._current_workers = current_ips
@@ -1021,7 +1021,7 @@ class DistributedSupervisor:
             change = self._membership_changes.get_nowait()
 
             # Import here to avoid circular dependency
-            from kubetorch.servers.http.utils import WorkerMembershipChanged
+            from kubetorch.serving.utils import WorkerMembershipChanged
 
             raise WorkerMembershipChanged(
                 added_ips=change["added"],

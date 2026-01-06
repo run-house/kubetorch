@@ -22,7 +22,7 @@ from kubetorch.resources.compute.utils import (
 from kubetorch.resources.images.image import Image  # noqa: F401
 from kubetorch.resources.secrets import Secret, secret  # noqa: F401
 from kubetorch.resources.volumes.volume import Volume  # noqa: F401  # noqa: F401
-from kubetorch.servers.http.utils import (  # noqa: F401
+from kubetorch.serving.utils import (  # noqa: F401
     deep_breakpoint,
     PodTerminatedError,
     StartupError,

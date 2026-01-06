@@ -185,7 +185,7 @@ def find_locally_installed_version(package_name: str) -> Optional[str]:
 
 def get_names_for_reload_fallbacks(name: str, prefixes: list[str] = []):
     from kubetorch.globals import config
-    from kubetorch.servers.http.utils import clean_and_validate_k8s_name
+    from kubetorch.serving.utils import clean_and_validate_k8s_name
     from kubetorch.utils import current_git_branch, validate_username
 
     current_prefix = config.username
