@@ -931,8 +931,10 @@ class Module:
             deployment_timestamp: Timestamp to filter logs after
         """
         try:
-            # Query using labels set by LogCapture (service, namespace, request_id)
-            pod_query = f'{{service="{self.service_name}", namespace="{self.namespace}", request_id="{request_id}"}}'
+            # Query using labels set by LogCapture (service, namespace)
+            # Use regex for service name to capture nested/child service logs (e.g., parent-service-child)
+            # Child services have their own request_ids, so we don't filter by request_id here
+            pod_query = f'{{service=~"{self.service_name}.*", namespace="{self.namespace}"}}'
             # Event query for K8s events pushed by controller's event watcher
             # Include service name pattern AND actual pod names for selector-only mode
             name_patterns = [f"{self.service_name}.*"]
@@ -1014,8 +1016,10 @@ class Module:
             deployment_timestamp: Timestamp to filter logs after
         """
         try:
-            # Query using labels set by LogCapture (service, namespace, request_id)
-            pod_query = f'{{service="{self.service_name}", namespace="{self.namespace}", request_id="{request_id}"}}'
+            # Query using labels set by LogCapture (service, namespace)
+            # Use regex for service name to capture nested/child service logs (e.g., parent-service-child)
+            # Child services have their own request_ids, so we don't filter by request_id here
+            pod_query = f'{{service=~"{self.service_name}.*", namespace="{self.namespace}"}}'
             # Event query for K8s events pushed by controller's event watcher
             # Include service name pattern AND actual pod names for selector-only mode
             name_patterns = [f"{self.service_name}.*"]

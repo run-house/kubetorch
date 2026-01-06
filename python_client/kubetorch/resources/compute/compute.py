@@ -1561,7 +1561,10 @@ class Compute:
             replica_specs_key = service_manager.config.get("replica_specs_key")
             replica_specs = spec.get(replica_specs_key, {}) if replica_specs_key else {}
 
-            for replica_name in [service_manager.primary_replica, service_manager.worker_replica]:
+            for replica_name in [
+                service_manager.config.get("primary_replica"),
+                service_manager.config.get("worker_replica"),
+            ]:
                 replica_spec = replica_specs.get(replica_name, {})
                 pod_spec = replica_spec.get("template", {}).get("spec", {})
                 containers = pod_spec.get("containers", [])
