@@ -1,6 +1,7 @@
 import base64
 import importlib
 import inspect
+import json
 import os
 import signal
 import subprocess
@@ -71,6 +72,8 @@ except ImportError:
 from .logger import get_logger
 
 app = typer.Typer(add_completion=False)
+server_app = typer.Typer(help="Kubetorch server commands.")
+app.add_typer(server_app, name="server")
 console = Console()
 
 # Register internal CLI commands if available
@@ -736,7 +739,7 @@ def kt_list(
         help="Service tag or prefix (ex: 'myusername', 'some-git-branch').",
     ),
 ):
-    """List all Kubetorch services.
+    """List all Kubetorch resources.
 
     Examples:
 
@@ -748,11 +751,11 @@ def kt_list(
     """
 
     # Import here to avoid circular imports
-    from kubetorch.provisioning.service_manager import BaseServiceManager
+    from kubetorch.provisioning.service_manager import ServiceManager
 
     try:
         # Use unified service discovery
-        unified_services = BaseServiceManager.discover_services_static(namespace=namespace, name_filter=tag)
+        unified_services = ServiceManager.discover_services(namespace=namespace, name_filter=tag)
 
         if not unified_services:
             console.print(f"[yellow]No services found in {namespace} namespace[/yellow]")
@@ -788,18 +791,24 @@ def kt_list(
         except Exception as e:
             logger.warning(f"Failed to list pods for all services in namespace {namespace}: {e}")
             return
-        pod_map = {
-            svc["name"]: [
-                pod
-                for pod in pods
-                if pod.get("metadata", {}).get("labels", {}).get(provisioning_constants.KT_SERVICE_LABEL) == svc["name"]
-            ]
-            for svc in unified_services
-        }
+
+        # Build pod map - for selector-based pools, use _pods from the resource (found via selector)
+        pod_map = {}
+        for svc in unified_services:
+            if svc["template_type"] == "selector":
+                # For selector-based pools, use actual pods from K8s (found via selector)
+                pod_map[svc["name"]] = svc["resource"].get("_pods", [])
+            else:
+                pod_map[svc["name"]] = [
+                    pod
+                    for pod in pods
+                    if pod.get("metadata", {}).get("labels", {}).get(provisioning_constants.KT_SERVICE_LABEL)
+                    == svc["name"]
+                ]
 
         # Create table
         table_columns = [
-            ("SERVICE", "cyan"),
+            ("RESOURCE", "cyan"),
             ("TYPE", "magenta"),
             ("STATUS", "green"),
             ("# OF PODS", "yellow"),
@@ -867,6 +876,46 @@ def kt_list(
                         gpu = reqs.get("nvidia.com/gpu") or reqs.get("gpu")
                     except Exception as e:
                         logger.warning(f"Could not get revision for {name}: {e}")
+            elif kind == "selector":
+                # Selector-based pools: status based on actual pods found via selector
+                num_pods = len(pods)
+                has_selector = bool(res.get("_selector"))
+                if num_pods > 0:
+                    # Check if pods are running
+                    running_pods = [p for p in pods if p.get("status", {}).get("phase") == "Running"]
+                    if len(running_pods) == num_pods:
+                        display_status = "[green]Ready[/green]"
+                    elif len(running_pods) > 0:
+                        display_status = "[yellow]Scaling[/yellow]"
+                    else:
+                        display_status = "[yellow]Pending[/yellow]"
+
+                    # Infer resource type from pod's ownerReferences
+                    try:
+                        owner_refs = pods[0].get("metadata", {}).get("ownerReferences", [])
+                        if owner_refs:
+                            owner_kind = owner_refs[0].get("kind", "").lower()
+                            # ReplicaSet is owned by Deployment, so show "deployment"
+                            if owner_kind == "replicaset":
+                                kind = "deployment"
+                            elif owner_kind:
+                                kind = owner_kind
+                    except Exception:
+                        pass  # Keep "selector" if we can't infer
+
+                    # Extract resources from first pod's container
+                    try:
+                        container = pods[0].get("spec", {}).get("containers", [{}])[0]
+                        reqs = container.get("resources", {}).get("requests", {})
+                        cpu = reqs.get("cpu")
+                        memory = reqs.get("memory")
+                        gpu = reqs.get("nvidia.com/gpu") or reqs.get("gpu")
+                    except Exception as e:
+                        logger.warning(f"Failed to get resources for selector pool {name}: {e}")
+                elif has_selector:
+                    display_status = "[yellow]No pods[/yellow]"
+                else:
+                    display_status = "[yellow]Waiting[/yellow]"
             else:
                 # Process Deployment - now using consistent dict access
                 ready = res.get("status", {}).get("readyReplicas", 0) or 0
@@ -884,6 +933,19 @@ def kt_list(
                         display_status = "[yellow]Scaling[/yellow]"
                     else:
                         display_status = "[red]Failed[/red]"
+                elif kind in ("pytorchjob", "tfjob", "mxjob", "xgboostjob"):
+                    # Training jobs use conditions to track status
+                    conditions = {c["type"]: c["status"] for c in status_data.get("conditions", [])}
+                    if conditions.get("Succeeded") == "True":
+                        display_status = "[green]Succeeded[/green]"
+                    elif conditions.get("Running") == "True":
+                        display_status = "[green]Running[/green]"
+                    elif conditions.get("Created") == "True":
+                        display_status = "[yellow]Created[/yellow]"
+                    elif conditions.get("Failed") == "True":
+                        display_status = "[red]Failed[/red]"
+                    else:
+                        display_status = "[yellow]Pending[/yellow]"
                 else:
                     display_status = (
                         "[green]Ready[/green]"
@@ -1480,7 +1542,7 @@ def kt_teardown(
     if force:
         console.print("\n[yellow]Force deleting resources...[/yellow]")
     else:
-        console.print("\n[yellow]Deleting resources...[/yellow]")
+        console.print("\n[dim]Deleting resources...[/dim]")
 
     controller_client = globals.controller_client()
 
@@ -1489,7 +1551,6 @@ def kt_teardown(
         service_info = resources["services"][name]
         configmaps = service_info["configmaps"]
         service_type = service_info.get("type", "knative")
-        service_group = service_info.get("group", None)
         service_types.add(service_type)
 
         delete_resources_for_service(
@@ -1499,7 +1560,6 @@ def kt_teardown(
             namespace=namespace,
             console=console,
             force=force,
-            group=service_group,
         )
 
     # Force delete any remaining pods if --force flag is set
@@ -2325,6 +2385,212 @@ def kt_rm(
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
+
+
+# TODO [JL, CC]: probably irrelevant long term, but helpful temporarily for debugging
+@app.command("pool", hidden=True)
+def kt_pool(
+    namespace: str = typer.Option(
+        globals.config.namespace,
+        "-n",
+        "--namespace",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show detailed module, specifier, labels, and annotations",
+    ),
+    watchers: bool = typer.Option(
+        False,
+        "--watchers",
+        "-w",
+        help="Show pod watcher metadata",
+    ),
+):
+    """
+    List registered pools.
+    """
+    import kubetorch as kt
+
+    controller = kt.globals.controller_client()
+
+    # Show watcher debug info if requested
+    if watchers:
+        watcher_data = controller.get_watchers()
+        if not watcher_data:
+            console.print("[yellow]No pools with BYO manifests found[/yellow]")
+            raise typer.Exit()
+
+        table = Table(
+            show_header=True,
+            border_style="bright_black",
+            expand=True,
+        )
+        table.add_column("Pool Name", style="bold magenta", no_wrap=True)
+        table.add_column("Namespace", style="cyan", no_wrap=True)
+        table.add_column("Pods", style="green", no_wrap=True)
+        table.add_column("Pod IPs", style="yellow", overflow="fold")
+
+        for pool_name, info in watcher_data.items():
+            ips = info.get("ips", [])
+            pod_count = info.get("pod_count", len(ips))
+            table.add_row(
+                pool_name,
+                info.get("namespace", "-"),
+                str(pod_count),
+                ", ".join(ips) if ips else "-",
+            )
+
+        console.print(table)
+        raise typer.Exit()
+
+    def fmt(ts):
+        if not ts:
+            return "-"
+        try:
+            return datetime.fromisoformat(ts).strftime("%m-%d %H:%M")
+        except Exception:
+            return ts
+
+    resp = controller.list_pools(namespace=namespace)
+    pools = resp.get("pools", [])
+
+    if not pools:
+        console.print(f"[yellow]No pools found in {namespace} namespace[/yellow]")
+        raise typer.Exit()
+
+    table = Table(
+        show_header=True,
+        border_style="bright_black",
+    )
+
+    table.add_column("Pool Name", style="bold magenta", no_wrap=True)
+    table.add_column("User", style="green", no_wrap=True)
+    table.add_column("Resource", style="cyan", no_wrap=True)
+    table.add_column("Last Deployed", style="white", no_wrap=True)
+
+    for p in pools:
+        metadata = p.get("pool_metadata") or {}
+        user = metadata.get("username", "-")
+        resource_kind = p.get("resource_kind") or "-"
+
+        table.add_row(
+            p.get("name", "-"),
+            user,
+            resource_kind,
+            fmt(p.get("last_deployed_at", "-")),
+        )
+
+    console.print(table)
+
+    # Show detailed JSON for each pool only in verbose mode
+    if verbose:
+        console.print()
+        console.rule("[bold]Pool Details[/bold]", style="bright_black")
+        for p in pools:
+            pool_name = p.get("name", "-")
+            module = p.get("module") or {}
+            specifier = p.get("specifier", {})
+            labels = p.get("labels") or {}
+            annotations = p.get("annotations") or {}
+
+            console.print()
+            console.print(
+                Panel.fit(
+                    f"[bold magenta]{pool_name}[/bold magenta]",
+                    border_style="magenta",
+                )
+            )
+            if module:
+                console.print("  [white]Module:[/white]")
+                console.print(Syntax(json.dumps(module, indent=2), "json", theme="monokai", line_numbers=False))
+            if specifier:
+                console.print("  [white]Specifier:[/white]")
+                console.print(Syntax(json.dumps(specifier, indent=2), "json", theme="monokai", line_numbers=False))
+            if labels:
+                console.print("  [white]Labels:[/white]")
+                console.print(Syntax(json.dumps(labels, indent=2), "json", theme="monokai", line_numbers=False))
+            if annotations:
+                console.print("  [white]Annotations:[/white]")
+                console.print(Syntax(json.dumps(annotations, indent=2), "json", theme="monokai", line_numbers=False))
+
+
+@server_app.command("start", hidden=True)
+def kt_server_start(
+    port: int = typer.Option(
+        int(os.getenv("KT_SERVER_PORT", 32300)),
+        "--port",
+        "-p",
+        help="Port to run the HTTP server on",
+    ),
+    host: str = typer.Option(
+        "0.0.0.0",
+        "--host",
+        "-h",
+        help="Host to bind the HTTP server to",
+    ),
+    pool_name: str = typer.Option(
+        os.getenv("KT_POOL_NAME"),
+        "--pool",
+        "-n",
+        help="Pool name",
+    ),
+    controller_url: str = typer.Option(
+        os.getenv("KT_CONTROLLER_URL"),
+        "--controller-url",
+        "-u",
+        help="Controller URL",
+    ),
+):
+    """Start the Kubetorch server.
+
+    Used in BYO-compute deployments where the server must be launched inside
+    a user-provided pod. Handles remote execution and optional self-registration
+    with the Kubetorch controller.
+
+    Examples:
+
+    .. code-block:: bash
+
+        $ kubetorch server start --pool my-workers --controller-url http://kubetorch-controller:8080
+
+        $ export KT_POOL_NAME=my-workers
+
+        $ export KT_CONTROLLER_URL=http://kubetorch-controller.kubetorch.svc.cluster.local:8080
+
+        $ kubetorch server start
+    """
+    try:
+        import uvicorn
+    except ImportError:
+        console.print(r'[red]uvicorn is not installed. Install with: `pip install "kubetorch\[server]"`[/red]')
+        raise typer.Exit(1)
+
+    if not is_running_in_kubernetes():
+        console.print(
+            "[yellow]`kubetorch server start` is typically used inside Kubernetes pods. "
+            "It's not recommended to run this command directly on your local machine.[/yellow]"
+        )
+
+    if pool_name:
+        os.environ["KT_POOL_NAME"] = pool_name
+
+    if controller_url:
+        os.environ["KT_CONTROLLER_URL"] = controller_url
+
+    elif pool_name and not os.getenv("KT_CONTROLLER_URL"):
+        # Default controller URL if not provided but pool name is set
+        namespace = os.getenv("POD_NAMESPACE", "kubetorch")
+        default_url = f"http://kubetorch-controller.{namespace}.svc.cluster.local:8080"
+        os.environ["KT_CONTROLLER_URL"] = default_url
+        console.print(f"[dim]Using default controller URL: {default_url}[/dim]")
+
+    console.print(f"[green]Starting kubetorch HTTP server on {host}:{port}[/green]")
+
+    from kubetorch.serving.http_server import app as http_app
+
+    uvicorn.run(http_app, host=host, port=port)
 
 
 @app.callback(invoke_without_command=True, help="Kubetorch CLI")

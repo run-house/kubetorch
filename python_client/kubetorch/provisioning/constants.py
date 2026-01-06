@@ -6,6 +6,7 @@ KT_LAUNCH_TIMEOUT = 900  # 15 minutes
 DEFAULT_NGINX_PORT = 8080
 LOCAL_NGINX_PORT = 38080
 DEFAULT_KT_SERVER_PORT = 32300  # Standard port of Knative services
+DEFAULT_K8S_SERVICE_PORT = 80  # K8s Service port (external), maps to DEFAULT_KT_SERVER_PORT
 DEFAULT_DEBUG_PORT = 5678
 
 # Namespaces
@@ -48,9 +49,7 @@ KNATIVE_SERVICE_TEMPLATE_FILE = "knative_service_template.yaml"
 POD_TEMPLATE_FILE = "pod_template.yaml"
 KT_SETUP_TEMPLATE_FILE = "kt_setup_template.sh.j2"
 DEPLOYMENT_TEMPLATE_FILE = "deployment_template.yaml"
-DEPLOYMENT_SERVICE_TEMPLATE_FILE = "service_template.yaml"
 RAYCLUSTER_TEMPLATE_FILE = "raycluster_template.yaml"
-RAYCLUSTER_SERVICE_TEMPLATE_FILE = "raycluster_service_template.yaml"
 
 # Loki
 LOKI_GATEWAY_SERVICE_NAME = "loki-gateway"

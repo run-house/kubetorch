@@ -63,6 +63,8 @@ class Compute:
         replicas: int = None,
         logging_config: LoggingConfig = None,
         queue_name: str = None,
+        selector: Dict[str, str] = None,
+        endpoint: "Endpoint" = None,
         _skip_template_init: bool = False,
     ):
         """Initialize the compute requirements for a Kubetorch service.
@@ -121,6 +123,12 @@ class Compute:
                 ``kueue.x-k8s.io/queue-name`` label to the pod template metadata. For training jobs
                 (PyTorchJob, TFJob, etc.), also sets ``spec.runPolicy.suspend: true`` so Kueue can
                 manage admission. Requires Kueue to be installed in the cluster.
+            selector (Dict[str, str], optional): Label selector to identify pods that belong to this compute.
+                Use this when you've already applied your own K8s manifest (e.g., via kubectl) and want to
+                deploy functions to those pods. Example: ``{"app": "workers", "team": "ml"}``.
+            endpoint (Endpoint, optional): Custom endpoint configuration for routing calls to pods.
+                Use this to specify your own URL (skip Service creation) or a custom selector
+                (route to subset of pool). See :class:`Endpoint` for details.
 
         Note:
 
@@ -161,7 +169,9 @@ class Compute:
         """
         self.default_config = {}
 
+        self._endpoint_config = endpoint
         self._endpoint = None
+        self._pod_selector = selector  # For selector-only or BYO manifest modes
         self._service_manager = None
         self._autoscaling_config = None
         self._kubeconfig_path = kubeconfig_path
@@ -175,6 +185,12 @@ class Compute:
 
         # Skip template initialization if loading from existing service
         if _skip_template_init:
+            return
+
+        if selector and not any([cpus, memory, disk_size, gpus, gpu_type, gpu_memory, image]):
+            # Selector-only mode: user provides only a selector for existing pods
+            # No manifest is built - just register pool and create service
+            self._namespace = namespace or globals.config.namespace
             return
 
         template_vars = {
@@ -214,14 +230,14 @@ class Compute:
             manifest_annotations[provisioning_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
 
         # Build initial manifest based on deployment type
-        from kubetorch.provisioning.service_manager import DeploymentServiceManager
+        from kubetorch.provisioning.utils import build_deployment_manifest
 
         # Prepare labels, including Kueue queue label if specified
         manifest_labels = labels.copy() if labels else {}
         if queue_name:
             manifest_labels[provisioning_constants.KUEUE_QUEUE_NAME_LABEL] = queue_name
 
-        self._manifest = DeploymentServiceManager._build_base_manifest(
+        self._manifest = build_deployment_manifest(
             pod_spec=pod_spec,
             namespace=template_vars["namespace"],
             replicas=replicas if replicas else 1,
@@ -242,15 +258,26 @@ class Compute:
         return compute
 
     @classmethod
-    def from_manifest(cls, manifest: Union[Dict, str]):
+    def from_manifest(
+        cls,
+        manifest: Union[Dict, str],
+        selector: Optional[Dict[str, str]] = None,
+        endpoint: Optional["Endpoint"] = None,
+    ):
         """Create a Compute instance from a user-provided Kubernetes manifest.
 
-        The user manifest is used as the baseline, and kubetorch-specific default
-        configurations (env vars, labels, annotations, setup script) are merged in
-        if missing from the user manifest.
+        Use this when you have an existing K8s deployment and want to deploy
+        kubetorch functions to it. The manifest can be one you've already applied
+        via kubectl, or one you want kubetorch to apply for you.
 
         Args:
             manifest: Kubernetes manifest dict or path to YAML file
+            selector: Label selector to identify pods belonging to this compute.
+                     If not provided, uses the manifest's spec.selector.matchLabels.
+                     Example: {"app": "my-workers", "team": "ml"}
+            endpoint: Custom endpoint configuration for routing calls to pods.
+                     Use ``Endpoint(url="...")`` for your own Service/Ingress, or
+                     ``Endpoint(selector={...})`` to route to a subset of pool pods.
 
         Returns:
             Compute instance
@@ -261,11 +288,29 @@ class Compute:
 
             import kubetorch as kt
 
-            compute = kt.Compute.from_manifest(user_manifest)
+            # Basic usage - manifest already applied via kubectl
+            compute = kt.Compute.from_manifest(
+                manifest=my_manifest,
+                selector={"app": "my-workers"}
+            )
 
-            # Override properties after creation
-            compute.cpus = "2"
-            compute.image = kt.images.Debian().pip_install(["numpy"])
+            # Deploy a function to the existing pods
+            remote_fn = kt.fn(my_func).to(compute)
+            result = remote_fn(1, 2)
+
+            # With custom endpoint URL (user-created service)
+            compute = kt.Compute.from_manifest(
+                manifest=my_manifest,
+                selector={"app": "my-workers"},
+                endpoint=kt.Endpoint(url="my-svc.my-ns.svc.cluster.local:8080")
+            )
+
+            # Route to subset of pool (e.g., head node only)
+            compute = kt.Compute.from_manifest(
+                manifest=ray_manifest,
+                selector={"app": "ray"},  # Pool: all ray pods
+                endpoint=kt.Endpoint(selector={"app": "ray", "role": "head"})  # Route: head only
+            )
         """
         # Load manifest from file if provided as a string
         if isinstance(manifest, str):
@@ -281,6 +326,12 @@ class Compute:
         compute._manifest = copy.deepcopy(manifest)
         compute._manifest.setdefault("metadata", {})
         compute._manifest.setdefault("spec", {})
+
+        # Store selector and endpoint configuration
+        if selector:
+            compute._pod_selector = selector
+        if endpoint:
+            compute._endpoint_config = endpoint
 
         # Extract kubeconfig_path from manifest annotations if present
         user_annotations = compute._manifest["metadata"].get("annotations", {})
@@ -305,7 +356,7 @@ class Compute:
             manifest_annotations[provisioning_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
 
         # Apply kubetorch-specific metadata to user manifest
-        self.service_manager._apply_kubetorch_updates(
+        self.service_manager._apply_kubetorch_metadata_to_manifest(
             manifest=self._manifest,
             custom_labels={},
             custom_annotations=manifest_annotations,
@@ -418,12 +469,11 @@ class Compute:
         kubetorch values are added where user doesn't have them, but existing user
         values are preserved.
         """
-        from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
-        from kubetorch.provisioning.utils import nested_merge
+        from kubetorch.provisioning.utils import get_resource_config, nested_merge, SUPPORTED_TRAINING_JOBS
 
-        if self.kind in TrainJobServiceManager.SUPPORTED_KINDS:
-            config = TrainJobServiceManager._get_config(self.kind)
-            container_name = config["container_name"]
+        if self.kind.lower() in SUPPORTED_TRAINING_JOBS:
+            config = get_resource_config(self.kind.lower())
+            container_name = config.get("container_name", "kubetorch")
         else:
             container_name = "kubetorch"
         if not self.pod_spec or not self.pod_spec.get("containers"):
@@ -485,8 +535,9 @@ class Compute:
         if self.kind in ["PyTorchJob", "TFJob", "MXJob", "XGBoostJob"]:
             service_manager = self.service_manager
             spec = self._manifest.get("spec", {})
-            replica_specs = spec.get(service_manager.replica_specs_key, {})
-            worker_spec = replica_specs.get(service_manager.worker_replica, {})
+            replica_specs_key = service_manager.config.get("replica_specs_key")
+            replica_specs = spec.get(replica_specs_key, {}) if replica_specs_key else {}
+            worker_spec = replica_specs.get("Worker", {})
             if worker_spec:
                 worker_template = worker_spec.setdefault("template", {})
                 worker_pod_spec = worker_template.setdefault("spec", {})
@@ -518,6 +569,16 @@ class Compute:
     def manifest(self):
         """Get the current resource manifest."""
         return self._manifest
+
+    @property
+    def selector_only(self) -> bool:
+        """Check if this compute is in selector-only mode.
+
+        Selector-only mode is when the user provides a pod selector to identify
+        existing running pods, without providing a manifest or resource requirements.
+        In this mode, Kubetorch just registers the pool and routes calls to the pods.
+        """
+        return self._pod_selector is not None and self._manifest is None
 
     @property
     def logging_config(self) -> LoggingConfig:
@@ -568,24 +629,12 @@ class Compute:
     @property
     def service_manager(self):
         if self._service_manager is None:
-            from kubetorch.provisioning.deployment_service_manager import DeploymentServiceManager
-            from kubetorch.provisioning.knative_service_manager import KnativeServiceManager
-            from kubetorch.provisioning.raycluster_service_manager import RayClusterServiceManager
-            from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
+            from kubetorch.provisioning.service_manager import ServiceManager
 
-            service_manager_mapping = {
-                "deployment": DeploymentServiceManager,
-                "knative": KnativeServiceManager,
-                "raycluster": RayClusterServiceManager,
-            }
-            kwargs = {
-                "namespace": self.namespace,
-            }
-            if self.deployment_mode not in service_manager_mapping:
-                kwargs["kind"] = self.kind
-                self._service_manager = TrainJobServiceManager(**kwargs)
-            else:
-                self._service_manager = service_manager_mapping[self.deployment_mode](**kwargs)
+            self._service_manager = ServiceManager(
+                resource_type=self.deployment_mode,
+                namespace=self.namespace,
+            )
         return self._service_manager
 
     @property
@@ -612,8 +661,11 @@ class Compute:
 
     @property
     def endpoint(self):
-        if self._endpoint is None and self.service_name:
-            self._endpoint = self.service_manager.get_endpoint(self.service_name)
+        if self._endpoint is None:
+            if self._endpoint_config and self._endpoint_config.url:
+                self._endpoint = self._endpoint_config.url
+            else:
+                self._endpoint = self.service_manager.get_endpoint(self.service_name)
         return self._endpoint
 
     @endpoint.setter
@@ -622,13 +674,16 @@ class Compute:
 
     def _container(self):
         """Get the container from the pod spec."""
+        if self.pod_spec is None:
+            # manifest applied separately
+            return None
         if "containers" not in self.pod_spec:
             raise ValueError("pod_spec missing 'containers' field.")
 
-        from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
+        from kubetorch.provisioning.utils import SUPPORTED_TRAINING_JOBS
 
         expected_name = (
-            self.kind.lower().replace("job", "") if self.kind in TrainJobServiceManager.SUPPORTED_KINDS else "kubetorch"
+            self.kind.lower().replace("job", "") if self.kind.lower() in SUPPORTED_TRAINING_JOBS else "kubetorch"
         )
         containers = self.pod_spec.get("containers")
         for container in containers:
@@ -639,6 +694,9 @@ class Compute:
 
     def _container_env(self):
         container = self._container()
+        if container is None:
+            # manifest applied separately,
+            return []
         if "env" not in container:
             return []
         return container["env"]
@@ -1048,10 +1106,17 @@ class Compute:
 
     @property
     def namespace(self):
-        return self._manifest.get("metadata", {}).get("namespace") if self._manifest else globals.config.namespace
+        if self._manifest is None:
+            # manifest applied separately, use stored namespace
+            return getattr(self, "_namespace", None) or globals.config.namespace
+        return self._manifest.get("metadata", {}).get("namespace") or globals.config.namespace
 
     @namespace.setter
     def namespace(self, value: str):
+        if self._manifest is None:
+            # manifest applied separately, store namespace directly
+            self._namespace = value
+            return
         self._manifest.setdefault("metadata", {})
         self._manifest["metadata"]["namespace"] = value
 
@@ -1070,6 +1135,9 @@ class Compute:
     @property
     def freeze(self):
         container = self._container()
+        if container is None:
+            # manifest applied separately, default to False
+            return False
         if "env" in container:
             for env_var in container["env"]:
                 if env_var["name"] == "KT_FREEZE" and "value" in env_var:
@@ -1298,7 +1366,11 @@ class Compute:
 
     @property
     def working_dir(self):
-        return self._container().get("workingDir")
+        container = self._container()
+        if container is None:
+            # manifest applied separately
+            return None
+        return container.get("workingDir")
 
     @working_dir.setter
     def working_dir(self, value: str):
@@ -1317,6 +1389,9 @@ class Compute:
     @property
     def metrics_enabled(self):
         container = self._container()
+        if container is None:
+            # manifest applied separately, default to False
+            return False
         if "env" in container:
             for env_var in container["env"]:
                 if env_var["name"] == "KT_METRICS_ENABLED" and "value" in env_var:
@@ -1326,12 +1401,13 @@ class Compute:
     @property
     def launch_timeout(self):
         container = self._container()
-        if "startupProbe" in container:
+        if container is not None and "startupProbe" in container:
             startup_probe = container["startupProbe"]
             if "failureThreshold" in startup_probe:
                 # Convert back from failure threshold (launch_timeout // 5)
                 return startup_probe["failureThreshold"] * 5
-        return None
+        # Use default from config/env when not set in manifest or pool-only mode
+        return self._get_launch_timeout()
 
     @launch_timeout.setter
     def launch_timeout(self, value: int):
@@ -1343,6 +1419,9 @@ class Compute:
     @property
     def inactivity_ttl(self):
         container = self._container()
+        if container is None:
+            # manifest applied separately, default to None
+            return None
         if "env" in container:
             for env_var in container["env"]:
                 if env_var["name"] == "KT_INACTIVITY_TTL" and "value" in env_var:
@@ -1418,6 +1497,9 @@ class Compute:
         # First try to get from pod spec
         template_config = {}
         container = self._container()
+        if container is None:
+            # manifest applied separately
+            return template_config
         if "env" in container:
             for env_var in container["env"]:
                 if env_var["name"] == "KT_DISTRIBUTED_CONFIG" and "value" in env_var and env_var["value"]:
@@ -1436,7 +1518,7 @@ class Compute:
         """Set distributed config in all containers."""
         import json
 
-        from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
+        from kubetorch.provisioning.utils import SUPPORTED_TRAINING_JOBS
 
         # Populate defaults if config is missing values
         workers = config.get("workers")
@@ -1473,10 +1555,11 @@ class Compute:
             env_vars_to_set["KT_SERVICE_DNS"] = service_dns
 
         # For training jobs (PyTorchJob, TFJob, etc.), set in both Master and Worker replica containers
-        if self.kind in TrainJobServiceManager.SUPPORTED_KINDS:
+        if self.kind.lower() in SUPPORTED_TRAINING_JOBS:
             service_manager = self.service_manager
             spec = self._manifest.get("spec", {})
-            replica_specs = spec.get(service_manager.replica_specs_key, {})
+            replica_specs_key = service_manager.config.get("replica_specs_key")
+            replica_specs = spec.get(replica_specs_key, {}) if replica_specs_key else {}
 
             for replica_name in [service_manager.primary_replica, service_manager.worker_replica]:
                 replica_spec = replica_specs.get(replica_name, {})
@@ -1509,6 +1592,12 @@ class Compute:
             self._set_env_vars_in_container(container, env_vars_to_set)
 
     @property
+    def dispatch_method(self):
+        if self.distributed_config and self.distributed_config.get("dispatch"):
+            return self.distributed_config.get("dispatch")
+        return "regular"
+
+    @property
     def deployment_mode(self):
         if self.kind == "Service":
             return "knative"
@@ -1518,10 +1607,17 @@ class Compute:
 
     @property
     def service_name(self):
+        if self._manifest is None:
+            # manifest applied separately, use stored name
+            return getattr(self, "_service_name", None)
         return self._manifest.get("metadata", {}).get("name")
 
     @service_name.setter
     def service_name(self, value: str):
+        if self._manifest is None:
+            # manifest applied separately, store name directly
+            self._service_name = value
+            return
         current_name = self._manifest.get("metadata", {}).get("name")
         if current_name and not current_name == value:
             raise ValueError("Service name cannot be changed after it has been set")
@@ -1541,9 +1637,9 @@ class Compute:
     @replicas.setter
     def replicas(self, value: int):
         # Set replicas in manifest and applies to relevant containers
-        from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
+        from kubetorch.provisioning.service_manager import SUPPORTED_TRAINING_JOBS
 
-        if isinstance(self.service_manager, TrainJobServiceManager):
+        if self.kind.lower() in SUPPORTED_TRAINING_JOBS:
             # For kubeflow training service managers, also update distributed config
             distributed_config = self.distributed_config
 
@@ -1768,7 +1864,7 @@ class Compute:
 
         return resources
 
-    def _get_launch_timeout(self, launch_timeout):
+    def _get_launch_timeout(self, launch_timeout=None):
         if launch_timeout:
             return int(launch_timeout)
         default_launch_timeout = (
@@ -1882,11 +1978,36 @@ class Compute:
         launch_id: str = None,
         deployment_timestamp: str = None,
         dryrun: bool = False,
+        dockerfile: str = None,
+        module: dict = None,
     ):
         """Creates a new service on the compute for the provided service. If the service already exists,
         it will update the service with the latest copy of the code."""
-        # Finalize pod spec with launch time env vars
-        self._update_launch_env_vars(service_name, pointer_env_vars, metadata_env_vars, launch_id)
+        if self.selector_only:
+            if not dryrun:
+                # Selector-only mode: just register pool, no manifest to apply
+                # tells controller to notify existing pods to reload
+                specifier = {"type": "label_selector", "selector": self._pod_selector}
+                pool_response = globals.controller_client().register_pool(
+                    name=service_name,
+                    namespace=self.namespace,
+                    specifier=specifier,
+                    pool_metadata={"username": globals.config.username},
+                    module=module,
+                )
+                status = pool_response.get("status")
+                message = pool_response.get("message", "")
+                if status == "error":
+                    raise Exception(f"Resource registration to kubetorch controller failed: {message}")
+                elif status == "warning":
+                    logger.warning(f"Resource registered to kubetorch controller with warning: {message}")
+                elif status == "partial":
+                    logger.warning(f"Resource registered to kubetorch controller with partial success: {message}")
+                else:
+                    logger.debug(f"Registered {service_name} to kubetorch controller: {message}")
+
+            return {"metadata": {"name": service_name, "namespace": self.namespace}, "spec": {"template": {}}}
+
         self._upload_secrets_list()
 
         setup_script = self._get_setup_script(install_url, startup_rsync_command)
@@ -1898,16 +2019,27 @@ class Compute:
             container["args"] = [setup_script]
 
         # Create service using the appropriate service manager
-        (created_service, updated_manifest,) = self.service_manager.create_or_update_service(
+        # Create headless service only when distributed config is set (for SPMD/distributed pod discovery)
+        created_service, updated_manifest = self.service_manager.create_or_update_service(
             service_name=service_name,
             module_name=pointer_env_vars["KT_MODULE_NAME"],
             manifest=self._manifest,
             deployment_timestamp=deployment_timestamp,
             dryrun=dryrun,
+            dockerfile=dockerfile,
+            module=module,
+            create_headless_service=bool(self.distributed_config),
+            endpoint=getattr(self, "_endpoint_config", None),
+            pod_selector=getattr(self, "_pod_selector", None),
+            pointer_env_vars=pointer_env_vars,
+            metadata_env_vars=metadata_env_vars,
+            launch_id=launch_id,
+            deployment_mode=self.deployment_mode,
+            distributed_config=self.distributed_config,
         )
         self._manifest = updated_manifest
 
-        service_info = self.service_manager.normalize_created_service(created_service)
+        service_info = self.service_manager.load_service_info(created_service)
         service_name = service_info["name"]
         service_template = {
             "metadata": {
@@ -1931,6 +2063,8 @@ class Compute:
         launch_id: str = None,
         deployment_timestamp: str = None,
         dryrun: bool = False,
+        dockerfile: str = None,
+        module: dict = None,
     ):
         """Async version of _launch. Creates a new service on the compute for the provided service.
         If the service already exists, it will update the service with the latest copy of the code."""
@@ -1950,62 +2084,11 @@ class Compute:
             launch_id,
             deployment_timestamp,
             dryrun,
+            dockerfile,
+            module,
         )
 
         return service_template
-
-    def _update_launch_env_vars(self, service_name, pointer_env_vars, metadata_env_vars, launch_id):
-        kt_env_vars = {
-            **pointer_env_vars,
-            **metadata_env_vars,
-            "KT_LAUNCH_ID": launch_id,
-            "KT_SERVICE_NAME": service_name,
-            "KT_SERVICE_DNS": (
-                f"{service_name}-headless.{self.namespace}.svc.cluster.local"
-                if self.distributed_config
-                else f"{service_name}.{self.namespace}.svc.cluster.local"
-            ),
-            "KT_DEPLOYMENT_MODE": self.deployment_mode,
-        }
-        if "OTEL_SERVICE_NAME" not in self.config_env_vars.keys():
-            kt_env_vars["OTEL_SERVICE_NAME"] = service_name
-
-        # Ensure cluster config env vars are set
-        if globals.config.cluster_config:
-            if globals.config.cluster_config.get("log_streaming_enabled", True):
-                kt_env_vars["KT_LOG_STREAMING_ENABLED"] = True
-            if globals.config.cluster_config.get("metrics_enabled", True):
-                kt_env_vars["KT_METRICS_ENABLED"] = True
-
-        # Ensure all environment variable values are strings for Kubernetes compatibility
-        kt_env_vars = self._serialize_env_vars(kt_env_vars)
-
-        updated_env_vars = set()
-        for env_var in self._container_env():
-            if env_var["name"] in kt_env_vars:
-                env_var["value"] = kt_env_vars[env_var["name"]]
-                updated_env_vars.add(env_var["name"])
-        for key, val in kt_env_vars.items():
-            if key not in updated_env_vars:
-                self._container_env().append({"name": key, "value": val})
-
-    def _serialize_env_vars(self, env_vars: Dict) -> Dict:
-        import json
-
-        serialized_vars = {}
-        for key, value in env_vars.items():
-            if value is None:
-                serialized_vars[key] = "null"
-            elif isinstance(value, (dict, list)):
-                try:
-                    serialized_vars[key] = json.dumps(value)
-                except (TypeError, ValueError):
-                    serialized_vars[key] = str(value)
-            elif isinstance(value, (bool, int, float)):
-                serialized_vars[key] = str(value)
-            else:
-                serialized_vars[key] = value
-        return serialized_vars
 
     def _extract_secrets(self, secrets, namespace):
         if is_running_in_kubernetes():
@@ -2074,6 +2157,10 @@ class Compute:
         ]
 
     def pods(self):
+        # For selector-only mode, use the user's pod selector to find pods
+        if self.selector_only and self._pod_selector:
+            label_selector = ",".join(f"{k}={v}" for k, v in self._pod_selector.items())
+            return self.service_manager.get_pods_for_service(self.service_name, label_selector=label_selector)
         return self.service_manager.get_pods_for_service(self.service_name)
 
     # ------------------------------- Volumes ------------------------------ #
@@ -2157,10 +2244,44 @@ class Compute:
         """Checks if the service is ready to start serving requests.
 
         Delegates to the appropriate service manager's check_service_ready method.
+        For selector-only mode, checks that pods matching the selector are running.
         """
+        if self.selector_only:
+            # Selector-only mode: check for pods matching the selector
+            return self._check_selector_pods_ready()
+
         return self.service_manager.check_service_ready(
             service_name=self.service_name, launch_timeout=self.launch_timeout
         )
+
+    def _check_selector_pods_ready(self):
+        """Check that pods matching the selector are running (for selector-only mode)."""
+        # Convert selector dict to label selector string
+        label_selector = ",".join(f"{k}={v}" for k, v in self._pod_selector.items())
+
+        sleep_interval = 2
+        start_time = time.time()
+        launch_timeout = self.launch_timeout
+
+        logger.info(f"Checking for pods with selector {label_selector} (timeout: {launch_timeout} seconds)")
+
+        while (time.time() - start_time) < launch_timeout:
+            result = globals.controller_client().list_pods(namespace=self.namespace, label_selector=label_selector)
+            pods = result.get("items", [])
+
+            if pods:
+                running_pods = [pod for pod in pods if pod_is_running(pod)]
+                if running_pods:
+                    logger.info(f"Found {len(running_pods)} running pod(s) matching selector {label_selector}")
+                    return True
+                else:
+                    logger.debug(f"Found {len(pods)} pod(s) but none are running yet")
+            else:
+                logger.debug(f"No pods found matching selector {label_selector}")
+
+            time.sleep(sleep_interval)
+
+        raise TimeoutError(f"Timeout waiting for pods with selector {label_selector} after {launch_timeout} seconds")
 
     async def _check_service_ready_async(self):
         """Async version of _check_service_ready. Checks if the service is ready to start serving requests.
@@ -2476,13 +2597,14 @@ class Compute:
 
             distribution_type = distributed_config.get("distribution_type")
             if distribution_type == "ray":
-                # Convert to RayCluster manifest
-                from kubetorch.provisioning.service_manager import RayClusterServiceManager
+                # Build RayCluster manifest from pod spec
+                from kubetorch.provisioning.utils import build_raycluster_manifest
 
-                self._manifest = RayClusterServiceManager._convert_manifest(
-                    deployment_manifest=self._manifest,
+                self._manifest = build_raycluster_manifest(
+                    pod_spec=self.pod_spec,
                     namespace=self.namespace,
                     replicas=self.replicas,
+                    inactivity_ttl=self.inactivity_ttl,
                 )
 
             # Invalidate cached service manager so it gets recreated with the right type
@@ -2575,17 +2697,18 @@ class Compute:
         if autoscaling_config:
             self._autoscaling_config = autoscaling_config
 
-            # Convert manifest to Knative service manifest
-            from kubetorch.provisioning.service_manager import KnativeServiceManager
+            # Build Knative service manifest from pod spec
+            from kubetorch.provisioning.utils import build_knative_manifest
 
-            self._manifest = KnativeServiceManager._convert_manifest(
-                deployment_manifest=self._manifest,
+            self._manifest = build_knative_manifest(
+                pod_spec=self.pod_spec,
                 namespace=self.namespace,
                 autoscaling_config=autoscaling_config,
                 gpu_annotations=self.gpu_annotations,
+                inactivity_ttl=self.inactivity_ttl,
             )
 
-            # Invalidate cached service manager so it gets recreated with KnativeServiceManager
+            # Invalidate cached service manager so it gets recreated with correct type
             self._service_manager = None
 
         return self

@@ -8,14 +8,6 @@ KUBETORCH_IMAGE = "ghcr.io/run-house/kubetorch:fix-debug-config-and-imports"  # 
 
 
 @pytest.fixture
-def client():
-    """Fixture that provides a KubetorchClient instance for testing."""
-    from kubetorch import KubetorchClient
-
-    return KubetorchClient()
-
-
-@pytest.fixture
 def mock_response():
     """Fixture that provides a mock response for testing API calls."""
     return {"status": "success", "data": {"id": "test-id", "name": "test-name"}}

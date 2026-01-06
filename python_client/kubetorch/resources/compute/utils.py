@@ -74,7 +74,7 @@ class SecretNotFound(Exception):
 
 
 class ControllerRequestError(Exception):
-    """Raised when a request to the Kubetorch controller fails."""
+    """Raised when a request to the kubetorch controller fails."""
 
     def __init__(self, method: str, url: str, status_code: int, message: str):
         self.method = method
@@ -317,193 +317,6 @@ def delete_knative_service(
                 console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
 
 
-def delete_deployment(
-    name: str,
-    namespace: str,
-    console: "Console" = None,
-):
-    """Delete a Deployment and its associated service."""
-    controller_client = kubetorch.globals.controller_client()
-    try:
-        # Delete the Deployment
-        controller_client.delete_deployment(
-            name=name,
-            namespace=namespace,
-        )
-        if console:
-            console.print(f"✓ Deleted deployment [blue]{name}[/blue]")
-    except Exception as e:
-        if http_not_found(e):
-            if console:
-                console.print(f"[yellow]Note:[/yellow] Deployment {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete deployment {name}: {e}")
-
-    # Delete the associated service (regular service, not headless)
-    try:
-        controller_client.delete_service(
-            namespace=namespace,
-            name=name,
-        )
-        if console:
-            console.print(f"✓ Deleted service [blue]{name}[/blue]")
-    except Exception as e:
-        if http_not_found(e):
-            if console:
-                console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
-
-    try:
-        headless = controller_client.get_service(namespace=namespace, name=f"{name}-headless", ignore_not_found=True)
-    except Exception:
-        headless = None
-
-    if headless:
-        try:
-            controller_client.delete_service(
-                namespace=namespace,
-                name=f"{name}-headless",
-            )
-            if console:
-                console.print(f"✓ Deleted headless service [blue]{name}-headless[/blue]")
-        except Exception as e:
-            if not http_not_found(e) and console:
-                console.print(f"[red]Error:[/red] Failed to delete headless service {name}-headless: {e}")
-
-
-def delete_raycluster(
-    name: str,
-    namespace: str,
-    console: "Console" = None,
-    force: bool = False,
-):
-    """Delete a RayCluster and its associated service."""
-
-    grace_period_seconds, propagation_policy = None, None
-    if force:
-        grace_period_seconds = 0
-        propagation_policy = "Foreground"
-
-    try:
-        # Delete the RayCluster
-        kubetorch.globals.controller_client().delete_namespaced_custom_object(
-            group="ray.io",
-            version="v1",
-            namespace=namespace,
-            plural="rayclusters",
-            name=name,
-            grace_period_seconds=grace_period_seconds,
-            propagation_policy=propagation_policy,
-        )
-        if console:
-            console.print(f"✓ Deleted RayCluster [blue]{name}[/blue]")
-    except Exception as e:
-        if http_not_found(e):
-            if console:
-                console.print(f"[yellow]Note:[/yellow] RayCluster {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete RayCluster {name}: {e}")
-
-    # Delete the associated service (created alongside RayCluster)
-    try:
-        kubetorch.globals.controller_client().delete_service(
-            namespace=namespace,
-            name=name,
-        )
-        if console:
-            console.print(f"✓ Deleted service [blue]{name}[/blue]")
-    except Exception as e:
-        if http_not_found(e):
-            if console:
-                console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
-
-    # Delete the headless service for Ray pod discovery
-    try:
-        kubetorch.globals.controller_client().delete_service(
-            namespace=namespace,
-            name=f"{name}-headless",
-        )
-        if console:
-            console.print(f"✓ Deleted headless service [blue]{name}-headless[/blue]")
-    except Exception as e:
-        if http_not_found(e):
-            # This is normal for older Ray clusters without headless services
-            pass
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete headless service {name}-headless: {e}")
-
-
-def delete_trainjob(
-    name: str,
-    namespace: str,
-    group: str,
-    plural: str,
-    console: "Console" = None,
-    force: bool = False,
-):
-    """Delete a manifest and its associated service."""
-
-    grace_period_seconds, propagation_policy = None, None
-    if force:
-        grace_period_seconds = 0
-        propagation_policy = "Foreground"
-
-    manifest_type = plural[:-1]
-
-    try:
-        # Delete the manifest
-        kubetorch.globals.controller_client().delete_namespaced_custom_object(
-            group=group,
-            version="v1",
-            namespace=namespace,
-            plural=plural,
-            name=name,
-            grace_period_seconds=grace_period_seconds,
-            propagation_policy=propagation_policy,
-        )
-        if console:
-            console.print(f"✓ Deleted {manifest_type} [blue]{name}[/blue]")
-    except Exception as e:
-        if http_not_found(e):
-            if console:
-                console.print(f"[yellow]Note:[/yellow] {manifest_type} {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete {manifest_type} {name}: {e}")
-
-    # Delete the associated services (created alongside the trainjob)
-    associated_services = kubetorch.globals.controller_client().list_services(
-        namespace=namespace, label_selector=f"kubetorch.com/service={name}"
-    )
-    associated_services = associated_services.get("items", [])
-    if len(associated_services) > 0:
-        if console:
-            console.print(f"Deleting services associated with [reset]{name}")
-        for service in associated_services:
-            associated_service_name = service["metadata"]["name"]
-            try:
-                kubetorch.globals.controller_client().delete_service(
-                    namespace=namespace,
-                    name=associated_service_name,
-                )
-                if console:
-                    console.print(f"✓ Deleted service [blue]{associated_service_name}[/blue]")
-            except Exception as e:
-                if http_not_found(e):
-                    pass
-                else:
-                    if console:
-                        console.print(f"[red]Error:[/red] Failed to delete {associated_service_name}: {e}")
-
-
 def delete_resources_for_service(
     configmaps: List[str],
     name: str,
@@ -511,34 +324,45 @@ def delete_resources_for_service(
     namespace: str = None,
     console: "Console" = None,
     force: bool = False,
-    group: str = None,
 ):
-    """Delete service resources based on service type."""
-    # Delete the main service (Knative, Deployment, or RayCluster)
-    if service_type == "deployment":
-        delete_deployment(
-            name=name,
-            namespace=namespace,
-            console=console,
+    """Delete the relevant k8s resource(s) based on service type.
+
+    Uses the same teardown path as the Python API (module.teardown() -> service_manager.teardown_service()).
+    """
+    from kubetorch.provisioning.service_manager import ServiceManager
+    from kubetorch.provisioning.utils import SUPPORTED_TRAINING_JOBS
+
+    if service_type == "selector":
+        # BYO (selector-based) compute mode:
+        # The user applied the Kubernetes manifest themselves (e.g., via kubectl, Helm, or ArgoCD).
+        # Kubetorch did not create or own the K8s resources, so teardown only removes
+        # Kubetorch controller state and associated metadata — not the underlying pods/deployments/services
+        msg = (
+            f"Resources for {name} were created outside Kubetorch. You are responsible for deleting "
+            "the actual Kubernetes resources (pods, deployments, services, etc.)."
         )
-    elif service_type == "raycluster":
-        delete_raycluster(
-            name=name,
-            namespace=namespace,
-            console=console,
-            force=force,
-        )
-    elif service_type == "knative":
-        delete_knative_service(
-            name=name,
-            namespace=namespace,
-            console=console,
-            force=force,
-        )
-    elif group:  # service is a training job
-        delete_trainjob(
-            name=name, namespace=namespace, console=console, force=force, group=group, plural=f"{service_type}s"
-        )
+        # For selector-based pools, just delete the controller pool (no K8s resource to delete)
+        service_manager = ServiceManager(resource_type="selector", namespace=namespace)
+        service_manager.teardown_service(service_name=name, console=console, force=force)
+        if console:
+            console.print(f"[yellow]{msg}[/yellow]")
+        else:
+            logger.warning(msg)
+    else:
+        # manifest applied via kubetorch
+        supported_types = ["deployment", "raycluster", "knative"] + [k.lower() for k in SUPPORTED_TRAINING_JOBS]
+        if service_type in supported_types:
+            service_manager = ServiceManager(resource_type=service_type, namespace=namespace)
+        else:
+            msg = f"Unknown service type: {service_type}, skipping teardown"
+            if console:
+                console.print(f"[yellow]{msg}[/yellow]")
+            else:
+                logger.warning(msg)
+            return
+
+        # Use the same teardown path as the Python API to tear down
+        service_manager.teardown_service(service_name=name, console=console, force=force)
 
     # Delete configmaps
     if configmaps:
@@ -727,9 +551,9 @@ def fetch_resources_for_teardown(
             if not http_not_found(e):
                 logger.warning(f"Failed to list RayClusters: {e}")
 
-        from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
+        from kubetorch.provisioning.utils import SUPPORTED_TRAINING_JOBS
 
-        for job_kind in TrainJobServiceManager.SUPPORTED_KINDS:
+        for job_kind in SUPPORTED_TRAINING_JOBS:
             try:
                 plural = job_kind.lower() + "s"
                 if username:
@@ -775,6 +599,22 @@ def fetch_resources_for_teardown(
                 if http_not_found(e):  # Ignore if Kubeflow Training Operator is not installed
                     logger.warning(f"Failed to list {job_kind}s: {e}")
 
+        # Search pools from controller database
+        try:
+            pools_resp = controller_client.list_pools(namespace=namespace)
+            pools = pools_resp.get("pools", []) if pools_resp else []
+            for pool in pools:
+                pool_name = pool.get("name")
+                pool_metadata = pool.get("pool_metadata") or {}
+                pool_username = pool_metadata.get("username")
+                # Filter by username or prefix
+                if username and pool_username == username:
+                    services.append(pool_name)
+                elif prefix and pool_name.startswith(prefix):
+                    services.append(pool_name)
+        except Exception as e:
+            logger.warning(f"Failed to list pools: {e}")
+
     else:
         if not target:
             raise ValueError("Please provide a service name or use the --all or --prefix flags")
@@ -794,27 +634,58 @@ def fetch_resources_for_teardown(
         service_type = None
         service_found = False
         service_group = None
+        pool_selector = None
+
+        # Pools are handled via controller - we delete the pool from DB, controller handles K8s cleanup
+        try:
+            pool_info = controller_client.get_pool(namespace=namespace, name=service_name)
+            if pool_info:
+                specifier = pool_info.get("specifier") or {}
+                # Determine service type based on resource_kind AND whether it's KT-managed
+                # KT-managed pools have the kubetorch.com/template label (applied via /apply)
+                # Selector-only pools may have resource_kind (discovered from pods) but no template label
+                resource_kind = pool_info.get("resource_kind")
+                pool_labels = pool_info.get("labels") or {}
+                is_kt_managed = serving_constants.KT_TEMPLATE_LABEL in pool_labels
+
+                if resource_kind and is_kt_managed:
+                    # KT-managed resource: delete the K8s resource
+                    # Map resource_kind to service_type (lowercase)
+                    # Most kinds just need lowercasing: Deployment->deployment, RayCluster->raycluster
+                    # Training jobs: PyTorchJob->pytorchjob, TFJob->tfjob, etc.
+                    service_type = resource_kind.lower()
+                    # Handle Knative special case: KnativeService -> knative
+                    if service_type == "knativeservice":
+                        service_type = "knative"
+                else:
+                    # Selector-only: user created K8s resource, only delete controller state
+                    service_type = "selector"
+                service_found = True
+                pool_selector = specifier.get("selector")
+        except Exception as e:
+            logger.debug(f"Pool lookup for {service_name} failed: {e}")
 
         # Check if it's a Knative service
-        try:
-            service = controller_client.get_namespaced_custom_object(
-                group="serving.knative.dev",
-                version="v1",
-                namespace=namespace,
-                plural="services",
-                name=service_name,
-                ignore_not_found=True,
-            )
-            if (
-                isinstance(service, dict)
-                and service.get("kind") == "Service"
-                and service.get("metadata", {}).get("name") == service_name
-            ):
-                service_type = "knative"
-                service_found = True
+        if not service_found:
+            try:
+                service = controller_client.get_namespaced_custom_object(
+                    group="serving.knative.dev",
+                    version="v1",
+                    namespace=namespace,
+                    plural="services",
+                    name=service_name,
+                    ignore_not_found=True,
+                )
+                if (
+                    isinstance(service, dict)
+                    and service.get("kind") == "Service"
+                    and service.get("metadata", {}).get("name") == service_name
+                ):
+                    service_type = "knative"
+                    service_found = True
 
-        except Exception:
-            pass
+            except Exception:
+                pass
 
         # Check if it's a Deployment (if not found as Knative service)
         if not service_found:
@@ -851,9 +722,9 @@ def fetch_resources_for_teardown(
 
         # Check if it's a custom training job (PyTorchJob, TFJob, MXJob, XGBoostJob) if not found as other types
         if not service_found:
-            from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
+            from kubetorch.provisioning.utils import SUPPORTED_TRAINING_JOBS
 
-            for job_kind in TrainJobServiceManager.SUPPORTED_KINDS:
+            for job_kind in SUPPORTED_TRAINING_JOBS:
                 try:
                     plural = job_kind.lower() + "s"
                     job_resource = controller_client.get_namespaced_custom_object(
@@ -876,9 +747,13 @@ def fetch_resources_for_teardown(
         configmaps = load_configmaps(service_name, namespace)
         pods = []
         try:
-            pods_result = controller_client.list_pods(
-                namespace=namespace, label_selector=f"{KT_SERVICE_LABEL}={service_name}"
-            )
+            # For selector-based pools, use the pool selector to find pods
+            if pool_selector:
+                label_selector = ",".join(f"{k}={v}" for k, v in pool_selector.items())
+            else:
+                label_selector = f"{KT_SERVICE_LABEL}={service_name}"
+
+            pods_result = controller_client.list_pods(namespace=namespace, label_selector=label_selector)
             # Handle dict response from ControllerClient
             if pods_result:
                 pods = [pod["metadata"]["name"] for pod in pods_result.get("items", [])]
