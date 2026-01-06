@@ -32,6 +32,7 @@ import struct
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -67,6 +68,9 @@ SERVER_PID_FILE = "/tmp/kt-gpu-data-server.pid"
 # Configurable via environment variables
 KT_NCCL_TIMEOUT_SECONDS = int(os.environ.get("KT_NCCL_TIMEOUT_SECONDS", "60"))
 KT_NCCL_MAX_FAILURES = int(os.environ.get("KT_NCCL_MAX_FAILURES", "3"))
+
+# Prevent NCCL from aborting the process on timeout/failure - raise exception instead
+os.environ.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
 
 
 def _get_nccl_cuda_versions() -> dict:
@@ -375,6 +379,67 @@ class PodDataServer:
             # Use os._exit to ensure immediate termination without cleanup
             # that might hang on corrupted NCCL state
             os._exit(1)
+
+    @contextmanager
+    def _init_nccl_process_group(
+        self,
+        master_addr: str,
+        master_port: int,
+        rank: int,
+        world_size: int,
+        timeout_seconds: int = KT_NCCL_TIMEOUT_SECONDS,
+    ):
+        """
+        Initialize NCCL process group using explicit TCPStore.
+
+        Uses TCPStore directly instead of env vars, allowing concurrent NCCL
+        operations on different ports without interference.
+
+        Yields the process group and cleans it up on exit.
+        """
+        from datetime import timedelta
+
+        import torch.distributed as dist
+        from torch.distributed import TCPStore
+
+        process_group = None
+
+        try:
+            # Create explicit TCPStore - no env vars needed, supports concurrency
+            store = TCPStore(
+                host_name=master_addr,
+                port=master_port,
+                world_size=world_size,
+                is_master=(rank == 0),
+                timeout=timedelta(seconds=timeout_seconds),
+            )
+
+            if dist.is_initialized():
+                # Already initialized - create a new group
+                ranks = list(range(world_size))
+                process_group = dist.new_group(ranks)
+            else:
+                # Initialize with explicit store (not env vars)
+                dist.init_process_group(
+                    backend="nccl",
+                    store=store,
+                    rank=rank,
+                    world_size=world_size,
+                    timeout=timedelta(seconds=timeout_seconds),
+                )
+                process_group = dist.group.WORLD
+
+            yield process_group
+
+        finally:
+            if process_group is not None:
+                try:
+                    if process_group != dist.group.WORLD:
+                        dist.destroy_process_group(process_group)
+                    else:
+                        dist.destroy_process_group()
+                except Exception:
+                    pass
 
     def start(self):
         """Start the GPU data server."""
@@ -765,39 +830,23 @@ class PodDataServer:
 
         The getter GPU servers will connect as ranks 1..N.
         """
-        from datetime import timedelta
-
         dist = _get_torch_distributed()
-
         pod_ip = os.getenv("POD_IP", "127.0.0.1")
-
-        # Set up NCCL environment
-        os.environ["MASTER_ADDR"] = pod_ip
-        os.environ["MASTER_PORT"] = str(nccl_port)
 
         logger.info(
             f"Starting broadcast {broadcast_id}: world_size={world_size}, "
             f"MASTER_ADDR={pod_ip}, MASTER_PORT={nccl_port}"
         )
 
-        process_group = None
         try:
-            # Initialize process group as rank 0 with timeout
-            if dist.is_initialized():
-                # Create new group for this broadcast
-                ranks = list(range(world_size))
-                process_group = dist.new_group(ranks)
-            else:
-                dist.init_process_group(
-                    backend="nccl",
-                    rank=0,
-                    world_size=world_size,
-                    timeout=timedelta(seconds=KT_NCCL_TIMEOUT_SECONDS),
-                )
-                process_group = dist.group.WORLD
-
-            # Broadcast the tensor
-            dist.broadcast(tensor, src=0, group=process_group)
+            with self._init_nccl_process_group(
+                master_addr=pod_ip,
+                master_port=nccl_port,
+                rank=0,
+                world_size=world_size,
+            ) as process_group:
+                # Broadcast the tensor
+                dist.broadcast(tensor, src=0, group=process_group)
 
             logger.info(f"Broadcast {broadcast_id} complete")
             self._record_nccl_success()
@@ -806,14 +855,6 @@ class PodDataServer:
             logger.error(f"Broadcast {broadcast_id} failed: {e}")
             self._record_nccl_failure(str(e))
             raise
-
-        finally:
-            # Cleanup process group
-            if process_group is not None:
-                if process_group != dist.group.WORLD:
-                    dist.destroy_process_group(process_group)
-                else:
-                    dist.destroy_process_group()
 
     def _handle_receive_broadcast(self, message: dict) -> dict:
         """
@@ -1105,51 +1146,39 @@ class PodDataServer:
                 )
 
             # Step 4: Set up NCCL and perform broadcasts
-            from datetime import timedelta
+            # Build unified transfer list ordered by (src_rank, key)
+            # All ranks must execute broadcasts in the same order
+            all_broadcasts = []
 
-            os.environ["MASTER_ADDR"] = master_addr
-            os.environ["MASTER_PORT"] = str(master_port)
-
-            process_group = None
-            try:
-                if dist.is_initialized():
-                    dist.destroy_process_group()
-
-                dist.init_process_group(
-                    backend="nccl",
-                    rank=rank,
-                    world_size=world_size,
-                    timeout=timedelta(seconds=KT_NCCL_TIMEOUT_SECONDS),
+            for send in sends:
+                key = send["key"]
+                all_broadcasts.append(
+                    {
+                        "src_rank": rank,
+                        "key": key,
+                        "tensor": send_tensors[key],
+                    }
                 )
-                process_group = dist.group.WORLD
 
-                # Build unified transfer list ordered by (src_rank, key)
-                # All ranks must execute broadcasts in the same order
-                all_broadcasts = []
+            for recv in receives:
+                key = recv["key"]
+                all_broadcasts.append(
+                    {
+                        "src_rank": recv["from_rank"],
+                        "key": key,
+                        "tensor": recv_tensors[key],
+                    }
+                )
 
-                for send in sends:
-                    key = send["key"]
-                    all_broadcasts.append(
-                        {
-                            "src_rank": rank,
-                            "key": key,
-                            "tensor": send_tensors[key],
-                        }
-                    )
+            # Sort for deterministic order across all participants
+            all_broadcasts.sort(key=lambda x: (x["src_rank"], x["key"]))
 
-                for recv in receives:
-                    key = recv["key"]
-                    all_broadcasts.append(
-                        {
-                            "src_rank": recv["from_rank"],
-                            "key": key,
-                            "tensor": recv_tensors[key],
-                        }
-                    )
-
-                # Sort for deterministic order across all participants
-                all_broadcasts.sort(key=lambda x: (x["src_rank"], x["key"]))
-
+            with self._init_nccl_process_group(
+                master_addr=master_addr,
+                master_port=master_port,
+                rank=rank,
+                world_size=world_size,
+            ) as process_group:
                 # Execute broadcasts
                 for bc in all_broadcasts:
                     src_rank = bc["src_rank"]
@@ -1159,16 +1188,9 @@ class PodDataServer:
                     logger.debug(f"Broadcast {key}: src={src_rank}, shape={list(tensor.shape)}")
                     dist.broadcast(tensor, src=src_rank, group=process_group)
 
-                logger.info(f"Broadcast group {group_id} complete")
-                self._record_nccl_success()
-                return {"status": "ok", "group_id": group_id, "rank": rank}
-
-            finally:
-                if process_group is not None:
-                    try:
-                        dist.destroy_process_group()
-                    except Exception as e:
-                        logger.warning(f"Failed to destroy process group: {e}")
+            logger.info(f"Broadcast group {group_id} complete")
+            self._record_nccl_success()
+            return {"status": "ok", "group_id": group_id, "rank": rank}
 
         except Exception as e:
             logger.error(f"Broadcast group {group_id} failed: {e}")
@@ -1192,8 +1214,6 @@ class PodDataServer:
         Args:
             tensors: Single tensor or list of tensors to broadcast
         """
-        from datetime import timedelta
-
         dist = _get_torch_distributed()
         pod_ip = os.getenv("POD_IP", "127.0.0.1")
 
@@ -1201,33 +1221,21 @@ class PodDataServer:
         if not isinstance(tensors, list):
             tensors = [tensors]
 
-        # Set up NCCL environment
-        os.environ["MASTER_ADDR"] = pod_ip
-        os.environ["MASTER_PORT"] = str(nccl_port)
-
         logger.info(
             f"Serving NCCL broadcast {broadcast_id}: world_size={world_size}, "
             f"tensors={len(tensors)}, MASTER_ADDR={pod_ip}, MASTER_PORT={nccl_port}"
         )
 
-        process_group = None
         try:
-            # Initialize process group as rank 0 with timeout
-            if dist.is_initialized():
-                ranks = list(range(world_size))
-                process_group = dist.new_group(ranks)
-            else:
-                dist.init_process_group(
-                    backend="nccl",
-                    rank=0,
-                    world_size=world_size,
-                    timeout=timedelta(seconds=KT_NCCL_TIMEOUT_SECONDS),
-                )
-                process_group = dist.group.WORLD
-
-            # Broadcast all tensors in same NCCL session
-            for tensor in tensors:
-                dist.broadcast(tensor, src=0, group=process_group)
+            with self._init_nccl_process_group(
+                master_addr=pod_ip,
+                master_port=nccl_port,
+                rank=0,
+                world_size=world_size,
+            ) as process_group:
+                # Broadcast all tensors in same NCCL session
+                for tensor in tensors:
+                    dist.broadcast(tensor, src=0, group=process_group)
 
             logger.info(f"NCCL broadcast {broadcast_id} complete: {len(tensors)} tensor(s)")
             self._record_nccl_success()
@@ -1235,16 +1243,6 @@ class PodDataServer:
         except Exception as e:
             logger.error(f"NCCL broadcast {broadcast_id} failed: {e}")
             self._record_nccl_failure(str(e))
-
-        finally:
-            if process_group is not None:
-                try:
-                    if process_group != dist.group.WORLD:
-                        dist.destroy_process_group(process_group)
-                    else:
-                        dist.destroy_process_group()
-                except Exception:
-                    pass
 
     def _join_nccl_broadcast(
         self,
@@ -1264,8 +1262,6 @@ class PodDataServer:
             dest_tensors: Single tensor or list of tensors to receive into
             nccl_timeout: Optional timeout override in seconds (for testing)
         """
-        from datetime import timedelta
-
         dist = _get_torch_distributed()
 
         # Normalize to list
@@ -1275,33 +1271,22 @@ class PodDataServer:
         # Use override timeout if provided, otherwise use global setting
         timeout_seconds = nccl_timeout if nccl_timeout is not None else KT_NCCL_TIMEOUT_SECONDS
 
-        # Set up NCCL environment
-        os.environ["MASTER_ADDR"] = master_addr
-        os.environ["MASTER_PORT"] = str(master_port)
-
         logger.info(
             f"Joining NCCL broadcast {broadcast_id}: rank={rank}, world_size={world_size}, "
             f"tensors={len(dest_tensors)}, MASTER_ADDR={master_addr}, MASTER_PORT={master_port}, timeout={timeout_seconds}s"
         )
 
-        process_group = None
         try:
-            # Initialize process group with timeout
-            if dist.is_initialized():
-                ranks = list(range(world_size))
-                process_group = dist.new_group(ranks)
-            else:
-                dist.init_process_group(
-                    backend="nccl",
-                    rank=rank,
-                    world_size=world_size,
-                    timeout=timedelta(seconds=timeout_seconds),
-                )
-                process_group = dist.group.WORLD
-
-            # Receive broadcast into all destination tensors
-            for tensor in dest_tensors:
-                dist.broadcast(tensor, src=0, group=process_group)
+            with self._init_nccl_process_group(
+                master_addr=master_addr,
+                master_port=master_port,
+                rank=rank,
+                world_size=world_size,
+                timeout_seconds=timeout_seconds,
+            ) as process_group:
+                # Receive broadcast into all destination tensors
+                for tensor in dest_tensors:
+                    dist.broadcast(tensor, src=0, group=process_group)
 
             logger.info(f"NCCL broadcast {broadcast_id} received {len(dest_tensors)} tensor(s) successfully")
             self._record_nccl_success()
@@ -1310,16 +1295,6 @@ class PodDataServer:
             logger.error(f"NCCL broadcast {broadcast_id} join failed: {e}")
             self._record_nccl_failure(str(e))
             raise
-
-        finally:
-            if process_group is not None:
-                try:
-                    if process_group != dist.group.WORLD:
-                        dist.destroy_process_group(process_group)
-                    else:
-                        dist.destroy_process_group()
-                except Exception:
-                    pass
 
     def _send_tcp_message(self, host: str, port: int, message: dict, timeout: float = 30.0) -> dict:
         """Send a message to a remote GPU server via TCP."""
