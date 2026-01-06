@@ -150,6 +150,9 @@ async def test_monitoring_with_custom_structlog():
         remote_worker = kt.cls(LoggingTestWorker).to(compute)
         service_name = remote_worker.service_name
 
+        # Trigger class instantiation by calling a method (class __init__ only runs on first method call)
+        _ = remote_worker.process_with_logs(1)
+
         # Poll for initialization logs and events with timeout
         # Events flow through K8s API -> Controller -> Loki -> Log stream, so may take time
         init_out = ""

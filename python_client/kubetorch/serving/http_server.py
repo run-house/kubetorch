@@ -1224,7 +1224,7 @@ def execute_callable(
         # Default JSON handling
         args = params.get("args", [])
         kwargs = params.get("kwargs", {})
-        debugger: dict = params.pop("debugger", None)
+        debugger: dict = params.get("debugger", None) if params else None
         if debugger:
             debug_mode = debugger.get("mode")
             debug_port = debugger.get("port")
