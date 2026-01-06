@@ -354,6 +354,12 @@ class PodDataServer:
         # TTL for completed broadcasts (10 minutes)
         self._fs_broadcast_ttl = 600
 
+        # Semaphore to serialize NCCL process group operations.
+        # PyTorch's dist module only supports one global process group at a time,
+        # so concurrent broadcasts would clobber each other.
+        self._nccl_semaphore = threading.Semaphore(1)
+        self._nccl_semaphore_timeout = 240
+
     def _record_nccl_success(self):
         """Record a successful NCCL operation, resetting failure counter."""
         with self._nccl_failure_lock:
@@ -395,6 +401,9 @@ class PodDataServer:
         Uses TCPStore directly instead of env vars, allowing concurrent NCCL
         operations on different ports without interference.
 
+        Acquires semaphore to serialize NCCL operations (PyTorch only supports
+        one global process group at a time).
+
         Yields the process group and cleans it up on exit.
         """
         from datetime import timedelta
@@ -403,8 +412,17 @@ class PodDataServer:
         from torch.distributed import TCPStore
 
         process_group = None
+        semaphore_acquired = False
 
         try:
+            # Acquire semaphore to serialize NCCL operations
+            semaphore_acquired = self._nccl_semaphore.acquire(timeout=self._nccl_semaphore_timeout)
+            if not semaphore_acquired:
+                raise RuntimeError(
+                    f"Timeout waiting for NCCL semaphore after {self._nccl_semaphore_timeout}s. "
+                    "Another NCCL operation may be stuck."
+                )
+
             # Create explicit TCPStore - no env vars needed, supports concurrency
             store = TCPStore(
                 host_name=master_addr,
@@ -414,32 +432,38 @@ class PodDataServer:
                 timeout=timedelta(seconds=timeout_seconds),
             )
 
+            # Always destroy existing process group to ensure clean state.
+            # NOTE: We can't use new_group() for cross-process broadcasts because
+            # it's a collective that requires all ranks in the CURRENT world to
+            # participate - but the getter is NOT in the source's world.
             if dist.is_initialized():
-                # Already initialized - create a new group
-                ranks = list(range(world_size))
-                process_group = dist.new_group(ranks)
-            else:
-                # Initialize with explicit store (not env vars)
-                dist.init_process_group(
-                    backend="nccl",
-                    store=store,
-                    rank=rank,
-                    world_size=world_size,
-                    timeout=timedelta(seconds=timeout_seconds),
-                )
-                process_group = dist.group.WORLD
+                try:
+                    dist.destroy_process_group()
+                except Exception as e:
+                    logger.warning(f"Failed to destroy existing process group: {e}")
+
+            # Initialize with explicit store
+            dist.init_process_group(
+                backend="nccl",
+                store=store,
+                rank=rank,
+                world_size=world_size,
+                timeout=timedelta(seconds=timeout_seconds),
+            )
+            process_group = dist.group.WORLD
 
             yield process_group
 
         finally:
             if process_group is not None:
                 try:
-                    if process_group != dist.group.WORLD:
-                        dist.destroy_process_group(process_group)
-                    else:
-                        dist.destroy_process_group()
-                except Exception:
-                    pass
+                    dist.destroy_process_group()
+                except Exception as e:
+                    logger.warning(f"Failed to destroy process group: {e}")
+
+            # Release semaphore
+            if semaphore_acquired:
+                self._nccl_semaphore.release()
 
     def start(self):
         """Start the GPU data server."""
