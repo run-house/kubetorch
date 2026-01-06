@@ -14,6 +14,7 @@ from typing import List
 from urllib.parse import urlparse
 
 import httpx
+import yaml
 
 from kubetorch.serving.utils import is_running_in_kubernetes
 from kubetorch.utils import http_not_found
@@ -2385,6 +2386,114 @@ def kt_rm(
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
+
+
+@app.command("apply")
+def kt_apply(
+    files: List[str] = typer.Argument(
+        ...,
+        help="Path to YAML manifest file(s) to apply.",
+    ),
+    namespace: str = typer.Option(
+        globals.config.namespace,
+        "-n",
+        "--namespace",
+    ),
+    name: str = typer.Option(
+        None,
+        "--name",
+        help="Override the service name from manifest metadata.name",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print what would be applied without making changes",
+    ),
+):
+    """Apply a Kubernetes manifest through the Kubetorch controller. Similar to `kubectl apply`,
+    but routes through the Kubetorch controller for proper tracking and integration with Kubetorch features.
+
+    Examples:
+
+    .. code-block:: bash
+
+        $ kt apply deployment.yaml
+
+        $ kt apply my-service.yaml -n default
+
+        $ kt apply manifest1.yaml manifest2.yaml
+
+        $ kt apply deployment.yaml --dry-run
+    """
+    controller = globals.controller_client()
+
+    for file_path in files:
+        try:
+            path = Path(file_path)
+            if not path.exists():
+                raise FileNotFoundError(f"Manifest file not found: {file_path}")
+            content = path.read_text()
+
+            # Parse all documents in the YAML file (supports multi-document YAML)
+            manifests = list(yaml.safe_load_all(content))
+            manifests = [m for m in manifests if m is not None]
+        except FileNotFoundError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(1)
+        except yaml.YAMLError as e:
+            console.print(f"[red]Error parsing YAML from {file_path}: {e}[/red]")
+            raise typer.Exit(1)
+
+        for manifest in manifests:
+            service_name = name or manifest.get("metadata", {}).get("name")
+            if not service_name:
+                console.print("[red]Error: No service name found in manifest and --name not provided[/red]")
+                raise typer.Exit(1)
+
+            if name:
+                manifest["metadata"]["name"] = name
+
+            resource_type = manifest.get("kind", "").lower()
+            if not resource_type:
+                console.print("[red]Error: Kind not found in manifest[/red]")
+                raise typer.Exit(1)
+            if resource_type == "service" and "serving.knative.dev" in manifest.get("apiVersion", ""):
+                resource_type = "knative"
+
+            # Use manifest namespace unless -n flag explicitly provided
+            target_namespace = namespace or manifest.get("metadata", {}).get("namespace") or globals.config.namespace
+            manifest["metadata"]["namespace"] = target_namespace
+
+            if dry_run:
+                console.print(
+                    f"[yellow]Dry run:[/yellow] {resource_type} [blue]{service_name}[/blue] "
+                    f"in namespace [blue]{target_namespace}[/blue]"
+                )
+                continue
+
+            # Apply via controller
+            try:
+                response = controller.apply(
+                    service_name=service_name,
+                    namespace=target_namespace,
+                    resource_type=resource_type,
+                    resource_manifest=manifest,
+                )
+
+                status = response.get("status", "unknown")
+                message = response.get("message", "")
+
+                if status == "success":
+                    console.print(
+                        f"[green]✓[/green] Applied {resource_type} [blue]{service_name}[/blue] "
+                        f"in namespace [blue]{target_namespace}[/blue]"
+                    )
+                else:
+                    console.print(
+                        f"[red]✗[/red] Failed to apply {resource_type} [blue]{service_name}[/blue]: {message}"
+                    )
+            except Exception as e:
+                console.print(f"[red]Error applying {resource_type} {service_name}: {e}[/red]")
 
 
 # TODO [JL, CC]: probably irrelevant long term, but helpful temporarily for debugging

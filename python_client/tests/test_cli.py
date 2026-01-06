@@ -396,6 +396,88 @@ def test_cli_kt_config_unknown_action():
 
 
 ####################################
+########## kt apply tests ##########
+####################################
+
+
+@pytest.mark.level("unit")
+def test_cli_kt_apply_errors():
+    """Test kt apply error handling for various invalid inputs."""
+    import yaml
+
+    # No file provided
+    result = runner.invoke(app, ["apply"], color=False, env={"COLUMNS": "200"})
+    assert result.exit_code != 0
+
+    # File not found
+    result = runner.invoke(app, ["apply", "nonexistent.yaml"], color=False, env={"COLUMNS": "200"})
+    assert result.exit_code == 1
+
+    # Invalid YAML
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write("invalid: yaml: content: [")
+        temp_file = f.name
+    try:
+        result = runner.invoke(app, ["apply", temp_file], color=False, env={"COLUMNS": "200"})
+        assert result.exit_code == 1
+    finally:
+        os.unlink(temp_file)
+
+    # Missing name in manifest
+    manifest = {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {}, "spec": {"replicas": 1}}
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(manifest, f)
+        temp_file = f.name
+    try:
+        result = runner.invoke(app, ["apply", temp_file, "--dry-run"], color=False, env={"COLUMNS": "200"})
+        assert result.exit_code == 1
+        assert "name" in result.stdout.lower()
+    finally:
+        os.unlink(temp_file)
+
+
+@pytest.mark.level("unit")
+def test_cli_kt_apply_dry_run():
+    """Test kt apply --dry-run."""
+    import yaml
+
+    deployment = {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {"name": "test-deployment"},
+        "spec": {
+            "replicas": 1,
+            "selector": {"matchLabels": {"app": "test"}},
+            "template": {
+                "metadata": {"labels": {"app": "test"}},
+                "spec": {"containers": [{"name": "test", "image": "nginx:latest"}]},
+            },
+        },
+    }
+
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(deployment, f)
+            temp_file = f.name
+
+        result = runner.invoke(app, ["apply", temp_file, "--dry-run"], color=False, env={"COLUMNS": "200"})
+        assert result.exit_code == 0
+        assert "Dry run" in result.stdout
+        assert "test-deployment" in result.stdout
+        assert "deployment" in result.stdout.lower()
+
+        # Test --name override
+        result = runner.invoke(
+            app, ["apply", temp_file, "--dry-run", "--name", "overridden"], color=False, env={"COLUMNS": "200"}
+        )
+        assert result.exit_code == 0
+        assert "overridden" in result.stdout
+    finally:
+        if temp_file:
+            os.unlink(temp_file)
+
+
+####################################
 ########## kt check tests ##########
 ####################################
 @pytest.mark.level("minimal")
