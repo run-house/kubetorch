@@ -34,7 +34,7 @@ class ExecutionSupervisor:
 
     def __init__(
         self,
-        process_class=None,
+        process_class: ProcessWorker = None,
         num_processes: int = 1,
         max_threads_per_proc: int = 10,
         restart_procs: bool = True,
@@ -43,12 +43,12 @@ class ExecutionSupervisor:
         """Initialize execution supervisor.
 
         Args:
-            process_class (ProcessWorker): The ProcessWorker subclass to use for subprocesses.
+            process_class (ProcessWorker, optional): The ProcessWorker subclass to use for subprocesses.
                 If None, ProcessWorker will be used. (Default: None)
-            num_processes (int): Number of local subprocesses to run. Can also be "auto" to use
+            num_processes (int, optional): Number of local subprocesses to run. Can also be "auto" to use
                 process_class.get_auto_num_processes(). (Default: 1)
-            max_threads_per_proc (int): Maximum threads per subprocess. (Default: 10)
-            restart_procs (bool): Whether to restart processes on setup. (Default: True)
+            max_threads_per_proc (int, optional): Maximum threads per subprocess. (Default: 10)
+            restart_procs (bool, optional): Whether to restart processes on setup. (Default: True)
             **process_kwargs: Additional kwargs passed to process class constructor.
         """
         self.process_class = process_class or ProcessWorker

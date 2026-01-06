@@ -67,7 +67,7 @@ class BroadcastWindow:
         fanout (int, optional): Number of children each node can have in the broadcast tree.
             Defaults to 2 for GPU (binary tree), can be set higher for filesystem
             transfers where rsync can handle many concurrent clients (~50). (Default: None)
-        pack (bool): For GPU state_dict transfers only. When True, concatenates all
+        pack (bool, optional): For GPU state_dict transfers only. When True, concatenates all
             tensors into a single packed buffer before broadcasting for maximum
             efficiency (single NCCL call). Requires all participants to have
             identical dict structure (same keys). Default False uses async

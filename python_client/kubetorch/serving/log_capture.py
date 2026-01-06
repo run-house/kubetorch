@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 from queue import Empty
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 import requests
 
@@ -45,18 +45,18 @@ class LogCapture:
         flush_interval: float = 1.0,
         # Queue mode: push to queue instead of Loki (for subprocesses)
         output_queue: mp.Queue = None,
-        get_request_id_fn=None,
+        get_request_id_fn: Callable = None,
     ):
         """
         Initialize log capture.
 
         Args:
-            log_store_url (str): Base URL for log store (e.g., http://kubetorch-data-store.namespace:3100). (Default: None)
-            labels (Dict[str, str]): Base labels for all logs (service, pod_name, namespace). (Default: None)
-            batch_size (int): Number of log entries to batch before pushing. (Default: 100)
-            flush_interval (float): Seconds between automatic flushes. (Default: 1.0)
-            output_queue (mp.Queue): If provided, push logs to this queue instead of Loki (subprocess mode). (Default: None)
-            get_request_id_fn (Callable): Function to get current request_id (required for subprocess mode). (Default: None)
+            log_store_url (str, optional): Base URL for log store (e.g., http://kubetorch-data-store.namespace:3100). (Default: None)
+            labels (Dict[str, str], optional): Base labels for all logs (service, pod_name, namespace). (Default: None)
+            batch_size (int, optional): Number of log entries to batch before pushing. (Default: 100)
+            flush_interval (float, optional): Seconds between automatic flushes. (Default: 1.0)
+            output_queue (mp.Queue, optional): If provided, push logs to this queue instead of Loki (subprocess mode). (Default: None)
+            get_request_id_fn (Callable, optional): Function to get current request_id (required for subprocess mode). (Default: None)
         """
         self.log_store_url = log_store_url
         self.labels = labels or {}

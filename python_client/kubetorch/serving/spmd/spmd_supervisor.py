@@ -38,11 +38,11 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         """Initialize SPMD supervisor.
 
         Args:
-            process_class (type): ProcessWorker subclass for framework-specific execution. (Default: None)
-            num_proc (int): Number of local processes ("auto" to detect from process_class). (Default: None)
-            port (int): Port for distributed communication (framework-specific). (Default: None)
-            tree_fanout (int): Max children per node in tree topology. (Default: 50)
-            tree_minimum (int): Min cluster size to use tree topology. (Default: 100)
+            process_class (type, optional): ProcessWorker subclass for framework-specific execution. (Default: None)
+            num_proc (int, optional): Number of local processes ("auto" to detect from process_class). (Default: None)
+            port (int, optional): Port for distributed communication (framework-specific). (Default: None)
+            tree_fanout (int, optional): Max children per node in tree topology. (Default: 50)
+            tree_minimum (int, optional): Min cluster size to use tree topology. (Default: 100)
             **kwargs: Arguments passed to DistributedSupervisor (quorum_*, monitor_members, etc.)
         """
         # Map num_proc to num_processes for parent class

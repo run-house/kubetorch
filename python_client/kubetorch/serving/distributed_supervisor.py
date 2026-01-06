@@ -41,10 +41,10 @@ class DistributedSupervisor(ExecutionSupervisor):
         """Initialize distributed supervisor.
 
         Args:
-            quorum_workers (int): Number of workers to wait for before proceeding.
+            quorum_workers (int, optional): Number of workers to wait for before proceeding.
                 If None, returns immediately with whatever pods are found. (Default: None)
-            quorum_timeout (int): Maximum seconds to wait for quorum. (Default: 300)
-            monitor_members (bool): Whether to monitor for worker membership changes.
+            quorum_timeout (int, optional): Maximum seconds to wait for quorum. (Default: 300)
+            monitor_members (bool, optional): Whether to monitor for worker membership changes.
                 Set to False for frameworks like Ray that manage their own membership. (Default: True)
             **kwargs: Additional arguments passed to ExecutionSupervisor.
         """

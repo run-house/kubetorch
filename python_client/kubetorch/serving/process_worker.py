@@ -2,6 +2,7 @@ import multiprocessing
 import os
 from bdb import BdbQuit
 from concurrent.futures import ThreadPoolExecutor
+from typing import List
 
 from kubetorch.serving.http_server import execute_callable, load_callable, logger, package_exception
 from kubetorch.serving.log_capture import create_subprocess_log_capture

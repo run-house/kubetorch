@@ -227,7 +227,7 @@ def start_debugger(port: int, timeout: int = 300):
 
     Args:
         port (int): Port for the WebSocket server.
-        timeout (int): How long to wait for a client to connect (seconds). (Default: 300)
+        timeout (int, optional): How long to wait for a client to connect (seconds). (Default: 300)
     """
     global _server_thread
 
