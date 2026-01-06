@@ -418,6 +418,49 @@ def test_controller_http_methods():
 
 
 @pytest.mark.level("unit")
+def test_discover_resources():
+    """Test GET /controller/discover/{namespace} endpoint"""
+    controller_client = kt.globals.controller_client()
+    namespace = kt.config.namespace
+
+    result = controller_client.discover_resources(namespace=namespace)
+
+    # Verify the response structure contains expected resource types
+    assert result is not None
+    assert isinstance(result, dict)
+
+    expected_keys = ["knative_services", "deployments", "rayclusters", "training_jobs", "pools"]
+    for key in expected_keys:
+        assert key in result, f"Missing expected key: {key}"
+        assert isinstance(result[key], list), f"{key} should be a list"
+
+
+@pytest.mark.level("unit")
+def test_discover_resources_with_filters():
+    """Test discover_resources with name_filter and prefix_filter"""
+    controller_client = kt.globals.controller_client()
+    namespace = kt.config.namespace
+
+    # Test with name_filter (should return empty or matching resources)
+    result = controller_client.discover_resources(
+        namespace=namespace,
+        name_filter="nonexistent-filter-12345",
+    )
+    assert result is not None
+    assert isinstance(result, dict)
+    assert [result.get(key) == [] for key in result.keys()]
+
+    # Test with prefix_filter
+    result = controller_client.discover_resources(
+        namespace=namespace,
+        prefix_filter="test-prefix-",
+    )
+    assert result is not None
+    assert isinstance(result, dict)
+    assert [result.get(key) == [] for key in result.keys()]
+
+
+@pytest.mark.level("unit")
 def test_all_list_operations_structure():
     """Test that all list operations return consistent structure
 
@@ -445,6 +488,36 @@ def test_all_list_operations_structure():
         assert result is not None, f"{method_name} returned None"
         assert "items" in result, f"{method_name} missing 'items'"
         assert isinstance(result["items"], list), f"{method_name} items not a list"
+
+
+# =============================================================================
+# Deploy Endpoint Tests (/controller/deploy)
+# =============================================================================
+@pytest.mark.level("unit")
+def test_deploy_method_signature():
+    """Test that deploy method exists and has correct signature"""
+    controller_client = kt.globals.controller_client()
+
+    # Check deploy method exists
+    assert hasattr(controller_client, "deploy")
+    assert callable(controller_client.deploy)
+
+    # Check it has the expected parameters (via introspection)
+    import inspect
+
+    sig = inspect.signature(controller_client.deploy)
+    param_names = list(sig.parameters.keys())
+
+    # Required parameters
+    assert "service_name" in param_names
+    assert "namespace" in param_names
+    assert "resource_type" in param_names
+    assert "resource_manifest" in param_names
+    assert "specifier" in param_names
+
+    # Optional parameters
+    assert "server_port" in param_names
+    assert "create_headless_service" in param_names
 
 
 # =============================================================================

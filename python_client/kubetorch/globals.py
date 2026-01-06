@@ -9,7 +9,7 @@ import time
 
 from dataclasses import dataclass
 from functools import cache
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import requests
 
@@ -852,24 +852,19 @@ class ControllerClient:
             "specifier": specifier,
             "server_port": server_port,
         }
-        if service is not None:
-            body["service"] = service
-        if dockerfile is not None:
-            body["dockerfile"] = dockerfile
-        if module is not None:
-            body["module"] = module
-        if pool_metadata is not None:
-            body["pool_metadata"] = pool_metadata
-        if labels is not None:
-            body["labels"] = labels
-        if annotations is not None:
-            body["annotations"] = annotations
-        if resource_kind is not None:
-            body["resource_kind"] = resource_kind
-        if resource_name is not None:
-            body["resource_name"] = resource_name
-        if create_headless_service:
-            body["create_headless_service"] = create_headless_service
+        args = {
+            "service": service,
+            "dockerfile": dockerfile,
+            "module": module,
+            "pool_metadata": pool_metadata,
+            "labels": labels,
+            "annotations": annotations,
+            "create_headless_service": create_headless_service,
+            "resource_kind": resource_kind,
+            "resource_name": resource_name,
+        }
+        filtered_args = {k: v for k, v in args.items() if v not in (None, False)}
+        body.update(filtered_args)
 
         return self.post("/controller/pool", json=body)
 
@@ -929,22 +924,24 @@ class ControllerClient:
         """Deploy K8s resource and register pool.
 
         Args:
-            service_name: Name of the service
-            namespace: Kubernetes namespace
-            resource_type: Type of resource (deployment, knative, raycluster, etc.)
-            resource_manifest: The full K8s manifest to apply
-            specifier: How to track pods in the pool (e.g., {"type": "label_selector", "selector": {...}})
-            service: Optional service configuration for routing
-            dockerfile: Optional dockerfile instructions for rebuilding workers
-            module: Optional application to deploy onto a pool
-            pool_metadata: Optional metadata (username, etc.)
-            server_port: Port for the K8s service (default: 32300)
-            labels: Labels for the K8s service
-            annotations: Annotations for the K8s service
-            create_headless_service: Whether to create a headless service for distributed pod discovery
+            service_name (str): Name of the service.
+            namespace (str): Kubernetes namespace.
+            resource_type (str): Type of resource (deployment, knative, raycluster, etc.).
+            resource_manifest (Dict[str, Any]): The full K8s manifest to apply.
+            specifier (Dict[str, Any]): How to track pods in the pool
+                (e.g., {"type": "label_selector", "selector": {...}}).
+            service (Optional[Dict[str, Any]]): Service configuration for routing. (Default: None)
+            dockerfile (Optional[str]): Dockerfile instructions for rebuilding workers. (Default: None)
+            module (Optional[Dict[str, Any]]): Application to deploy onto a pool. (Default: None)
+            pool_metadata (Optional[Dict[str, Any]]): Metadata (username, etc.). (Default: None)
+            server_port (int): Port for the K8s service. (Default: 32300)
+            labels (Optional[Dict[str, Any]]): Labels for the K8s service. (Default: None)
+            annotations (Optional[Dict[str, Any]]): Annotations for the K8s service. (Default: None)
+            create_headless_service (bool): Whether to create a headless service for
+                distributed pod discovery. (Default: False)
 
         Returns:
-            Deploy response with apply_status, pool_status, service_url, and created resource
+            Deploy response with apply_status, pool_status, service_url, and created resource.
         """
         body = {
             "service_name": service_name,
@@ -954,20 +951,17 @@ class ControllerClient:
             "specifier": specifier,
             "server_port": server_port,
         }
-        if service is not None:
-            body["service"] = service
-        if dockerfile is not None:
-            body["dockerfile"] = dockerfile
-        if module is not None:
-            body["module"] = module
-        if pool_metadata is not None:
-            body["pool_metadata"] = pool_metadata
-        if labels is not None:
-            body["labels"] = labels
-        if annotations is not None:
-            body["annotations"] = annotations
-        if create_headless_service:
-            body["create_headless_service"] = create_headless_service
+        args = {
+            "service": service,
+            "dockerfile": dockerfile,
+            "module": module,
+            "pool_metadata": pool_metadata,
+            "labels": labels,
+            "annotations": annotations,
+            "create_headless_service": create_headless_service,
+        }
+        filtered_args = {k: v for k, v in args.items() if v not in (None, False)}
+        body.update(filtered_args)
 
         return self.post("/controller/deploy", json=body)
 
@@ -978,6 +972,41 @@ class ControllerClient:
     def get_watchers(self) -> Dict[str, Any]:
         """Get pod watcher debug info (IPs being tracked for each pool)."""
         return self.get("/controller/debug/watchers")
+
+    def discover_resources(
+        self,
+        namespace: str,
+        label_selector: Optional[str] = None,
+        name_filter: Optional[str] = None,
+        prefix_filter: Optional[str] = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Discover all kubetorch-managed resources in a namespace.
+
+        Args:
+            namespace (str): Kubernetes namespace to search.
+            label_selector (Optional[str]): K8s label selector for server-side filtering
+                (e.g., "kubetorch.com/username=xyz"). (Default: None)
+            name_filter (Optional[str]): Filter by name substring. (Default: None)
+            prefix_filter (Optional[str]): Filter by name prefix. (Default: None)
+
+        Returns:
+            Dict mapping resource type to list of resources:
+            {
+                "knative_services": [...],
+                "deployments": [...],
+                "rayclusters": [...],
+                "training_jobs": [...],
+                "pools": [...],
+            }
+        """
+        params = {
+            "label_selector": label_selector,
+            "name_filter": name_filter,
+            "prefix_filter": prefix_filter,
+        }
+        params = {k: v for k, v in params.items() if v}
+        return self.get(f"/controller/discover/{namespace}", params=params or None)
 
 
 @cache
