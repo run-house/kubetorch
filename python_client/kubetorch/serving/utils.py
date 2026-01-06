@@ -630,8 +630,8 @@ def deep_breakpoint(debug_port: int = DEFAULT_DEBUG_PORT, debug_mode: Optional[s
     blocking all processes in the distributed group.
 
     Args:
-        debug_port (int): Port number for the debug server. (Default: 5678)
-        debug_mode (Optional[str]): Debug mode - "pdb" (WebSocket PTY) or "pdb-ui" (web UI).
+        debug_port (int, optional): Port number for the debug server. (Default: 5678)
+        debug_mode (str, optional): Debug mode - "pdb" (WebSocket PTY) or "pdb-ui" (web UI).
                     If None, uses KT_DEBUG_MODE environment variable. (Default: "pdb")
 
     The debug mode can be controlled via:

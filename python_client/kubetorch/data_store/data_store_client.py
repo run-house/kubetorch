@@ -83,15 +83,15 @@ class DataStoreClient:
         Args:
             key (str or List[str]): Storage key(s). Can be a single key or list of keys.
             src (str or Path or List[str or Path]): Local file(s) or directory(s) to upload.
-            locale (Locale): Where data is stored ("store" or "local"). (Default: "store")
-            lifespan (Lifespan): How long data persists ("cluster" or "resource"). (Default: "cluster")
+            locale (Locale, optional): Where data is stored ("store" or "local"). (Default: "store")
+            lifespan (Lifespan, optional): How long data persists ("cluster" or "resource"). (Default: "cluster")
             broadcast (BroadcastWindow, optional): Optional BroadcastWindow for coordinated transfers. (Default: None)
-            contents (bool): If True, copy directory contents. (Default: False)
+            contents (bool, optional): If True, copy directory contents. (Default: False)
             filter_options (str, optional): Additional rsync filter options. (Default: None)
-            force (bool): Force overwrite of existing files. (Default: False)
-            verbose (bool): Show detailed progress. (Default: False)
-            start_rsyncd (bool): For locale="local": Start rsync daemon. (Default: True)
-            base_path (str): For locale="local": Root path for rsync daemon. (Default: "/")
+            force (bool, optional): Force overwrite of existing files. (Default: False)
+            verbose (bool, optional): Show detailed progress. (Default: False)
+            start_rsyncd (bool, optional): For locale="local": Start rsync daemon. (Default: True)
+            base_path (str, optional): For locale="local": Root path for rsync daemon. (Default: "/")
         """
         # Normalize keys to list
         keys = [key] if isinstance(key, str) else key
