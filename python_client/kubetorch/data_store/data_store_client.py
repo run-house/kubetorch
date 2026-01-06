@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Union
 
-import kubetorch.serving.constants as serving_constants
+import kubetorch.provisioning.constants as provisioning_constants
 from kubetorch import globals
 from kubetorch.logger import get_logger
 from kubetorch.resources.compute.utils import find_available_port, RsyncError
@@ -60,7 +60,7 @@ class DataStoreClient:
         """
         self.namespace = namespace or globals.config.namespace
         self.metadata_client = MetadataClient(
-            namespace=self.namespace, metadata_port=serving_constants.DATA_STORE_METADATA_PORT
+            namespace=self.namespace, metadata_port=provisioning_constants.DATA_STORE_METADATA_PORT
         )
 
     def put(
@@ -256,7 +256,7 @@ class DataStoreClient:
         try:
             # Use the store service URL as the identifier (stable across pod restarts)
             # The actual rsync routing uses the service URL, not pod IP
-            store_service_url = f"{serving_constants.DATA_STORE_SERVICE_NAME}.{self.namespace}.svc.cluster.local"
+            store_service_url = f"{provisioning_constants.DATA_STORE_SERVICE_NAME}.{self.namespace}.svc.cluster.local"
 
             # Determine service_name for lifespan="resource"
             service_name = os.getenv("KT_SERVICE_NAME") if lifespan == "resource" else None
@@ -490,7 +490,7 @@ class DataStoreClient:
                         logger.info(f"Got rsync path from parent: {rsync_path}")
 
                 # Build rsync URL and download
-                peer_url = f"rsync://{parent_ip}:{serving_constants.REMOTE_RSYNC_PORT}/data/"
+                peer_url = f"rsync://{parent_ip}:{provisioning_constants.REMOTE_RSYNC_PORT}/data/"
                 remote_source = peer_url + rsync_path
                 if contents:
                     remote_source = remote_source.rstrip("/") + "/"
@@ -557,7 +557,7 @@ class DataStoreClient:
         # Build peer rsync URL - putter is serving via rsync daemon
         # The src_path is the key's path segment
         src_path = parsed.path if parsed.path else key.split("/")[-1]
-        peer_url = f"rsync://{putter_ip}:{serving_constants.REMOTE_RSYNC_PORT}/data/"
+        peer_url = f"rsync://{putter_ip}:{provisioning_constants.REMOTE_RSYNC_PORT}/data/"
         remote_source = peer_url + src_path
         if contents:
             remote_source = remote_source.rstrip("/") + "/"
@@ -699,7 +699,7 @@ class DataStoreClient:
             logger.info(f"Source relative path: {src_path_relative}")
 
         # Build peer rsync URL
-        peer_url = f"rsync://{source_info.ip}:{serving_constants.REMOTE_RSYNC_PORT}/data/"
+        peer_url = f"rsync://{source_info.ip}:{provisioning_constants.REMOTE_RSYNC_PORT}/data/"
         remote_source = peer_url + src_path_relative
         if contents:
             remote_source = remote_source.rstrip("/") + "/"
@@ -761,12 +761,12 @@ class DataStoreClient:
                 logger.info(f"Using port-forward to connect to peer pod {pod_name}")
 
             # Set up port-forward
-            local_port = find_available_port(serving_constants.REMOTE_RSYNC_PORT + 1000)
+            local_port = find_available_port(provisioning_constants.REMOTE_RSYNC_PORT + 1000)
             pf_cmd = [
                 "kubectl",
                 "port-forward",
                 f"pod/{pod_name}",
-                f"{local_port}:{serving_constants.REMOTE_RSYNC_PORT}",
+                f"{local_port}:{provisioning_constants.REMOTE_RSYNC_PORT}",
                 "-n",
                 pod_namespace,
             ]

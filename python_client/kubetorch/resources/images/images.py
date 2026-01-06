@@ -7,16 +7,16 @@ def debian() -> Image:
     This uses the default Kubetorch server image, which is built on top of
     a minimal Debian base.
     """
-    import kubetorch.serving.constants as serving_constants
+    import kubetorch.provisioning.constants as provisioning_constants
 
-    return Image(name="debian", image_id=serving_constants.SERVER_IMAGE_MINIMAL)
+    return Image(name="debian", image_id=provisioning_constants.SERVER_IMAGE_MINIMAL)
 
 
 def ubuntu() -> Image:
     """Return a Kubetorch ubuntu image."""
-    import kubetorch.serving.constants as serving_constants
+    import kubetorch.provisioning.constants as provisioning_constants
 
-    return Image(name="ubuntu", image_id=serving_constants.UBUNTU_IMAGE_MINIMAL)
+    return Image(name="ubuntu", image_id=provisioning_constants.UBUNTU_IMAGE_MINIMAL)
 
 
 def python(version: str) -> Image:

@@ -1,6 +1,6 @@
 from unittest.mock import Mock, patch
 
-import kubetorch.serving.constants as serving_constants
+import kubetorch.provisioning.constants as provisioning_constants
 import pytest
 from kubetorch.resources.compute.compute import Compute
 from kubetorch.resources.images.image import Image
@@ -80,10 +80,10 @@ def test_compute_image_override(mock_service_manager):
 @pytest.mark.level("unit")
 def test_compute_trapdoor_image_handling(mock_service_manager):
     """Test that trapdoor image is replaced with default server image"""
-    compute = Compute(image=Image(image_id=serving_constants.KUBETORCH_IMAGE_TRAPDOOR))
+    compute = Compute(image=Image(image_id=provisioning_constants.KUBETORCH_IMAGE_TRAPDOOR))
     assert compute.server_image in [
-        serving_constants.SERVER_IMAGE_MINIMAL,
-        serving_constants.SERVER_IMAGE_WITH_OTEL,
+        provisioning_constants.SERVER_IMAGE_MINIMAL,
+        provisioning_constants.SERVER_IMAGE_WITH_OTEL,
     ]
 
 
@@ -115,8 +115,8 @@ def test_compute_image_precedence(mock_service_manager):
 
     compute3 = Compute()
     assert compute3.server_image in [
-        serving_constants.SERVER_IMAGE_MINIMAL,
-        serving_constants.SERVER_IMAGE_WITH_OTEL,
+        provisioning_constants.SERVER_IMAGE_MINIMAL,
+        provisioning_constants.SERVER_IMAGE_WITH_OTEL,
     ]
 
 
@@ -182,6 +182,6 @@ def test_compute_partial_global_config(mock_service_manager):
     assert compute.env_vars == {}
     assert compute.gpu_anti_affinity is False  # Default value
     assert compute.server_image in [
-        serving_constants.SERVER_IMAGE_MINIMAL,
-        serving_constants.SERVER_IMAGE_WITH_OTEL,
+        provisioning_constants.SERVER_IMAGE_MINIMAL,
+        provisioning_constants.SERVER_IMAGE_WITH_OTEL,
     ]

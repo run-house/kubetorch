@@ -10,20 +10,20 @@ from typing import Dict, List, Optional, Union
 import yaml
 
 import kubetorch.constants as constants
-import kubetorch.serving.constants as serving_constants
+import kubetorch.provisioning.constants as provisioning_constants
 
 from kubetorch import data_store, globals
 from kubetorch.globals import LoggingConfig
 
 from kubetorch.logger import get_logger
+from kubetorch.provisioning.autoscaling import AutoscalingConfig
+from kubetorch.provisioning.utils import pod_is_running
 from kubetorch.resources.callables.utils import find_locally_installed_version
 from kubetorch.resources.compute.utils import _get_sync_package_paths, _run_bash
 from kubetorch.resources.images.image import Image, ImageSetupStepType
 from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecretsClient
 from kubetorch.resources.volumes.volume import Volume
 from kubetorch.servers.http.utils import is_running_in_kubernetes, load_template
-from kubetorch.serving.autoscaling import AutoscalingConfig
-from kubetorch.serving.utils import pod_is_running
 
 from kubetorch.utils import extract_host_port, load_head_node_pod
 
@@ -105,7 +105,7 @@ class Compute:
             gpu_anti_affinity (bool, optional): Whether to prevent scheduling the service on a GPU, should no GPUs be requested.
                 Can also control globally by setting the `KT_GPU_ANTI_AFFINITY` environment variable. (Default: ``False``)
             launch_timeout (int, optional): Determines how long to wait for the service to ready before giving up.
-                If not specified, will wait {serving_constants.KT_LAUNCH_TIMEOUT} seconds.
+                If not specified, will wait {provisioning_constants.KT_LAUNCH_TIMEOUT} seconds.
                 Note: you can also control this timeout globally by setting the `KT_LAUNCH_TIMEOUT` environment variable.
             replicas (int, optional): Number of replicas to create for deployment-based services. Can also be set via
                 the `.distribute(workers=N)` method for distributed training. If not specified, defaults to 1 for new
@@ -211,15 +211,15 @@ class Compute:
         gpu_annotations = {"gpu-memory": gpu_memory} if gpu_memory else {}
         manifest_annotations.update(gpu_annotations)
         if self._kubeconfig_path is not None:
-            manifest_annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
+            manifest_annotations[provisioning_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
 
         # Build initial manifest based on deployment type
-        from kubetorch.serving.service_manager import DeploymentServiceManager
+        from kubetorch.provisioning.service_manager import DeploymentServiceManager
 
         # Prepare labels, including Kueue queue label if specified
         manifest_labels = labels.copy() if labels else {}
         if queue_name:
-            manifest_labels[serving_constants.KUEUE_QUEUE_NAME_LABEL] = queue_name
+            manifest_labels[provisioning_constants.KUEUE_QUEUE_NAME_LABEL] = queue_name
 
         self._manifest = DeploymentServiceManager._build_base_manifest(
             pod_spec=pod_spec,
@@ -284,7 +284,7 @@ class Compute:
 
         # Extract kubeconfig_path from manifest annotations if present
         user_annotations = compute._manifest["metadata"].get("annotations", {})
-        compute._kubeconfig_path = user_annotations.get(serving_constants.KUBECONFIG_PATH_ANNOTATION)
+        compute._kubeconfig_path = user_annotations.get(provisioning_constants.KUBECONFIG_PATH_ANNOTATION)
 
         # Merge kubetorch defaults into user manifest
         compute._build_and_merge_kubetorch_defaults()
@@ -302,7 +302,7 @@ class Compute:
 
         manifest_annotations = {}
         if self._kubeconfig_path is not None:
-            manifest_annotations[serving_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
+            manifest_annotations[provisioning_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
 
         # Apply kubetorch-specific metadata to user manifest
         self.service_manager._apply_kubetorch_updates(
@@ -323,8 +323,8 @@ class Compute:
             tuple: (pod_spec dict, template_vars dict)
         """
         namespace = config.get("namespace") or globals.config.namespace
-        server_port = serving_constants.DEFAULT_KT_SERVER_PORT
-        service_account_name = config.get("service_account_name") or serving_constants.DEFAULT_SERVICE_ACCOUNT_NAME
+        server_port = provisioning_constants.DEFAULT_KT_SERVER_PORT
+        service_account_name = config.get("service_account_name") or provisioning_constants.DEFAULT_SERVICE_ACCOUNT_NAME
         log_streaming_enabled = (
             globals.config.cluster_config.get("log_streaming_enabled", True) if globals.config.cluster_config else True
         )
@@ -394,10 +394,10 @@ class Compute:
         }
 
         pod_spec = load_template(
-            template_file=serving_constants.POD_TEMPLATE_FILE,
+            template_file=provisioning_constants.POD_TEMPLATE_FILE,
             template_dir=os.path.join(
                 os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                "serving",
+                "provisioning",
                 "templates",
             ),
             **template_vars,
@@ -418,8 +418,8 @@ class Compute:
         kubetorch values are added where user doesn't have them, but existing user
         values are preserved.
         """
-        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
-        from kubetorch.serving.utils import nested_merge
+        from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
+        from kubetorch.provisioning.utils import nested_merge
 
         if self.kind in TrainJobServiceManager.SUPPORTED_KINDS:
             config = TrainJobServiceManager._get_config(self.kind)
@@ -510,9 +510,9 @@ class Compute:
         self._manifest.setdefault("metadata", {}).setdefault("annotations", {})
 
         if value is not None:
-            self._manifest["metadata"]["annotations"][serving_constants.KUBECONFIG_PATH_ANNOTATION] = value
-        elif serving_constants.KUBECONFIG_PATH_ANNOTATION in self._manifest["metadata"].get("annotations", {}):
-            del self._manifest["metadata"]["annotations"][serving_constants.KUBECONFIG_PATH_ANNOTATION]
+            self._manifest["metadata"]["annotations"][provisioning_constants.KUBECONFIG_PATH_ANNOTATION] = value
+        elif provisioning_constants.KUBECONFIG_PATH_ANNOTATION in self._manifest["metadata"].get("annotations", {}):
+            del self._manifest["metadata"]["annotations"][provisioning_constants.KUBECONFIG_PATH_ANNOTATION]
 
     @property
     def manifest(self):
@@ -568,10 +568,10 @@ class Compute:
     @property
     def service_manager(self):
         if self._service_manager is None:
-            from kubetorch.serving.deployment_service_manager import DeploymentServiceManager
-            from kubetorch.serving.knative_service_manager import KnativeServiceManager
-            from kubetorch.serving.raycluster_service_manager import RayClusterServiceManager
-            from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+            from kubetorch.provisioning.deployment_service_manager import DeploymentServiceManager
+            from kubetorch.provisioning.knative_service_manager import KnativeServiceManager
+            from kubetorch.provisioning.raycluster_service_manager import RayClusterServiceManager
+            from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
 
             service_manager_mapping = {
                 "deployment": DeploymentServiceManager,
@@ -625,7 +625,7 @@ class Compute:
         if "containers" not in self.pod_spec:
             raise ValueError("pod_spec missing 'containers' field.")
 
-        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+        from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
 
         expected_name = (
             self.kind.lower().replace("job", "") if self.kind in TrainJobServiceManager.SUPPORTED_KINDS else "kubetorch"
@@ -704,9 +704,9 @@ class Compute:
         if ports and len(ports) > 0:
             return ports[0].get("containerPort")
         # Return default if ports not found
-        import kubetorch.serving.constants as serving_constants
+        import kubetorch.provisioning.constants as provisioning_constants
 
-        return serving_constants.DEFAULT_KT_SERVER_PORT
+        return provisioning_constants.DEFAULT_KT_SERVER_PORT
 
     @server_port.setter
     def server_port(self, value: int):
@@ -1406,7 +1406,7 @@ class Compute:
         if self._autoscaling_config is not None:
             return self._autoscaling_config
 
-        from kubetorch.serving.autoscaling import AutoscalingConfig
+        from kubetorch.provisioning.autoscaling import AutoscalingConfig
 
         try:
             return AutoscalingConfig.from_manifest(self._manifest)
@@ -1436,7 +1436,7 @@ class Compute:
         """Set distributed config in all containers."""
         import json
 
-        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+        from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
 
         # Populate defaults if config is missing values
         workers = config.get("workers")
@@ -1541,7 +1541,7 @@ class Compute:
     @replicas.setter
     def replicas(self, value: int):
         # Set replicas in manifest and applies to relevant containers
-        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+        from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
 
         if isinstance(self.service_manager, TrainJobServiceManager):
             # For kubeflow training service managers, also update distributed config
@@ -1571,11 +1571,13 @@ class Compute:
     def queue_name(self) -> Optional[str]:
         pod_template = self.pod_template
         if pod_template:
-            queue = pod_template.get("metadata", {}).get("labels", {}).get(serving_constants.KUEUE_QUEUE_NAME_LABEL)
+            queue = (
+                pod_template.get("metadata", {}).get("labels", {}).get(provisioning_constants.KUEUE_QUEUE_NAME_LABEL)
+            )
             if queue:
                 return queue
         # Fall back to top-level manifest metadata (for from_manifest cases)
-        return self._manifest.get("metadata", {}).get("labels", {}).get(serving_constants.KUEUE_QUEUE_NAME_LABEL)
+        return self._manifest.get("metadata", {}).get("labels", {}).get(provisioning_constants.KUEUE_QUEUE_NAME_LABEL)
 
     @queue_name.setter
     def queue_name(self, value: Optional[str]):
@@ -1586,7 +1588,7 @@ class Compute:
         so that Kueue can manage workload admission. When clearing queue_name, also clears
         the suspend flag.
         """
-        queue_label = {serving_constants.KUEUE_QUEUE_NAME_LABEL: value} if value else {}
+        queue_label = {provisioning_constants.KUEUE_QUEUE_NAME_LABEL: value} if value else {}
 
         # Add to top-level metadata
         if value:
@@ -1594,11 +1596,12 @@ class Compute:
         else:
             # Remove label if value is None
             metadata = self._get_manifest_metadata()
-            metadata.get("labels", {}).pop(serving_constants.KUEUE_QUEUE_NAME_LABEL, None)
+            metadata.get("labels", {}).pop(provisioning_constants.KUEUE_QUEUE_NAME_LABEL, None)
 
         # Add to pod template metadata
         self.add_pod_template_labels(
-            queue_label if value else {}, remove_keys=[serving_constants.KUEUE_QUEUE_NAME_LABEL] if not value else []
+            queue_label if value else {},
+            remove_keys=[provisioning_constants.KUEUE_QUEUE_NAME_LABEL] if not value else [],
         )
 
         # For training jobs, manage runPolicy.suspend for Kueue admission control
@@ -1729,8 +1732,8 @@ class Compute:
         """Return base server image"""
         image = self.image.image_id if self.image and self.image.image_id else None
 
-        if not image or image == serving_constants.KUBETORCH_IMAGE_TRAPDOOR:
-            return serving_constants.SERVER_IMAGE_MINIMAL
+        if not image or image == provisioning_constants.KUBETORCH_IMAGE_TRAPDOOR:
+            return provisioning_constants.SERVER_IMAGE_MINIMAL
 
         return image
 
@@ -1771,7 +1774,7 @@ class Compute:
         default_launch_timeout = (
             self.default_config["launch_timeout"]
             if "launch_timeout" in self.default_config
-            else serving_constants.KT_LAUNCH_TIMEOUT
+            else provisioning_constants.KT_LAUNCH_TIMEOUT
         )
         return int(os.getenv("KT_LAUNCH_TIMEOUT", default_launch_timeout))
 
@@ -2025,10 +2028,10 @@ class Compute:
         from kubetorch.servers.http.utils import _get_rendered_template
 
         setup_script = _get_rendered_template(
-            serving_constants.KT_SETUP_TEMPLATE_FILE,
+            provisioning_constants.KT_SETUP_TEMPLATE_FILE,
             template_dir=os.path.join(
                 os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                "serving",
+                "provisioning",
                 "templates",
             ),
             python_path=self.python_path,
@@ -2474,7 +2477,7 @@ class Compute:
             distribution_type = distributed_config.get("distribution_type")
             if distribution_type == "ray":
                 # Convert to RayCluster manifest
-                from kubetorch.serving.service_manager import RayClusterServiceManager
+                from kubetorch.provisioning.service_manager import RayClusterServiceManager
 
                 self._manifest = RayClusterServiceManager._convert_manifest(
                     deployment_manifest=self._manifest,
@@ -2573,7 +2576,7 @@ class Compute:
             self._autoscaling_config = autoscaling_config
 
             # Convert manifest to Knative service manifest
-            from kubetorch.serving.service_manager import KnativeServiceManager
+            from kubetorch.provisioning.service_manager import KnativeServiceManager
 
             self._manifest = KnativeServiceManager._convert_manifest(
                 deployment_manifest=self._manifest,

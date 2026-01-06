@@ -3,10 +3,10 @@ import os
 import time
 from typing import List, Optional
 
-import kubetorch.serving.constants as serving_constants
+import kubetorch.provisioning.constants as provisioning_constants
 from kubetorch.logger import get_logger
+from kubetorch.provisioning.base_service_manager import BaseServiceManager
 from kubetorch.servers.http.utils import load_template
-from kubetorch.serving.base_service_manager import BaseServiceManager
 from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)
@@ -135,11 +135,11 @@ class RayClusterServiceManager(BaseServiceManager):
         deployment_annotations = deployment_manifest["metadata"]["annotations"]
 
         labels = deployment_labels.copy()
-        labels[serving_constants.KT_TEMPLATE_LABEL] = "raycluster"
+        labels[provisioning_constants.KT_TEMPLATE_LABEL] = "raycluster"
 
         # Template labels (exclude template label - that's only for the top-level resource)
         template_labels = labels.copy()
-        template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+        template_labels.pop(provisioning_constants.KT_TEMPLATE_LABEL, None)
 
         # Head node specific labels (for service selector)
         head_template_labels = {
@@ -176,7 +176,7 @@ class RayClusterServiceManager(BaseServiceManager):
         }
 
         raycluster = load_template(
-            template_file=serving_constants.RAYCLUSTER_TEMPLATE_FILE,
+            template_file=provisioning_constants.RAYCLUSTER_TEMPLATE_FILE,
             template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
             **template_vars,
         )
@@ -227,8 +227,8 @@ class RayClusterServiceManager(BaseServiceManager):
                 if "template" not in worker_group:
                     worker_group["template"] = {}
                 metadata = worker_group["template"].setdefault("metadata", {})
-                metadata.setdefault("labels", {})[serving_constants.KT_SERVICE_LABEL] = service_name
-                metadata["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
+                metadata.setdefault("labels", {})[provisioning_constants.KT_SERVICE_LABEL] = service_name
+                metadata["labels"][provisioning_constants.KT_MODULE_LABEL] = clean_module_name
                 metadata.setdefault("annotations", {})["kubetorch.com/deployment_timestamp"] = deployment_timestamp
 
         return raycluster
@@ -257,12 +257,12 @@ class RayClusterServiceManager(BaseServiceManager):
 
         # Service labels (exclude kt template label)
         service_labels = labels.copy()
-        service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+        service_labels.pop(provisioning_constants.KT_TEMPLATE_LABEL, None)
 
         try:
             # Create regular service for client access (head node only)
             service = load_template(
-                template_file=serving_constants.RAYCLUSTER_SERVICE_TEMPLATE_FILE,
+                template_file=provisioning_constants.RAYCLUSTER_SERVICE_TEMPLATE_FILE,
                 template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
                 name=service_name,
                 namespace=self.namespace,
@@ -289,7 +289,7 @@ class RayClusterServiceManager(BaseServiceManager):
 
             # Create headless service for Ray pod discovery (all nodes)
             headless_service = load_template(
-                template_file=serving_constants.RAYCLUSTER_SERVICE_TEMPLATE_FILE,
+                template_file=provisioning_constants.RAYCLUSTER_SERVICE_TEMPLATE_FILE,
                 template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
                 name=f"{service_name}-headless",
                 namespace=self.namespace,

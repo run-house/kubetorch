@@ -28,15 +28,15 @@ from rich.style import Style
 from rich.table import Table
 from websocket import create_connection
 
-import kubetorch.serving.constants as serving_constants
+import kubetorch.provisioning.constants as provisioning_constants
 
 from kubetorch import globals
 from kubetorch.config import KubetorchConfig
 from kubetorch.constants import MAX_PORT_TRIES
+from kubetorch.provisioning.utils import wait_for_port_forward
 
 from kubetorch.resources.compute.utils import is_port_available
 from kubetorch.servers.http.utils import stream_logs_websocket_helper, StreamType
-from kubetorch.serving.utils import wait_for_port_forward
 from kubetorch.utils import hours_to_ns, http_not_found
 
 from .constants import BULLET_UNICODE, CPU_RATE, DOUBLE_SPACE_UNICODE, GPU_RATE
@@ -177,7 +177,7 @@ def port_forward_to_pod(
     pod_name,
     namespace: str = None,
     local_port: int = 8080,
-    remote_port: int = serving_constants.DEFAULT_NGINX_PORT,
+    remote_port: int = provisioning_constants.DEFAULT_NGINX_PORT,
     health_endpoint: str = None,
 ):
     for attempt in range(MAX_PORT_TRIES):
@@ -785,7 +785,7 @@ def stream_logs_websocket(uri, stop_event, print_pod_name: bool = False):
 
 
 def generate_logs_query(name: str, namespace: str, selected_pod: str, deployment_mode):
-    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+    from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
 
     if not selected_pod:
         if deployment_mode in ["knative", "deployment"] + TrainJobServiceManager.SUPPORTED_KINDS:
@@ -923,7 +923,7 @@ def detect_deployment_mode(name: str, namespace: str):
 
     # Then try TrainJobs
 
-    from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+    from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
 
     for kind in TrainJobServiceManager.SUPPORTED_KINDS:
         try:
@@ -1015,13 +1015,13 @@ def load_runhouse_dashboard(
 
     if not local_server:
         # Check if the service is available
-        cmd = f"kubectl get svc/{serving_constants.KUBETORCH_UI_SERVICE_NAME} -n {namespace}"
+        cmd = f"kubectl get svc/{provisioning_constants.KUBETORCH_UI_SERVICE_NAME} -n {namespace}"
         result = subprocess.run(cmd.split(), capture_output=True, text=True)
         if result.returncode != 0:
             console.print("[red]Dashboard UI service is not available[/red]")
             raise typer.Exit(1)
 
-        cmd = f"kubectl port-forward -n {namespace} svc/{serving_constants.KUBETORCH_UI_SERVICE_NAME} {local_port}:3000 -n {namespace}"
+        cmd = f"kubectl port-forward -n {namespace} svc/{provisioning_constants.KUBETORCH_UI_SERVICE_NAME} {local_port}:3000 -n {namespace}"
         process.append(subprocess.Popen(cmd.split()))
 
     # Check if the controller API service is available

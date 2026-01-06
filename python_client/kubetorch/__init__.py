@@ -1,5 +1,6 @@
 from kubetorch.data_store import BroadcastWindow, DataStoreError, get, ls, put, rm  # noqa: F401
 from kubetorch.globals import config, DebugConfig, LoggingConfig, MetricsConfig  # noqa: F401
+from kubetorch.provisioning.utils import KubernetesCredentialsError
 from kubetorch.resources.callables.cls.cls import Cls, cls  # noqa: F401
 from kubetorch.resources.callables.fn.fn import Fn, fn  # noqa: F401
 from kubetorch.resources.callables.utils import NotebookError
@@ -27,7 +28,6 @@ from kubetorch.servers.http.utils import (  # noqa: F401
     StartupError,
     WorkerMembershipChanged,
 )
-from kubetorch.serving.utils import KubernetesCredentialsError
 
 from . import distributed
 from .resources import images

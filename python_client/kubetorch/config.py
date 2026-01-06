@@ -236,7 +236,7 @@ class KubetorchConfig:
     @stream_logs.setter
     def stream_logs(self, value):
         """Set log streaming for current process."""
-        from kubetorch.serving.utils import check_loki_enabled
+        from kubetorch.provisioning.utils import check_loki_enabled
 
         bool_value = value
 
@@ -279,7 +279,7 @@ class KubetorchConfig:
     @stream_metrics.setter
     def stream_metrics(self, value):
         """Set metrics streaming for current process."""
-        from kubetorch.serving.utils import check_prometheus_enabled
+        from kubetorch.provisioning.utils import check_prometheus_enabled
 
         bool_value = value
 

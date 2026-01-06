@@ -3,8 +3,11 @@ import time
 from typing import List
 
 import kubetorch as kt
-import kubetorch.serving.constants as serving_constants
+import kubetorch.provisioning.constants as provisioning_constants
 from kubetorch.logger import get_logger
+from kubetorch.provisioning.autoscaling import AutoscalingConfig
+from kubetorch.provisioning.base_service_manager import BaseServiceManager
+from kubetorch.provisioning.utils import pod_is_running
 from kubetorch.resources.compute.utils import (
     check_pod_events_for_errors,
     check_pod_status_for_errors,
@@ -12,9 +15,6 @@ from kubetorch.resources.compute.utils import (
     ServiceTimeoutError,
 )
 from kubetorch.servers.http.utils import load_template
-from kubetorch.serving.autoscaling import AutoscalingConfig
-from kubetorch.serving.base_service_manager import BaseServiceManager
-from kubetorch.serving.utils import pod_is_running
 from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)
@@ -86,11 +86,11 @@ class KnativeServiceManager(BaseServiceManager):
         deployment_annotations = deployment_manifest["metadata"]["annotations"]
 
         labels = deployment_labels.copy()
-        labels[serving_constants.KT_TEMPLATE_LABEL] = "ksvc"
+        labels[provisioning_constants.KT_TEMPLATE_LABEL] = "ksvc"
 
         # Template labels (exclude template label - that's only for the top-level resource)
         template_labels = labels.copy()
-        template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+        template_labels.pop(provisioning_constants.KT_TEMPLATE_LABEL, None)
 
         template_annotations = {
             "networking.knative.dev/ingress.class": "kourier.ingress.networking.knative.dev",
@@ -138,7 +138,7 @@ class KnativeServiceManager(BaseServiceManager):
             template_vars["container_concurrency"] = autoscaling_config.concurrency
 
         service = load_template(
-            template_file=serving_constants.KNATIVE_SERVICE_TEMPLATE_FILE,
+            template_file=provisioning_constants.KNATIVE_SERVICE_TEMPLATE_FILE,
             template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
             **template_vars,
         )

@@ -8,8 +8,8 @@ from kubetorch.constants import DEFAULT_KUBECONFIG_PATH
 from kubetorch.globals import config as kt_config
 
 from kubetorch.logger import get_logger
+from kubetorch.provisioning.utils import pod_is_running
 from kubetorch.servers.http.utils import is_running_in_kubernetes
-from kubetorch.serving.utils import pod_is_running
 
 logger = get_logger(__name__)
 

@@ -15,7 +15,7 @@ import requests
 
 from kubetorch.config import KubetorchConfig
 from kubetorch.logger import get_logger
-from kubetorch.serving.constants import (
+from kubetorch.provisioning.constants import (
     DEFAULT_NGINX_HEALTH_ENDPOINT,
     DEFAULT_NGINX_PORT,
     KUBETORCH_CONTROLLER,
@@ -143,8 +143,8 @@ def _cleanup_port_forwards():
 
 
 def _ensure_pf(service_name: str, namespace: str, remote_port: int, health_endpoint: str) -> PFHandle:
+    from kubetorch.provisioning.utils import wait_for_port_forward
     from kubetorch.resources.compute.utils import find_available_port
-    from kubetorch.serving.utils import wait_for_port_forward
 
     # Cache key includes port to support multiple ports per service
     cache_key = f"{service_name}:{remote_port}"
@@ -211,8 +211,8 @@ def _ensure_pf(service_name: str, namespace: str, remote_port: int, health_endpo
 
 async def _ensure_pf_async(service_name: str, namespace: str, remote_port: int, health_endpoint: str) -> PFHandle:
     """Async version of _ensure_pf for use in async contexts."""
+    from kubetorch.provisioning.utils import wait_for_port_forward
     from kubetorch.resources.compute.utils import find_available_port
-    from kubetorch.serving.utils import wait_for_port_forward
 
     # Cache key includes port to support multiple ports per service
     cache_key = f"{service_name}:{remote_port}"

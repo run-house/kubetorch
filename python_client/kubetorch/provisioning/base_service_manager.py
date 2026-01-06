@@ -4,7 +4,7 @@ from abc import abstractmethod
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Type
 
-import kubetorch.serving.constants as serving_constants
+import kubetorch.provisioning.constants as provisioning_constants
 from kubetorch import globals
 
 from kubetorch.logger import get_logger
@@ -50,9 +50,9 @@ class BaseServiceManager:
         from kubetorch import __version__
 
         labels = {
-            serving_constants.KT_VERSION_LABEL: __version__,
-            serving_constants.KT_TEMPLATE_LABEL: template_label,
-            serving_constants.KT_USERNAME_LABEL: globals.config.username,
+            provisioning_constants.KT_VERSION_LABEL: __version__,
+            provisioning_constants.KT_TEMPLATE_LABEL: template_label,
+            provisioning_constants.KT_USERNAME_LABEL: globals.config.username,
         }
 
         if custom_labels:
@@ -79,7 +79,7 @@ class BaseServiceManager:
     ) -> dict:
         annotations = {
             "prometheus.io/scrape": "true",
-            "prometheus.io/path": serving_constants.PROMETHEUS_HEALTH_ENDPOINT,
+            "prometheus.io/path": provisioning_constants.PROMETHEUS_HEALTH_ENDPOINT,
             "prometheus.io/port": "8080",
         }
         if service_annotations:
@@ -89,7 +89,7 @@ class BaseServiceManager:
             annotations.update(custom_annotations)
 
         if inactivity_ttl:
-            annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
+            annotations[provisioning_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
             logger.info(f"Configuring auto-down after idle timeout ({inactivity_ttl})")
 
         return annotations
@@ -104,7 +104,7 @@ class BaseServiceManager:
         **kwargs,  # Allow subclasses to accept additional kwargs (e.g., gpu_annotations)
     ) -> dict:
         """Apply kubetorch labels and annotations to manifest."""
-        from kubetorch.serving.utils import nested_override
+        from kubetorch.provisioning.utils import nested_override
 
         # Get base labels and annotations
         labels = self._get_labels(
@@ -112,7 +112,7 @@ class BaseServiceManager:
             custom_labels=custom_labels,
         )
         template_labels = labels.copy()
-        template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+        template_labels.pop(provisioning_constants.KT_TEMPLATE_LABEL, None)
         annotations = self._get_annotations(
             service_annotations=self.service_annotations,
             custom_annotations=custom_annotations,
@@ -167,10 +167,10 @@ class BaseServiceManager:
         # Update top-level metadata
         updated_manifest["metadata"]["name"] = service_name
         updated_manifest["metadata"].setdefault("labels", {})
-        updated_manifest["metadata"]["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
-        updated_manifest["metadata"]["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
-        updated_manifest["metadata"]["labels"][serving_constants.KT_APP_LABEL] = service_name
-        updated_manifest["metadata"]["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
+        updated_manifest["metadata"]["labels"][provisioning_constants.KT_SERVICE_LABEL] = service_name
+        updated_manifest["metadata"]["labels"][provisioning_constants.KT_MODULE_LABEL] = clean_module_name
+        updated_manifest["metadata"]["labels"][provisioning_constants.KT_APP_LABEL] = service_name
+        updated_manifest["metadata"]["labels"][provisioning_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
 
         # Update template metadata
         template_path = self.get_pod_template_path()
@@ -179,10 +179,10 @@ class BaseServiceManager:
             current = current.setdefault(key, {})
         metadata = current.setdefault("metadata", {})
         metadata.setdefault("labels", {})
-        metadata["labels"][serving_constants.KT_SERVICE_LABEL] = service_name
-        metadata["labels"][serving_constants.KT_MODULE_LABEL] = clean_module_name
-        metadata["labels"][serving_constants.KT_APP_LABEL] = service_name
-        metadata["labels"][serving_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
+        metadata["labels"][provisioning_constants.KT_SERVICE_LABEL] = service_name
+        metadata["labels"][provisioning_constants.KT_MODULE_LABEL] = clean_module_name
+        metadata["labels"][provisioning_constants.KT_APP_LABEL] = service_name
+        metadata["labels"][provisioning_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
 
         # Update deployment timestamp annotation
         metadata.setdefault("annotations", {})["kubetorch.com/deployment_timestamp"] = deployment_timestamp
@@ -227,7 +227,7 @@ class BaseServiceManager:
 
     @staticmethod
     def _get_service_manager_class(kind: str) -> Type["BaseServiceManager"]:
-        from kubetorch.serving.service_manager import (
+        from kubetorch.provisioning.service_manager import (
             DeploymentServiceManager,
             KnativeServiceManager,
             RayClusterServiceManager,
@@ -400,7 +400,7 @@ class BaseServiceManager:
         def fetch_knative_services():
             """Fetch Knative services in parallel."""
             try:
-                label_selector = f"{serving_constants.KT_TEMPLATE_LABEL}=ksvc"
+                label_selector = f"{provisioning_constants.KT_TEMPLATE_LABEL}=ksvc"
                 result = controller_client.list_namespaced_custom_object(
                     group="serving.knative.dev",
                     version="v1",
@@ -438,7 +438,7 @@ class BaseServiceManager:
         def fetch_deployments():
             """Fetch Deployments in parallel."""
             try:
-                label_selector = f"{serving_constants.KT_TEMPLATE_LABEL}=deployment"
+                label_selector = f"{provisioning_constants.KT_TEMPLATE_LABEL}=deployment"
                 result = controller_client.list_deployments(
                     namespace=namespace,
                     label_selector=label_selector,
@@ -471,7 +471,7 @@ class BaseServiceManager:
 
         def fetch_rayclusters():
             try:
-                label_selector = f"{serving_constants.KT_TEMPLATE_LABEL}=raycluster"
+                label_selector = f"{provisioning_constants.KT_TEMPLATE_LABEL}=raycluster"
                 result = controller_client.list_namespaced_custom_object(
                     group="ray.io",
                     version="v1",
@@ -509,7 +509,7 @@ class BaseServiceManager:
 
         def fetch_custom_resources():
             """Fetch custom training job resources in parallel."""
-            from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+            from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
 
             local_services = []
             for resource_kind in TrainJobServiceManager.SUPPORTED_KINDS:
@@ -518,7 +518,7 @@ class BaseServiceManager:
                 plural = config["api_plural"]
                 version = config["api_version"]
                 try:
-                    label_selector = f"{serving_constants.KT_TEMPLATE_LABEL}={resource_kind.lower()}"
+                    label_selector = f"{provisioning_constants.KT_TEMPLATE_LABEL}={resource_kind.lower()}"
 
                     result = controller_client.list_namespaced_custom_object(
                         group=api_group,
@@ -582,7 +582,7 @@ class BaseServiceManager:
 
     def get_pods_for_service(self, service_name: str, label_selector: str = None, **kwargs) -> List[dict]:
         """Get all pods associated with this service."""
-        label_selector = label_selector or f"{serving_constants.KT_SERVICE_LABEL}={service_name}"
+        label_selector = label_selector or f"{provisioning_constants.KT_SERVICE_LABEL}={service_name}"
 
         raw = self.controller_client.list_pods(self.namespace, label_selector=label_selector)
         pods = raw.get("items", [])

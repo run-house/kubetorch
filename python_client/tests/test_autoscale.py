@@ -1,6 +1,6 @@
 import pytest
 
-from kubetorch.serving.autoscaling import AutoscalingConfig, AutoScalingError
+from kubetorch.provisioning.autoscaling import AutoscalingConfig, AutoScalingError
 
 
 @pytest.mark.level("unit")

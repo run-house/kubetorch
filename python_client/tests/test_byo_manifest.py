@@ -2,7 +2,7 @@ import copy
 import os
 
 import kubetorch.globals
-import kubetorch.serving.constants as serving_constants
+import kubetorch.provisioning.constants as provisioning_constants
 
 import pytest
 from kubetorch.utils import http_not_found
@@ -10,7 +10,7 @@ from kubetorch.utils import http_not_found
 from .assets.torch_ddp.torch_ddp import torch_ddp
 from .utils import summer
 
-QUEUE_LABEL = serving_constants.KUEUE_QUEUE_NAME_LABEL
+QUEUE_LABEL = provisioning_constants.KUEUE_QUEUE_NAME_LABEL
 
 
 def _kueue_available() -> bool:

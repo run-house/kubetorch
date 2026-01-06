@@ -8,11 +8,11 @@ from typing import List, Optional, Union
 
 import kubetorch.globals
 from kubetorch.logger import get_logger
+from kubetorch.provisioning import constants as provisioning_constants
+from kubetorch.provisioning.constants import KT_SERVICE_LABEL, KT_USERNAME_LABEL
 from kubetorch.resources.callables.utils import get_local_install_path, locate_working_dir
 from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecretsClient
 from kubetorch.servers.http.utils import StartupError
-from kubetorch.serving import constants as serving_constants
-from kubetorch.serving.constants import KT_SERVICE_LABEL, KT_USERNAME_LABEL
 from kubetorch.utils import http_not_found
 
 logger = get_logger(__name__)
@@ -648,7 +648,7 @@ def fetch_resources_for_teardown(
         # Search Knative services
         try:
             # Build label selector for Knative services - use template label to identify kubetorch services
-            knative_label_selector = f"{serving_constants.KT_TEMPLATE_LABEL}=ksvc"
+            knative_label_selector = f"{provisioning_constants.KT_TEMPLATE_LABEL}=ksvc"
             if username:
                 knative_label_selector += f",{KT_USERNAME_LABEL}={username}"
 
@@ -679,7 +679,7 @@ def fetch_resources_for_teardown(
         # Search Deployments
         try:
             # Build label selector for deployments - use KT_TEMPLATE_LABEL to identify kubetorch deployments
-            deployment_label_selector = f"{serving_constants.KT_TEMPLATE_LABEL}=deployment"
+            deployment_label_selector = f"{provisioning_constants.KT_TEMPLATE_LABEL}=deployment"
             if username:
                 deployment_label_selector += f",{KT_USERNAME_LABEL}={username}"
 
@@ -699,7 +699,7 @@ def fetch_resources_for_teardown(
         # Search RayClusters
         try:
             # Build label selector for rayclusters - use template label to identify kubetorch rayclusters
-            raycluster_label_selector = f"{serving_constants.KT_TEMPLATE_LABEL}=raycluster"
+            raycluster_label_selector = f"{provisioning_constants.KT_TEMPLATE_LABEL}=raycluster"
             if username:
                 raycluster_label_selector += f",{KT_USERNAME_LABEL}={username}"
 
@@ -727,7 +727,7 @@ def fetch_resources_for_teardown(
             if not http_not_found(e):
                 logger.warning(f"Failed to list RayClusters: {e}")
 
-        from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+        from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
 
         for job_kind in TrainJobServiceManager.SUPPORTED_KINDS:
             try:
@@ -762,7 +762,7 @@ def fetch_resources_for_teardown(
                 for item in items:
                     item_name = item["metadata"]["name"]
                     labels = item.get("metadata", {}).get("labels", {})
-                    template_label = labels.get(serving_constants.KT_TEMPLATE_LABEL)
+                    template_label = labels.get(provisioning_constants.KT_TEMPLATE_LABEL)
                     # Check if it's a kubetorch service (has template label with value matching job kind or "generic")
                     if template_label in (job_kind.lower(), "generic"):
                         # If prefix is provided, check if name starts with prefix
@@ -851,7 +851,7 @@ def fetch_resources_for_teardown(
 
         # Check if it's a custom training job (PyTorchJob, TFJob, MXJob, XGBoostJob) if not found as other types
         if not service_found:
-            from kubetorch.serving.trainjob_service_manager import TrainJobServiceManager
+            from kubetorch.provisioning.trainjob_service_manager import TrainJobServiceManager
 
             for job_kind in TrainJobServiceManager.SUPPORTED_KINDS:
                 try:

@@ -53,7 +53,7 @@ except ImportError:
     raise ImportError("Please install the required CLI dependencies: `pip install 'kubetorch[client]'`")
 
 
-import kubetorch.serving.constants as serving_constants
+import kubetorch.provisioning.constants as provisioning_constants
 
 from kubetorch import globals
 from kubetorch.config import ENV_MAPPINGS
@@ -748,7 +748,7 @@ def kt_list(
     """
 
     # Import here to avoid circular imports
-    from kubetorch.serving.service_manager import BaseServiceManager
+    from kubetorch.provisioning.service_manager import BaseServiceManager
 
     try:
         # Use unified service discovery
@@ -782,7 +782,7 @@ def kt_list(
 
         try:
             pods_result = globals.controller_client().list_pods(
-                namespace=namespace, label_selector=f"{serving_constants.KT_SERVICE_LABEL}"
+                namespace=namespace, label_selector=f"{provisioning_constants.KT_SERVICE_LABEL}"
             )
             pods = pods_result.get("items", [])
         except Exception as e:
@@ -792,7 +792,7 @@ def kt_list(
             svc["name"]: [
                 pod
                 for pod in pods
-                if pod.get("metadata", {}).get("labels", {}).get(serving_constants.KT_SERVICE_LABEL) == svc["name"]
+                if pod.get("metadata", {}).get("labels", {}).get(provisioning_constants.KT_SERVICE_LABEL) == svc["name"]
             ]
             for svc in unified_services
         }
@@ -836,8 +836,8 @@ def kt_list(
                 if creation_ts
                 else "Unknown"
             )
-            ttl = annotations.get(serving_constants.INACTIVITY_TTL_ANNOTATION, "None")
-            creator = labels.get(serving_constants.KT_USERNAME_LABEL, "—")
+            ttl = annotations.get(provisioning_constants.INACTIVITY_TTL_ANNOTATION, "None")
+            creator = labels.get(provisioning_constants.KT_USERNAME_LABEL, "—")
 
             volumes_display = load_kubetorch_volumes_from_pods(pods)
 
@@ -947,9 +947,11 @@ def kt_list(
 @app.command("port-forward")
 def kt_port_forward(
     name: str = service_name_argument(help="Service name"),
-    local_port: int = typer.Argument(default=serving_constants.DEFAULT_KT_SERVER_PORT, help="Local port to bind to"),
+    local_port: int = typer.Argument(
+        default=provisioning_constants.DEFAULT_KT_SERVER_PORT, help="Local port to bind to"
+    ),
     remote_port: int = typer.Argument(
-        default=serving_constants.DEFAULT_KT_SERVER_PORT,
+        default=provisioning_constants.DEFAULT_KT_SERVER_PORT,
         help="Remote port to forward to",
     ),
     namespace: str = typer.Option(
@@ -1346,7 +1348,7 @@ def kt_ssh(
 
         $ kt ssh my_service
     """
-    from kubetorch.serving.utils import pod_is_running
+    from kubetorch.provisioning.utils import pod_is_running
 
     try:
         # Validate service exists and get deployment mode
@@ -1972,7 +1974,7 @@ def kt_notebook(
 
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
 
-        from kubetorch.serving.utils import wait_for_port_forward
+        from kubetorch.provisioning.utils import wait_for_port_forward
 
         try:
             wait_for_port_forward(

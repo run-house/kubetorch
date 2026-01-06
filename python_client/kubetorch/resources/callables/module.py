@@ -12,6 +12,7 @@ import websockets
 
 from kubetorch.globals import config, LoggingConfig, service_url, service_url_async
 from kubetorch.logger import get_logger
+from kubetorch.provisioning.utils import has_k8s_credentials, KubernetesCredentialsError
 from kubetorch.resources.callables.utils import get_names_for_reload_fallbacks, locate_working_dir
 
 from kubetorch.resources.compute.utils import (
@@ -26,7 +27,6 @@ from kubetorch.servers.http.utils import (
     generate_unique_request_id,
     is_running_in_kubernetes,
 )
-from kubetorch.serving.utils import has_k8s_credentials, KubernetesCredentialsError
 from kubetorch.utils import (
     ColoredFormatter,
     extract_host_port,
@@ -237,7 +237,7 @@ class Module:
         potential_names = get_names_for_reload_fallbacks(name=name, prefixes=reload_prefixes)
 
         # Use unified service discovery from BaseServiceManager
-        from kubetorch.serving.service_manager import BaseServiceManager
+        from kubetorch.provisioning.service_manager import BaseServiceManager
 
         all_services = BaseServiceManager.discover_services_static(namespace=namespace)
 

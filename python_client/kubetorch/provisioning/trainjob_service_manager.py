@@ -3,10 +3,10 @@ import os
 import time
 from typing import List
 
-import kubetorch.serving.constants as serving_constants
+import kubetorch.provisioning.constants as provisioning_constants
 from kubetorch.logger import get_logger
+from kubetorch.provisioning.base_service_manager import BaseServiceManager
 from kubetorch.servers.http.utils import load_template
-from kubetorch.serving.base_service_manager import BaseServiceManager
 from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)
@@ -239,8 +239,8 @@ class TrainJobServiceManager(BaseServiceManager):
                 if key not in worker_labels:
                     worker_labels[key] = value
 
-            worker_labels[serving_constants.KT_SERVICE_LABEL] = service_name
-            worker_labels[serving_constants.KT_MODULE_LABEL] = clean_module_name
+            worker_labels[provisioning_constants.KT_SERVICE_LABEL] = service_name
+            worker_labels[provisioning_constants.KT_MODULE_LABEL] = clean_module_name
             metadata.setdefault("annotations", {})["kubetorch.com/deployment_timestamp"] = deployment_timestamp
 
         return updated
@@ -271,11 +271,11 @@ class TrainJobServiceManager(BaseServiceManager):
         labels = manifest.get("metadata", {}).get("labels", {})
         annotations = manifest.get("metadata", {}).get("annotations", {})
         service_labels = labels.copy()
-        service_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+        service_labels.pop(provisioning_constants.KT_TEMPLATE_LABEL, None)
 
         try:
             service = load_template(
-                template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
+                template_file=provisioning_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
                 template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
                 name=service_name,
                 namespace=self.namespace,
@@ -287,7 +287,7 @@ class TrainJobServiceManager(BaseServiceManager):
                 server_port=server_port,
             )
 
-            service["spec"]["selector"][serving_constants.KT_SERVICE_LABEL] = service_name
+            service["spec"]["selector"][provisioning_constants.KT_SERVICE_LABEL] = service_name
 
             is_distributed = self.is_distributed(manifest)
             if is_distributed:
@@ -310,7 +310,7 @@ class TrainJobServiceManager(BaseServiceManager):
             if is_distributed:
                 # Create headless service for distributed pod discovery
                 headless_service = load_template(
-                    template_file=serving_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
+                    template_file=provisioning_constants.DEPLOYMENT_SERVICE_TEMPLATE_FILE,
                     template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
                     name=f"{service_name}-headless",
                     namespace=self.namespace,
