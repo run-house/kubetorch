@@ -310,10 +310,10 @@ def clean_and_validate_k8s_name(name: str, allow_full_length: bool = True) -> st
     """Clean and validate a name for K8s compatibility.
 
     Args:
-        name: The name to clean and validate
-        allow_full_length: If True, allows and intelligently trims full pod names to 63 chars,
+        name (str): The name to clean and validate.
+        allow_full_length (bool): If ``True``, allows and intelligently trims full pod names to 63 chars,
                           preserving k8s-generated portions.
-                          If False, limits to 40 chars to leave room for k8s suffixes.
+                          If ``False``, limits to 40 chars to leave room for k8s suffixes. (Default: True)
     """
     max_k8s_name_length = 63  # max length allowed by k8s
     max_base_name_length = 40  # max module name length to account for added k8s suffixes
@@ -630,9 +630,9 @@ def deep_breakpoint(debug_port: int = DEFAULT_DEBUG_PORT, debug_mode: Optional[s
     blocking all processes in the distributed group.
 
     Args:
-        debug_port: Port number for the debug server (default: 5678)
-        debug_mode: Debug mode - "pdb" (WebSocket PTY) or "pdb-ui" (web UI).
-                    If None, uses KT_DEBUG_MODE environment variable (default: "pdb")
+        debug_port (int): Port number for the debug server. (Default: 5678)
+        debug_mode (Optional[str]): Debug mode - "pdb" (WebSocket PTY) or "pdb-ui" (web UI).
+                    If None, uses KT_DEBUG_MODE environment variable. (Default: "pdb")
 
     The debug mode can be controlled via:
     1. The debug_mode parameter (takes precedence)

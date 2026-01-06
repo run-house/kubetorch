@@ -38,11 +38,11 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         """Initialize SPMD supervisor.
 
         Args:
-            process_class: ProcessWorker subclass for framework-specific execution.
-            num_proc: Number of local processes ("auto" to detect from process_class).
-            port: Port for distributed communication (framework-specific).
-            tree_fanout: Max children per node in tree topology (default 50).
-            tree_minimum: Min cluster size to use tree topology (default 100).
+            process_class (type): ProcessWorker subclass for framework-specific execution. (Default: None)
+            num_proc (int): Number of local processes ("auto" to detect from process_class). (Default: None)
+            port (int): Port for distributed communication (framework-specific). (Default: None)
+            tree_fanout (int): Max children per node in tree topology. (Default: 50)
+            tree_minimum (int): Min cluster size to use tree topology. (Default: 100)
             **kwargs: Arguments passed to DistributedSupervisor (quorum_*, monitor_members, etc.)
         """
         # Map num_proc to num_processes for parent class
@@ -68,12 +68,12 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         """Calculate children nodes in a self-organizing tree based on IP indexing.
 
         Args:
-            sorted_ips: List of all worker IPs sorted deterministically
-            my_ip: This node's IP address
-            fanout: Maximum number of children per node (default 100)
+            sorted_ips (list): List of all worker IPs sorted deterministically.
+            my_ip (str): This node's IP address.
+            fanout (int): Maximum number of children per node. (Default: 100)
 
         Returns:
-            List of IP addresses that are children of this node
+            List of IP addresses that are children of this node.
         """
         try:
             my_index = sorted_ips.index(my_ip)

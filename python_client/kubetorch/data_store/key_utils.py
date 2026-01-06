@@ -49,10 +49,10 @@ def parse_key(key: str) -> ParsedKey:
     The first segment of the key is treated as the service_name, and the rest is the path.
 
     Args:
-        key: The storage key to parse (leading/trailing slashes are stripped)
+        key (str): The storage key to parse (leading/trailing slashes are stripped).
 
     Returns:
-        ParsedKey with service_name (or None) and path
+        ParsedKey with service_name (or None) and path.
 
     Examples:
         >>> parse_key("my-service/models/v1")

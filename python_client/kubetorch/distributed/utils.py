@@ -27,13 +27,13 @@ def pod_ips(
     using DNS resolution. It can optionally wait for a quorum of workers to appear.
 
     Args:
-        quorum_workers: Expected number of workers. If specified and quorum_timeout > 0,
-            will wait for this many workers to appear in DNS.
-        quorum_timeout: Maximum time in seconds to wait for quorum_workers.
-            If 0 (default), returns immediately after first DNS query.
+        quorum_workers (int, optional): Expected number of workers. If specified and quorum_timeout > 0,
+            will wait for this many workers to appear in DNS. (Default: None)
+        quorum_timeout (float, optional): Maximum time in seconds to wait for quorum_workers.
+            If 0 (default), returns immediately after first DNS query. (Default: 0)
 
     Returns:
-        List of pod IP addresses (sorted)
+        List of pod IP addresses (sorted).
 
     Raises:
         RuntimeError: If required environment variables are not set

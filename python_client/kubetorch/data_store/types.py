@@ -55,23 +55,23 @@ class BroadcastWindow:
     - Each getter rsyncs from its parent's rsync daemon
 
     Attributes:
-        timeout: Maximum time in seconds to wait for participants. The quorum
-            closes after this timeout even if other conditions aren't met.
-        world_size: Wait for this many total participants (putters + getters)
-            before closing the quorum.
-        ips: Wait for participants from these specific IP addresses before
-            closing the quorum.
-        group_id: Optional name for the broadcast group. If not provided, one
+        timeout (float, optional): Maximum time in seconds to wait for participants. The quorum
+            closes after this timeout even if other conditions aren't met. (Default: None)
+        world_size (int, optional): Wait for this many total participants (putters + getters)
+            before closing the quorum. (Default: None)
+        ips (List[str], optional): Wait for participants from these specific IP addresses before
+            closing the quorum. (Default: None)
+        group_id (str, optional): Optional name for the broadcast group. If not provided, one
             is auto-generated from the keys being transferred. Use the same
-            group_id across put/get calls to ensure they join the same quorum.
-        fanout: Number of children each node can have in the broadcast tree.
+            group_id across put/get calls to ensure they join the same quorum. (Default: None)
+        fanout (int, optional): Number of children each node can have in the broadcast tree.
             Defaults to 2 for GPU (binary tree), can be set higher for filesystem
-            transfers where rsync can handle many concurrent clients (~50).
-        pack: For GPU state_dict transfers only. When True, concatenates all
+            transfers where rsync can handle many concurrent clients (~50). (Default: None)
+        pack (bool): For GPU state_dict transfers only. When True, concatenates all
             tensors into a single packed buffer before broadcasting for maximum
             efficiency (single NCCL call). Requires all participants to have
             identical dict structure (same keys). Default False uses async
-            overlapped broadcasts (one per tensor, pipelined).
+            overlapped broadcasts (one per tensor, pipelined). (Default: False)
 
     Examples:
         # Wait up to 10 seconds for participants

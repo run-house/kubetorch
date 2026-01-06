@@ -50,7 +50,7 @@ class RayDistributed(DistributedSupervisor):
         """Initialize Ray supervisor.
 
         Args:
-            max_threads: Maximum threads per process (default 4).
+            max_threads (int, optional): Maximum threads per process. (Default: 4)
             **kwargs: Arguments passed to DistributedSupervisor.
         """
         # Ray manages its own membership, so we don't monitor DNS changes

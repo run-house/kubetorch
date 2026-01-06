@@ -27,11 +27,11 @@ class TunnelManager:
         """Get or create a tunnel for the given websocket URL.
 
         Args:
-            ws_url: The websocket URL to tunnel to
-            start_port: Starting port for finding an available local port
+            ws_url (str): The websocket URL to tunnel to.
+            start_port (int): Starting port for finding an available local port.
 
         Returns:
-            A running WebSocketRsyncTunnel instance
+            A running WebSocketRsyncTunnel instance.
         """
         with cls._lock:
             # Register cleanup handler on first use

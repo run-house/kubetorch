@@ -223,11 +223,11 @@ def nested_merge(user_dict, kt_dict):
       - Otherwise, append kt items that don't already exist in user list
 
     Args:
-        user_dict: The user's dict (values take precedence)
-        kt_dict: The kubetorch dict (values are added where user doesn't have them)
+        user_dict (dict): The user's dict (values take precedence).
+        kt_dict (dict): The kubetorch dict (values are added where user doesn't have them).
 
     Returns:
-        The merged dict (modifies user_dict in place)
+        The merged dict (modifies user_dict in place).
     """
     for key, kt_value in kt_dict.items():
         if key not in user_dict:

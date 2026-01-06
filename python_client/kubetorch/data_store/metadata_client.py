@@ -26,8 +26,8 @@ class MetadataClient:
         Initialize the metadata client.
 
         Args:
-            namespace: Kubernetes namespace (same namespace as the data-store service)
-            metadata_port: Port where metadata server is running
+            namespace (str): Kubernetes namespace (same namespace as the data-store service).
+            metadata_port (int): Port where metadata server is running. (Default: 8081)
         """
         self.namespace = namespace  # Namespace where the data-store service is deployed
         self.metadata_port = metadata_port
@@ -67,13 +67,13 @@ class MetadataClient:
         Get an IP address or pod info to rsync data from for the given key.
 
         Args:
-            key: Storage key
-            retry_with_peers: If True and server returns 503, retry with random peer selection
-            external: If True, return pod name + namespace instead of IP (for external clients)
+            key (str): Storage key.
+            retry_with_peers (bool): If True and server returns 503, retry with random peer selection. (Default: True)
+            external (bool): If True, return pod name + namespace instead of IP (for external clients). (Default: False)
 
         Returns:
-            If external=False: IP address (pod IP) to rsync from, or None if key doesn't exist
-            If external=True: Dict with "pod_name", "namespace", and optionally "proxy_through_store" and "peer_ip", or None
+            If external=False: IP address (pod IP) to rsync from, or None if key doesn't exist.
+            If external=True: Dict with "pod_name", "namespace", and optionally "proxy_through_store" and "peer_ip", or None.
         """
         try:
             # URL-encode the key to handle special characters

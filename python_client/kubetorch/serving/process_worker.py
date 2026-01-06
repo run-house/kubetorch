@@ -48,18 +48,25 @@ class ProcessWorker(multiprocessing.Process):
             self._executor = None
 
     @classmethod
-    def get_distributed_env_vars(cls, worker_ips, node_rank, local_rank, num_local_procs, **settings):
+    def get_distributed_env_vars(
+        cls,
+        worker_ips: List[str],
+        node_rank: int,
+        local_rank: int,
+        num_local_procs: int,
+        **settings,
+    ):
         """Get framework-specific distributed environment variables.
 
         Args:
-            worker_ips: List of all worker IPs
-            node_rank: Rank of this node (0-indexed)
-            local_rank: Local rank on this node (0-indexed)
-            num_local_procs: Number of processes on this node
-            **settings: Additional framework-specific settings (e.g., port)
+            worker_ips (List[str]): List of all worker IPs.
+            node_rank (int): Rank of this node (0-indexed).
+            local_rank (int): Local rank on this node (0-indexed).
+            num_local_procs (int): Number of processes on this node.
+            **settings: Additional framework-specific settings (e.g., port).
 
         Returns:
-            Dict of environment variables to set
+            Dict of environment variables to set.
         """
         # Base implementation - no special env vars needed
         return {
