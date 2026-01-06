@@ -229,8 +229,8 @@ def test_pvc_list_with_label_selector():
     """Test GET /api/v1/namespaces/{ns}/persistentvolumeclaims with label_selector"""
     controller_client = kt.globals.controller_client()
 
-    result = controller_client.list_pvcs(
-        namespace=kt.config.namespace, label_selector=f"kubetorch.com/username={kt.config.username}"
+    result = controller_client.list_resources(
+        "pvcs", namespace=kt.config.namespace, label_selector=f"kubetorch.com/username={kt.config.username}"
     )
 
     assert "items" in result
@@ -486,6 +486,15 @@ def test_all_list_operations_structure():
         assert "items" in result, f"{method_name} missing 'items'"
         assert isinstance(result["items"], list), f"{method_name} items not a list"
 
+    # Namespace-scoped resources available via list_resources endpoint
+    ns_resource_types = ["pvcs", "configmaps", "secrets", "pods", "replicasets", "events", "ingresses"]
+    for resource_type in ns_resource_types:
+        result = controller_client.list_resources(resource_type, namespace=namespace)
+
+        assert result is not None, f"list_resources({resource_type}) returned None"
+        assert "items" in result, f"list_resources({resource_type}) missing 'items'"
+        assert isinstance(result["items"], list), f"list_resources({resource_type}) items not a list"
+
 
 # =============================================================================
 # Deploy Endpoint Tests (/controller/deploy)
@@ -625,8 +634,17 @@ def test_configmap_operations():
     controller_client = kt.globals.controller_client()
     namespace = remote_fn.compute.namespace
 
-    configmaps = controller_client.list_config_maps(namespace=namespace)
+    configmaps = controller_client.list_resources("configmaps", namespace=namespace)
     assert "items" in configmaps
+
+    cms = controller_client.list_resources(
+        "configmaps", namespace=namespace, label_selector=f"kubetorch.com/service={service_name}"
+    )
+
+    if len(cms["items"]) > 0:
+        cm_name = cms["items"][0]["metadata"]["name"]
+        cm = controller_client.get_config_map(namespace=namespace, name=cm_name)
+        assert cm["kind"] == "ConfigMap"
 
 
 # =============================================================================

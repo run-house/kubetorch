@@ -36,6 +36,146 @@ env:
   KUBETORCH_IGNORE_VERSION_MISMATCH: 1
 
 jobs:
+  base-minimal-tests:
+    concurrency:
+      group: cpu-${{ github.ref }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
+
+      - name: Setup authentications
+        uses: ./.github/workflows/gke_authentications
+        with:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+
+      - name: Setup Test Cluster
+        uses: ./.github/workflows/setup_test_cluster
+        with:
+          KUBECONFIG: ${{ secrets.KT_TEST_KUBECONFIG }}
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials ${{ secrets.KT_TEST_CLUSTER_NAME }} \
+            --region ${{ secrets.CI_CLUSTER_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Set Python Source Root
+        run: echo "PYTHONPATH=$(pwd)/python_client" >> $GITHUB_ENV
+
+      - name: Set Test Hash
+        run: |
+          TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)-minimal"
+          echo "TEST_HASH=$TEST_HASH" >> $GITHUB_ENV
+          echo "Using test hash $TEST_HASH"
+
+      - name: Generate Namespace value from branch name
+        shell: bash
+        id: generate_ns
+        run: |
+          BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+
+          # create namespace only of the branch in in a format {namespace}---{featurename}".
+          # Namespace will be {namespace}
+
+          if [[ "$BRANCH" == *"---"* ]]; then
+            # Get part before '---'
+            NAMESPACE="${BRANCH%%---*}"
+            # If branch has a slash (e.g., sb/prefix---feature), keep what's after '/'
+            NAMESPACE="${NAMESPACE##*/}"
+          else
+            NAMESPACE="${BRANCH##*/}"
+          fi
+
+          # Sanitize for k8s namespace
+          NAMESPACE=$(echo "$NAMESPACE" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's#[^a-z0-9]#-#g' \
+            | sed 's/--*/-/g' \
+            | sed 's/^-//;s/-$//' \
+            | cut -c1-63)
+
+          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+
+      - name: Update kt config with controller test namespace, if exists
+        shell: bash
+        id: controller-ns
+        run: |
+
+          NAMESPACE=${{ steps.generate_ns.outputs.NAMESPACE }}
+
+          # Check if namespace exists
+          if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+            echo "Namespace $NAMESPACE exists, setting kt config"
+            kt config set namespace "$NAMESPACE"
+            kt config set install_namespace "$NAMESPACE"
+          else
+            echo "Namespace $NAMESPACE does not exist, kt config remains unchanged"
+          fi
+
+      - name: Configure test namespace RBAC
+        run: |
+          TEST_NS="kt-test-$TEST_HASH"
+          echo "Creating test namespace $TEST_NS and configuring RBAC..."
+          kubectl create namespace $TEST_NS --dry-run=client -o yaml | kubectl apply -f -
+
+          # Use controller-ns output or fallback to 'kubetorch' (service account setup)
+          CONTROLLER_NS="${{ steps.controller-ns.outputs.NAMESPACE }}"
+          CONTROLLER_NS="${CONTROLLER_NS:-kubetorch}"
+
+          # Create Role for the test namespace
+          kubectl apply -f - <<EOF
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: kubetorch-controller-role-$TEST_NS
+            namespace: $TEST_NS
+          rules:
+            - apiGroups: [""]
+              resources: ["persistentvolumeclaims", "pods", "services", "configmaps", "secrets", "events"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            - apiGroups: [""]
+              resources: ["pods/exec", "pods/log"]
+              verbs: ["create", "get"]
+            - apiGroups: ["apps"]
+              resources: ["deployments", "deployments/status", "replicasets", "replicasets/status"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            - apiGroups: ["networking.k8s.io"]
+              resources: ["ingresses"]
+              verbs: ["get", "list", "watch"]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: kubetorch-controller-rolebinding-$TEST_NS
+            namespace: $TEST_NS
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: kubetorch-controller-role-$TEST_NS
+          subjects:
+            - kind: ServiceAccount
+              name: kubetorch-controller
+              namespace: $CONTROLLER_NS
+          EOF
+
+      - name: Run base minimal tests
+        run: |
+          cd python_client
+          pytest -v --durations=100 --level minimal -m "not gpu_test" -k "not distributed and not monitoring and not cli and not deploy" --ignore=tests/test_deployment_fixtures.py --ignore=tests/test_pod_from_pod.py --ignore=tests/test_python_path.py --ignore=tests/test_secret.py --ignore=tests/test_declarative.py --ignore=tests/test_app.py --ignore tests/test_byo_manifest.py
+        timeout-minutes: 60
+        env:
+          KT_STREAM_LOGS: false
+          KT_STREAM_METRICS: false
+
   cli-tests:
     concurrency:
       group: cli-${{ github.ref }}
