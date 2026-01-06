@@ -651,76 +651,68 @@ class ServiceManager:
         endpoint: Optional[Endpoint] = None,
         pod_selector: Optional[Dict[str, str]] = None,
     ) -> dict:
-        """Create or update resource via controller. First applies the manifest to create the relevant pod(s), then
-        registers the resource with the kubetorch controller."""
+        """Create or update resource via controller using the deploy endpoint. Applies the manifest and registers the pool."""
         pod_spec = self.pod_spec(manifest)
         server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
 
         labels = manifest.get("metadata", {}).get("labels", {})
         annotations = manifest.get("metadata", {}).get("annotations", {})
 
+        # Use custom pod_selector if provided, otherwise use KT labels for pods created by kubetorch
+        if pod_selector:
+            pool_selector_for_specifier = pod_selector
+        else:
+            pool_selector_for_specifier = {
+                provisioning_constants.KT_SERVICE_LABEL: service_name,
+                provisioning_constants.KT_MODULE_LABEL: clean_module_name,
+            }
+        specifier = {
+            "type": "label_selector",
+            "selector": pool_selector_for_specifier,
+        }
+
+        # Resolve service config (uses same selector as pool specifier for routing)
+        service_config = self._resolve_service_config(endpoint, service_name, pool_selector_for_specifier)
+
+        pool_metadata = self._load_pool_metadata()
+
         try:
-            # Step 1: Apply the manifest via controller to create k8s resources
             manifest_replicas = manifest.get("spec", {}).get("replicas", "NOT_SET")
-            logger.debug(f"Applying manifest for {service_name}: replicas={manifest_replicas}")
-            apply_response = self.controller_client.apply(
+            logger.debug(f"Deploying {service_name}: replicas={manifest_replicas}")
+
+            deploy_response = self.controller_client.deploy(
                 service_name=service_name,
                 namespace=self.namespace,
                 resource_type=self.resource_type,
                 resource_manifest=manifest,
+                specifier=specifier,
+                service=service_config,
+                server_port=server_port,
+                labels=labels,
+                annotations=annotations,
+                pool_metadata=pool_metadata,
+                dockerfile=dockerfile,
+                module=module,
+                create_headless_service=create_headless_service,
             )
 
-            if apply_response.get("status") == "error":
-                raise Exception(f"Apply failed: {apply_response.get('message')}")
+            # Check apply result
+            if deploy_response.get("apply_status") == "error":
+                raise Exception(f"Apply failed: {deploy_response.get('apply_message')}")
 
             logger.info(
                 f"Applied {manifest.get('kind', self.resource_type)} {service_name} in namespace {self.namespace}"
             )
 
-            # Step 2: Register resource with the controller
+            # Check pool registration result
             if not dry_run:
-                # Use custom pod_selector if provided, otherwise use KT labels for pods created by kubetorch
-                if pod_selector:
-                    pool_selector_for_specifier = pod_selector
-                else:
-                    pool_selector_for_specifier = {
-                        provisioning_constants.KT_SERVICE_LABEL: service_name,
-                        provisioning_constants.KT_MODULE_LABEL: clean_module_name,
-                    }
-                specifier = {
-                    "type": "label_selector",
-                    "selector": pool_selector_for_specifier,
-                }
-
-                # Resolve service config (uses same selector as pool specifier for routing)
-                service_config = self._resolve_service_config(endpoint, service_name, pool_selector_for_specifier)
-
-                # Get resource kind for pool registration
-                resource_kind = self.config.get("resource_kind") or manifest.get("kind")
-                pool_metadata = self._load_pool_metadata()
-
-                pool_response = self.controller_client.register_pool(
-                    name=service_name,
-                    namespace=self.namespace,
-                    specifier=specifier,
-                    service=service_config,
-                    server_port=server_port,
-                    labels=labels,
-                    annotations=annotations,
-                    pool_metadata=pool_metadata,
-                    dockerfile=dockerfile,
-                    module=module,
-                    resource_kind=resource_kind,
-                    resource_name=service_name,
-                    create_headless_service=create_headless_service,
-                )
-
-                if pool_response.get("status") not in ("success", "warning", "partial"):
-                    raise Exception(f"Resource registration failed: {pool_response.get('message')}")
+                pool_status = deploy_response.get("pool_status")
+                if pool_status not in ("success", "warning", "partial"):
+                    raise Exception(f"Resource registration failed: {deploy_response.get('pool_message')}")
 
                 logger.info(f"Registered {service_name} to kubetorch controller in namespace {self.namespace}")
 
-            return apply_response.get("resource", manifest)
+            return deploy_response.get("resource", manifest)
 
         except Exception as e:
             if http_conflict(e):

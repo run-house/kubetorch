@@ -910,6 +910,67 @@ class ControllerClient:
         }
         return self.post("/controller/apply", json=body)
 
+    def deploy(
+        self,
+        service_name: str,
+        namespace: str,
+        resource_type: str,
+        resource_manifest: Dict[str, Any],
+        specifier: Dict[str, Any],
+        service: Optional[Dict[str, Any]] = None,
+        dockerfile: Optional[str] = None,
+        module: Optional[Dict[str, Any]] = None,
+        pool_metadata: Optional[Dict[str, Any]] = None,
+        server_port: int = 32300,
+        labels: Optional[Dict[str, Any]] = None,
+        annotations: Optional[Dict[str, Any]] = None,
+        create_headless_service: bool = False,
+    ) -> Dict[str, Any]:
+        """Deploy K8s resource and register pool.
+
+        Args:
+            service_name: Name of the service
+            namespace: Kubernetes namespace
+            resource_type: Type of resource (deployment, knative, raycluster, etc.)
+            resource_manifest: The full K8s manifest to apply
+            specifier: How to track pods in the pool (e.g., {"type": "label_selector", "selector": {...}})
+            service: Optional service configuration for routing
+            dockerfile: Optional dockerfile instructions for rebuilding workers
+            module: Optional application to deploy onto a pool
+            pool_metadata: Optional metadata (username, etc.)
+            server_port: Port for the K8s service (default: 32300)
+            labels: Labels for the K8s service
+            annotations: Annotations for the K8s service
+            create_headless_service: Whether to create a headless service for distributed pod discovery
+
+        Returns:
+            Deploy response with apply_status, pool_status, service_url, and created resource
+        """
+        body = {
+            "service_name": service_name,
+            "namespace": namespace,
+            "resource_type": resource_type,
+            "resource_manifest": resource_manifest,
+            "specifier": specifier,
+            "server_port": server_port,
+        }
+        if service is not None:
+            body["service"] = service
+        if dockerfile is not None:
+            body["dockerfile"] = dockerfile
+        if module is not None:
+            body["module"] = module
+        if pool_metadata is not None:
+            body["pool_metadata"] = pool_metadata
+        if labels is not None:
+            body["labels"] = labels
+        if annotations is not None:
+            body["annotations"] = annotations
+        if create_headless_service:
+            body["create_headless_service"] = create_headless_service
+
+        return self.post("/controller/deploy", json=body)
+
     def list_pools(self, namespace: str) -> Dict[str, Any]:
         """List all compute pools."""
         return self.get(f"/controller/pools/{namespace}")
