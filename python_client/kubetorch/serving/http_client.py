@@ -639,16 +639,32 @@ class HTTPClient:
                                     continue
 
                                 for value in stream["values"]:
-                                    # Filter by timestamp (skip events before call started)
-                                    ts_ns = int(value[0])
-                                    if ts_ns < start_time_ns:
-                                        continue
-
+                                    # Parse event data first to get the actual K8s event timestamp
                                     try:
                                         event_data = json.loads(value[1])
                                         msg = event_data.get("message", value[1])
                                     except json.JSONDecodeError:
+                                        event_data = {}
                                         msg = value[1]
+
+                                    # Filter by the K8s event's actual timestamp, not Loki's ingestion time
+                                    # This filters out old events that were pushed to Loki after we started
+                                    event_timestamp = event_data.get("last_timestamp") or event_data.get(
+                                        "first_timestamp"
+                                    )
+                                    if event_timestamp:
+                                        try:
+                                            dt = datetime.fromisoformat(event_timestamp.replace("Z", "+00:00"))
+                                            event_ts_ns = int(dt.timestamp() * 1e9)
+                                            if event_ts_ns < start_time_ns:
+                                                continue
+                                        except Exception:
+                                            pass  # If we can't parse, fall through to Loki timestamp
+                                    else:
+                                        # Fall back to Loki timestamp if event has no timestamp
+                                        ts_ns = int(value[0])
+                                        if ts_ns < start_time_ns:
+                                            continue
 
                                     # Skip expected probe failures
                                     if reason == "Unhealthy" and (
@@ -666,11 +682,21 @@ class HTTPClient:
                                         continue
                                     shown_messages.add(msg)
 
-                                    # Format timestamp from event
-                                    try:
-                                        event_ts = datetime.fromtimestamp(ts_ns / 1e9).strftime("%Y-%m-%d %H:%M:%S")
-                                    except Exception:
-                                        event_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    # Format timestamp from event's actual timestamp
+                                    event_ts = None
+                                    if event_timestamp:
+                                        try:
+                                            dt = datetime.fromisoformat(event_timestamp.replace("Z", "+00:00"))
+                                            event_ts = dt.strftime("%Y-%m-%d %H:%M:%S")
+                                        except Exception:
+                                            pass
+                                    if not event_ts:
+                                        try:
+                                            event_ts = datetime.fromtimestamp(int(value[0]) / 1e9).strftime(
+                                                "%Y-%m-%d %H:%M:%S"
+                                            )
+                                        except Exception:
+                                            event_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                                     # Use yellow for warnings, green for normal
                                     if event_type == "Warning":
