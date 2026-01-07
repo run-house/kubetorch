@@ -51,6 +51,8 @@ spec:
   selector:
     matchLabels:
       app: kubetorch-data-store
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
