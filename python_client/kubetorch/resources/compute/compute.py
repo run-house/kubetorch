@@ -404,6 +404,15 @@ class Compute:
 
         env_vars = config.get("env_vars") or {}
 
+        # Include env vars from image setup steps (these get overridden by explicit env_vars)
+        image = config.get("image") or self._image
+        image_env_vars = self._get_image_env_vars(image)
+        if image_env_vars:
+            # Merge image env vars first, so explicit env_vars take precedence
+            merged_env_vars = image_env_vars.copy()
+            merged_env_vars.update(env_vars)
+            env_vars = merged_env_vars
+
         # Set KT_LOG_LEVEL from logging_config, falling back to env var
         if not env_vars.get("KT_LOG_LEVEL"):
             if self._logging_config.level:
@@ -664,6 +673,34 @@ class Compute:
         self._image = value
         if self._image.image_id:
             self.server_image = self._image.image_id
+        # Apply env vars from image setup steps to the manifest
+        self._apply_image_env_vars()
+
+    def _get_image_env_vars(self, image: "Image" = None) -> Dict:
+        """Extract env vars from image setup steps.
+
+        Args:
+            image: Image to extract env vars from. If None, uses self._image.
+
+        Returns:
+            Dict of env var name -> value from all SET_ENV_VARS steps.
+        """
+        image = image or self._image
+        if not image or not image.setup_steps:
+            return {}
+
+        env_vars = {}
+        for step in image.setup_steps:
+            if step.step_type == ImageSetupStepType.SET_ENV_VARS:
+                step_env_vars = step.kwargs.get("env_vars", {})
+                env_vars.update(step_env_vars)
+        return env_vars
+
+    def _apply_image_env_vars(self):
+        """Apply env vars from image setup steps to the container spec."""
+        image_env_vars = self._get_image_env_vars()
+        if image_env_vars:
+            self.add_env_vars(image_env_vars)
 
     @property
     def endpoint(self):
