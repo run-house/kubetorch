@@ -9,6 +9,7 @@ import kubetorch.provisioning.constants as provisioning_constants
 
 import pytest
 
+from kubetorch.provisioning import SUPPORTED_TRAINING_JOBS
 from kubetorch.provisioning.constants import DEFAULT_KT_SERVER_PORT
 from kubetorch.utils import http_not_found
 
@@ -280,7 +281,7 @@ async def test_byo_manifest_with_overrides(kind):
     assert fn.service_name == service_name
 
     result = fn(5, 10)
-    if kind in ["PyTorchJob", "TFJob", "MXJob", "XGBoostJob"]:
+    if kind.lower() in SUPPORTED_TRAINING_JOBS:
         assert isinstance(result, list)
         assert all(r == 15 for r in result)
         assert len(result) == 3

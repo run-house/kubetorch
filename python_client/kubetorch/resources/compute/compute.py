@@ -17,7 +17,7 @@ from kubetorch.globals import LoggingConfig
 
 from kubetorch.logger import get_logger
 from kubetorch.provisioning.autoscaling import AutoscalingConfig
-from kubetorch.provisioning.utils import pod_is_running
+from kubetorch.provisioning.utils import pod_is_running, SUPPORTED_TRAINING_JOBS
 from kubetorch.resources.callables.utils import find_locally_installed_version
 from kubetorch.resources.compute.utils import _get_sync_package_paths, _run_bash
 from kubetorch.resources.images.image import Image, ImageSetupStepType
@@ -330,6 +330,12 @@ class Compute:
         # Store selector and endpoint configuration
         if selector:
             compute._pod_selector = selector
+            # For training jobs, auto-derive manifest name from job-name selector if not set
+            kind = compute._manifest.get("kind", "").lower()
+            current_name = compute._manifest["metadata"].get("name", "")
+            job_name_from_selector = selector.get("training.kubeflow.org/job-name")
+            if not current_name and job_name_from_selector and kind in SUPPORTED_TRAINING_JOBS:
+                compute._manifest["metadata"]["name"] = job_name_from_selector
         if endpoint:
             compute._endpoint_config = endpoint
 
@@ -532,7 +538,7 @@ class Compute:
                 worker_template["spec"] = copy.deepcopy(merged)
 
         # For training jobs, ensure worker replicas
-        if self.kind in ["PyTorchJob", "TFJob", "MXJob", "XGBoostJob"]:
+        if self.kind.lower() in SUPPORTED_TRAINING_JOBS:
             service_manager = self.service_manager
             spec = self._manifest.get("spec", {})
             replica_specs_key = service_manager.config.get("replica_specs_key")
@@ -1704,8 +1710,8 @@ class Compute:
         )
 
         # For training jobs, manage runPolicy.suspend for Kueue admission control
-        kind = self._manifest.get("kind", "")
-        if kind in ["PyTorchJob", "TFJob", "MXJob", "XGBoostJob"]:
+        kind = self._manifest.get("kind", "").lower()
+        if kind in SUPPORTED_TRAINING_JOBS:
             if value:
                 # Set runPolicy.suspend = True for training jobs when using Kueue
                 self._manifest.setdefault("spec", {}).setdefault("runPolicy", {})["suspend"] = True
