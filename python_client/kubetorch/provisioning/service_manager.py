@@ -651,76 +651,66 @@ class ServiceManager:
         endpoint: Optional[Endpoint] = None,
         pod_selector: Optional[Dict[str, str]] = None,
     ) -> dict:
-        """Create or update resource via controller. First applies the manifest to create the relevant pod(s), then
-        registers the resource with the kubetorch controller."""
+        """Create or update resource via controller using the deploy endpoint. Applies the manifest and registers the pool."""
         pod_spec = self.pod_spec(manifest)
         server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
 
         labels = manifest.get("metadata", {}).get("labels", {})
         annotations = manifest.get("metadata", {}).get("annotations", {})
 
+        # Use custom pod_selector if provided, otherwise use KT labels for pods created by kubetorch
+        if pod_selector:
+            pool_selector_for_specifier = pod_selector
+        else:
+            pool_selector_for_specifier = {
+                provisioning_constants.KT_SERVICE_LABEL: service_name,
+                provisioning_constants.KT_MODULE_LABEL: clean_module_name,
+            }
+        specifier = {
+            "type": "label_selector",
+            "selector": pool_selector_for_specifier,
+        }
+
+        service_config = self._resolve_service_config(endpoint, service_name, pool_selector_for_specifier)
+        pool_metadata = self._load_pool_metadata()
+
         try:
-            # Step 1: Apply the manifest via controller to create k8s resources
             manifest_replicas = manifest.get("spec", {}).get("replicas", "NOT_SET")
-            logger.debug(f"Applying manifest for {service_name}: replicas={manifest_replicas}")
-            apply_response = self.controller_client.apply(
+            logger.debug(f"Deploying {service_name}: replicas={manifest_replicas}")
+
+            deploy_response = self.controller_client.deploy(
                 service_name=service_name,
                 namespace=self.namespace,
                 resource_type=self.resource_type,
                 resource_manifest=manifest,
+                specifier=specifier,
+                service=service_config,
+                server_port=server_port,
+                labels=labels,
+                annotations=annotations,
+                pool_metadata=pool_metadata,
+                dockerfile=dockerfile,
+                module=module,
+                create_headless_service=create_headless_service,
             )
 
-            if apply_response.get("status") == "error":
-                raise Exception(f"Apply failed: {apply_response.get('message')}")
+            # Check apply result
+            if deploy_response.get("apply_status") == "error":
+                raise Exception(f"Apply failed: {deploy_response.get('apply_message')}")
 
             logger.info(
                 f"Applied {manifest.get('kind', self.resource_type)} {service_name} in namespace {self.namespace}"
             )
 
-            # Step 2: Register resource with the controller
+            # Check pool registration result
             if not dry_run:
-                # Use custom pod_selector if provided, otherwise use KT labels for pods created by kubetorch
-                if pod_selector:
-                    pool_selector_for_specifier = pod_selector
-                else:
-                    pool_selector_for_specifier = {
-                        provisioning_constants.KT_SERVICE_LABEL: service_name,
-                        provisioning_constants.KT_MODULE_LABEL: clean_module_name,
-                    }
-                specifier = {
-                    "type": "label_selector",
-                    "selector": pool_selector_for_specifier,
-                }
-
-                # Resolve service config (uses same selector as pool specifier for routing)
-                service_config = self._resolve_service_config(endpoint, service_name, pool_selector_for_specifier)
-
-                # Get resource kind for pool registration
-                resource_kind = self.config.get("resource_kind") or manifest.get("kind")
-                pool_metadata = self._load_pool_metadata()
-
-                pool_response = self.controller_client.register_pool(
-                    name=service_name,
-                    namespace=self.namespace,
-                    specifier=specifier,
-                    service=service_config,
-                    server_port=server_port,
-                    labels=labels,
-                    annotations=annotations,
-                    pool_metadata=pool_metadata,
-                    dockerfile=dockerfile,
-                    module=module,
-                    resource_kind=resource_kind,
-                    resource_name=service_name,
-                    create_headless_service=create_headless_service,
-                )
-
-                if pool_response.get("status") not in ("success", "warning", "partial"):
-                    raise Exception(f"Resource registration failed: {pool_response.get('message')}")
+                pool_status = deploy_response.get("pool_status")
+                if pool_status not in ("success", "warning", "partial"):
+                    raise Exception(f"Resource registration failed: {deploy_response.get('pool_message')}")
 
                 logger.info(f"Registered {service_name} to kubetorch controller in namespace {self.namespace}")
 
-            return apply_response.get("resource", manifest)
+            return deploy_response.get("resource", manifest)
 
         except Exception as e:
             if http_conflict(e):
@@ -989,254 +979,93 @@ class ServiceManager:
                 'creation_timestamp': str
             }
         """
-        import concurrent.futures
-        import threading
-
         controller_client = globals.controller_client()
 
+        resources = controller_client.discover_resources(
+            namespace=namespace,
+            name_filter=name_filter,
+        )
+
+        def get_service_dict(resource: Dict, template_type: str) -> Dict:
+            return {
+                "name": resource.get("metadata", {}).get("name"),
+                "template_type": template_type,
+                "resource": resource,
+                "namespace": namespace,
+                "creation_timestamp": resource.get("metadata", {}).get("creationTimestamp", ""),
+            }
+
         services = []
-        services_lock = threading.Lock()
 
-        def fetch_knative_services():
-            """Fetch Knative services in parallel."""
-            try:
-                label_selector = f"{provisioning_constants.KT_TEMPLATE_LABEL}=ksvc"
-                result = controller_client.list_namespaced_custom_object(
-                    group="serving.knative.dev",
-                    version="v1",
-                    namespace=namespace,
-                    plural="services",
-                    label_selector=label_selector,
-                )
-                knative_services = result.get("items", [])
+        resource_configs = [
+            ("knative_services", "ksvc"),
+            ("deployments", "deployment"),
+            ("rayclusters", "raycluster"),
+        ]
+        for resource_type, template_type in resource_configs:
+            for resource in resources.get(resource_type, []):
+                services.append(get_service_dict(resource, template_type))
 
-                local_services = []
-                for svc in knative_services:
-                    svc_name = svc["metadata"]["name"]
-                    if name_filter and name_filter not in svc_name:
-                        continue
-                    local_services.append(
-                        {
-                            "name": svc_name,
-                            "template_type": "ksvc",
-                            "resource": svc,
-                            "namespace": namespace,
-                            "creation_timestamp": svc["metadata"]["creationTimestamp"],
-                        }
-                    )
+        # Training jobs
+        for resource in resources.get("training_jobs", []):
+            kind = resource.get("kind", "").lower()  # e.g., "PyTorchJob" -> "pytorchjob"
+            services.append(get_service_dict(resource, kind))
 
-                with services_lock:
-                    services.extend(local_services)
+        # Selector pools - need to build synthetic resources
+        for pool in resources.get("pools", []):
+            specifier = pool.get("specifier")
+            if not isinstance(specifier, dict):
+                specifier = {}
+            # Only include selector-based pools (others are already discovered via K8s resources)
+            if specifier.get("type") != "label_selector":
+                continue
 
-            except Exception as e:
-                if not http_not_found(e):
-                    logger.warning(f"Failed to list Knative services: {e}")
+            # Skip pools that have a KT-managed backing K8s resource (already discovered)
+            pool_labels = pool.get("labels") or {}
+            if pool.get("resource_kind") and provisioning_constants.KT_TEMPLATE_LABEL in pool_labels:
+                continue
 
-        def fetch_deployments():
-            """Fetch Deployments in parallel."""
-            try:
-                label_selector = f"{provisioning_constants.KT_TEMPLATE_LABEL}=deployment"
-                result = controller_client.list_deployments(
-                    namespace=namespace,
-                    label_selector=label_selector,
-                )
-                deployments = result.get("items", [])
+            pool_name = pool.get("name")
 
-                local_services = []
-                for deployment in deployments:
-                    deploy_name = deployment.get("metadata", {}).get("name")
-                    if name_filter and name_filter not in deploy_name:
-                        continue
-
-                    creation_timestamp = deployment.get("metadata", {}).get("creationTimestamp", "")
-
-                    local_services.append(
-                        {
-                            "name": deploy_name,
-                            "template_type": "deployment",
-                            "resource": deployment,
-                            "namespace": namespace,
-                            "creation_timestamp": creation_timestamp,
-                        }
-                    )
-
-                with services_lock:
-                    services.extend(local_services)
-
-            except Exception as e:
-                logger.warning(f"Failed to list Deployments: {e}")
-
-        def fetch_rayclusters():
-            try:
-                label_selector = f"{provisioning_constants.KT_TEMPLATE_LABEL}=raycluster"
-                result = controller_client.list_namespaced_custom_object(
-                    group="ray.io",
-                    version="v1",
-                    namespace=namespace,
-                    plural="rayclusters",
-                    label_selector=label_selector,
-                )
-                clusters = result.get("items", [])
-
-                local_services = []
-                for cluster in clusters:
-                    cluster_name = cluster["metadata"]["name"]
-                    if name_filter and name_filter not in cluster_name:
-                        continue
-
-                    local_services.append(
-                        {
-                            "name": cluster_name,
-                            "template_type": "raycluster",
-                            "resource": cluster,
-                            "namespace": namespace,
-                            "creation_timestamp": cluster["metadata"]["creationTimestamp"],
-                        }
-                    )
-
-                with services_lock:
-                    services.extend(local_services)
-
-            except Exception as e:
-                if not http_not_found(e):
-                    logger.warning(f"Failed to list RayClusters: {e}")
-
-        def fetch_custom_resources():
-            """Fetch custom training job resources in parallel."""
-            local_services = []
-            for resource_kind in SUPPORTED_TRAINING_JOBS:
-                config = get_resource_config(resource_kind)
-                api_group = config["api_group"]
-                plural = config["api_plural"]
-                version = config["api_version"]
+            # Get pods using selector from specifier
+            pods_for_pool = []
+            selector = specifier.get("selector")
+            if selector:
+                label_selector = ",".join(f"{k}={v}" for k, v in selector.items())
                 try:
-                    label_selector = f"{provisioning_constants.KT_TEMPLATE_LABEL}={resource_kind}"
-
-                    result = controller_client.list_namespaced_custom_object(
-                        group=api_group,
-                        version=version,
-                        namespace=namespace,
-                        plural=plural,
-                        label_selector=label_selector,
-                    )
-                    resources = result.get("items", [])
-
-                    for resource in resources:
-                        resource_name = resource["metadata"]["name"]
-                        if name_filter and name_filter not in resource_name:
-                            continue
-
-                        local_services.append(
-                            {
-                                "name": resource_name,
-                                "template_type": resource_kind,
-                                "resource": resource,
-                                "namespace": namespace,
-                                "creation_timestamp": resource["metadata"]["creationTimestamp"],
-                            }
-                        )
+                    pods_result = controller_client.list_pods(namespace=namespace, label_selector=label_selector)
+                    pods_for_pool = pods_result.get("items", [])
                 except Exception as e:
-                    if not http_not_found(e):
-                        logger.warning(f"Failed to list {resource_kind}: {e}")
+                    logger.warning(f"Failed to list pods for pool {pool_name}: {e}")
 
-            with services_lock:
-                services.extend(local_services)
+            # Create a synthetic resource dict for display compatibility
+            pool_metadata = pool.get("pool_metadata") or {}
+            labels = (pool.get("labels") or {}).copy()
+            username = pool_metadata.get("username", "")
+            if username:
+                labels[provisioning_constants.KT_USERNAME_LABEL] = username
 
-        def fetch_selector_pools():
-            """Fetch selector-based pools from controller database."""
-            try:
-                resp = controller_client.list_pools(namespace=namespace)
-                pools = resp.get("pools", [])
+            num_pods = len(pods_for_pool)
+            synthetic_resource = {
+                "metadata": {
+                    "name": pool_name,
+                    "namespace": namespace,
+                    "creationTimestamp": pool.get("created_at", ""),
+                    "labels": labels,
+                    "annotations": pool.get("annotations") or {},
+                },
+                "spec": {
+                    "replicas": num_pods,
+                },
+                "status": {
+                    "readyReplicas": num_pods,
+                    "replicas": num_pods,
+                },
+                "_pods": pods_for_pool,
+                "_pool_metadata": pool_metadata,
+                "_selector": selector,
+            }
 
-                local_services = []
-                for pool in pools:
-                    # Only include selector-based pools (others are already discovered via K8s resources)
-                    specifier = pool.get("specifier") or {}
-                    if specifier.get("type") != "label_selector":
-                        continue
-
-                    # Skip pools that have a KT-managed backing K8s resource - these are already
-                    # discovered by the K8s resource fetchers (fetch_deployments, fetch_rayclusters, etc.)
-                    # We detect KT-managed resources by checking for the KT_TEMPLATE_LABEL.
-                    # Selector-only pools (user-deployed resources) don't have this label.
-                    pool_labels = pool.get("labels") or {}
-                    if pool.get("resource_kind") and provisioning_constants.KT_TEMPLATE_LABEL in pool_labels:
-                        continue
-
-                    pool_name = pool.get("name")
-                    if name_filter and name_filter not in pool_name:
-                        continue
-
-                    # Get pods using selector from specifier (if available)
-                    pods_for_pool = []
-                    selector = specifier.get("selector")
-                    if selector:
-                        # Build label selector string from dict
-                        label_selector = ",".join(f"{k}={v}" for k, v in selector.items())
-                        try:
-                            pods_result = controller_client.list_pods(
-                                namespace=namespace, label_selector=label_selector
-                            )
-                            pods_for_pool = pods_result.get("items", [])
-                        except Exception as e:
-                            logger.warning(f"Failed to list pods for pool {pool_name}: {e}")
-
-                    # Create a synthetic resource dict for display compatibility
-                    pool_metadata = pool.get("pool_metadata") or {}
-                    labels = (pool.get("labels") or {}).copy()
-                    username = pool_metadata.get("username", "")
-                    if username:
-                        labels[provisioning_constants.KT_USERNAME_LABEL] = username
-
-                    num_pods = len(pods_for_pool)
-                    synthetic_resource = {
-                        "metadata": {
-                            "name": pool_name,
-                            "namespace": namespace,
-                            "creationTimestamp": pool.get("created_at", ""),
-                            "labels": labels,
-                            "annotations": pool.get("annotations") or {},
-                        },
-                        "spec": {
-                            "replicas": num_pods,  # For status calculation
-                        },
-                        "status": {
-                            "readyReplicas": num_pods,  # Assume pods are ready
-                            "replicas": num_pods,
-                        },
-                        # Extra fields for selector-based pools
-                        "_pods": pods_for_pool,  # Actual pod objects from K8s
-                        "_pool_metadata": pool_metadata,
-                        "_selector": selector,
-                    }
-
-                    local_services.append(
-                        {
-                            "name": pool_name,
-                            "template_type": "selector",
-                            "resource": synthetic_resource,
-                            "namespace": namespace,
-                            "creation_timestamp": pool.get("created_at", ""),
-                        }
-                    )
-
-                with services_lock:
-                    services.extend(local_services)
-
-            except Exception as e:
-                logger.warning(f"Failed to list selector pools: {e}")
-
-        # Execute all API calls in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [
-                executor.submit(fetch_knative_services),
-                executor.submit(fetch_deployments),
-                executor.submit(fetch_rayclusters),
-                executor.submit(fetch_custom_resources),
-                executor.submit(fetch_selector_pools),
-            ]
-
-            # Wait for all to complete
-            concurrent.futures.wait(futures)
+            services.append(get_service_dict(synthetic_resource, "selector"))
 
         return services

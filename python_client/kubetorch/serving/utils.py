@@ -15,7 +15,6 @@ from contextvars import ContextVar
 from typing import List, Optional
 
 import httpx
-
 import jinja2
 import websockets
 import yaml
