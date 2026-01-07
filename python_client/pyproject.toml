@@ -32,7 +32,6 @@ include = [
 python = "^3.9"
 jinja2 = ">=3.0"
 pydantic = ">=2.5.0"
-requests = "^2.32.0"
 websockets = "^15.0"
 websocket-client = "^1.6.0"
 httpx = "^0.28.0"
@@ -60,7 +59,7 @@ opentelemetry-sdk = {version = "*", optional = true}
 opentelemetry-distro = {version = "*", optional = true}
 opentelemetry-instrumentation = {version = "*", optional = true}
 opentelemetry-instrumentation-fastapi = {version = "*", optional = true}
-opentelemetry-instrumentation-requests = {version = "*", optional = true}
+opentelemetry-instrumentation-httpx = {version = "*", optional = true}
 opentelemetry-instrumentation-logging = {version = "*", optional = true}
 opentelemetry-exporter-otlp = {version = "*", optional = true}
 opentelemetry-exporter-prometheus = {version = "*", optional = true}
@@ -76,7 +75,7 @@ otel = [
     "opentelemetry-distro",
     "opentelemetry-instrumentation",
     "opentelemetry-instrumentation-fastapi",
-    "opentelemetry-instrumentation-requests",
+    "opentelemetry-instrumentation-httpx",
     "opentelemetry-instrumentation-logging",
     "opentelemetry-exporter-otlp",
     "opentelemetry-exporter-prometheus",
