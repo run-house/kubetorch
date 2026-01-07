@@ -247,6 +247,20 @@ class Compute:
             custom_template=service_template or {},
         )
 
+        self._apply_image_env_vars()
+
+    def _apply_image_env_vars(self):
+        """Apply env vars from image setup steps to the container spec.
+
+        This ensures image env vars persist in the manifest and survive image changes.
+        """
+        if self._image and self._image.setup_steps:
+            for step in self._image.setup_steps:
+                if step.step_type == ImageSetupStepType.SET_ENV_VARS:
+                    env_vars = step.kwargs.get("env_vars", {})
+                    if env_vars:
+                        self.add_env_vars(env_vars)
+
     @classmethod
     def from_template(cls, service_info: dict):
         """Create a Compute object from a deployed Kubernetes resource."""
@@ -664,6 +678,9 @@ class Compute:
         self._image = value
         if self._image.image_id:
             self.server_image = self._image.image_id
+
+        # Apply env vars from image setup steps to the container
+        self._apply_image_env_vars()
 
     @property
     def endpoint(self):
