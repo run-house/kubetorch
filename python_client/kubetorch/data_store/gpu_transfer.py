@@ -643,15 +643,15 @@ class GPUTransferManager:
         """Notify that broadcast is complete."""
         from urllib.parse import quote
 
-        import requests
+        import httpx
 
         encoded_key = quote(key, safe="")
         url = f"{self.metadata_client.base_url}/api/v1/keys/{encoded_key}/gpu/quorum/{broadcast_id}/complete"
 
         try:
-            response = requests.post(url, params={"pod_ip": pod_ip}, timeout=5)
+            response = httpx.post(url, params={"pod_ip": pod_ip}, timeout=5)
             response.raise_for_status()
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.warning(f"Failed to notify broadcast completion: {e}")
 
 

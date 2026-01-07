@@ -1403,7 +1403,7 @@ class PodDataServer:
 
     def _mds_publish_gpu(self, keys: Union[str, List[str]]) -> bool:
         """Publish GPU data key(s) to metadata server. Accepts single key or list."""
-        import requests
+        import httpx
 
         if not self._pod_ip or not self._pod_name or not self._namespace:
             logger.error("Missing POD_IP, POD_NAME, or KT_NAMESPACE environment variables")
@@ -1426,16 +1426,16 @@ class PodDataServer:
                 "gpu_server_socket": self.socket_path,
             }
 
-            response = requests.post(url, json=payload, timeout=30)
+            response = httpx.post(url, json=payload, timeout=30)
             response.raise_for_status()
             return True
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.error(f"Failed to publish {len(key_list)} GPU key(s) to MDS: {e}")
             return False
 
     def _mds_get_gpu_source(self, keys: Union[str, List[str]]) -> Dict[str, Optional[dict]]:
         """Get GPU data source info from metadata server. Supports batch lookup."""
-        import requests
+        import httpx
 
         key_list = [keys] if isinstance(keys, str) else keys
 
@@ -1444,7 +1444,7 @@ class PodDataServer:
         payload = {"keys": key_list}
 
         try:
-            response = requests.post(url, json=payload, timeout=30)
+            response = httpx.post(url, json=payload, timeout=30)
             response.raise_for_status()
             data = response.json()
 
@@ -1459,7 +1459,7 @@ class PodDataServer:
                     results[key] = None
             return results
 
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.error(f"Failed to get GPU sources for {len(key_list)} key(s): {e}")
             return {k: None for k in key_list}
 

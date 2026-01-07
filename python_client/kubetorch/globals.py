@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from functools import cache
 from typing import Any, Dict, List, Literal, Optional
 
-import requests
+import httpx
 
 from kubetorch.config import KubetorchConfig
 from kubetorch.logger import get_logger
@@ -371,10 +371,9 @@ class ControllerClient:
             base_url (str): Base URL for the controller (e.g., "http://localhost:8080")
         """
         self.base_url = base_url.rstrip("/")
-        self.session = requests.Session()
-        self.session.headers.update({"Content-Type": "application/json"})
+        self.session = httpx.Client(headers={"Content-Type": "application/json"})
 
-    def _request(self, method: str, path: str, ignore_not_found=False, **kwargs) -> requests.Response:
+    def _request(self, method: str, path: str, ignore_not_found=False, **kwargs) -> httpx.Response:
         """Make HTTP request to controller.
 
         Retries connection errors and controller unavailability (502/503).
@@ -394,7 +393,7 @@ class ControllerClient:
 
                 try:
                     response.raise_for_status()
-                except requests.HTTPError as e:
+                except httpx.HTTPStatusError as e:
                     status = response.status_code
                     if status == 404 and ignore_not_found:
                         return None
@@ -458,7 +457,7 @@ class ControllerClient:
                 # Don't retry HTTP errors (except 502/503 handled above)
                 raise
 
-            except (requests.ConnectionError, requests.Timeout) as e:
+            except (httpx.ConnectError, httpx.TimeoutException) as e:
                 # Retry connection errors (controller pod down/restarting)
                 if attempt < max_attempts:
                     retry_delay = base_delay * attempt

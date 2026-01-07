@@ -8,7 +8,7 @@ enabling peer-to-peer data transfer and load balancing.
 from typing import List, Optional, Union
 from urllib.parse import quote
 
-import requests
+import httpx
 
 from kubetorch.logger import get_logger
 from kubetorch.serving.utils import is_running_in_kubernetes
@@ -82,7 +82,7 @@ class MetadataClient:
             if external:
                 url += "?external=true"
 
-            response = requests.get(url, timeout=5)
+            response = httpx.get(url, timeout=5)
 
             # Handle 503 (all sources at max concurrent) - retry with random peer
             if response.status_code == 503 and retry_with_peers:
@@ -119,7 +119,7 @@ class MetadataClient:
                 if src_path:
                     return {"ip": ip, "src_path": src_path}
                 return ip
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.warning(f"Failed to get source IP for key '{key}': {e}")
             return None
 
@@ -161,14 +161,14 @@ class MetadataClient:
             if service_name:
                 payload["service_name"] = service_name
 
-            response = requests.post(
+            response = httpx.post(
                 f"{self.base_url}/api/v1/keys/{encoded_key}/publish",
                 json=payload,
                 timeout=5,
             )
             response.raise_for_status()
             return True
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.warning(f"Failed to publish key '{key}' from IP '{pod_ip}': {e}")
             return False
 
@@ -187,14 +187,14 @@ class MetadataClient:
         try:
             # URL-encode the key to handle special characters
             encoded_key = quote(key, safe="")
-            response = requests.post(
+            response = httpx.post(
                 f"{self.base_url}/api/v1/keys/{encoded_key}/source/complete",
                 json={"ip": ip},
                 timeout=5,
             )
             response.raise_for_status()
             return True
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.debug(f"Failed to notify completion for key '{key}' IP '{ip}': {e}")
             return False
 
@@ -212,12 +212,12 @@ class MetadataClient:
             True if store pod has the data, False if it doesn't exist (checked in metadata and filesystem)
 
         Raises:
-            requests.exceptions.ConnectionError: If metadata server is unreachable
-            requests.exceptions.ConnectTimeout: If metadata server connection times out
+            httpx.ConnectError: If metadata server is unreachable
+            httpx.TimeoutException: If metadata server connection times out
         """
         # URL-encode the key to handle special characters
         encoded_key = quote(key, safe="")
-        response = requests.get(
+        response = httpx.get(
             f"{self.base_url}/api/v1/keys/{encoded_key}",
             timeout=5,
         )
@@ -247,13 +247,13 @@ class MetadataClient:
         try:
             # URL-encode the key to handle special characters
             encoded_key = quote(key, safe="")
-            response = requests.delete(
+            response = httpx.delete(
                 f"{self.base_url}/api/v1/keys/{encoded_key}/sources/{pod_ip}",
                 timeout=5,
             )
             response.raise_for_status()
             return True
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.warning(f"Failed to remove source IP '{pod_ip}' for key '{key}': {e}")
             return False
 
@@ -275,10 +275,10 @@ class MetadataClient:
             url = f"{self.base_url}/api/v1/keys/{encoded_key}"
             if recursive:
                 url += "?recursive=true"
-            response = requests.delete(url, timeout=30)  # Longer timeout for filesystem operations
+            response = httpx.delete(url, timeout=30)  # Longer timeout for filesystem operations
             response.raise_for_status()
             return response.json()
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.warning(f"Failed to delete key '{key}': {e}")
             return {"success": False, "error": str(e)}
 
@@ -295,10 +295,10 @@ class MetadataClient:
         try:
             encoded_key = quote(key, safe="")
             url = f"{self.base_url}/api/v1/keys/{encoded_key}/mkdir"
-            response = requests.post(url, timeout=30)
+            response = httpx.post(url, timeout=30)
             response.raise_for_status()
             return response.json()
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.warning(f"Failed to create directory for key '{key}': {e}")
             return {"success": False, "error": str(e)}
 
@@ -317,13 +317,13 @@ class MetadataClient:
         """
         try:
             encoded_prefix = quote(prefix, safe="")
-            response = requests.get(
+            response = httpx.get(
                 f"{self.base_url}/api/v1/keys/list?prefix={encoded_prefix}",
                 timeout=5,
             )
             response.raise_for_status()
             return response.json()
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.warning(f"Failed to list keys with prefix '{prefix}': {e}")
             return {"prefix": prefix, "items": []}
 
@@ -354,14 +354,14 @@ class MetadataClient:
             if service_name:
                 payload["service_name"] = service_name
 
-            response = requests.post(
+            response = httpx.post(
                 f"{self.base_url}/api/v1/keys/{encoded_key}/store",
                 json=payload,
                 timeout=5,
             )
             response.raise_for_status()
             return True
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.warning(f"Failed to register store pod IP '{store_pod_ip}' for key '{key}': {e}")
             return False
 
@@ -402,14 +402,14 @@ class MetadataClient:
                 payload["ips"] = broadcast.ips
                 payload["group_id"] = broadcast.group_id
 
-            response = requests.post(
+            response = httpx.post(
                 f"{self.base_url}/api/v1/broadcast/join",
                 json=payload,
                 timeout=10,
             )
             response.raise_for_status()
             return response.json()
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.warning(f"Failed to join broadcast quorum: {e}")
             return {}
 
@@ -425,14 +425,14 @@ class MetadataClient:
             dict with status, putters, getters, and other info
         """
         try:
-            response = requests.get(
+            response = httpx.get(
                 f"{self.base_url}/api/v1/broadcast/{broadcast_id}/status",
                 params={"pod_ip": pod_ip},
                 timeout=5,
             )
             response.raise_for_status()
             return response.json()
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.warning(f"Failed to get broadcast status for {broadcast_id}: {e}")
             return {"status": "error", "error": str(e)}
 
@@ -448,14 +448,14 @@ class MetadataClient:
             True if successful, False otherwise
         """
         try:
-            response = requests.post(
+            response = httpx.post(
                 f"{self.base_url}/api/v1/broadcast/{broadcast_id}/complete",
                 params={"pod_ip": pod_ip},
                 timeout=5,
             )
             response.raise_for_status()
             return True
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.warning(f"Failed to complete broadcast {broadcast_id}: {e}")
             return False
 
@@ -471,14 +471,14 @@ class MetadataClient:
             dict with deleted_count and success status
         """
         try:
-            response = requests.delete(
+            response = httpx.delete(
                 f"{self.base_url}/api/v1/services/{quote(service_name, safe='')}/cleanup",
                 params={"namespace": self.namespace},
                 timeout=30,
             )
             response.raise_for_status()
             return response.json()
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.warning(f"Failed to cleanup keys for service '{service_name}': {e}")
             return {"success": False, "error": str(e), "deleted_count": 0}
 
