@@ -5,10 +5,11 @@ import time
 from concurrent.futures import as_completed, ThreadPoolExecutor
 from typing import Dict, Optional
 
-import httpx
 from starlette.responses import JSONResponse
 
 from kubetorch.serving.distributed_supervisor import DistributedSupervisor
+
+from kubetorch.serving.global_http_clients import get_sync_client
 from kubetorch.serving.http_server import logger, patch_sys_path
 from kubetorch.serving.process_worker import ProcessWorker
 
@@ -256,25 +257,24 @@ class RayDistributed(DistributedSupervisor):
             def reload_pod(pod_ip):
                 """Send reload request to a single pod."""
                 try:
-                    # Use a proper HTTP client session to avoid Content-Length issues
-                    with httpx.Client(timeout=None) as client:
-                        url = f"http://{pod_ip}:{server_port}/_reload_image"
-                        # First try a quick health check to see if pod is ready
-                        health_url = f"http://{pod_ip}:{server_port}/health"
-                        health_response = client.get(health_url, timeout=5)
+                    client = get_sync_client()
+                    url = f"http://{pod_ip}:{server_port}/_reload_image"
+                    # First try a quick health check to see if pod is ready
+                    health_url = f"http://{pod_ip}:{server_port}/health"
+                    health_response = client.get(health_url, timeout=5)
 
-                        if health_response.status_code != 200:
-                            logger.debug(f"Pod {pod_ip} health check failed, will retry later")
-                            return False
+                    if health_response.status_code != 200:
+                        logger.debug(f"Pod {pod_ip} health check failed, will retry later")
+                        return False
 
-                        # Pod is healthy, send reload request (no timeout, installs can be long-running)
-                        response = client.post(url, headers={"X-Deployed-As-Of": deployed_as_of})
-                        if response.status_code == 200:
-                            logger.debug(f"Successfully reloaded image on pod {pod_ip}")
-                            return True
-                        else:
-                            logger.warning(f"Pod {pod_ip} reload returned status {response.status_code}")
-                            return False
+                    # Pod is healthy, send reload request (no timeout, installs can be long-running)
+                    response = client.post(url, headers={"X-Deployed-As-Of": deployed_as_of}, timeout=None)
+                    if response.status_code == 200:
+                        logger.debug(f"Successfully reloaded image on pod {pod_ip}")
+                        return True
+                    else:
+                        logger.warning(f"Pod {pod_ip} reload returned status {response.status_code}")
+                        return False
 
                 except Exception as e:
                     logger.debug(f"Failed to reload image on pod {pod_ip}: {e}")
