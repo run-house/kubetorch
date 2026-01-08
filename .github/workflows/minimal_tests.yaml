@@ -90,9 +90,6 @@ jobs:
           elif [[ "$BRANCH" == *"data_store/"* ]]; then
             RAW_NAMESPACE="${BRANCH#*data_store/}"
             RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
-          else
-            echo "Unsupported branch format: $BRANCH"
-            exit 1
           fi
 
           RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
@@ -227,9 +224,6 @@ jobs:
           elif [[ "$BRANCH" == *"data_store/"* ]]; then
             RAW_NAMESPACE="${BRANCH#*data_store/}"
             RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
-          else
-            echo "Unsupported branch format: $BRANCH"
-            exit 1
           fi
 
           RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
@@ -366,9 +360,6 @@ jobs:
           elif [[ "$BRANCH" == *"data_store/"* ]]; then
             RAW_NAMESPACE="${BRANCH#*data_store/}"
             RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
-          else
-            echo "Unsupported branch format: $BRANCH"
-            exit 1
           fi
 
           RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
@@ -455,9 +446,6 @@ jobs:
           elif [[ "$BRANCH" == *"data_store/"* ]]; then
             RAW_NAMESPACE="${BRANCH#*data_store/}"
             RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
-          else
-            echo "Unsupported branch format: $BRANCH"
-            exit 1
           fi
 
           RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
@@ -551,9 +539,6 @@ jobs:
           elif [[ "$BRANCH" == *"data_store/"* ]]; then
             RAW_NAMESPACE="${BRANCH#*data_store/}"
             RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
-          else
-            echo "Unsupported branch format: $BRANCH"
-            exit 1
           fi
 
           RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
@@ -640,9 +625,6 @@ jobs:
           elif [[ "$BRANCH" == *"data_store/"* ]]; then
             RAW_NAMESPACE="${BRANCH#*data_store/}"
             RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
-          else
-            echo "Unsupported branch format: $BRANCH"
-            exit 1
           fi
 
           RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
@@ -729,9 +711,6 @@ jobs:
           elif [[ "$BRANCH" == *"data_store/"* ]]; then
             RAW_NAMESPACE="${BRANCH#*data_store/}"
             RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
-          else
-            echo "Unsupported branch format: $BRANCH"
-            exit 1
           fi
 
           RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
@@ -820,9 +799,6 @@ jobs:
           elif [[ "$BRANCH" == *"data_store/"* ]]; then
             RAW_NAMESPACE="${BRANCH#*data_store/}"
             RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
-          else
-            echo "Unsupported branch format: $BRANCH"
-            exit 1
           fi
 
           RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
@@ -909,9 +885,6 @@ jobs:
           elif [[ "$BRANCH" == *"data_store/"* ]]; then
             RAW_NAMESPACE="${BRANCH#*data_store/}"
             RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
-          else
-            echo "Unsupported branch format: $BRANCH"
-            exit 1
           fi
 
           RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
@@ -1006,9 +979,6 @@ jobs:
           elif [[ "$BRANCH" == *"data_store/"* ]]; then
             RAW_NAMESPACE="${BRANCH#*data_store/}"
             RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
-          else
-            echo "Unsupported branch format: $BRANCH"
-            exit 1
           fi
 
           RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
@@ -1121,9 +1091,6 @@ jobs:
           elif [[ "$BRANCH" == *"data_store/"* ]]; then
             RAW_NAMESPACE="${BRANCH#*data_store/}"
             RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
-          else
-            echo "Unsupported branch format: $BRANCH"
-            exit 1
           fi
 
           RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
