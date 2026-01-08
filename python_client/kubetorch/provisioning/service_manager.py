@@ -340,8 +340,6 @@ class ServiceManager:
             metadata.setdefault("labels", {})[provisioning_constants.KT_SERVICE_LABEL] = service_name
             metadata["labels"][provisioning_constants.KT_MODULE_LABEL] = clean_module_name
             metadata["labels"][provisioning_constants.KT_APP_LABEL] = service_name
-            metadata["labels"][provisioning_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
-            metadata.setdefault("annotations", {})["kubetorch.com/deployment_timestamp"] = deployment_timestamp
 
             # Also update worker template for distributed resources
             worker_path = self.config.get("worker_template_path")
@@ -359,7 +357,6 @@ class ServiceManager:
                     metadata = current.setdefault("metadata", {})
                     metadata.setdefault("labels", {})[provisioning_constants.KT_SERVICE_LABEL] = service_name
                     metadata["labels"][provisioning_constants.KT_MODULE_LABEL] = clean_module_name
-                    metadata.setdefault("annotations", {})["kubetorch.com/deployment_timestamp"] = deployment_timestamp
 
         return updated
 
@@ -376,7 +373,6 @@ class ServiceManager:
         kt_env_vars = {
             **pointer_env_vars,
             **metadata_env_vars,
-            "KT_LAUNCH_ID": launch_id,
             "KT_SERVICE_NAME": service_name,
             "KT_SERVICE_DNS": (
                 f"{service_name}-headless.{self.namespace}.svc.cluster.local"

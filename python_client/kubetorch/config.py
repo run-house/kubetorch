@@ -382,10 +382,18 @@ class KubetorchConfig:
         return os.getenv(ENV_MAPPINGS[key])
 
     def _get_config_env_vars(self):
-        """Get config values as environment variables with proper KT_ prefixes."""
+        """Get config values as environment variables with proper KT_ prefixes.
+
+        Note: Some config values are excluded from pod templates because they are
+        client-side only and would cause pod recreation if they change:
+        - cluster_config: Changes based on port-forward state, not needed by server
+        """
+        # Config keys that should NOT be in pod templates (client-side only)
+        excluded_keys = {"cluster_config"}
+
         env_vars = {}
         for key, value in dict(self).items():
-            if value is not None and key in ENV_MAPPINGS:
+            if value is not None and key in ENV_MAPPINGS and key not in excluded_keys:
                 env_vars[ENV_MAPPINGS[key]] = value
         return env_vars
 
