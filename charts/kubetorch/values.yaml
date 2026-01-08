@@ -10,7 +10,7 @@ kubetorchConfig:
 
 kubetorchController:
   image: ghcr.io/run-house/kubetorch-controller
-  tag: 0.3.0
+  tag: dev-auth
   imagePullPolicy: Always
 
   port: 8081  # Port the controller listens on
@@ -26,7 +26,7 @@ kubetorchController:
 
   # Authentication endpoint (leave empty to disable auth)
   # Example: "http://kubetorch-mgmt-controller-api.kubetorch.svc.cluster.local:8000/api/v1/auth/validate"
-  authEndpoint: ""
+  authEndpoint: "http://kubetorch-mgmt-controller-api.kubetorch.svc.cluster.local:8000/api/v1/auth/validate"
 
   resources:
     cpu:
