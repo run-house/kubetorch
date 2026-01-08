@@ -166,7 +166,8 @@ class App(Module):
         else:
             client.call_method(
                 self.endpoint(),
-                stream_logs=stream_logs,
+                stream_logs,
+                self.logging_config,
                 headers={"X-Deployed-As-Of": deployment_timestamp},
             )
 
