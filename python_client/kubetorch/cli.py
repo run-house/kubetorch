@@ -1654,6 +1654,7 @@ def kt_volumes(
     mount_path: str = typer.Option(None, "--mount-path", "-m", help="Mount path"),
     size: str = typer.Option("10Gi", "--size", "-s", help="Volume size (default: 10Gi)"),
     access_mode: str = typer.Option("ReadWriteMany", "--access-mode", "-a", help="Access mode"),
+    pv: str = typer.Option(None, "--pv", help="Bind to an existing PersistentVolume by name"),
     namespace: str = typer.Option(
         globals.config.namespace,
         "-n",
@@ -1679,6 +1680,8 @@ def kt_volumes(
         $ kt volumes create my-vol
 
         $ kt volumes create my-vol -c gp3-csi -s 20Gi
+
+        $ kt volumes create my-vol --pv existing-pv-name
 
         $ kt volumes delete my-vol
 
@@ -1801,6 +1804,7 @@ def kt_volumes(
                 size=size,
                 access_mode=access_mode,
                 namespace=namespace,
+                volume_name=pv,
             )
 
             if volume.exists():
