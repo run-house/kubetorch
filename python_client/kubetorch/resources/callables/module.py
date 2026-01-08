@@ -253,7 +253,7 @@ class Module:
             if service_info is None:
                 continue
 
-            # Skip selector-based pools - they don't have template for reload
+            # Skip selector-based resources - they don't have template for reload
             if service_info.get("template_type") == "selector":
                 continue
 
@@ -661,12 +661,12 @@ class Module:
         try:
             startup_rsync_command = self._startup_rsync_command(use_editable, install_url, dryrun)
 
-            # Generate dockerfile and module spec for pool registration
+            # Generate dockerfile and module spec for resource registration
             pointer_env_vars = self._get_pointer_env_vars(self.remote_pointers)
             metadata_env_vars = self._get_metadata_env_vars(init_args)
             dockerfile = self._get_service_dockerfile({**pointer_env_vars, **metadata_env_vars})
 
-            # Build module spec for pool registration
+            # Build module spec for resource registration
             dispatch = self.compute.dispatch_method
 
             module_metadata = {
@@ -741,12 +741,12 @@ class Module:
         try:
             startup_rsync_command = self._startup_rsync_command(use_editable, install_url, dryrun)
 
-            # Generate dockerfile and module spec for pool registration
+            # Generate dockerfile and module spec for resource registration
             pointer_env_vars = self._get_pointer_env_vars(self.remote_pointers)
             metadata_env_vars = self._get_metadata_env_vars(init_args)
             dockerfile = self._get_service_dockerfile({**pointer_env_vars, **metadata_env_vars})
 
-            # Build module spec for pool registration
+            # Build module spec for resource registration
             dispatch = self.compute.dispatch_method
 
             module_metadata = {
