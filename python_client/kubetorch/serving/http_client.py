@@ -1051,7 +1051,8 @@ class HTTPClient:
             metrics_thread,
             request_id,
         ) = self._prepare_request(endpoint, stream_logs, stream_metrics, headers, serialization, logging_config)
-        profiler: ProfilerConfig = body.get("profiler", None)  # instance of PyspyProfilerConfig or TorchProfilerConfig
+        profiler_dict = body.get("profiler", None)
+        profiler = ProfilerConfig(**profiler_dict) if profiler_dict else None
 
         try:
             json_data = _serialize_body(body, serialization)
@@ -1067,6 +1068,9 @@ class HTTPClient:
                     profiler=profiler,
                     service_name=self.service_name,
                     request_id=request_id,
+                    distribution_type=self.compute.distributed_config.get("distribution_type")
+                    if self.compute.distributed_config
+                    else None,
                 )
                 return fn_output
 
@@ -1105,20 +1109,21 @@ class HTTPClient:
             if stream_logs and log_task:
                 await asyncio.sleep(0.5)
 
-            profiler: ProfilerConfig = body.get(
-                "profiler", None
-            )  # instance of PyspyProfilerConfig or TorchProfilerConfig
-            if profiler:
-                profiler: ProfilerConfig = body.get(
-                    "profiler", None
-                )  # instance of PyspyProfilerConfig or TorchProfilerConfig
-                if profiler:
-                    from kubetorch.serving.profiling import parse_profiler_output
+            profiler_dict = body.get("profiler", None)
+            if profiler_dict:
+                from kubetorch.serving.profiling import parse_profiler_output
 
-                    fn_output = parse_profiler_output(
-                        call_output=result, profiler=profiler, service_name=self.service_name, request_id=request_id
-                    )
-                    return fn_output
+                profiler = ProfilerConfig(**profiler_dict)
+                fn_output = parse_profiler_output(
+                    call_output=result,
+                    profiler=profiler,
+                    service_name=self.service_name,
+                    request_id=request_id,
+                    distribution_type=self.compute.distributed_config.get("distribution_type")
+                    if self.compute.distributed_config
+                    else None,
+                )
+                return fn_output
 
             return result
         finally:

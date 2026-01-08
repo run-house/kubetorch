@@ -258,5 +258,5 @@ def build_call_body(*args, debug: Union[bool, DebugConfig] = None, profiler: Pro
     if debug or pdb:
         body = add_debugger_config_to_body(body=body, debug=debug, pdb=pdb)
     if profiler:
-        body["profiler"] = profiler
+        body["profiler"] = profiler.to_dict()
     return body

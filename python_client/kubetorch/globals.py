@@ -19,6 +19,10 @@ from kubetorch.constants import (
     CONTROLLER_POOL_TIMEOUT,
     CONTROLLER_READ_TIMEOUT,
     CONTROLLER_WRITE_TIMEOUT,
+    SUPPORTED_PROFILERS,
+    SUPPORTED_PYSPY_OUTPUTS,
+    SUPPORTED_PYTORCH_OUTPUTS,
+    SUPPORTED_PYTORCH_TABLE_SORT_KEYS,
 )
 from kubetorch.logger import get_logger
 from kubetorch.provisioning.constants import (
@@ -124,20 +128,46 @@ class ProfilerConfig:
     """Configuration for profiling behavior on a Kubetorch service.
 
     Attributes:
-        profiler_type: profiler type - "pyspy" (for CPU workloads) or "pytorch" (for GPU workloads)
-        output_path: Local directory path for saving profiling output (default: None, auto-generated if not set).
-        output_format: Output file format. Defaults: "flamegraph" for pyspy profiler, "chrometrace" for pytorch.
-        output_filename: Base name for the profiling output file (without extensions like .svg, .json, etc.; default: None, auto-generated if not set)
-        analyze_stack_traces: Should the profiler analyze Python and TorchScript stack traces. Relevant only to pytorch profiler.
+        profiler_type (str): Profiler type - "pyspy" (for CPU workloads) or "pytorch" (for GPU workloads).
+        output_path (str, optional): Local directory path for saving profiling output. (Default: None, auto-generated if not set)
+        output_format (str, optional): Output file format. Defaults: "flamegraph" for pyspy profiler, "chrometrace" for pytorch.
+        output_filename (str, optional): Base name for the profiling output file (without extensions like .svg, .json, etc.). (Default: None, auto-generated if not set)
+        analyze_stack_traces (bool): Whether the profiler should analyze Python and TorchScript stack traces. Relevant only to pytorch profiler. (Default: True)
+        memory_timeline_output_type (str): Memory timeline file format. Relevant only to pytorch profiler, if the ``output_format`` is memory_timeline. (Default: "html")
+        table_sort_by (str, optional): Attribute used to sort table entries. Relevant only to pytorch profiler, if the ``output_format`` is table. (Default: None)
+        consolidate_table (bool): Consolidate distributed table outputs. If true, returns one string, representing all table outputs. Else, returns separate table, one for each distributed worker. Relevant only to pytorch profiler, if the ``output_format`` is table. (Default: False)
+        group_by_input_shape (bool): Group entries by (event name, input shapes) rather than just event name. Relevant only to pytorch profiler, if ``analyze_stack_traces`` is ``True``. (Default: False)
+        group_by_stack_n (int): Group by top n stack trace entries. Relevant only to pytorch profiler, if ``analyze_stack_traces`` is ``True``. (Default: 0)
+
+    For more information about ``memory_timeline_output_type`` supported values, see `pytorch docs <https://docs.pytorch.org/docs/stable/profiler.html#torch.profiler._KinetoProfile.export_memory_timeline>`_.
+
     """
 
     profiler_type: Literal["pyspy", "pytorch"]
-    output_format: Literal["flamegraph", "raw", "speedscope", "chrometrace"] = None
+    output_format: Literal[
+        "flamegraph", "raw", "speedscope", "chrometrace", "table", "memory_timeline", "stacks"
+    ] = None
     output_path: str | None = None
     output_filename: str | None = None
     analyze_stack_traces: bool = True
+    memory_timeline_output_type: Literal["html", "json", "json_zip", "raw"] = "html"
+    table_sort_by: Literal[
+        "cpu_time",
+        "cuda_time",
+        "cpu_time_total",
+        "cuda_time_total",
+        "cpu_memory_usage",
+        "cuda_memory_usage",
+        "self_cpu_memory_usage",
+        "self_cuda_memory_usage",
+        "count",
+    ] = None
+    consolidate_table: bool = False
+    group_by_input_shape: bool = False
+    group_by_stack_n: int = 0
 
     def __post_init__(self):
+
         if self.profiler_type not in SUPPORTED_PROFILERS:
             raise ValueError(f"profiler_type must be 'pyspy' or 'pytorch', got {self.profiler_type!r}")
         if self.profiler_type == "pytorch":
@@ -148,6 +178,17 @@ class ProfilerConfig:
                     f"Invalid profiler_output for Pytorch profiler: {self.output_format!r}. "
                     f"Must be one of {SUPPORTED_PYTORCH_OUTPUTS}"
                 )
+
+            if (
+                self.output_format == "table"
+                and self.table_sort_by
+                and self.table_sort_by not in SUPPORTED_PYTORCH_TABLE_SORT_KEYS
+            ):
+                raise ValueError(
+                    f"Invalid table_sort_by for Pytorch profiler: {self.table_sort_by!r}. "
+                    f"Must be one of {SUPPORTED_PYTORCH_TABLE_SORT_KEYS}"
+                )
+
         if self.profiler_type == "pyspy":
             if not self.output_format:
                 self.output_format = "flamegraph"  # set default to "flamegraph"
@@ -162,8 +203,29 @@ class ProfilerConfig:
             return "svg"
         elif self.output_format == "raw":
             return "txt"
+        elif self.output_format == "memory_timeline":
+            if self.memory_timeline_output_type == "raw":
+                return "raw.json.gz"
+            elif self.memory_timeline_output_type == "json_zip":
+                return "json.gz"
+            else:
+                return self.memory_timeline_output_type
         else:
             return "json"
+
+    def to_dict(self):
+        return {
+            "profiler_type": self.profiler_type,
+            "output_format": self.output_format,
+            "output_path": self.output_path,
+            "output_filename": self.output_filename,
+            "analyze_stack_traces": self.analyze_stack_traces,
+            "memory_timeline_output_type": self.memory_timeline_output_type,
+            "table_sort_by": self.table_sort_by,
+            "consolidate_table": self.consolidate_table,
+            "group_by_input_shape": self.group_by_input_shape,
+            "group_by_stack_n": self.group_by_stack_n,
+        }
 
 
 @dataclass(frozen=True)

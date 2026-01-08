@@ -42,8 +42,8 @@ class Fn(Module):
         stream_metrics = kwargs.pop("stream_metrics", None)
         debug = kwargs.pop("debug", None)
         pdb = kwargs.pop("pdb", None)  # Keep for backward compatibility
-        serialization = kwargs.pop("serialization", self.serialization)
         profiler = kwargs.pop("profiler", None)
+        serialization = kwargs.pop("serialization", self.serialization)
 
         # debug takes precedence over pdb
         if debug is None and pdb is not None:
@@ -77,8 +77,8 @@ class Fn(Module):
         stream_metrics = kwargs.pop("stream_metrics", None)
         debug = kwargs.pop("debug", None)
         pdb = kwargs.pop("pdb", None)  # Keep for backward compatibility
-        serialization = kwargs.pop("serialization", self.serialization)
         profiler = kwargs.pop("profiler", None)
+        serialization = kwargs.pop("serialization", self.serialization)
 
         # debug takes precedence over pdb
         if debug is None and pdb is not None:

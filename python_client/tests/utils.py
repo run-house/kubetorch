@@ -2,6 +2,7 @@ import importlib
 import inspect
 import logging
 import os
+import random
 import re
 import subprocess
 import sys
@@ -578,3 +579,92 @@ def remote_cls_for_teardown():
     name = f"td-SlowNumpyArray-{random_string(3)}"
     fn = kt.cls(SlowNumpyArray, name=name).to(compute)
     return fn
+
+
+def matrix_dot_np(num_iterations: int = 5):
+    import time
+
+    import numpy as np
+
+    time.sleep(3)
+    for i in range(num_iterations * 2):
+        # Create two large matrices on CPU
+        size = random.randint(100, 600)
+        a = np.random.rand(size, size)
+        b = np.random.rand(size, size)
+
+        # Perform a CPU computation
+        c = np.dot(a, b)
+
+        logger.info(f"Round: {i}: Matrix multiplication completed on CPU. Result shape: {c.shape}")
+
+    return "matrix_dot_np ran successfully!"
+
+
+class Matrix:
+    def __init__(self):
+        self.size = random.randint(100, 600)
+        self.dot_iterations = random.randint(5, 15)
+
+    def dot_np(self):
+        import numpy as np
+
+        for i in range(self.dot_iterations):
+            a = np.random.rand(self.size, self.size)
+            b = np.random.rand(self.size, self.size)
+
+            c = np.dot(a, b)
+
+            logger.info(f"Round: {i}: Matrix multiplication completed on CPU. Result shape: {c.shape}")
+
+        return "dot_np in Matrix class instance ran successfully!"
+
+
+def matrix_dot_torch(num_iterations: int = 5):
+    import time
+
+    import torch
+
+    time.sleep(3)
+
+    logger.info(f"Using GPU: {torch.cuda.get_device_name(0)}")
+
+    for i in range(num_iterations):
+        # Create two large matrices on GPU
+        size = random.randint(5000, 6000)
+        a = torch.randn(size, size, device="cuda")
+        b = torch.randn(size, size, device="cuda")
+
+        # Perform a GPU computation
+        c = torch.matmul(a, b)
+
+        logger.info(f"Round: {i}: Matrix multiplication completed on GPU. Result shape: {c.shape}")
+
+    return "matrix_dot_torch ran successfully!"
+
+
+class Matrix_GPU:
+    def __init__(self):
+        self.size = random.randint(100, 600)
+        self.dot_iterations = random.randint(5, 15)
+
+    def dot_torch(self):
+        import time
+
+        import torch
+
+        time.sleep(3)
+
+        logger.info(f"Using GPU: {torch.cuda.get_device_name(0)}")
+
+        for i in range(self.dot_iterations):
+            # Create two large matrices on GPU
+            a = torch.randn(self.size, self.size, device="cuda")
+            b = torch.randn(self.size, self.size, device="cuda")
+
+            # Perform a GPU computation
+            c = torch.matmul(a, b)
+
+            logger.info(f"Round: {i}: Matrix multiplication completed on GPU. Result shape: {c.shape}")
+
+        return "dot_torch in Matrix_CPU class ran successfully!"

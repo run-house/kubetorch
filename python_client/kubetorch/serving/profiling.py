@@ -7,9 +7,10 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from typing import List, Union
 
+from kubetorch.constants import PYSPY_SAMPLE_RATE_HZ
 from kubetorch.globals import ProfilerConfig
-from kubetorch.servers.http.constants import PYSPY_SAMPLE_RATE_HZ
 
 logger = logging.getLogger(__name__)
 
@@ -136,8 +137,7 @@ def run_with_profile(
                     profiler_output = json.loads(f.read())
         return result, profiler_output
 
-    if profiler_type == "pyspy":
-
+    elif profiler_type == "pyspy":
         pyspy_output_data = {"result": None}
 
         with pyspy_profiler(output=pyspy_output_data, output_format=output_format) as pyspy_proc:
@@ -161,16 +161,36 @@ def run_with_profile(
 
         return result, profiler_output
 
+    else:
+        logger.warning(f"Unsupported profiler type {profiler}, running without profiling")
+        result = fn(*args, **kwargs)
+        return result, None
+
 
 def generate_profiler_output_filename(filename: str, file_suffix: str, service_name: str, request_id: str) -> str:
     if filename:
-        return f"{filename}.{file_suffix}"
+        if file_suffix in filename:
+            return filename
+        return f"{filename}{file_suffix}"
     else:
-        return f"{service_name}_{request_id}.{file_suffix}"  # added request id to prevent collisions. The running ts will be a part of the file metadata.
+        # Note: add request id to prevent collisions (The running ts will be a part of the file metadata)
+        return f"{service_name}_{request_id}{file_suffix}"
 
 
-def parse_profiler_output(call_output: dict, profiler: ProfilerConfig, service_name: str, request_id: str):
-    profiler_output = call_output.pop("profiler_output")
+def parse_profiler_output_helper(
+    single_call_output: dict,
+    profiler: ProfilerConfig,
+    service_name: str,
+    request_id: str,
+    file_name_suffix: str = None,
+):
+    profiler_output = single_call_output.pop("profiler_output", None)
+    fn_output = single_call_output.pop("fn_output")
+
+    if not profiler_output:
+        logger.warning(f"No profiling information found for service '{service_name}'.")
+        return fn_output, None
+
     profiler_output_path = profiler.output_path
     profiler_output_filename = profiler.output_filename
     profiler_output_suffix = profiler.output_file_suffix()
@@ -178,9 +198,10 @@ def parse_profiler_output(call_output: dict, profiler: ProfilerConfig, service_n
     if not profiler_output_path:
         profiler_output_path = str(Path.cwd())
 
+    file_suffix = f"_{file_name_suffix}.{profiler_output_suffix}" if file_name_suffix else f".{profiler_output_suffix}"
     profiler_output_filename = generate_profiler_output_filename(
         filename=profiler_output_filename,
-        file_suffix=profiler_output_suffix,
+        file_suffix=file_suffix,
         service_name=service_name,
         request_id=request_id,
     )
@@ -188,7 +209,57 @@ def parse_profiler_output(call_output: dict, profiler: ProfilerConfig, service_n
     output_full_path = Path(profiler_output_path) / Path(profiler_output_filename)
 
     with open(output_full_path, "w+") as output_file:
-        output_file.write(profiler_output)
+        if isinstance(profiler_output, str):
+            output_file.write(profiler_output)
+        else:
+            output_file.write(json.dumps(profiler_output))
         logger.info(f"profiler output can be found in {output_full_path}")
 
-    return call_output.pop("fn_output")
+    return fn_output, None
+
+
+def parse_profiler_output(
+    call_output: Union[dict, List[dict]],
+    profiler: ProfilerConfig,
+    service_name: str,
+    request_id: str,
+    distribution_type: str = None,
+):
+    filename_suffix = distribution_type if distribution_type else None
+    if isinstance(call_output, list):
+        fn_outputs = []
+        profiler_outputs = []  # in case profiler output is a table
+        output_index = 0
+        for output in call_output:
+            indexed_suffix = f"{filename_suffix}_{output_index}" if filename_suffix else str(output_index)
+            fn_output, profiler_output = parse_profiler_output_helper(
+                single_call_output=output,
+                profiler=profiler,
+                service_name=service_name,
+                request_id=request_id,
+                file_name_suffix=indexed_suffix,
+            )
+            output_index += 1
+            fn_outputs.append(fn_output)
+
+            if profiler.output_format == "table":
+                profiler_outputs.append(profiler_output)
+
+        if profiler.output_format == "table":
+            if profiler.consolidate_table:
+                # consolidate the distributed tables into one table
+                profiler_outputs = "\n\n".join(profiler_outputs)
+                return fn_outputs, profiler_outputs
+
+            return fn_outputs, profiler_outputs
+
+        return fn_outputs
+
+    fn_output, _ = parse_profiler_output_helper(
+        single_call_output=call_output,
+        profiler=profiler,
+        service_name=service_name,
+        request_id=request_id,
+        file_name_suffix=filename_suffix,
+    )
+    return fn_output

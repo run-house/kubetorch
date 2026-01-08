@@ -316,5 +316,57 @@ async def remote_monitoring_fn():
     return remote_fn
 
 
+@pytest.fixture(scope="session")
+async def remote_profiling_pyspy_fn():
+    import kubetorch as kt
+
+    from .utils import matrix_dot_np
+
+    compute_type = os.getenv("TEST_COMPUTE_TYPE", "deployment")
+    compute = get_compute(compute_type)
+    compute.image = compute.image.pip_install(["numpy"])
+
+    remote_fn = await kt.fn(matrix_dot_np).to_async(compute)
+    return remote_fn
+
+
+@pytest.fixture(scope="session")
+async def remote_profiling_pyspy_cls():
+    import kubetorch as kt
+
+    from .utils import Matrix
+
+    compute_type = os.getenv("TEST_COMPUTE_TYPE", "deployment")
+    compute = get_compute(compute_type)
+    compute.image = compute.image.pip_install(["numpy"])
+
+    remote_cls = await kt.cls(Matrix).to_async(compute)
+    return remote_cls
+
+
+@pytest.fixture(scope="session")
+async def remote_profiling_torch_fn():
+    import kubetorch as kt
+
+    from .utils import matrix_dot_torch
+
+    compute = kt.Compute(gpus="1", image=kt.images.pytorch("24.02-py3"))
+
+    remote_fn = await kt.fn(matrix_dot_torch).to_async(compute)
+    return remote_fn
+
+
+@pytest.fixture(scope="session")
+async def remote_profiling_torch_cls():
+    import kubetorch as kt
+
+    from .utils import Matrix_GPU
+
+    compute = kt.Compute(gpus="1", image=kt.images.pytorch("24.02-py3"))
+
+    remote_cls = await kt.cls(Matrix_GPU).to_async(compute)
+    return remote_cls
+
+
 def get_test_hash():
     return TEST_SESSION_HASH

@@ -18,6 +18,23 @@ DASHBOARD_PORT = 3001
 GRAFANA_PORT = 3000
 DEFAULT_TAIL_LENGTH = 100  # log tail length
 
+# Profiling constants
+PYSPY_SAMPLE_RATE_HZ = 100
+SUPPORTED_PROFILERS = ["pytorch", "pyspy"]
+SUPPORTED_PYSPY_OUTPUTS = ["flamegraph", "raw", "speedscope", "chrometrace"]
+SUPPORTED_PYTORCH_OUTPUTS = ["chrometrace", "table", "memory_timeline", "stacks"]
+SUPPORTED_PYTORCH_TABLE_SORT_KEYS = [
+    "cpu_time",
+    "cuda_time",
+    "cpu_time_total",
+    "cuda_time_total",
+    "cpu_memory_usage",
+    "cuda_memory_usage",
+    "self_cpu_memory_usage",
+    "self_cuda_memory_usage",
+    "count",
+]
+
 # HTTPX
 CONTROLLER_CONNECT_TIMEOUT = 30.0  # Time to establish TCP connection
 CONTROLLER_READ_TIMEOUT = 30.0  # Time to receive response body for quick operations (list, get)

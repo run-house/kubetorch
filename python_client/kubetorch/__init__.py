@@ -1,12 +1,6 @@
 from kubetorch.data_store import BroadcastWindow, DataStoreError, get, ls, put, rm  # noqa: F401
-from kubetorch.globals import (  # noqa: F401
-    config,
-    DebugConfig,
-    KubernetesCredentialsError,
-    LoggingConfig,
-    MetricsConfig,
-    ProfilerConfig,
-)
+from kubetorch.globals import config, DebugConfig, LoggingConfig, MetricsConfig, ProfilerConfig  # noqa: F401
+from kubetorch.provisioning.utils import KubernetesCredentialsError  # noqa: F401
 from kubetorch.resources.callables.cls.cls import Cls, cls  # noqa: F401
 from kubetorch.resources.callables.fn.fn import Fn, fn  # noqa: F401
 from kubetorch.resources.callables.utils import NotebookError
