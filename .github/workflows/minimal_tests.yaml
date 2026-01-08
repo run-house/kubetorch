@@ -82,9 +82,32 @@ jobs:
         id: controller-ns
         run: |
           BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
-          NAMESPACE=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9]#-#g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-63)
-          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+
+          # Extract part after 'controller/' or 'data_store/'
+          if [[ "$BRANCH" == *"controller/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*controller/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#controller/}"
+          elif [[ "$BRANCH" == *"data_store/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*data_store/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
+          else
+            echo "Unsupported branch format: $BRANCH"
+            exit 1
+          fi
+
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+
+          # Remove optional ':flag'
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+          # Sanitize for k8s namespace
+          NAMESPACE=$(echo "$RAW_NAMESPACE" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's#[^a-z0-9]#-#g' \
+            | sed 's/--*/-/g' \
+            | sed 's/^-//;s/-$//' \
+            | cut -c1-63)
 
           # Check if namespace exists
           if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
@@ -196,9 +219,32 @@ jobs:
         id: controller-ns
         run: |
           BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
-          NAMESPACE=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9]#-#g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-63)
-          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+
+          # Extract part after 'controller/' or 'data_store/'
+          if [[ "$BRANCH" == *"controller/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*controller/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#controller/}"
+          elif [[ "$BRANCH" == *"data_store/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*data_store/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
+          else
+            echo "Unsupported branch format: $BRANCH"
+            exit 1
+          fi
+
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+
+          # Remove optional ':flag'
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+          # Sanitize for k8s namespace
+          NAMESPACE=$(echo "$RAW_NAMESPACE" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's#[^a-z0-9]#-#g' \
+            | sed 's/--*/-/g' \
+            | sed 's/^-//;s/-$//' \
+            | cut -c1-63)
 
           # Check if namespace exists
           if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
@@ -312,9 +358,32 @@ jobs:
         shell: bash
         run: |
           BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
-          NAMESPACE=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9]#-#g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-63)
-          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+
+          # Extract part after 'controller/' or 'data_store/'
+          if [[ "$BRANCH" == *"controller/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*controller/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#controller/}"
+          elif [[ "$BRANCH" == *"data_store/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*data_store/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
+          else
+            echo "Unsupported branch format: $BRANCH"
+            exit 1
+          fi
+
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+
+          # Remove optional ':flag'
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+          # Sanitize for k8s namespace
+          NAMESPACE=$(echo "$RAW_NAMESPACE" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's#[^a-z0-9]#-#g' \
+            | sed 's/--*/-/g' \
+            | sed 's/^-//;s/-$//' \
+            | cut -c1-63)
 
           # Check if namespace exists
           if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
@@ -378,9 +447,32 @@ jobs:
         shell: bash
         run: |
           BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
-          NAMESPACE=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9]#-#g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-63)
-          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+
+          # Extract part after 'controller/' or 'data_store/'
+          if [[ "$BRANCH" == *"controller/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*controller/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#controller/}"
+          elif [[ "$BRANCH" == *"data_store/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*data_store/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
+          else
+            echo "Unsupported branch format: $BRANCH"
+            exit 1
+          fi
+
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+
+          # Remove optional ':flag'
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+          # Sanitize for k8s namespace
+          NAMESPACE=$(echo "$RAW_NAMESPACE" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's#[^a-z0-9]#-#g' \
+            | sed 's/--*/-/g' \
+            | sed 's/^-//;s/-$//' \
+            | cut -c1-63)
 
           # Check if namespace exists
           if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
@@ -451,9 +543,32 @@ jobs:
         shell: bash
         run: |
           BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
-          NAMESPACE=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9]#-#g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-63)
-          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+
+          # Extract part after 'controller/' or 'data_store/'
+          if [[ "$BRANCH" == *"controller/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*controller/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#controller/}"
+          elif [[ "$BRANCH" == *"data_store/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*data_store/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
+          else
+            echo "Unsupported branch format: $BRANCH"
+            exit 1
+          fi
+
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+
+          # Remove optional ':flag'
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+          # Sanitize for k8s namespace
+          NAMESPACE=$(echo "$RAW_NAMESPACE" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's#[^a-z0-9]#-#g' \
+            | sed 's/--*/-/g' \
+            | sed 's/^-//;s/-$//' \
+            | cut -c1-63)
 
           # Check if namespace exists
           if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
@@ -517,9 +632,32 @@ jobs:
         shell: bash
         run: |
           BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
-          NAMESPACE=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9]#-#g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-63)
-          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+
+          # Extract part after 'controller/' or 'data_store/'
+          if [[ "$BRANCH" == *"controller/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*controller/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#controller/}"
+          elif [[ "$BRANCH" == *"data_store/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*data_store/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
+          else
+            echo "Unsupported branch format: $BRANCH"
+            exit 1
+          fi
+
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+
+          # Remove optional ':flag'
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+          # Sanitize for k8s namespace
+          NAMESPACE=$(echo "$RAW_NAMESPACE" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's#[^a-z0-9]#-#g' \
+            | sed 's/--*/-/g' \
+            | sed 's/^-//;s/-$//' \
+            | cut -c1-63)
 
           # Check if namespace exists
           if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
@@ -583,9 +721,32 @@ jobs:
         shell: bash
         run: |
           BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
-          NAMESPACE=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9]#-#g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-63)
-          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+
+          # Extract part after 'controller/' or 'data_store/'
+          if [[ "$BRANCH" == *"controller/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*controller/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#controller/}"
+          elif [[ "$BRANCH" == *"data_store/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*data_store/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
+          else
+            echo "Unsupported branch format: $BRANCH"
+            exit 1
+          fi
+
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+
+          # Remove optional ':flag'
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+          # Sanitize for k8s namespace
+          NAMESPACE=$(echo "$RAW_NAMESPACE" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's#[^a-z0-9]#-#g' \
+            | sed 's/--*/-/g' \
+            | sed 's/^-//;s/-$//' \
+            | cut -c1-63)
 
           # Check if namespace exists
           if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
@@ -651,9 +812,32 @@ jobs:
         shell: bash
         run: |
           BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
-          NAMESPACE=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9]#-#g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-63)
-          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+
+          # Extract part after 'controller/' or 'data_store/'
+          if [[ "$BRANCH" == *"controller/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*controller/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#controller/}"
+          elif [[ "$BRANCH" == *"data_store/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*data_store/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
+          else
+            echo "Unsupported branch format: $BRANCH"
+            exit 1
+          fi
+
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+
+          # Remove optional ':flag'
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+          # Sanitize for k8s namespace
+          NAMESPACE=$(echo "$RAW_NAMESPACE" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's#[^a-z0-9]#-#g' \
+            | sed 's/--*/-/g' \
+            | sed 's/^-//;s/-$//' \
+            | cut -c1-63)
 
           # Check if namespace exists
           if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
@@ -717,9 +901,32 @@ jobs:
         shell: bash
         run: |
           BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
-          NAMESPACE=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9]#-#g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-63)
-          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+
+          # Extract part after 'controller/' or 'data_store/'
+          if [[ "$BRANCH" == *"controller/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*controller/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#controller/}"
+          elif [[ "$BRANCH" == *"data_store/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*data_store/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
+          else
+            echo "Unsupported branch format: $BRANCH"
+            exit 1
+          fi
+
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+
+          # Remove optional ':flag'
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+          # Sanitize for k8s namespace
+          NAMESPACE=$(echo "$RAW_NAMESPACE" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's#[^a-z0-9]#-#g' \
+            | sed 's/--*/-/g' \
+            | sed 's/^-//;s/-$//' \
+            | cut -c1-63)
 
           # Check if namespace exists
           if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
@@ -791,8 +998,28 @@ jobs:
         id: controller-ns
         run: |
           BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
-          NAMESPACE=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]' \
+
+          # Extract part after 'controller/' or 'data_store/'
+          if [[ "$BRANCH" == *"controller/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*controller/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#controller/}"
+          elif [[ "$BRANCH" == *"data_store/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*data_store/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
+          else
+            echo "Unsupported branch format: $BRANCH"
+            exit 1
+          fi
+
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+
+          # Remove optional ':flag'
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+          # Sanitize for k8s namespace
+          NAMESPACE=$(echo "$RAW_NAMESPACE" \
+            | tr '[:upper:]' '[:lower:]' \
             | sed 's#[^a-z0-9]#-#g' \
             | sed 's/--*/-/g' \
             | sed 's/^-//;s/-$//' \
@@ -886,9 +1113,32 @@ jobs:
         shell: bash
         run: |
           BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
-          NAMESPACE=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9]#-#g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-63)
-          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+
+          # Extract part after 'controller/' or 'data_store/'
+          if [[ "$BRANCH" == *"controller/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*controller/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#controller/}"
+          elif [[ "$BRANCH" == *"data_store/"* ]]; then
+            RAW_NAMESPACE="${BRANCH#*data_store/}"
+            RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
+          else
+            echo "Unsupported branch format: $BRANCH"
+            exit 1
+          fi
+
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+
+          # Remove optional ':flag'
+          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
+
+          # Sanitize for k8s namespace
+          NAMESPACE=$(echo "$RAW_NAMESPACE" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's#[^a-z0-9]#-#g' \
+            | sed 's/--*/-/g' \
+            | sed 's/^-//;s/-$//' \
+            | cut -c1-63)
 
           # Check if namespace exists
           if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
