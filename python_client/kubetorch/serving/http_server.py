@@ -301,6 +301,19 @@ class ControllerWebSocket:
         if metadata.get("deployment_mode"):
             os.environ["KT_DEPLOYMENT_MODE"] = metadata["deployment_mode"]
 
+        # Apply runtime config - these can change between deploys
+        runtime_config = metadata.get("runtime_config", {})
+        if runtime_config.get("log_streaming_enabled") is not None:
+            os.environ["KT_LOG_STREAMING_ENABLED"] = str(runtime_config["log_streaming_enabled"])
+        if runtime_config.get("metrics_enabled") is not None:
+            os.environ["KT_METRICS_ENABLED"] = str(runtime_config["metrics_enabled"])
+        if runtime_config.get("inactivity_ttl"):
+            os.environ["KT_INACTIVITY_TTL"] = runtime_config["inactivity_ttl"]
+        if runtime_config.get("log_level"):
+            os.environ["KT_LOG_LEVEL"] = runtime_config["log_level"]
+        if runtime_config.get("allowed_serialization"):
+            os.environ["KT_ALLOWED_SERIALIZATION"] = runtime_config["allowed_serialization"]
+
         logger.info(
             f"Applied metadata from controller: module={module_info.get('module_name')}, "
             f"callable={module_info.get('cls_or_fn_name')}"

@@ -61,38 +61,11 @@ containers:
 {{ setup_script | indent(8, true) }}
 
     env:
-      # Note: POD_NAME, POD_NAMESPACE, POD_IP are derived in code without Downward API:
-      # - POD_NAME: from hostname (K8s sets hostname to pod name)
-      # - POD_NAMESPACE: from /var/run/secrets/kubernetes.io/serviceaccount/namespace
-      # - POD_IP: from resolving hostname
-      # See http_server.py _get_pod_name(), _get_pod_namespace(), _get_pod_ip()
-
-      # KT_SERVICE is set from labels for log streaming identification
-      - name: KT_SERVICE
-        valueFrom:
-          fieldRef:
-            fieldPath: metadata.labels['kubetorch.com/service']
-      # Install namespace for constructing controller URL
-      - name: KT_INSTALL_NAMESPACE
-        value: "{{ install_namespace }}"
-      - name: UV_LINK_MODE
-        value: "copy"  # Suppress the hardlink warning
-      - name: KT_LOG_STREAMING_ENABLED
-        value: "{{ log_streaming_enabled }}"
-      - name: KT_METRICS_ENABLED
-        value: "{{ metrics_enabled }}"
-      - name: KT_SERVER_PORT
-        value: "{{ server_port }}"
-      - name: KT_FREEZE
-        value: "{{ freeze }}"
-      {% if inactivity_ttl is not none %}
-      - name: KT_INACTIVITY_TTL
-        value: "{{ inactivity_ttl }}"
-      {% endif %}
-      {% for key, value in config_env_vars.items() %}
-      - name: {{ key }}
-        value: "{{ value }}"
-      {% endfor %}
+      # Note: Most KT_* env vars are now exported in the setup script (kt_setup_template.sh.j2)
+      # instead of being baked into the manifest. This minimizes manifest size and avoids
+      # pod recreation when config values change.
+      # POD_NAME, POD_NAMESPACE, POD_IP are derived in code at runtime.
+      # See http_server.py _populate_pod_env_vars()
       {% if env_vars is not none and env_vars|length > 0 %}
       {% for key, value in env_vars.items() %}
       - name: {{ key }}
