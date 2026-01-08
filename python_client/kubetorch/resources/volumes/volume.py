@@ -27,17 +27,22 @@ class Volume:
         storage_class: str = None,
         access_mode: str = None,
         namespace: str = None,
+        volume_name: str = None,
     ):
         """
         Kubetorch Volume object, specifying persistent storage properties.
 
         Args:
-            name (str): Name of the volume.
+            name (str): Name of the volume/PVC.
             size (str): Size of the volume.
             mount_path (str): Mount path for the volume.
             storage_class (str, optional): Storage class to use for the volume.
+                Ignored if volume_name is specified.
             access_mode (str, optional): Access mode for the volume.
             namespace (str, optional): Namespace for the volume.
+            volume_name (str, optional): Name of an existing PersistentVolume (PV) to bind to.
+                When specified, creates a PVC that binds to this specific PV instead of
+                using dynamic provisioning via a storage class.
 
         Example:
 
@@ -57,6 +62,15 @@ class Volume:
                 access_mode="ReadWriteMany"
             )
 
+            # Bind to an existing PV
+            kt.Volume(
+                name="team-nfs-pvc",
+                size="20Gi",
+                mount_path="/data",
+                volume_name="team-nfs-pv",
+                access_mode="ReadWriteMany"
+            )
+
             # uv cache
             compute = kt.Compute(
                 cpus=".01",
@@ -72,6 +86,7 @@ class Volume:
         self.size = size
         self.access_mode = access_mode or DEFAULT_VOLUME_ACCESS_MODE
         self.mount_path = mount_path
+        self.volume_name = volume_name
 
         self.name = name
         self.namespace = namespace or globals.config.namespace
@@ -98,6 +113,10 @@ class Volume:
     @cached_property
     def storage_class(self) -> str:
         """Get storage class - either specified or cluster default"""
+        # When binding to an existing PV, storage class should be empty
+        if self.volume_name:
+            return ""
+
         if self._storage_class:
             return self._storage_class
 
@@ -165,13 +184,13 @@ class Volume:
         try:
             pvc = controller_client.get_pvc(namespace, pvc_name)
 
-            storage_class = pvc["spec"]["storageClassName"]
+            storage_class = pvc["spec"].get("storageClassName")
             size = pvc["spec"]["resources"]["requests"]["storage"]
             access_modes = pvc["spec"].get("accessModes", [])
             access_mode = access_modes[0] if access_modes else DEFAULT_VOLUME_ACCESS_MODE
+            volume_name = pvc["spec"].get("volumeName")
 
             # Load mount_path from annotation
-
             annotations = pvc.get("metadata", {}).get("annotations") or {}
             annotation_mount_path = annotations.get("kubetorch.com/mount-path")
 
@@ -186,9 +205,13 @@ class Volume:
                 size=size,
                 access_mode=access_mode,
                 namespace=namespace,
+                volume_name=volume_name,
             )
 
-            logger.debug(f"Loaded existing PVC {pvc_name} with storage_class={storage_class}")
+            if volume_name:
+                logger.debug(f"Loaded existing PVC {pvc_name} bound to PV {volume_name}")
+            else:
+                logger.debug(f"Loaded existing PVC {pvc_name} with storage_class={storage_class}")
             return vol
 
         except Exception as e:
@@ -198,14 +221,18 @@ class Volume:
 
     def config(self) -> Dict[str, str]:
         """Get configuration for this volume"""
-        return {
+        config = {
             "name": self.name,
             "size": self.size,
             "access_mode": self.access_mode,
             "mount_path": self.mount_path,
-            "storage_class": self.storage_class,
             "namespace": self.namespace,
         }
+        if self.volume_name:
+            config["volume_name"] = self.volume_name
+        else:
+            config["storage_class"] = self.storage_class
+        return config
 
     def pod_template_spec(self) -> dict:
         """Convert to Kubernetes volume spec for pod template"""
@@ -225,7 +252,12 @@ class Volume:
                 return existing_pvc
 
             logger.info(f"Creating new PVC with name: {self.pvc_name}")
-            storage_class_name = self.storage_class
+
+            # When binding to an existing PV, use empty storage class and set volumeName
+            if self.volume_name:
+                storage_class_name = ""
+            else:
+                storage_class_name = self.storage_class
 
             pvc_body = {
                 "apiVersion": "v1",
@@ -245,12 +277,22 @@ class Volume:
                 },
             }
 
+            # Add volumeName to bind to a specific PV
+            if self.volume_name:
+                pvc_body["spec"]["volumeName"] = self.volume_name
+
             created_pvc = self.controller_client.create_pvc(self.namespace, pvc_body)
 
-            logger.info(
-                f"Successfully created PVC {self.pvc_name} in namespace {self.namespace} with "
-                f"storage class {storage_class_name}"
-            )
+            if self.volume_name:
+                logger.info(
+                    f"Successfully created PVC {self.pvc_name} in namespace {self.namespace} "
+                    f"bound to PV {self.volume_name}"
+                )
+            else:
+                logger.info(
+                    f"Successfully created PVC {self.pvc_name} in namespace {self.namespace} with "
+                    f"storage class {storage_class_name}"
+                )
             return created_pvc
 
         except Exception as e:
