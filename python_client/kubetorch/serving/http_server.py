@@ -179,6 +179,27 @@ def _get_pod_ip() -> str:
         return ""
 
 
+def _populate_pod_env_vars():
+    """Populate POD_NAME, POD_NAMESPACE, POD_IP env vars at startup.
+
+    These were previously set via Kubernetes Downward API in the pod template.
+    Now we derive them locally and set them as env vars so they're available
+    throughout the codebase and in user code.
+    """
+    if not os.environ.get("POD_NAME"):
+        os.environ["POD_NAME"] = _get_pod_name()
+    if not os.environ.get("POD_NAMESPACE"):
+        os.environ["POD_NAMESPACE"] = _get_pod_namespace()
+    if not os.environ.get("POD_IP"):
+        pod_ip = _get_pod_ip()
+        if pod_ip:
+            os.environ["POD_IP"] = pod_ip
+
+
+# Populate pod env vars at module load time
+_populate_pod_env_vars()
+
+
 class ControllerWebSocket:
     """WebSocket client for receiving metadata from the kubetorch controller.
 
