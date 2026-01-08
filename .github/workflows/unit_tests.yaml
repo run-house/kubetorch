@@ -82,29 +82,26 @@ jobs:
           TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)"
           echo "TEST_HASH=$TEST_HASH" >> $GITHUB_ENV
 
-      - name: Update kt config with controller test namespace, if exists
+      - name: Generate Namespace value from branch name
         shell: bash
-        id: controller-ns
+        id: generate_ns
         run: |
           BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
 
-          # Extract part after 'controller/' or 'data_store/'
-          if [[ "$BRANCH" == *"controller/"* ]]; then
-            RAW_NAMESPACE="${BRANCH#*controller/}"
-            RAW_NAMESPACE="${RAW_NAMESPACE#controller/}"
-          elif [[ "$BRANCH" == *"data_store/"* ]]; then
-            RAW_NAMESPACE="${BRANCH#*data_store/}"
-            RAW_NAMESPACE="${RAW_NAMESPACE#data_store/}"
+          # create namespace only of the branch in in a format {namespace}---{featurename}".
+          # Namespace will be {namespace}
+
+          if [[ "$BRANCH" == *"---"* ]]; then
+            # Get part before '---'
+            NAMESPACE="${BRANCH%%---*}"
+            # If branch has a slash (e.g., sb/prefix---feature), keep what's after '/'
+            NAMESPACE="${NAMESPACE##*/}"
+          else
+            NAMESPACE="${BRANCH##*/}"
           fi
 
-          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
-
-
-          # Remove optional ':flag'
-          RAW_NAMESPACE="${RAW_NAMESPACE%%/*}"
-
           # Sanitize for k8s namespace
-          NAMESPACE=$(echo "$RAW_NAMESPACE" \
+          NAMESPACE=$(echo "$NAMESPACE" \
             | tr '[:upper:]' '[:lower:]' \
             | sed 's#[^a-z0-9]#-#g' \
             | sed 's/--*/-/g' \
@@ -113,11 +110,19 @@ jobs:
 
           echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
 
+      - name: Update kt config with controller test namespace, if exists
+        shell: bash
+        id: controller-ns
+        run: |
+
+          NAMESPACE=${{ steps.generate_ns.outputs.NAMESPACE }}
+
           # Check if namespace exists
           if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
             echo "Namespace $NAMESPACE exists, setting kt config"
             kt config set namespace "$NAMESPACE"
             kt config set install_namespace "$NAMESPACE"
+            echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
           else
             echo "Namespace $NAMESPACE does not exist, kt config remains unchanged"
             echo "NAMESPACE=kubetorch" >> $GITHUB_OUTPUT
