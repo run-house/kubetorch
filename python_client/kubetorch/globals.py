@@ -513,11 +513,6 @@ class ControllerClient:
         """Delete a PersistentVolumeClaim"""
         return self.delete(f"/api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}", ignore_not_found=True)
 
-    def list_pvcs(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List PersistentVolumeClaims"""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/api/v1/namespaces/{namespace}/persistentvolumeclaims", params=params)
-
     # Services
     def create_service(self, namespace: str, body: Dict[str, Any], params: Dict = None) -> Dict[str, Any]:
         """Create a Service"""
@@ -593,8 +588,7 @@ class ControllerClient:
 
     def list_secrets(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
         """List Secrets"""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/api/v1/namespaces/{namespace}/secrets", params=params)
+        return self.list_resources("secrets", namespace=namespace, label_selector=label_selector)
 
     def delete_secret(self, namespace: str, name: str) -> Dict[str, Any]:
         """Delete a Secret"""
@@ -608,8 +602,7 @@ class ControllerClient:
     # Pods
     def list_pods(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
         """List Pods"""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/api/v1/namespaces/{namespace}/pods", params=params)
+        return self.list_resources("pods", namespace=namespace, label_selector=label_selector)
 
     def get_pod(self, namespace: str, name: str) -> Dict[str, Any]:
         """Get a Pod"""
@@ -656,13 +649,12 @@ class ControllerClient:
 
     def list_namespaces(self) -> Dict[str, Any]:
         """List Namespaces"""
-        return self.get("/api/v1/namespaces")
+        return self.list_resources("namespaces")
 
     # Nodes
     def list_nodes(self, label_selector: Optional[str] = None) -> Dict[str, Any]:
         """List Nodes"""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get("/api/v1/nodes", params=params)
+        return self.list_resources("nodes", label_selector=label_selector)
 
     def get_node(self, name: str) -> Dict[str, Any]:
         """Get a Node"""
@@ -671,23 +663,11 @@ class ControllerClient:
     # StorageClasses
     def list_storage_classes(self) -> Dict[str, Any]:
         """List StorageClasses"""
-        return self.get("/apis/storage.k8s.io/v1/storageclasses")
+        return self.list_resources("storageclasses")
 
     def get_storage_class(self, name: str) -> Dict[str, Any]:
         """Get a StorageClass"""
         return self.get(f"/apis/storage.k8s.io/v1/storageclasses/{name}")
-
-    # Events
-    def list_events(self, namespace: str, field_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List Kubernetes Events via controller."""
-        params = {"field_selector": field_selector} if field_selector else {}
-        return self.get(f"/api/v1/namespaces/{namespace}/events", params=params)
-
-    # ConfigMaps
-    def list_config_maps(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List ConfigMaps"""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/api/v1/namespaces/{namespace}/configmaps", params=params)
 
     def get_config_map(self, namespace: str, name: str) -> Dict[str, Any]:
         """Get a ConfigMap"""
@@ -762,15 +742,9 @@ class ControllerClient:
             f"/apis/{group}/{version}/namespaces/{namespace}/{plural}", params=params, ignore_not_found=ignore_not_found
         )
 
-    def list_ingresses(self, namespace: str, label_selector: str = None):
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/apis/networking.k8s.io/v1/namespaces/{namespace}/ingresses", params=params)
-
-    # ReplicaSets
-    def list_namespaced_replica_set(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List ReplicaSets in a namespace."""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/apis/apps/v1/namespaces/{namespace}/replicasets", params=params)
+    def list_ingresses(self, namespace: str, label_selector: str = None) -> Dict[str, Any]:
+        """List Ingresses"""
+        return self.list_resources("ingresses", namespace=namespace, label_selector=label_selector)
 
     def get_namespaced_replica_set(self, namespace: str, name: str) -> Dict[str, Any]:
         """Get a ReplicaSet"""
@@ -1000,6 +974,63 @@ class ControllerClient:
             params["resource_type"] = resource_type
         return self.get(
             f"/controller/discover/{namespace}/{name}/status",
+            params=params if params else None,
+        )
+
+    def list_resources(
+        self,
+        resource_type: str,
+        namespace: str = None,
+        namespaces: List[str] = None,
+        label_selector: str = None,
+        field_selector: str = None,
+        include_events: bool = False,
+    ) -> Dict[str, Any]:
+        """List Kubernetes resources with Kubetorch-specific filtering.
+
+        This endpoint consolidates multiple K8s API calls into a single request,
+        applying Kubetorch-specific filters and returning only relevant data.
+
+        Supported resource types (namespace-scoped):
+        - pvcs: All PersistentVolumeClaims
+        - volumes: PVCs with kubetorch.com/mount-path annotation (Kubetorch volumes only)
+        - secrets: Secrets
+        - pods: Pods
+        - replicasets: ReplicaSets with optional events (for error checking)
+        - configmaps: ConfigMaps
+        - events: Kubernetes events (supports field_selector)
+        - ingresses: Ingresses
+
+        Supported resource types (cluster-scoped, namespace param ignored):
+        - namespaces: Namespaces
+        - nodes: Nodes
+        - storageclasses: StorageClasses
+
+        Args:
+            resource_type (str): Type of resource to list.
+            namespace (str, optional): Single namespace to search.
+            namespaces (List[str], optional): List of namespaces to search.
+            label_selector (str, optional): Kubernetes label selector to filter resources.
+            field_selector (str, optional): Kubernetes field selector (for events).
+            include_events (bool, optional): Include events for resources that support it.
+
+        Returns:
+            Dict with 'items' list containing resource data.
+        """
+        params = {}
+        if namespace:
+            params["namespace"] = namespace
+        if namespaces:
+            params["namespaces"] = ",".join(namespaces)
+        if label_selector:
+            params["label_selector"] = label_selector
+        if field_selector:
+            params["field_selector"] = field_selector
+        if include_events:
+            params["include_events"] = "true"
+
+        return self.get(
+            f"/controller/list/{resource_type}",
             params=params if params else None,
         )
 

@@ -228,8 +228,8 @@ def test_pvc_list_with_label_selector():
     """Test GET /api/v1/namespaces/{ns}/persistentvolumeclaims with label_selector"""
     controller_client = kt.globals.controller_client()
 
-    result = controller_client.list_pvcs(
-        namespace=kt.config.namespace, label_selector=f"kubetorch.com/username={kt.config.username}"
+    result = controller_client.list_resources(
+        "pvcs", namespace=kt.config.namespace, label_selector=f"kubetorch.com/username={kt.config.username}"
     )
 
     assert "items" in result
@@ -471,13 +471,12 @@ def test_all_list_operations_structure():
     namespace = kt.config.namespace
 
     # Only test namespace-scoped resources (controller has namespace-level permissions)
+    # Direct client methods
     list_ops = [
-        ("list_pvcs", {"namespace": namespace}),
         ("list_services", {"namespace": namespace}),
         ("list_deployments", {"namespace": namespace}),
         ("list_secrets", {"namespace": namespace}),
         ("list_pods", {"namespace": namespace}),
-        ("list_config_maps", {"namespace": namespace}),
         ("list_storage_classes", {}),  # Cluster-scoped but read-only, usually allowed
     ]
 
@@ -488,6 +487,15 @@ def test_all_list_operations_structure():
         assert result is not None, f"{method_name} returned None"
         assert "items" in result, f"{method_name} missing 'items'"
         assert isinstance(result["items"], list), f"{method_name} items not a list"
+
+    # Namespace-scoped resources available via list_resources endpoint
+    ns_resource_types = ["pvcs", "configmaps", "secrets", "pods", "replicasets", "events", "ingresses"]
+    for resource_type in ns_resource_types:
+        result = controller_client.list_resources(resource_type, namespace=namespace)
+
+        assert result is not None, f"list_resources({resource_type}) returned None"
+        assert "items" in result, f"list_resources({resource_type}) missing 'items'"
+        assert isinstance(result["items"], list), f"list_resources({resource_type}) items not a list"
 
 
 # =============================================================================
@@ -667,11 +675,11 @@ def test_configmap_operations():
     controller_client = kt.globals.controller_client()
     namespace = remote_fn.compute.namespace
 
-    configmaps = controller_client.list_config_maps(namespace=namespace)
+    configmaps = controller_client.list_resources("configmaps", namespace=namespace)
     assert "items" in configmaps
 
-    cms = controller_client.list_config_maps(
-        namespace=namespace, label_selector=f"kubetorch.com/service={service_name}"
+    cms = controller_client.list_resources(
+        "configmaps", namespace=namespace, label_selector=f"kubetorch.com/service={service_name}"
     )
 
     if len(cms["items"]) > 0:
@@ -729,14 +737,14 @@ def test_events_operations():
     controller_client = kt.globals.controller_client()
     namespace = remote_fn.compute.namespace
 
-    events = controller_client.list_events(namespace=namespace)
+    events = controller_client.list_resources("events", namespace=namespace)
     assert "items" in events
 
     pods = controller_client.list_pods(namespace=namespace, label_selector=f"kubetorch.com/service={service_name}")
     if len(pods["items"]) > 0:
         pod_name = pods["items"][0]["metadata"]["name"]
-        pod_events = controller_client.list_events(
-            namespace=namespace, field_selector=f"involvedObject.name={pod_name}"
+        pod_events = controller_client.list_resources(
+            "events", namespace=namespace, field_selector=f"involvedObject.name={pod_name}"
         )
         assert "items" in pod_events
 
@@ -758,8 +766,8 @@ def test_replicaset_operations():
     namespace = remote_fn.compute.namespace
     actual_service_name = remote_fn.service_name
 
-    replicasets = controller_client.list_namespaced_replica_set(
-        namespace=namespace, label_selector=f"kubetorch.com/service={actual_service_name}"
+    replicasets = controller_client.list_resources(
+        "replicasets", namespace=namespace, label_selector=f"kubetorch.com/service={actual_service_name}"
     )
     assert "items" in replicasets
     assert len(replicasets["items"]) > 0

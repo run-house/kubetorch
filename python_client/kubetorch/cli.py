@@ -59,7 +59,7 @@ from kubetorch import globals
 from kubetorch.config import ENV_MAPPINGS
 from kubetorch.serving.utils import DEFAULT_DEBUG_PORT
 
-from .constants import BULLET_UNICODE, DEFAULT_TAIL_LENGTH, KT_MOUNT_FOLDER
+from .constants import BULLET_UNICODE, DEFAULT_TAIL_LENGTH
 
 try:
     from .internal.cli import register_internal_commands
@@ -840,7 +840,7 @@ def kt_list(
 
             volumes_display = load_kubetorch_volumes_from_pods(pods)
 
-            # Get resources from revision
+            # Get resources from revision (pre-fetched by discover_services)
             cpu = memory = gpu = None
             if kind == "ksvc":
                 cond = status_data.get("conditions", [{}])[0]
@@ -849,23 +849,12 @@ def kt_list(
                     "True": "[green]Ready[/green]",
                     "Unknown": "[yellow]Creating[/yellow]",
                 }.get(status, "[red]Failed[/red]")
-                rev_name = status_data.get("latestCreatedRevisionName")
-                if rev_name:
-                    try:
-                        rev = globals.controller_client().get_namespaced_custom_object(
-                            group="serving.knative.dev",
-                            version="v1",
-                            namespace=namespace,
-                            plural="revisions",
-                            name=rev_name,
-                        )
-                        container = rev["spec"]["containers"][0]
-                        reqs = container.get("resources", {}).get("requests", {})
-                        cpu = reqs.get("cpu")
-                        memory = reqs.get("memory")
-                        gpu = reqs.get("nvidia.com/gpu") or reqs.get("gpu")
-                    except Exception as e:
-                        logger.warning(f"Could not get revision for {name}: {e}")
+                # Use pre-fetched resource_requests from `discover_services`
+                resource_requests = svc.get("resource_requests", {})
+                if resource_requests:
+                    cpu = resource_requests.get("cpu")
+                    memory = resource_requests.get("memory")
+                    gpu = resource_requests.get("gpu")
             elif kind == "selector":
                 # Selector-based resources: status based on actual pods found via selector
                 num_pods = len(pods)
@@ -1682,32 +1671,22 @@ def kt_volumes(
     if action == VolumeAction.list:
         try:
             if all_namespaces:
-                # Controller doesn't have all-namespaces endpoint, so we need to list from each namespace
-                # Get list of allowed namespaces from config (or use common defaults)
                 allowed_namespaces = globals.config.deployment_namespaces or ["default", "kubetorch"]
-                all_pvcs = []
-                for ns in allowed_namespaces:
-                    try:
-                        result = controller_client.list_pvcs(ns)
-                        all_pvcs.extend(result.get("items", []))
-                    except Exception:
-                        # Skip namespaces that don't exist or we don't have access to
-                        pass
-                pvcs_items = all_pvcs
+                result = controller_client.list_resources(
+                    resource_type="volumes",
+                    namespaces=allowed_namespaces,
+                )
                 title = "Kubetorch Volumes (All Namespaces)"
             else:
-                result = controller_client.list_pvcs(target_namespace)
-                pvcs_items = result.get("items", [])
+                result = controller_client.list_resources(
+                    resource_type="volumes",
+                    namespace=target_namespace,
+                )
                 title = f"Kubetorch Volumes (Namespace: {target_namespace})"
 
-            # List all Kubetorch PVCs
-            kubetorch_pvcs = [
-                pvc
-                for pvc in pvcs_items
-                if (pvc.get("metadata", {}).get("annotations") or {}).get("kubetorch.com/mount-path")
-            ]
+            volumes = result.get("items", [])
 
-            if not kubetorch_pvcs:
+            if not volumes:
                 if all_namespaces:
                     console.print("[yellow]No volumes found in all namespaces[/yellow]")
                 else:
@@ -1725,33 +1704,23 @@ def kt_volumes(
             table.add_column("Access Mode", style="white")
             table.add_column("Mount Path", style="dim")
 
-            for pvc in kubetorch_pvcs:
-                # Extract volume name from PVC name
-                volume_name = pvc["metadata"]["name"]
-                status = pvc["status"]["phase"]
-                size = pvc["spec"]["resources"]["requests"].get("storage", "Unknown")
-                storage_class = pvc["spec"].get("storageClassName") or "Default"
-                access_mode = pvc["spec"]["accessModes"][0] if pvc["spec"].get("accessModes") else "Unknown"
-
-                # Get mount path from annotations
-                annotations = pvc["metadata"].get("annotations") or {}
-                mount_path_display = annotations.get("kubetorch.com/mount-path", f"/{KT_MOUNT_FOLDER}/{volume_name}")
-
+            for vol in volumes:
+                status = vol.get("status", "Unknown")
                 status_color = "green" if status == "Bound" else "yellow" if status == "Pending" else "red"
 
                 row_data = []
                 if all_namespaces:
-                    row_data.append(pvc["metadata"]["namespace"])
+                    row_data.append(vol.get("namespace", ""))
 
                 row_data.extend(
                     [
-                        volume_name,
-                        pvc["metadata"]["name"],
+                        vol.get("name", ""),
+                        vol.get("name", ""),  # PVC name is same as volume name
                         f"[{status_color}]{status}[/{status_color}]",
-                        size,
-                        storage_class,
-                        access_mode,
-                        mount_path_display,
+                        vol.get("size", "Unknown"),
+                        vol.get("storage_class") or "Default",
+                        vol.get("access_mode", "Unknown"),
+                        vol.get("mount_path", ""),
                     ]
                 )
 
