@@ -8,7 +8,7 @@ from typing import List, Optional, Union
 
 import kubetorch.globals
 from kubetorch.logger import get_logger
-from kubetorch.provisioning.constants import KT_SERVICE_LABEL, KT_USERNAME_LABEL
+from kubetorch.provisioning.constants import KT_SERVICE_LABEL, KT_TEMPLATE_LABEL, KT_USERNAME_LABEL
 from kubetorch.resources.callables.utils import get_local_install_path, locate_working_dir
 from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecretsClient
 from kubetorch.serving.utils import StartupError
@@ -539,7 +539,7 @@ def fetch_resources_for_teardown(
                     # Selector-only pools may have resource_kind (discovered from pods) but no template label
                     resource_kind = pool_info.get("resource_kind")
                     pool_labels = pool_info.get("labels") or {}
-                    is_kt_managed = serving_constants.KT_TEMPLATE_LABEL in pool_labels
+                    is_kt_managed = KT_TEMPLATE_LABEL in pool_labels
 
                     if resource_kind and is_kt_managed:
                         # KT-managed resource: delete the K8s resource
