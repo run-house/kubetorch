@@ -21,9 +21,14 @@ import time
 from queue import Empty
 from typing import Callable, Dict, Optional
 
-import requests
+import httpx
 
 logger = logging.getLogger(__name__)
+
+# Silence httpx/httpcore INFO logs to prevent feedback loop:
+# httpx logs every request -> LogCapture captures it -> pushes to Loki -> httpx logs again
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 class LogCapture:
@@ -94,6 +99,9 @@ class LogCapture:
         # Track if started
         self._started = False
 
+        # HTTP client for connection pooling (reuses TCP connections)
+        self._session: Optional[httpx.Client] = None
+
     def start(self):
         """Start log capture - call early in process startup."""
         if self._started:
@@ -114,8 +122,11 @@ class LogCapture:
         # Redirect root logger to use our interceptor
         self._setup_logging_handler()
 
-        # In queue mode (subprocess), we don't need background threads
+        # In queue mode (subprocess), we don't need background threads or HTTP client
         if not self._queue_mode:
+            # Create HTTP client for connection pooling (reuses TCP connections)
+            self._session = httpx.Client(timeout=5.0)
+
             # Start background flush thread
             self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
             self._flush_thread.start()
@@ -138,6 +149,14 @@ class LogCapture:
             self._flush_now()
         sys.stdout = self._original_stdout
         sys.stderr = self._original_stderr
+
+        # Close HTTP session
+        if self._session is not None:
+            try:
+                self._session.close()
+            except Exception:
+                pass
+            self._session = None
 
         # Shutdown manager if we created one
         if self._manager is not None:
@@ -231,8 +250,9 @@ class LogCapture:
                     "levelname": level,
                 }
             )
-            if len(self._buffer) >= self.batch_size:
-                self._flush_now()
+            # Don't flush here - let the background thread handle it.
+            # Calling _flush_now() here would block the calling thread,
+            # which could be the async event loop.
 
     def _setup_logging_handler(self):
         """Add handler to root logger that feeds into our capture."""
@@ -290,11 +310,11 @@ class LogCapture:
         payload = {"streams": list(streams.values())}
 
         try:
-            requests.post(
-                f"{self.log_store_url}/loki/api/v1/push",
-                json=payload,
-                timeout=5,
-            )
+            if self._session:
+                self._session.post(
+                    f"{self.log_store_url}/loki/api/v1/push",
+                    json=payload,
+                )
         except Exception as e:
             # Log to original stderr (don't recurse)
             self._original_stderr.write(f"Failed to push logs to log store: {e}\n")

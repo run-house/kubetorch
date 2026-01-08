@@ -1240,13 +1240,14 @@ async def ws_reload(websocket: WebSocket):
                 os.environ["KT_DISTRIBUTED_CONFIG"] = json.dumps(distributed_config) if distributed_config else "None"
                 logger.info("Set KT_DISTRIBUTED_CONFIG for selector-only mode")
 
-        # Run the reload
+        # Run the reload in a thread pool to avoid blocking the event loop
+        # (run_image_setup does rsync, file I/O, and potentially time.sleep)
         deployed_time = (
             datetime.fromisoformat(deployed_as_of).timestamp()
             if deployed_as_of
             else datetime.now(timezone.utc).timestamp()
         )
-        run_image_setup(deployed_time)
+        await run_in_executor_with_context(None, run_image_setup, deployed_time)
         _LAST_DEPLOYED = deployed_time
 
         # Send acknowledgment back to controller
