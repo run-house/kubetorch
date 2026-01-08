@@ -341,26 +341,34 @@ class LogCapture:
 class _StreamInterceptor:
     """Intercepts writes to stdout/stderr."""
 
+    # Thread-local flag to detect when we're inside a logging emit
+    # This replaces expensive sys._getframe() stack walking
+    _in_logging_emit = threading.local()
+
     def __init__(self, original, log_capture: LogCapture, stream_name: str):
         self.original = original
         self.log_capture = log_capture
         self.stream_name = stream_name
 
-    def _is_from_logging(self):
-        """Check if the current write call is coming from the logging system."""
-        frame = sys._getframe()
-        while frame:
-            if frame.f_globals.get("__name__", "").startswith("logging"):
-                return True
-            frame = frame.f_back
-        return False
+    @classmethod
+    def set_in_logging(cls, value: bool):
+        """Set flag indicating we're inside logging handler emit."""
+        cls._in_logging_emit.active = value
+
+    @classmethod
+    def is_in_logging(cls) -> bool:
+        """Check if we're inside logging handler emit."""
+        return getattr(cls._in_logging_emit, "active", False)
 
     def write(self, msg: str):
         # Always forward to original (kubectl logs, user handlers)
         self.original.write(msg)
+        # Flush immediately to ensure output appears in kubectl logs
+        # Container stdout may be fully buffered (not line-buffered)
+        self.original.flush()
 
-        # Skip if from logging system (already captured via handler)
-        if self._is_from_logging():
+        # Skip if from logging system (already captured via _LogCaptureHandler)
+        if self.is_in_logging():
             return
 
         # Also capture for log store (skip empty lines)
@@ -409,28 +417,34 @@ class _LogCaptureHandler(logging.Handler):
         self._time_formatter = logging.Formatter(datefmt="%Y-%m-%d %H:%M:%S")
 
     def emit(self, record):
-        # Get request_id from record if set by filter, otherwise from context variable.
-        # Filters on root logger don't run for records that propagate from child loggers,
-        # so we need to check the context variable directly.
-        request_id = getattr(record, "request_id", None)
-        if request_id is None or request_id == "-":
-            try:
-                from .utils import request_id_ctx_var
+        # Set flag so _StreamInterceptor knows not to double-capture
+        # (logging output also goes through StreamHandler -> stdout -> interceptor)
+        _StreamInterceptor.set_in_logging(True)
+        try:
+            # Get request_id from record if set by filter, otherwise from context variable.
+            # Filters on root logger don't run for records that propagate from child loggers,
+            # so we need to check the context variable directly.
+            request_id = getattr(record, "request_id", None)
+            if request_id is None or request_id == "-":
+                try:
+                    from .utils import request_id_ctx_var
 
-                request_id = request_id_ctx_var.get("-")
-            except Exception:
-                request_id = "-"
+                    request_id = request_id_ctx_var.get("-")
+                except Exception:
+                    request_id = "-"
 
-        # Format timestamp
-        asctime = self._time_formatter.formatTime(record, self._time_formatter.datefmt)
+            # Format timestamp
+            asctime = self._time_formatter.formatTime(record, self._time_formatter.datefmt)
 
-        self.log_capture.add_log(
-            message=self.format(record),
-            level=record.levelname,
-            request_id=request_id,
-            name=record.name,
-            asctime=asctime,
-        )
+            self.log_capture.add_log(
+                message=self.format(record),
+                level=record.levelname,
+                request_id=request_id,
+                name=record.name,
+                asctime=asctime,
+            )
+        finally:
+            _StreamInterceptor.set_in_logging(False)
 
 
 # Global instance for easy access

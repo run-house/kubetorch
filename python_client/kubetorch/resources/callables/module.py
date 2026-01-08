@@ -704,9 +704,13 @@ class Module:
                 # Additional health check to ensure HTTP server is ready
                 self._wait_for_http_health()
         finally:
-            # Stop log streaming
+            # Stop log streaming and wait for it to finish
+            # This prevents overlap with HTTPClient's log streaming during function calls
             if log_thread:
                 stop_event.set()
+                # Wait for log stream to fully stop
+                # _stream_launch_logs waits for inner threads (grace_period + 1.0), so we need extra buffer
+                log_thread.join(timeout=self.logging_config.grace_period + 2.0)
 
     async def _launch_service_async(
         self,
@@ -956,47 +960,50 @@ class Module:
             encoded_event_query = urllib.parse.quote_plus(event_query)
             logger.debug(f"Streaming launch logs and events for service {self.service_name}")
 
-            def start_log_threads(host, port):
-                def run_pod_logs():
-                    self._run_log_stream(
-                        request_id,
-                        stop_event,
-                        host,
-                        port,
-                        encoded_pod_query,
-                        deployment_timestamp,
-                        namespace=self.namespace,
-                        dedup=True,
-                    )
-
-                def run_event_logs():
-                    self._run_log_stream(
-                        request_id,
-                        stop_event,
-                        host,
-                        port,
-                        encoded_event_query,
-                        deployment_timestamp,
-                        namespace=self.namespace,
-                    )
-
-                pod_thread = threading.Thread(target=run_pod_logs, daemon=True)
-
-                pod_thread.start()
-
-                # Only start event log thread if include_events is enabled
-                if self.logging_config.include_events:
-                    event_thread = threading.Thread(target=run_event_logs, daemon=True)
-                    event_thread.start()
-                    event_thread.join(timeout=1.0)
-
-                # Don't block indefinitely on joins - use short timeouts
-                pod_thread.join(timeout=1.0)
-
             base_url = service_url()
             host, port = extract_host_port(base_url)
             logger.debug(f"Streaming launch logs with url={base_url} host={host} and local port {port}")
-            start_log_threads(host, port)
+
+            def run_pod_logs():
+                self._run_log_stream(
+                    request_id,
+                    stop_event,
+                    host,
+                    port,
+                    encoded_pod_query,
+                    deployment_timestamp,
+                    namespace=self.namespace,
+                    dedup=True,
+                )
+
+            def run_event_logs():
+                self._run_log_stream(
+                    request_id,
+                    stop_event,
+                    host,
+                    port,
+                    encoded_event_query,
+                    deployment_timestamp,
+                    namespace=self.namespace,
+                )
+
+            # Start log threads (NOT daemon - we need to wait for them to finish)
+            threads = []
+            pod_thread = threading.Thread(target=run_pod_logs)
+            pod_thread.start()
+            threads.append(pod_thread)
+
+            # Only start event log thread if include_events is enabled
+            if self.logging_config.include_events:
+                event_thread = threading.Thread(target=run_event_logs)
+                event_thread.start()
+                threads.append(event_thread)
+
+            # Wait for stop event, then wait for threads to finish their grace period
+            stop_event.wait()
+            grace_timeout = self.logging_config.grace_period + 1.0
+            for t in threads:
+                t.join(timeout=grace_timeout)
 
         except Exception as e:
             logger.error(f"Failed to stream launch logs: {e}")
