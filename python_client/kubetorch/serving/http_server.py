@@ -1798,25 +1798,25 @@ async def execute_callable_async(
         logger.info(f"Debugging remote callable {callable_name} on port {debug_port}")
         deep_breakpoint(debug_port, debug_mode)
 
+    # Check if profiling is enabled
+    profiler_config = None
     if profiler:
         from kubetorch.globals import ProfilerConfig
-        from kubetorch.serving.profiling import run_with_profile
 
         profiler_config = ProfilerConfig(**profiler)
 
-        request_id = request_id_ctx_var.get("-")
-        logger.debug(
-            f"Running {cls_or_fn_name} with profiler: {profiler_config} (callable_name={callable_name}, request_id={request_id})"
-        )
+    if profiler_config and not profiler_config._disabled:
+        from kubetorch.serving.profiling import run_pytorch_profile_async, run_with_profile
 
-        if is_async:
-            # Async callable with profiler - run_with_profile doesn't support async yet
-            # Run without profiling and log warning
-            logger.warning(f"Profiling async callables not yet supported, running {callable_name} without profiling")
-            fn_output = await user_method(*args, **kwargs)
-            profiler_output = None
+        # Run with profiling
+        if is_async and profiler_config.profiler_type == "pytorch":
+            logger.debug(f"Running async {callable_name} with PyTorch profiler")
+            fn_output, profiler_output = await run_pytorch_profile_async(
+                user_method, *args, profiler=profiler_config, callable_name=callable_name, **kwargs
+            )
         else:
-            # Sync callable with profiler
+            # Sync callable, or async with py-spy (runs in subprocess with asyncio.run())
+            logger.debug(f"Running {callable_name} with {profiler_config.profiler_type} profiler")
             fn_output, profiler_output = run_with_profile(
                 user_method, *args, profiler=profiler_config, callable_name=callable_name, **kwargs
             )

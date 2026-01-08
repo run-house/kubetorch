@@ -1060,7 +1060,7 @@ class HTTPClient:
             response.raise_for_status()
             deserialize_response = _deserialize_response(response, serialization)
 
-            if profiler:
+            if profiler and not getattr(profiler, "_disabled", False):
                 from kubetorch.serving.profiling import parse_profiler_output
 
                 fn_output = parse_profiler_output(
@@ -1111,19 +1111,20 @@ class HTTPClient:
 
             profiler_dict = body.get("profiler", None)
             if profiler_dict:
-                from kubetorch.serving.profiling import parse_profiler_output
-
                 profiler = ProfilerConfig(**profiler_dict)
-                fn_output = parse_profiler_output(
-                    call_output=result,
-                    profiler=profiler,
-                    service_name=self.service_name,
-                    request_id=request_id,
-                    distribution_type=self.compute.distributed_config.get("distribution_type")
-                    if self.compute.distributed_config
-                    else None,
-                )
-                return fn_output
+                if not getattr(profiler, "_disabled", False):
+                    from kubetorch.serving.profiling import parse_profiler_output
+
+                    fn_output = parse_profiler_output(
+                        call_output=result,
+                        profiler=profiler,
+                        service_name=self.service_name,
+                        request_id=request_id,
+                        distribution_type=self.compute.distributed_config.get("distribution_type")
+                        if self.compute.distributed_config
+                        else None,
+                    )
+                    return fn_output
 
             return result
         finally:
