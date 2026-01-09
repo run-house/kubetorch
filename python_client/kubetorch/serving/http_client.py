@@ -9,13 +9,14 @@ from datetime import datetime
 from typing import Literal, Union
 
 import httpx
-import requests
 import websockets
 
 from kubetorch.globals import config, LoggingConfig, MetricsConfig, service_url
 from kubetorch.logger import get_logger
 
 from kubetorch.provisioning.constants import DEFAULT_NGINX_PORT
+
+from kubetorch.serving.global_http_clients import get_sync_client
 
 from kubetorch.serving.utils import (
     _deserialize_response,
@@ -809,7 +810,7 @@ class HTTPClient:
 
         Args:
             stop_event (threading.event or asyncio.Event): A threading.Event or asyncio.Event used to stop collection.
-            http_getter (Callable): Callable that fetches Prometheus data — either sync (`requests.get`)
+            http_getter (Callable): Callable that fetches Prometheus data — either sync (`httpx.Client.get`)
                          or async (`httpx.AsyncClient.get`).
             sleeper (Callable): Callable that sleeps between metric polls — either time.sleep or asyncio.sleep.
             metrics_config (MetricsConfig): User provided configuration controlling metrics collection behavior.
@@ -1001,13 +1002,13 @@ class HTTPClient:
         logger.debug(f"Stopped async metrics for {request_id}")
 
     def stream_metrics(self, stop_event, metrics_config: MetricsConfig = None):
-        """Synchronous GPU/CPU metrics streaming (uses requests)."""
+        """Synchronous GPU/CPU metrics streaming."""
         logger.debug(f"Streaming metrics for {self.service_name}")
         logger.debug(f"Using metrics config: {metrics_config}")
 
         def sync_http_get(url, params):
             try:
-                resp = requests.get(url, params=params, timeout=5.0)
+                resp = get_sync_client().get(url, params=params, timeout=5.0)
                 resp.raise_for_status()
                 try:
                     return resp.json()
