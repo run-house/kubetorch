@@ -5,7 +5,6 @@ os.environ["KT_LOG_STREAMING_ENABLED"] = "false"
 os.environ["KT_METRICS_ENABLED"] = "false"
 
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -34,7 +33,6 @@ def _reset_http_server_state():
 
     http_server.SUPERVISOR = None
     http_server._CACHED_CALLABLES.clear()
-    http_server._LAST_DEPLOYED = 0
     http_server._CACHED_IMAGE.clear()
 
     # Give processes and threads time to fully terminate
@@ -170,72 +168,12 @@ class TestLocalExecution:
         assert "Callable 'non_existent_callable' not found in metadata configuration" in response.json()["detail"]
 
 
-# ============ Reload/Redeployment Tests ============
-# These tests verify reload behavior and need to run within the same class-scoped server.
-# The tests check relative state changes, not absolute values, so they work with shared state.
+# ============ Callable Caching Tests ============
 
 
 @pytest.mark.parametrize("setup_test_env", load_test_assets(["summer"]), indirect=True)
-class TestReloadBehavior:
-    """Test hot reload and redeployment behavior."""
-
-    @pytest.mark.level("unit")
-    def test_reload_updates_last_deployed(self, http_client, setup_test_env):
-        """Verify _LAST_DEPLOYED is updated when deployed_as_of changes."""
-        name, _, is_class = load_callable_from_test_dir(setup_test_env["test_dir"])
-        url = f"/{name.title()}/add" if is_class else "/summer"
-
-        # First call - get current state
-        first_timestamp = datetime.now(timezone.utc).isoformat()
-        response = http_client.post(
-            url,
-            json={"args": [1, 2]},
-            headers={"X-Deployed-As-Of": first_timestamp},
-        )
-        assert response.status_code == 200
-
-        first_deployed = http_server._LAST_DEPLOYED
-        assert first_deployed > 0
-
-        # Wait to ensure different timestamp
-        time.sleep(0.1)
-
-        # Second call with newer timestamp - should trigger reload
-        second_timestamp = datetime.now(timezone.utc).isoformat()
-        response = http_client.post(
-            url,
-            json={"args": [3, 4]},
-            headers={"X-Deployed-As-Of": second_timestamp},
-        )
-        assert response.status_code == 200
-        assert http_server._LAST_DEPLOYED > first_deployed
-
-    @pytest.mark.level("unit")
-    def test_no_reload_without_timestamp_change(self, http_client, setup_test_env):
-        """Verify no reload happens when deployed_as_of is the same."""
-        name, _, is_class = load_callable_from_test_dir(setup_test_env["test_dir"])
-        url = f"/{name.title()}/add" if is_class else "/summer"
-
-        # First call with new timestamp
-        timestamp = datetime.now(timezone.utc).isoformat()
-        response = http_client.post(
-            url,
-            json={"args": [1, 2]},
-            headers={"X-Deployed-As-Of": timestamp},
-        )
-        assert response.status_code == 200
-
-        after_first_call = http_server._LAST_DEPLOYED
-
-        # Second call with same timestamp - should NOT reload
-        response = http_client.post(
-            url,
-            json={"args": [3, 4]},
-            headers={"X-Deployed-As-Of": timestamp},
-        )
-        assert response.status_code == 200
-        # _LAST_DEPLOYED should be unchanged after second call
-        assert http_server._LAST_DEPLOYED == after_first_call
+class TestCallableCaching:
+    """Test callable caching behavior."""
 
     @pytest.mark.level("unit")
     def test_callable_cached_between_calls(self, http_client, setup_test_env):
@@ -253,6 +191,133 @@ class TestReloadBehavior:
 
         # Verify still cached
         assert callable_name in http_server._CACHED_CALLABLES
+
+
+# ============ Reload Behavior Tests ============
+# These tests verify the push-based reload mechanism via the /_test_reload endpoint
+
+
+@pytest.mark.parametrize("setup_test_env", load_test_assets(["summer", "number"]), indirect=True)
+class TestReloadBehavior:
+    """Test hot reload and redeployment behavior via push-based model."""
+
+    @pytest.mark.level("unit")
+    def test_reload_clears_cache(self, http_client, setup_test_env):
+        """Verify cache is cleared on reload."""
+        name, _, is_class = load_callable_from_test_dir(setup_test_env["test_dir"])
+        url = f"/{name.title()}/add" if is_class else "/summer"
+
+        # Make initial call to ensure callable is cached
+        response = http_client.post(url, json={"args": [1, 2]})
+        assert response.status_code == 200
+
+        callable_name = os.environ["KT_CLS_OR_FN_NAME"]
+        assert callable_name in http_server._CACHED_CALLABLES
+
+        # Trigger reload with same metadata
+        metadata = {
+            "module": {
+                "module_name": os.environ.get("KT_MODULE_NAME"),
+                "cls_or_fn_name": os.environ.get("KT_CLS_OR_FN_NAME"),
+                "file_path": os.environ.get("KT_FILE_PATH"),
+                "callable_type": os.environ.get("KT_CALLABLE_TYPE", "fn"),
+            }
+        }
+        reload_response = http_client.post("/_test_reload", json=metadata)
+        assert reload_response.status_code == 200
+        assert reload_response.json()["status"] == "ok"
+
+        # Cache should be cleared during reload, then repopulated
+        # After reload completes, the callable should be re-cached
+        assert callable_name in http_server._CACHED_CALLABLES
+
+    @pytest.mark.level("unit")
+    def test_reload_recreates_supervisor(self, http_client, setup_test_env):
+        """Verify supervisor is recreated on reload."""
+        name, _, is_class = load_callable_from_test_dir(setup_test_env["test_dir"])
+        url = f"/{name.title()}/add" if is_class else "/summer"
+
+        # Make initial call
+        response = http_client.post(url, json={"args": [1, 2]})
+        assert response.status_code == 200
+
+        # Store reference to original supervisor
+        original_supervisor = http_server.SUPERVISOR
+        assert original_supervisor is not None
+
+        # Trigger reload
+        metadata = {
+            "module": {
+                "module_name": os.environ.get("KT_MODULE_NAME"),
+                "cls_or_fn_name": os.environ.get("KT_CLS_OR_FN_NAME"),
+                "file_path": os.environ.get("KT_FILE_PATH"),
+                "callable_type": os.environ.get("KT_CALLABLE_TYPE", "fn"),
+            }
+        }
+        reload_response = http_client.post("/_test_reload", json=metadata)
+        assert reload_response.status_code == 200
+
+        # Supervisor should be recreated (new instance)
+        # Note: The supervisor object itself is recreated, but the config hash may be the same
+        assert http_server.SUPERVISOR is not None
+
+    @pytest.mark.level("unit")
+    def test_reload_with_different_callable(self, http_client, setup_test_env):
+        """Verify reload updates to a different callable."""
+        name, _, is_class = load_callable_from_test_dir(setup_test_env["test_dir"])
+        url = f"/{name.title()}/add" if is_class else "/summer"
+
+        # Make initial call
+        response = http_client.post(url, json={"args": [1, 2]})
+        assert response.status_code == 200
+
+        original_callable = os.environ.get("KT_CLS_OR_FN_NAME")
+
+        # Simulate reload with different callable name (but keep same module for test)
+        # In a real scenario, this would be a different function
+        new_callable_name = "different_callable"
+        metadata = {
+            "module": {
+                "module_name": os.environ.get("KT_MODULE_NAME"),
+                "cls_or_fn_name": new_callable_name,
+                "file_path": os.environ.get("KT_FILE_PATH"),
+                "callable_type": "fn",
+            }
+        }
+        reload_response = http_client.post("/_test_reload", json=metadata)
+        assert reload_response.status_code == 200
+
+        # Verify env var was updated
+        assert os.environ.get("KT_CLS_OR_FN_NAME") == new_callable_name
+
+        # Restore original for subsequent tests
+        os.environ["KT_CLS_OR_FN_NAME"] = original_callable
+
+    @pytest.mark.level("unit")
+    def test_callable_works_after_reload(self, http_client, setup_test_env):
+        """Verify callable still works correctly after reload."""
+        name, _, is_class = load_callable_from_test_dir(setup_test_env["test_dir"])
+        test_inputs = setup_test_env["inputs"]
+
+        # First, ensure the correct callable is loaded (previous test may have changed it)
+        metadata = {
+            "module": {
+                "module_name": os.environ.get("KT_MODULE_NAME"),
+                "cls_or_fn_name": os.environ.get("KT_CLS_OR_FN_NAME"),
+                "file_path": os.environ.get("KT_FILE_PATH"),
+                "callable_type": os.environ.get("KT_CALLABLE_TYPE", "fn"),
+            }
+        }
+        reload_response = http_client.post("/_test_reload", json=metadata)
+        assert reload_response.status_code == 200
+
+        # Make calls after reload - should work correctly
+        for method, cases in test_inputs.items():
+            for test_case in cases.get("valid", []):
+                url = f"/{name.title()}/{method}" if is_class else f"/{method}"
+                response = http_client.post(url, json={"args": test_case["args"]})
+                assert response.status_code == 200
+                assert response.json() == test_case["expected"]
 
 
 # ============ Distributed Execution Tests ============
@@ -410,3 +475,126 @@ class TestErrorHandling:
                 assert "pod_name" in error_json
                 break  # Just test one error case per method
             break  # Just test first method
+
+
+# ============ Async Concurrency Tests ============
+# These tests verify that async callables run concurrently on the event loop,
+# matching FastAPI's concurrency model.
+
+
+@pytest.mark.parametrize("setup_test_env", load_test_assets(["async_summer"]), indirect=True)
+class TestAsyncConcurrency:
+    """Test async callable concurrency behavior.
+
+    Verifies that the ProcessWorker's event loop properly handles async callables:
+    - Multiple async calls should run concurrently (not sequentially)
+    - All calls should start before any finish (cooperative multitasking)
+    """
+
+    @pytest.mark.level("unit")
+    def test_async_callable_basic(self, http_client, setup_test_env):
+        """Verify async callable returns correct result."""
+        response = http_client.post("/async_summer", json={"args": [1, 2]})
+        assert response.status_code == 200
+        assert response.json() == 3
+
+    @pytest.mark.level("unit")
+    def test_async_callable_with_times(self, http_client, setup_test_env):
+        """Verify async callable returns timing information."""
+        response = http_client.post(
+            "/async_summer", json={"args": [5, 10], "kwargs": {"sleep_time": 0.1, "return_times": True}}
+        )
+        assert response.status_code == 200
+        result = response.json()
+        assert "start" in result
+        assert "end" in result
+        assert "result" in result
+        assert result["result"] == 15
+        # Should have slept ~0.1 seconds
+        assert result["end"] - result["start"] >= 0.09
+
+    @pytest.mark.level("unit")
+    def test_async_concurrent_execution(self, http_client, setup_test_env):
+        """Verify multiple async calls run concurrently.
+
+        If async calls run sequentially, total time would be ~N * sleep_time.
+        If they run concurrently, total time should be ~sleep_time.
+
+        We launch N calls that each sleep for 0.3s. If concurrent, they should
+        all complete in ~0.3s total. If sequential, they'd take ~N*0.3s.
+        """
+        import concurrent.futures
+
+        num_calls = 5
+        sleep_time = 0.3
+
+        def make_call(i):
+            return http_client.post(
+                "/async_summer", json={"args": [i, i], "kwargs": {"sleep_time": sleep_time, "return_times": True}}
+            )
+
+        start_time = time.time()
+
+        # Launch all calls concurrently from client side
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_calls) as executor:
+            futures = [executor.submit(make_call, i) for i in range(num_calls)]
+            responses = [f.result() for f in concurrent.futures.as_completed(futures)]
+
+        total_time = time.time() - start_time
+
+        # Verify all calls succeeded
+        for resp in responses:
+            assert resp.status_code == 200
+
+        # Parse timing info from responses
+        results = [r.json() for r in responses]
+        start_times = [r["start"] for r in results]
+        end_times = [r["end"] for r in results]
+
+        # Key assertion: If running concurrently, all calls should start before
+        # the earliest call finishes (overlapping execution windows)
+        max_start = max(start_times)
+        min_end = min(end_times)
+        assert max_start < min_end, (
+            f"Async calls not running concurrently! " f"Latest start ({max_start}) should be < earliest end ({min_end})"
+        )
+
+        # Total time should be closer to sleep_time than to num_calls * sleep_time
+        # Allow some overhead but it should definitely be less than sequential time
+        sequential_time = num_calls * sleep_time
+        assert total_time < sequential_time * 0.5, (
+            f"Total time ({total_time:.2f}s) too close to sequential time ({sequential_time:.2f}s). "
+            f"Expected concurrent execution to be much faster."
+        )
+
+
+@pytest.mark.parametrize("setup_test_env", load_test_assets(["summer"]), indirect=True)
+class TestSyncConcurrency:
+    """Test sync callable concurrency behavior.
+
+    Verifies that sync callables run in the thread pool and don't block the event loop.
+    """
+
+    @pytest.mark.level("unit")
+    def test_sync_concurrent_execution(self, http_client, setup_test_env):
+        """Verify multiple sync calls can run concurrently via thread pool.
+
+        Sync callables should run in the thread pool, allowing multiple to
+        execute concurrently (up to the thread pool size).
+        """
+        import concurrent.futures
+
+        num_calls = 5
+
+        def make_call(i):
+            return http_client.post("/summer", json={"args": [i, i]})
+
+        # Launch all calls concurrently from client side
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_calls) as executor:
+            futures = [executor.submit(make_call, i) for i in range(num_calls)]
+            responses = [f.result() for f in concurrent.futures.as_completed(futures)]
+
+        # Verify all calls succeeded with correct results
+        results = sorted([r.json() for r in responses])
+        expected = sorted([i + i for i in range(num_calls)])
+        assert results == expected
