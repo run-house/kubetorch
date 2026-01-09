@@ -406,36 +406,36 @@ def build_deployment_manifest(
     import os
 
     from kubetorch import __version__
-    from kubetorch.provisioning import constants as serving_constants
+    from kubetorch.provisioning import constants as provisioning_constants
     from kubetorch.serving.utils import load_template
 
     # Build labels
     labels = {
-        serving_constants.KT_VERSION_LABEL: __version__,
-        serving_constants.KT_TEMPLATE_LABEL: "deployment",
-        serving_constants.KT_USERNAME_LABEL: globals.config.username,
+        provisioning_constants.KT_VERSION_LABEL: __version__,
+        provisioning_constants.KT_TEMPLATE_LABEL: "deployment",
+        provisioning_constants.KT_USERNAME_LABEL: globals.config.username,
     }
     if custom_labels:
         labels.update(custom_labels)
 
     # Template labels (exclude kt template label)
     template_labels = labels.copy()
-    template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+    template_labels.pop(provisioning_constants.KT_TEMPLATE_LABEL, None)
 
     # Build annotations
     annotations = {
         "prometheus.io/scrape": "true",
-        "prometheus.io/path": serving_constants.PROMETHEUS_HEALTH_ENDPOINT,
+        "prometheus.io/path": provisioning_constants.PROMETHEUS_HEALTH_ENDPOINT,
         "prometheus.io/port": "8080",
     }
     if custom_annotations:
         annotations.update(custom_annotations)
     if inactivity_ttl:
-        annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
+        annotations[provisioning_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
 
     # Create Deployment manifest
     deployment = load_template(
-        template_file=serving_constants.DEPLOYMENT_TEMPLATE_FILE,
+        template_file=provisioning_constants.DEPLOYMENT_TEMPLATE_FILE,
         template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
         name="",  # Will be set during launch
         namespace=namespace,
@@ -466,32 +466,32 @@ def build_knative_manifest(
     import os
 
     from kubetorch import __version__
-    from kubetorch.provisioning import constants as serving_constants
+    from kubetorch.provisioning import constants as provisioning_constants
     from kubetorch.serving.utils import load_template
 
     # Build labels
     labels = {
-        serving_constants.KT_VERSION_LABEL: __version__,
-        serving_constants.KT_TEMPLATE_LABEL: "ksvc",
-        serving_constants.KT_USERNAME_LABEL: globals.config.username,
+        provisioning_constants.KT_VERSION_LABEL: __version__,
+        provisioning_constants.KT_TEMPLATE_LABEL: "ksvc",
+        provisioning_constants.KT_USERNAME_LABEL: globals.config.username,
     }
     if custom_labels:
         labels.update(custom_labels)
 
     # Template labels (exclude kt template label)
     template_labels = labels.copy()
-    template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+    template_labels.pop(provisioning_constants.KT_TEMPLATE_LABEL, None)
 
     # Build annotations
     annotations = {
         "prometheus.io/scrape": "true",
-        "prometheus.io/path": serving_constants.PROMETHEUS_HEALTH_ENDPOINT,
+        "prometheus.io/path": provisioning_constants.PROMETHEUS_HEALTH_ENDPOINT,
         "prometheus.io/port": "8080",
     }
     if custom_annotations:
         annotations.update(custom_annotations)
     if inactivity_ttl:
-        annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
+        annotations[provisioning_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
 
     # Build template annotations for autoscaling
     template_annotations = {}
@@ -508,7 +508,7 @@ def build_knative_manifest(
             template_annotations["autoscaling.knative.dev/target"] = str(autoscaling_config.target)
 
     knative_service = load_template(
-        template_file=serving_constants.KNATIVE_SERVICE_TEMPLATE_FILE,
+        template_file=provisioning_constants.KNATIVE_SERVICE_TEMPLATE_FILE,
         template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
         name="",
         namespace=namespace,
@@ -534,33 +534,33 @@ def build_raycluster_manifest(
     import os
 
     from kubetorch import __version__
-    from kubetorch.provisioning import constants as serving_constants
+    from kubetorch.provisioning import constants as provisioning_constants
     from kubetorch.serving.utils import load_template
 
     # Build labels
     labels = {
-        serving_constants.KT_VERSION_LABEL: __version__,
-        serving_constants.KT_TEMPLATE_LABEL: "raycluster",
-        serving_constants.KT_USERNAME_LABEL: globals.config.username,
+        provisioning_constants.KT_VERSION_LABEL: __version__,
+        provisioning_constants.KT_TEMPLATE_LABEL: "raycluster",
+        provisioning_constants.KT_USERNAME_LABEL: globals.config.username,
     }
     if custom_labels:
         labels.update(custom_labels)
 
     # Template labels for head and worker pods (exclude kt template label)
     head_template_labels = labels.copy()
-    head_template_labels.pop(serving_constants.KT_TEMPLATE_LABEL, None)
+    head_template_labels.pop(provisioning_constants.KT_TEMPLATE_LABEL, None)
     worker_template_labels = head_template_labels.copy()
 
     # Build annotations
     annotations = {
         "prometheus.io/scrape": "true",
-        "prometheus.io/path": serving_constants.PROMETHEUS_HEALTH_ENDPOINT,
+        "prometheus.io/path": provisioning_constants.PROMETHEUS_HEALTH_ENDPOINT,
         "prometheus.io/port": "8080",
     }
     if custom_annotations:
         annotations.update(custom_annotations)
     if inactivity_ttl:
-        annotations[serving_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
+        annotations[provisioning_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
 
     # Template annotations for pod specs
     template_annotations = annotations.copy()
@@ -569,7 +569,7 @@ def build_raycluster_manifest(
     worker_replicas = max(0, replicas - 1)
 
     raycluster = load_template(
-        template_file=serving_constants.RAYCLUSTER_TEMPLATE_FILE,
+        template_file=provisioning_constants.RAYCLUSTER_TEMPLATE_FILE,
         template_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
         name="",
         namespace=namespace,

@@ -176,25 +176,8 @@ class ServiceManager:
             primary_template = primary_spec.get("template", {})
             worker_spec["template"] = copy.deepcopy(primary_template)
 
-        # Update distributed config if provided
-        if distributed_config is not None:
-            import json
-
-            env_value = json.dumps(distributed_config)
-            for replica_name in [primary_replica, "Worker"]:
-                rs = replica_specs.get(replica_name, {})
-                pod_spec = rs.get("template", {}).get("spec", {})
-                containers = pod_spec.get("containers", [])
-                for container in containers:
-                    env_list = container.setdefault("env", [])
-                    updated = False
-                    for env_var in env_list:
-                        if env_var.get("name") == "KT_DISTRIBUTED_CONFIG":
-                            env_var["value"] = env_value
-                            updated = True
-                            break
-                    if not updated:
-                        env_list.append({"name": "KT_DISTRIBUTED_CONFIG", "value": env_value})
+        # Distributed config flows via WebSocket metadata from the controller,
+        # not via env vars in the manifest
 
     # =========================================================================
     # Labels and Annotations
@@ -360,81 +343,6 @@ class ServiceManager:
 
         return updated
 
-    def _apply_launchtime_env_vars(
-        self,
-        manifest: dict,
-        service_name: str,
-        pointer_env_vars: dict,
-        metadata_env_vars: dict,
-        launch_id: str,
-        deployment_mode: str = None,
-        distributed_config: dict = None,
-    ) -> dict:
-        kt_env_vars = {
-            **pointer_env_vars,
-            **metadata_env_vars,
-            "KT_SERVICE_NAME": service_name,
-            "KT_SERVICE_DNS": (
-                f"{service_name}-headless.{self.namespace}.svc.cluster.local"
-                if distributed_config
-                else f"{service_name}.{self.namespace}.svc.cluster.local"
-            ),
-            "KT_DEPLOYMENT_MODE": deployment_mode,
-        }
-
-        pod_spec = self.pod_spec(manifest)
-        containers = pod_spec.get("containers", [])
-        has_otel = False
-        if containers:
-            existing_env = containers[0].get("env", [])
-            has_otel = any(env.get("name") == "OTEL_SERVICE_NAME" for env in existing_env)
-
-        if not has_otel:
-            kt_env_vars["OTEL_SERVICE_NAME"] = service_name
-
-        # Ensure cluster config env vars are set
-        if globals.config.cluster_config:
-            if globals.config.cluster_config.get("log_streaming_enabled", True):
-                kt_env_vars["KT_LOG_STREAMING_ENABLED"] = "True"
-            if globals.config.cluster_config.get("metrics_enabled", True):
-                kt_env_vars["KT_METRICS_ENABLED"] = "True"
-
-        # Ensure all environment variable values are strings for Kubernetes compatibility
-        kt_env_vars = self._serialize_env_vars(kt_env_vars)
-
-        for container in containers:
-            env_list = container.setdefault("env", [])
-            updated_names = set()
-            for env_var in env_list:
-                name = env_var.get("name")
-                if name in kt_env_vars:
-                    env_var["value"] = kt_env_vars[name]
-                    updated_names.add(name)
-            for name, value in kt_env_vars.items():
-                if name not in updated_names:
-                    env_list.append({"name": name, "value": value})
-
-        return manifest
-
-    def _serialize_env_vars(self, env_vars: dict) -> dict:
-        """Serialize env var values to strings for Kubernetes compatibility."""
-        import json
-
-        serialized_vars = {}
-        for key, value in env_vars.items():
-            if value is None:
-                serialized_vars[key] = "null"
-            elif isinstance(value, (dict, list)):
-                try:
-                    serialized_vars[key] = json.dumps(value)
-                except (TypeError, ValueError):
-                    serialized_vars[key] = str(value)
-            elif isinstance(value, (bool, int, float)):
-                serialized_vars[key] = str(value)
-            else:
-                serialized_vars[key] = value
-        return serialized_vars
-
     # =========================================================================
     # Service Config / Endpoint Resolution
     # =========================================================================
@@ -477,11 +385,10 @@ class ServiceManager:
         create_headless_service: bool = False,
         endpoint: Optional[Endpoint] = None,
         pod_selector: Optional[Dict[str, str]] = None,
-        pointer_env_vars: dict = None,
-        metadata_env_vars: dict = None,
         launch_id: str = None,
         deployment_mode: str = None,
         distributed_config: dict = None,
+        runtime_config: dict = None,
     ) -> Tuple[dict, dict]:
         """Create or update a Kubernetes service and register it with the controller.
 
@@ -506,11 +413,12 @@ class ServiceManager:
                 registration. If provided, the controller watches pods matching this
                 selector instead of the default kubetorch labels. Used with ``from_manifest()``
                 when providing a custom selector with an existing K8s manifest.
-            pointer_env_vars (dict, optional): Environment variables for module pointers.
-            metadata_env_vars (dict, optional): Environment variables for module metadata.
             launch_id (str, optional): Unique launch identifier, auto-generated by Kubetorch.
             deployment_mode (str, optional): Deployment mode (e.g., "deployment", "knative").
             distributed_config (dict, optional): Distributed configuration.
+            runtime_config (dict, optional): Runtime configuration that flows via WebSocket.
+                Includes log_streaming_enabled, metrics_enabled, inactivity_ttl, log_level,
+                allowed_serialization. These can change between deploys without pod recreation.
 
         Returns:
             Tuple[dict, dict]: A tuple of (created_service, updated_manifest) where
@@ -519,17 +427,9 @@ class ServiceManager:
         """
         logger.info(f"Deploying {manifest.get('kind', self.resource_type)} service with name: {service_name}")
 
-        # Apply launch-time env vars first (before syncing to workers)
-        if pointer_env_vars is not None and metadata_env_vars is not None:
-            manifest = self._apply_launchtime_env_vars(
-                manifest=manifest,
-                service_name=service_name,
-                pointer_env_vars=pointer_env_vars,
-                metadata_env_vars=metadata_env_vars,
-                launch_id=launch_id or "",
-                deployment_mode=deployment_mode,
-                distributed_config=distributed_config,
-            )
+        # Note: Module metadata and runtime env vars (KT_SERVICE_NAME, KT_SERVICE_DNS, etc.)
+        # are now sent via controller WebSocket instead of being baked into the manifest.
+        # See http_server.py ControllerWebSocket for details.
 
         # Preprocess manifest (syncs worker pod specs from primary, including env vars)
         manifest = self._preprocess_manifest_for_launch(manifest)
@@ -552,6 +452,9 @@ class ServiceManager:
             create_headless_service=create_headless_service,
             endpoint=endpoint,
             pod_selector=pod_selector,
+            deployment_mode=deployment_mode,
+            distributed_config=distributed_config,
+            runtime_config=runtime_config,
         )
 
         return created_service, updated_manifest
@@ -612,28 +515,38 @@ class ServiceManager:
         return manifest
 
     def _is_distributed(self, manifest: dict) -> bool:
-        """Check if this is a distributed job."""
-        # Check KT_DISTRIBUTED_CONFIG env var
-        pod_spec = self.pod_spec(manifest)
-        containers = pod_spec.get("containers", [])
-        if containers:
-            env_vars = containers[0].get("env", [])
-            for env_var in env_vars:
-                if (
-                    env_var.get("name") == "KT_DISTRIBUTED_CONFIG"
-                    and env_var.get("value")
-                    and env_var.get("value") != "null"
-                ):
-                    return True
+        """Check if this is a distributed job.
 
-        # Check replicas for training jobs
+        Distributed config flows via WebSocket, so we check replicas for training jobs.
+        """
         if self.resource_type in SUPPORTED_TRAINING_JOBS:
             return self.get_replicas(manifest) > 1
 
         return False
 
-    def _load_pool_metadata(self):
-        return {"username": globals.config.username}
+    def _load_pool_metadata(
+        self,
+        deployment_mode: str = None,
+        distributed_config: dict = None,
+        runtime_config: dict = None,
+    ) -> dict:
+        """Build pool metadata dict for controller registration.
+
+        Args:
+            deployment_mode: Deployment mode (e.g., "deployment", "knative").
+            distributed_config: Distributed configuration for SPMD.
+            runtime_config: Runtime configuration that flows via WebSocket to pods.
+                Includes log_streaming_enabled, metrics_enabled, inactivity_ttl,
+                log_level, allowed_serialization.
+        """
+        metadata = {"username": globals.config.username}
+        if deployment_mode:
+            metadata["deployment_mode"] = deployment_mode
+        if distributed_config:
+            metadata["distributed_config"] = distributed_config
+        if runtime_config:
+            metadata["runtime_config"] = runtime_config
+        return metadata
 
     def _apply_and_register_pool(
         self,
@@ -646,6 +559,9 @@ class ServiceManager:
         create_headless_service: bool = False,
         endpoint: Optional[Endpoint] = None,
         pod_selector: Optional[Dict[str, str]] = None,
+        deployment_mode: str = None,
+        distributed_config: dict = None,
+        runtime_config: dict = None,
     ) -> dict:
         """Create or update resource via controller using the deploy endpoint. Applies the manifest and registers the pool."""
         pod_spec = self.pod_spec(manifest)
@@ -668,7 +584,11 @@ class ServiceManager:
         }
 
         service_config = self._resolve_service_config(endpoint, service_name, pool_selector_for_specifier)
-        pool_metadata = self._load_pool_metadata()
+        pool_metadata = self._load_pool_metadata(
+            deployment_mode=deployment_mode,
+            distributed_config=distributed_config,
+            runtime_config=runtime_config,
+        )
 
         try:
             manifest_replicas = manifest.get("spec", {}).get("replicas", "NOT_SET")

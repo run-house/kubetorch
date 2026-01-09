@@ -1,6 +1,18 @@
 # Increase file descriptor limit for large-scale distributed jobs
 ulimit -n 65536
 
+# Suppress uv hardlink warnings when cache and target are on different filesystems
+export UV_LINK_MODE=copy
+
+# Kubetorch static configuration - these are needed before the server starts
+# Runtime config (log_streaming, metrics, etc.) flows via WebSocket from controller
+export KT_SERVER_PORT="{{ server_port }}"
+export KT_FREEZE="{{ freeze }}"
+export KT_INSTALL_NAMESPACE="{{ install_namespace }}"
+{% if service_name %}
+export KT_SERVICE="{{ service_name }}"
+{% endif %}
+
 {% if python_path %}
 export PATH="{{ python_path }}:$PATH"
 if command -v "{{ python_path }}" &> /dev/null; then

@@ -61,57 +61,11 @@ containers:
 {{ setup_script | indent(8, true) }}
 
     env:
-      # Pod metadata available via the Kubernetes Downward API
-      - name: POD_NAME
-        valueFrom:
-          fieldRef:
-            fieldPath: metadata.name
-      - name: POD_NAMESPACE
-        valueFrom:
-          fieldRef:
-            fieldPath: metadata.namespace
-      - name: POD_IP
-        valueFrom:
-          fieldRef:
-            fieldPath: status.podIP
-      - name: POD_UUID
-        valueFrom:
-          fieldRef:
-            fieldPath: metadata.uid
-      - name: MODULE_NAME
-        valueFrom:
-          fieldRef:
-            fieldPath: metadata.labels['kubetorch.com/module']
-      - name: KT_SERVICE
-        valueFrom:
-          fieldRef:
-            fieldPath: metadata.labels['kubetorch.com/service']
-      - name: KUBETORCH_VERSION
-        valueFrom:
-          fieldRef:
-            fieldPath: metadata.labels['kubetorch.com/version']
-      - name: SERVICE_ACCOUNT_NAME
-        valueFrom:
-          fieldRef:
-            fieldPath: spec.serviceAccountName
-      - name: UV_LINK_MODE
-        value: "copy"  # Suppress the hardlink warning
-      - name: KT_LOG_STREAMING_ENABLED
-        value: "{{ log_streaming_enabled }}"
-      - name: KT_METRICS_ENABLED
-        value: "{{ metrics_enabled }}"
-      - name: KT_SERVER_PORT
-        value: "{{ server_port }}"
-      - name: KT_FREEZE
-        value: "{{ freeze }}"
-      {% if inactivity_ttl is not none %}
-      - name: KT_INACTIVITY_TTL
-        value: "{{ inactivity_ttl }}"
-      {% endif %}
-      {% for key, value in config_env_vars.items() %}
-      - name: {{ key }}
-        value: "{{ value }}"
-      {% endfor %}
+      # Note: Most KT_* env vars are now exported in the setup script (kt_setup_template.sh.j2)
+      # instead of being baked into the manifest. This minimizes manifest size and avoids
+      # pod recreation when config values change.
+      # POD_NAME, POD_NAMESPACE, POD_IP are derived in code at runtime.
+      # See http_server.py _populate_pod_env_vars()
       {% if env_vars is not none and env_vars|length > 0 %}
       {% for key, value in env_vars.items() %}
       - name: {{ key }}

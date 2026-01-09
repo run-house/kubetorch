@@ -182,6 +182,7 @@ class Compute:
         self._volumes = volumes
         self._logging_config = logging_config or LoggingConfig()
         self._manifest = None
+        self._template_vars = {}  # Will be populated by _build_kubetorch_pod_spec
 
         # Skip template initialization if loading from existing service
         if _skip_template_init:
@@ -221,6 +222,9 @@ class Compute:
 
         # Build pod spec with defaults
         pod_spec, template_vars = self._build_kubetorch_pod_spec(config=template_vars)
+
+        # Store template vars for use in _launch (for setup script generation)
+        self._template_vars = template_vars
 
         # Prepare manifest annotations
         manifest_annotations = annotations.copy() if annotations else {}
@@ -353,6 +357,9 @@ class Compute:
         # Build kubetorch pod spec with empty defaults
         pod_spec, template_vars = self._build_kubetorch_pod_spec(config={})
 
+        # Store template vars for use in _launch (for setup script generation)
+        self._template_vars = template_vars
+
         # Merge kubetorch pod spec into user pod spec
         # This keeps user values where they exist, adds kubetorch defaults where missing
         self._merge_pod_specs(pod_spec)
@@ -434,10 +441,11 @@ class Compute:
             "volume_mounts": volume_mounts,
             "volume_specs": volume_specs,
             "service_account_name": service_account_name,
-            "config_env_vars": self._get_config_env_vars(allowed_serialization),
+            "allowed_serialization": ",".join(allowed_serialization) if allowed_serialization else None,
             "image_pull_policy": config.get("image_pull_policy"),
             "namespace": namespace,
             "freeze": config.get("freeze", False),
+            "install_namespace": globals.config.install_namespace,  # For controller WebSocket URL
             "gpu_anti_affinity": config.get("gpu_anti_affinity"),
             "working_dir": config.get("working_dir"),
             "tolerations": all_tolerations,
@@ -593,17 +601,11 @@ class Compute:
 
     @logging_config.setter
     def logging_config(self, value: LoggingConfig):
-        """Set the logging configuration for this compute."""
-        self._logging_config = value
+        """Set the logging configuration for this compute.
 
-        if self._manifest is not None:
-            try:
-                container = self._container()
-                if value and value.level:
-                    env_vars = {"KT_LOG_LEVEL": value.level.upper()}
-                    self._set_env_vars_in_container(container, env_vars)
-            except (ValueError, AttributeError):
-                pass
+        Log level flows to pods via WebSocket runtime config, not manifest env vars.
+        """
+        self._logging_config = value
 
     @property
     def pod_spec(self):
@@ -1081,20 +1083,6 @@ class Compute:
         self.pod_spec["serviceAccountName"] = value
 
     @property
-    def config_env_vars(self):
-        from kubetorch.config import ENV_MAPPINGS
-
-        config_env_vars = {}
-        container = self._container()
-        if "env" in container:
-            for env_var in container["env"]:
-                # Filter for config-related env vars (those that start with KT_ or are known config vars)
-                if env_var["name"] in ENV_MAPPINGS.keys():
-                    if "value" in env_var and env_var["value"]:
-                        config_env_vars[env_var["name"]] = env_var["value"]
-        return config_env_vars
-
-    @property
     def image_pull_policy(self):
         return self._container().get("imagePullPolicy")
 
@@ -1140,26 +1128,23 @@ class Compute:
 
     @property
     def freeze(self):
-        container = self._container()
-        if container is None:
-            # manifest applied separately, default to False
-            return False
-        if "env" in container:
-            for env_var in container["env"]:
-                if env_var["name"] == "KT_FREEZE" and "value" in env_var:
-                    return env_var["value"].lower() == "true"
-        return False
+        """Get freeze setting. Set in setup script, not manifest env vars."""
+        template_vars = getattr(self, "_template_vars", None) or {}
+        return template_vars.get("freeze", False)
 
     @freeze.setter
     def freeze(self, value: bool):
         if value == self.freeze:
             return
 
+        # Store in template_vars - flows to setup script
+        if not hasattr(self, "_template_vars") or self._template_vars is None:
+            self._template_vars = {}
+        self._template_vars["freeze"] = value
+
         container = self._container()
 
-        self._set_env_vars_in_container(container, {"KT_FREEZE": str(value).lower()})
-
-        # Update securityContext from pod template based on freeze value
+        # Also update securityContext based on freeze value
         if value:  # Remove SYS_PTRACE capability when freeze is enabled
             security_context = container.get("securityContext")
             if not security_context:
@@ -1187,29 +1172,20 @@ class Compute:
 
     @property
     def allowed_serialization(self):
-        """Get allowed_serialization from the container's KT_ALLOWED_SERIALIZATION env var."""
-        container = self._container()
-        if "env" in container:
-            for env_var in container["env"]:
-                if env_var["name"] == "KT_ALLOWED_SERIALIZATION" and "value" in env_var:
-                    value = env_var["value"]
-                    if value:
-                        return value.split(",")
+        """Get allowed_serialization. Flows to pods via WebSocket runtime config."""
+        template_vars = getattr(self, "_template_vars", None) or {}
+        value = template_vars.get("allowed_serialization")
+        if value:
+            return value.split(",") if isinstance(value, str) else value
         return None
 
     @allowed_serialization.setter
     def allowed_serialization(self, value: Optional[List[str]]):
-        """Set allowed_serialization and update the manifest pod spec."""
-        container = self._container()
-
-        if value:
-            env_value = ",".join(value)
-            self._set_env_vars_in_container(container, {"KT_ALLOWED_SERIALIZATION": env_value})
-        else:
-            if "env" in container:
-                container["env"] = [
-                    env_var for env_var in container["env"] if env_var.get("name") != "KT_ALLOWED_SERIALIZATION"
-                ]
+        """Set allowed_serialization. Flows to pods via WebSocket runtime config."""
+        # Store in template_vars for inclusion in runtime_config sent via WebSocket
+        if not hasattr(self, "_template_vars") or self._template_vars is None:
+            self._template_vars = {}
+        self._template_vars["allowed_serialization"] = ",".join(value) if value else None
 
     @property
     def secrets(self):
@@ -1500,31 +1476,16 @@ class Compute:
 
     @property
     def distributed_config(self):
-        # First try to get from pod spec
-        template_config = {}
-        container = self._container()
-        if container is None:
-            # manifest applied separately
-            return template_config
-        if "env" in container:
-            for env_var in container["env"]:
-                if env_var["name"] == "KT_DISTRIBUTED_CONFIG" and "value" in env_var and env_var["value"]:
-                    import json
+        """Get the distributed config for this compute.
 
-                    try:
-                        template_config = json.loads(env_var["value"])
-                    except (json.JSONDecodeError, TypeError):
-                        template_config = env_var["value"]
-                    break
-
-        return template_config
+        Distributed config flows to pods via WebSocket metadata from the controller.
+        """
+        return getattr(self, "_distributed_config", None) or {}
 
     @distributed_config.setter
     def distributed_config(self, config: dict):
-        """Set distributed config in all containers."""
+        """Set distributed config. Flows to pods via WebSocket metadata."""
         import json
-
-        from kubetorch.provisioning.utils import SUPPORTED_TRAINING_JOBS
 
         # Populate defaults if config is missing values
         workers = config.get("workers")
@@ -1533,7 +1494,6 @@ class Compute:
         config["quorum_workers"] = config.get("quorum_workers", workers or self.replicas)
         self.replicas = workers or config["quorum_workers"]
 
-        # Serialize the config to JSON, ensuring it's always a string
         # Check for non-serializable values and raise an error with details
         non_serializable_keys = []
         for key, value in config.items():
@@ -1548,57 +1508,8 @@ class Compute:
                 f"All values must be JSON serializable (strings, numbers, booleans, lists, dicts)."
             )
 
-        distribution_type = config.get("distribution_type", "spmd")
-        service_dns = None
-        if distribution_type == "ray":
-            service_dns = "ray-head-svc"
-        elif distribution_type == "pytorch":
-            service_dns = "rank0"
-
-        # Prepare env vars to set
-        env_vars_to_set = {"KT_DISTRIBUTED_CONFIG": json.dumps(config)}
-        if service_dns:
-            env_vars_to_set["KT_SERVICE_DNS"] = service_dns
-
-        # For training jobs (PyTorchJob, TFJob, etc.), set in both Master and Worker replica containers
-        if self.kind.lower() in SUPPORTED_TRAINING_JOBS:
-            service_manager = self.service_manager
-            spec = self._manifest.get("spec", {})
-            replica_specs_key = service_manager.config.get("replica_specs_key")
-            replica_specs = spec.get(replica_specs_key, {}) if replica_specs_key else {}
-
-            for replica_name in [
-                service_manager.config.get("primary_replica"),
-                service_manager.config.get("worker_replica"),
-            ]:
-                replica_spec = replica_specs.get(replica_name, {})
-                pod_spec = replica_spec.get("template", {}).get("spec", {})
-                containers = pod_spec.get("containers", [])
-
-                for container in containers:
-                    self._set_env_vars_in_container(container, env_vars_to_set)
-        # For RayCluster, set in both head and worker group containers
-        elif self.kind == "RayCluster":
-            spec = self._manifest.get("spec", {})
-
-            # Set in head group
-            head_spec = spec.get("headGroupSpec", {})
-            head_pod_spec = head_spec.get("template", {}).get("spec", {})
-            head_containers = head_pod_spec.get("containers", [])
-            for container in head_containers:
-                self._set_env_vars_in_container(container, env_vars_to_set)
-
-            # Set in worker groups
-            worker_group_specs = spec.get("workerGroupSpecs", [])
-            for worker_group in worker_group_specs:
-                worker_pod_spec = worker_group.get("template", {}).get("spec", {})
-                worker_containers = worker_pod_spec.get("containers", [])
-                for container in worker_containers:
-                    self._set_env_vars_in_container(container, env_vars_to_set)
-        else:
-            # Regular manifest - set config in main container
-            container = self._container()
-            self._set_env_vars_in_container(container, env_vars_to_set)
+        # Store config - flows to pods via WebSocket metadata from controller
+        self._distributed_config = config
 
     @property
     def dispatch_method(self):
@@ -1883,12 +1794,6 @@ class Compute:
         )
         return int(os.getenv("KT_LAUNCH_TIMEOUT", default_launch_timeout))
 
-    def _get_config_env_vars(self, allowed_serialization):
-        config_env_vars = globals.config._get_config_env_vars()
-        if allowed_serialization:
-            config_env_vars["KT_ALLOWED_SERIALIZATION"] = ",".join(allowed_serialization)
-        return config_env_vars
-
     @property
     def image_install_cmd(self):
         return self.image.install_cmd if self.image and self.image.install_cmd else None
@@ -1981,8 +1886,7 @@ class Compute:
         self,
         service_name: str,
         install_url: str,
-        pointer_env_vars: Dict,
-        metadata_env_vars: Dict,
+        module_name: str,
         startup_rsync_command: str = None,
         launch_id: str = None,
         deployment_timestamp: str = None,
@@ -2019,7 +1923,7 @@ class Compute:
 
         self._upload_secrets_list()
 
-        setup_script = self._get_setup_script(install_url, startup_rsync_command)
+        setup_script = self._get_setup_script(install_url, startup_rsync_command, service_name)
 
         container = self._container()
         if "args" in container and len(container["args"]) > 0:
@@ -2027,11 +1931,24 @@ class Compute:
         else:
             container["args"] = [setup_script]
 
+        # Build runtime config that flows via WebSocket to pods
+        # These values can change between deploys without pod recreation
+        template_vars = self._template_vars or {}
+        runtime_config = {
+            "log_streaming_enabled": template_vars.get("log_streaming_enabled", True),
+            "metrics_enabled": template_vars.get("metrics_enabled", True),
+            "inactivity_ttl": template_vars.get("inactivity_ttl"),
+            "allowed_serialization": template_vars.get("allowed_serialization"),
+            "log_level": self._logging_config.level if self._logging_config else None,
+        }
+        # Remove None values to keep the payload clean
+        runtime_config = {k: v for k, v in runtime_config.items() if v is not None}
+
         # Create service using the appropriate service manager
         # Create headless service only when distributed config is set (for SPMD/distributed pod discovery)
         created_service, updated_manifest = self.service_manager.create_or_update_service(
             service_name=service_name,
-            module_name=pointer_env_vars["KT_MODULE_NAME"],
+            module_name=module_name,
             manifest=self._manifest,
             deployment_timestamp=deployment_timestamp,
             dryrun=dryrun,
@@ -2040,11 +1957,10 @@ class Compute:
             create_headless_service=bool(self.distributed_config),
             endpoint=getattr(self, "_endpoint_config", None),
             pod_selector=getattr(self, "_pod_selector", None),
-            pointer_env_vars=pointer_env_vars,
-            metadata_env_vars=metadata_env_vars,
             launch_id=launch_id,
             deployment_mode=self.deployment_mode,
             distributed_config=self.distributed_config,
+            runtime_config=runtime_config,
         )
         self._manifest = updated_manifest
 
@@ -2066,8 +1982,7 @@ class Compute:
         self,
         service_name: str,
         install_url: str,
-        pointer_env_vars: Dict,
-        metadata_env_vars: Dict,
+        module_name: str,
         startup_rsync_command: str = None,
         launch_id: str = None,
         deployment_timestamp: str = None,
@@ -2087,8 +2002,7 @@ class Compute:
             self._launch,
             service_name,
             install_url,
-            pointer_env_vars,
-            metadata_env_vars,
+            module_name,
             startup_rsync_command,
             launch_id,
             deployment_timestamp,
@@ -2115,8 +2029,12 @@ class Compute:
 
         return secret_env_vars, secret_volumes
 
-    def _get_setup_script(self, install_url, startup_rsync_command):
-        # Load the setup script template
+    def _get_setup_script(self, install_url, startup_rsync_command, service_name):
+        """Generate the setup script for pod startup.
+
+        Only includes static config needed before server starts. Runtime config
+        (log_streaming, metrics, etc.) flows via WebSocket from controller.
+        """
         from kubetorch.serving.utils import _get_rendered_template
 
         setup_script = _get_rendered_template(
@@ -2133,6 +2051,8 @@ class Compute:
             server_image=self.server_image,
             rsync_kt_local_cmd=startup_rsync_command,
             server_port=self.server_port,
+            install_namespace=globals.config.install_namespace,
+            service_name=service_name,
         )
         return setup_script
 
