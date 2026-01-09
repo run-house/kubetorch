@@ -40,7 +40,6 @@ KT_POD_TYPE_LABEL = "kubetorch.com/pod-type"
 KT_TEMPLATE_LABEL = "kubetorch.com/template"
 KT_SECRET_NAME_LABEL = "kubetorch.com/secret-name"
 KT_APP_LABEL = "app"  # Stable app identifier for easy querying
-KT_DEPLOYMENT_ID_LABEL = "kubetorch.com/deployment-id"  # Unique per deployment run
 KUEUE_QUEUE_NAME_LABEL = "kueue.x-k8s.io/queue-name"  # Kueue queue label for GPU scheduling
 
 # Templates
@@ -59,7 +58,6 @@ PROMETHEUS_SERVICE_NAME = "kubetorch-metrics"
 
 # Grafana
 GRAFANA_HEALTH_ENDPOINT = "/api/health"
-PROMETHEUS_HEALTH_ENDPOINT = "/metrics"
 
 # HTTP Client
 KT_TERMINATION_REASONS = ["OOMKilled", "Evicted", "Not Found"]
