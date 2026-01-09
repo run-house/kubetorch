@@ -1,4 +1,6 @@
 import multiprocessing
+import os
+import signal
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -86,20 +88,38 @@ class ProcessPool:
         if self._router_thread:
             self._router_thread.join(timeout=0.5)
 
-        # Terminate all processes immediately without waiting
+        # Kill all processes and their descendants by killing the process group.
+        # Each ProcessWorker calls os.setpgrp() on startup to become a process group leader,
+        # so killing the group terminates all child processes (e.g., vLLM, Ray workers).
         for process in self.processes:
             if process.is_alive():
-                process.terminate()
+                try:
+                    # First try SIGTERM to the process group for graceful shutdown
+                    os.killpg(process.pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    # Process may have already exited or not be a group leader
+                    try:
+                        process.terminate()
+                    except Exception:
+                        pass
 
-        # Give processes a brief chance to terminate gracefully (reduced timeout)
+        # Give processes a brief chance to terminate gracefully
         for process in self.processes:
             process.join(timeout=0.5)
 
-        # Force kill any remaining processes
+        # Force kill any remaining processes and their descendants
         for process in self.processes:
             if process.is_alive():
-                logger.warning(f"Force killing process {process.pid}")
-                process.kill()
+                logger.warning(f"Force killing process group {process.pid}")
+                try:
+                    # SIGKILL the entire process group
+                    os.killpg(process.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    # Fallback to just killing the process
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
                 process.join(timeout=0.1)  # Brief wait to confirm kill
 
         # Clear all queues

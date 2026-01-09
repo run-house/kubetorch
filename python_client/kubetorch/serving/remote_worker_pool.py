@@ -1,6 +1,7 @@
 import multiprocessing
 import os
 import queue
+import signal
 import threading
 import uuid
 
@@ -60,10 +61,23 @@ class RemoteWorkerPool:
             self.request_queue.put(("SHUTDOWN", None))
             self.process.join(timeout=5)
             if self.process and self.process.is_alive():
-                self.process.terminate()
+                # Kill the process group to terminate any child processes
+                try:
+                    os.killpg(self.process.pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    try:
+                        self.process.terminate()
+                    except Exception:
+                        pass
                 self.process.join(timeout=1)
                 if self.process and self.process.is_alive():
-                    self.process.kill()
+                    try:
+                        os.killpg(self.process.pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        try:
+                            self.process.kill()
+                        except Exception:
+                            pass
             self.process = None
 
         # Clear response events
@@ -183,6 +197,12 @@ class RemoteWorkerPool:
         import queue
 
         import httpx
+
+        # Create a new process group so parent can kill all descendants on shutdown
+        try:
+            os.setpgrp()
+        except OSError:
+            pass
 
         async def wait_for_worker_health(client, worker_ip, workers_arg, quorum_timeout):
             """Wait for a worker to become healthy within timeout."""
