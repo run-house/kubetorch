@@ -261,7 +261,7 @@ class Module:
 
             pods_result = controller_client.list_pods(
                 namespace=namespace,
-                label_selector=f"kubetorch.com/service={name}",
+                label_selector=f"kubetorch.com/service={candidate}",
             )
             volumes = []
 

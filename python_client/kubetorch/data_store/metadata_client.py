@@ -459,29 +459,6 @@ class MetadataClient:
             logger.warning(f"Failed to complete broadcast {broadcast_id}: {e}")
             return False
 
-    def cleanup_service_keys(self, service_name: str) -> dict:
-        """
-        Delete all keys with lifespan='resource' for a service.
-        Called when a service is torn down.
-
-        Args:
-            service_name: Name of the service to clean up
-
-        Returns:
-            dict with deleted_count and success status
-        """
-        try:
-            response = requests.delete(
-                f"{self.base_url}/api/v1/services/{quote(service_name, safe='')}/cleanup",
-                params={"namespace": self.namespace},
-                timeout=30,
-            )
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            logger.warning(f"Failed to cleanup keys for service '{service_name}': {e}")
-            return {"success": False, "error": str(e), "deleted_count": 0}
-
     # ==================== Filesystem Broadcast Methods ====================
 
     def join_fs_broadcast(

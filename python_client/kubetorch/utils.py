@@ -188,7 +188,7 @@ class capture_stdout:
     def __str__(self):
         return self.stream.getvalue()
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, _exc_type, _exc_val, _exc_tb):
         if hasattr(sys.stdout, "instream"):
             sys.stdout = sys.stdout.instream
         if hasattr(sys.stderr, "instream"):

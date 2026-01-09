@@ -538,40 +538,6 @@ class DataStoreClient:
                 logger.warning(f"Falling back to regular get for key '{k}'")
                 self._get_single(k, dest, contents, filter_options, force, verbose)
 
-    def _get_from_putter(
-        self,
-        key: str,
-        putter_ip: str,
-        dest: Union[str, Path],
-        contents: bool,
-        filter_options: Optional[str],
-        force: bool,
-        verbose: bool,
-    ) -> None:
-        """Get data directly from a putter pod."""
-        parsed = parse_key(key)
-        rsync_client = RsyncClient(namespace=self.namespace, service_name=parsed.service_name or "store")
-
-        dest_str = self._normalize_dest(dest, contents, key)
-
-        # Build peer rsync URL - putter is serving via rsync daemon
-        # The src_path is the key's path segment
-        src_path = parsed.path if parsed.path else key.split("/")[-1]
-        peer_url = f"rsync://{putter_ip}:{provisioning_constants.REMOTE_RSYNC_PORT}/data/"
-        remote_source = peer_url + src_path
-        if contents:
-            remote_source = remote_source.rstrip("/") + "/"
-
-        if verbose:
-            logger.info(f"Downloading from putter: {remote_source} to {dest_str}")
-
-        rsync_client.download(
-            source=remote_source, dest=dest_str, contents=contents, filter_options=filter_options, force=force
-        )
-
-        if verbose:
-            logger.info(f"Successfully retrieved key '{key}' from putter {putter_ip}")
-
     def _get_single(
         self,
         key: str,

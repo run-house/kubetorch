@@ -82,6 +82,54 @@ SUPERVISOR = None
 APP_PROCESS = None
 _CALLABLE_LOAD_LOCK = threading.Lock()  # Lock for thread-safe callable loading
 
+# Persistent event loop for subprocess async execution
+# This avoids the problem of asyncio.run() closing the loop after each call,
+# which would destroy background tasks in stateful async services (e.g., vLLM AsyncLLMEngine)
+# The loop runs in a dedicated background thread to support concurrent requests.
+_SUBPROCESS_EVENT_LOOP = None
+_SUBPROCESS_EVENT_LOOP_THREAD = None
+_SUBPROCESS_EVENT_LOOP_LOCK = threading.Lock()
+
+
+def _run_event_loop_forever(loop):
+    """Run the event loop forever in a background thread."""
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+
+def _get_subprocess_event_loop():
+    """Get or create a persistent event loop for subprocess async execution.
+
+    The event loop runs in a dedicated background thread, allowing multiple
+    concurrent requests to submit coroutines via run_coroutine_threadsafe().
+    This preserves background tasks between calls (e.g., vLLM AsyncLLMEngine).
+    """
+    global _SUBPROCESS_EVENT_LOOP, _SUBPROCESS_EVENT_LOOP_THREAD
+    with _SUBPROCESS_EVENT_LOOP_LOCK:
+        if _SUBPROCESS_EVENT_LOOP is None or _SUBPROCESS_EVENT_LOOP.is_closed():
+            _SUBPROCESS_EVENT_LOOP = asyncio.new_event_loop()
+            _SUBPROCESS_EVENT_LOOP_THREAD = threading.Thread(
+                target=_run_event_loop_forever,
+                args=(_SUBPROCESS_EVENT_LOOP,),
+                daemon=True,
+                name="subprocess-event-loop",
+            )
+            _SUBPROCESS_EVENT_LOOP_THREAD.start()
+        return _SUBPROCESS_EVENT_LOOP
+
+
+def _run_coroutine_sync(coro):
+    """Run a coroutine synchronously using the persistent event loop.
+
+    Submits the coroutine to the background event loop thread and waits
+    for the result. This allows multiple concurrent requests to share
+    the same event loop safely.
+    """
+    loop = _get_subprocess_event_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result()  # Block until complete
+
+
 # Log streaming and metrics collection - enabled by default in Kubernetes
 KT_LOG_STREAMING_ENABLED = os.environ.get("KT_LOG_STREAMING_ENABLED", "True").lower() == "true"
 KT_METRICS_ENABLED = os.environ.get("KT_METRICS_ENABLED", "True").lower() == "true"
@@ -1738,21 +1786,25 @@ def execute_callable(
         deep_breakpoint(debug_port, debug_mode)
         # If using the debugger, step in here ("s") to enter your function/class method.
         if is_async_method:
-            # For async methods in sync context, we need to run them in a new event loop
-            result = asyncio.run(user_method(*args, **kwargs))
+            # Use persistent event loop in background thread to:
+            # 1. Preserve background tasks across calls (e.g., vLLM AsyncLLMEngine)
+            # 2. Support concurrent async requests from multiple threads
+            result = _run_coroutine_sync(user_method(*args, **kwargs))
         else:
             result = user_method(*args, **kwargs)
     else:
         logger.debug(f"Calling remote callable {callable_name}")
         if is_async_method:
-            # For async methods in sync context, we need to run them in a new event loop
-            result = asyncio.run(user_method(*args, **kwargs))
+            # Use persistent event loop in background thread to:
+            # 1. Preserve background tasks across calls (e.g., vLLM AsyncLLMEngine)
+            # 2. Support concurrent async requests from multiple threads
+            result = _run_coroutine_sync(user_method(*args, **kwargs))
         else:
             result = user_method(*args, **kwargs)
 
     # Handle case where sync method returns an awaitable
     if isinstance(result, Awaitable):
-        result = asyncio.run(result)
+        result = _run_coroutine_sync(result)
 
     # Serialize response based on format
     if serialization == "pickle":

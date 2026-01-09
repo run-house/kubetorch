@@ -449,8 +449,10 @@ class HTTPClient:
 
         try:
             # Query using labels set by LogCapture (service, namespace, request_id)
+            # Use regex to match either the specific request_id OR "-" (for subprocess/Ray logs
+            # that don't have access to the request context variable)
             namespace = self.compute.namespace
-            query = f'{{service="{self.service_name}", namespace="{namespace}", request_id="{request_id}"}}'
+            query = f'{{service="{self.service_name}", namespace="{namespace}", request_id=~"{request_id}|-"}}'
             encoded_query = urllib.parse.quote_plus(query)
             uri = f"ws://{host}:{port}/loki/{namespace}/api/v1/tail?query={encoded_query}"
             # Track when we should stop

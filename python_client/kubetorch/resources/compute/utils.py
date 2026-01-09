@@ -201,28 +201,6 @@ def _get_rsync_exclude_options() -> str:
     return exclude_args.strip()
 
 
-def is_pod_terminated(pod: dict) -> bool:
-    """Check if pod is terminated. Pod must be a dict from ControllerClient."""
-    # Check if pod is marked for deletion
-    deletion_timestamp = pod.get("metadata", {}).get("deletionTimestamp")
-    if deletion_timestamp is not None:
-        return True
-
-    # Check pod phase
-    phase = pod.get("status", {}).get("phase")
-    if phase in ["Succeeded", "Failed"]:
-        return True
-
-    # Check container statuses
-    container_statuses = pod.get("status", {}).get("containerStatuses", [])
-    for container in container_statuses:
-        state = container.get("state", {})
-        if state.get("terminated"):
-            return True
-
-    return False
-
-
 # ----------------- ConfigMap utils ----------------- #
 def load_configmaps(
     service_name: str,
@@ -280,40 +258,6 @@ def delete_configmaps(
             else:
                 if console:
                     console.print(f"[red]Error:[/red] Failed to delete configmap {cm}: {e}")
-
-
-def delete_knative_service(
-    name: str,
-    namespace,
-    console: "Console" = None,
-    force: bool = False,
-):
-    """Delete a Knative service."""
-
-    grace_period_seconds, propagation_policy = None, None
-    if force:
-        grace_period_seconds = 0
-        propagation_policy = "Foreground"
-
-    try:
-        kubetorch.globals.controller_client().delete_namespaced_custom_object(
-            group="serving.knative.dev",
-            version="v1",
-            namespace=namespace,
-            plural="services",
-            name=name,
-            grace_period_seconds=grace_period_seconds,
-            propagation_policy=propagation_policy,
-        )
-        if console:
-            console.print(f"✓ Deleted service [blue]{name}[/blue]")
-    except Exception as e:
-        if http_not_found(e):
-            if console:
-                console.print(f"[yellow]Note:[/yellow] Service {name} not found or already deleted")
-        else:
-            if console:
-                console.print(f"[red]Error:[/red] Failed to delete service {name}: {e}")
 
 
 def delete_resources_for_service(
