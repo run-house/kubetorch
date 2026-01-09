@@ -269,10 +269,12 @@ class LogCapture:
             if isinstance(h, _LogCaptureHandler) and h.log_capture is self:
                 return  # Already present
 
-        # Add our handler
+        # Add our handler at the FRONT of the handlers list
+        # This ensures it runs BEFORE any StreamHandlers that write to stdout,
+        # so the _in_logging_emit flag is set before stdout writes happen
         handler = _LogCaptureHandler(self)
         handler.setFormatter(logging.Formatter("%(message)s"))
-        logging.root.addHandler(handler)
+        logging.root.handlers.insert(0, handler)
 
     def _flush_loop(self):
         """Background thread: flush buffer periodically."""
@@ -341,8 +343,7 @@ class LogCapture:
 class _StreamInterceptor:
     """Intercepts writes to stdout/stderr."""
 
-    # Thread-local flag to detect when we're inside a logging emit
-    # This replaces expensive sys._getframe() stack walking
+    # Thread-local flag to detect when we're inside _LogCaptureHandler.emit()
     _in_logging_emit = threading.local()
 
     def __init__(self, original, log_capture: LogCapture, stream_name: str):
@@ -360,6 +361,28 @@ class _StreamInterceptor:
         """Check if we're inside logging handler emit."""
         return getattr(cls._in_logging_emit, "active", False)
 
+    def _is_from_logging(self) -> bool:
+        """Check if the current write is from the logging system.
+
+        Uses hybrid approach:
+        1. Fast path: check thread-local flag (set by _LogCaptureHandler)
+        2. Slow path: limited frame walk to detect child logger handlers
+        """
+        # Fast path: flag is set by _LogCaptureHandler
+        if self.is_in_logging():
+            return True
+
+        # Slow path: check call stack for logging module (handles child logger handlers)
+        # Limit to 15 frames to avoid walking entire stack
+        frame = sys._getframe()
+        for _ in range(15):
+            if frame is None:
+                return False
+            if frame.f_globals.get("__name__", "").startswith("logging"):
+                return True
+            frame = frame.f_back
+        return False
+
     def write(self, msg: str):
         # Always forward to original (kubectl logs, user handlers)
         self.original.write(msg)
@@ -368,7 +391,7 @@ class _StreamInterceptor:
         self.original.flush()
 
         # Skip if from logging system (already captured via _LogCaptureHandler)
-        if self.is_in_logging():
+        if self._is_from_logging():
             return
 
         # Also capture for log store (skip empty lines)
