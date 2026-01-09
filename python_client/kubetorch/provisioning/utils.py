@@ -423,11 +423,7 @@ def build_deployment_manifest(
     template_labels.pop(provisioning_constants.KT_TEMPLATE_LABEL, None)
 
     # Build annotations
-    annotations = {
-        "prometheus.io/scrape": "true",
-        "prometheus.io/path": provisioning_constants.PROMETHEUS_HEALTH_ENDPOINT,
-        "prometheus.io/port": "8080",
-    }
+    annotations = {}
     if custom_annotations:
         annotations.update(custom_annotations)
     if inactivity_ttl:
@@ -483,11 +479,7 @@ def build_knative_manifest(
     template_labels.pop(provisioning_constants.KT_TEMPLATE_LABEL, None)
 
     # Build annotations
-    annotations = {
-        "prometheus.io/scrape": "true",
-        "prometheus.io/path": provisioning_constants.PROMETHEUS_HEALTH_ENDPOINT,
-        "prometheus.io/port": "8080",
-    }
+    annotations = {}
     if custom_annotations:
         annotations.update(custom_annotations)
     if inactivity_ttl:
@@ -552,11 +544,7 @@ def build_raycluster_manifest(
     worker_template_labels = head_template_labels.copy()
 
     # Build annotations
-    annotations = {
-        "prometheus.io/scrape": "true",
-        "prometheus.io/path": provisioning_constants.PROMETHEUS_HEALTH_ENDPOINT,
-        "prometheus.io/port": "8080",
-    }
+    annotations = {}
     if custom_annotations:
         annotations.update(custom_annotations)
     if inactivity_ttl:

@@ -188,7 +188,7 @@ class Compute:
         if _skip_template_init:
             return
 
-        if selector and not any([cpus, memory, disk_size, gpus, gpu_type, gpu_memory, image]):
+        if selector and not any([cpus, memory, disk_size, gpus, gpu_type, gpu_memory]):
             # Selector-only mode: user provides only a selector for existing pods
             # No manifest is built - just register pool and create service
             self._namespace = namespace or globals.config.namespace
@@ -756,12 +756,22 @@ class Compute:
     # -------------- Properties From Template -------------- #
     @property
     def server_image(self):
-        return self._container().get("image")
+        container = self._container()
+        if container is None:
+            # Selector-only mode: use the Image object if provided
+            return self._image.image_id if self._image else None
+        return container.get("image")
 
     @server_image.setter
     def server_image(self, value: str):
         """Set the server image in the pod spec."""
-        self._container()["image"] = value
+        container = self._container()
+        if container is None:
+            # Selector-only mode: can't set container image, but can update _image
+            if self._image:
+                self._image.image_id = value
+            return
+        container["image"] = value
 
     @property
     def server_port(self):

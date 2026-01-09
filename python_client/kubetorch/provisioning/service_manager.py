@@ -5,7 +5,6 @@ This module provides a single ServiceManager class that handles all resource typ
 Resource-specific behavior is driven by its relevant config.
 """
 import copy
-import hashlib
 import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
@@ -202,11 +201,7 @@ class ServiceManager:
         inactivity_ttl: str = None,
     ) -> dict:
         """Get standard kubetorch annotations."""
-        annotations = {
-            "prometheus.io/scrape": "true",
-            "prometheus.io/path": provisioning_constants.PROMETHEUS_HEALTH_ENDPOINT,
-            "prometheus.io/port": "8080",
-        }
+        annotations = {}
         if self.service_annotations:
             annotations.update(self.service_annotations)
         if custom_annotations:
@@ -285,7 +280,6 @@ class ServiceManager:
         service_name: str,
         clean_module_name: str,
         deployment_timestamp: str,
-        deployment_id: str,
     ) -> dict:
         """Update manifest with service name and deployment timestamp."""
         updated = copy.deepcopy(manifest)
@@ -296,13 +290,12 @@ class ServiceManager:
         updated["metadata"]["labels"][provisioning_constants.KT_SERVICE_LABEL] = service_name
         updated["metadata"]["labels"][provisioning_constants.KT_MODULE_LABEL] = clean_module_name
         updated["metadata"]["labels"][provisioning_constants.KT_APP_LABEL] = service_name
-        updated["metadata"]["labels"][provisioning_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
 
-        # For Deployments, update selector.matchLabels to match template labels
+        # For Deployments, update selector.matchLabels - only use service label for selection
+        # (module label is informational, not used for pod selection)
         if self.resource_type == "deployment":
             updated["spec"].setdefault("selector", {}).setdefault("matchLabels", {})
             updated["spec"]["selector"]["matchLabels"][provisioning_constants.KT_SERVICE_LABEL] = service_name
-            updated["spec"]["selector"]["matchLabels"][provisioning_constants.KT_MODULE_LABEL] = clean_module_name
 
         # Update template metadata
         if self.config.get("pod_template_path"):
@@ -436,10 +429,8 @@ class ServiceManager:
 
         # Update manifest with service name and deployment metadata
         clean_module_name = self._clean_module_name(module_name)
-        timestamp, deployment_id = self._get_deployment_timestamp_and_id(service_name, deployment_timestamp)
-        updated_manifest = self._update_launchtime_manifest(
-            manifest, service_name, clean_module_name, timestamp, deployment_id
-        )
+        timestamp = deployment_timestamp or self._get_deployment_timestamp()
+        updated_manifest = self._update_launchtime_manifest(manifest, service_name, clean_module_name, timestamp)
 
         # Create or update the resource with the controller
         created_service = self._apply_and_register_pool(
@@ -570,13 +561,12 @@ class ServiceManager:
         labels = manifest.get("metadata", {}).get("labels", {})
         annotations = manifest.get("metadata", {}).get("annotations", {})
 
-        # Use custom pod_selector if provided, otherwise use KT labels for pods created by kubetorch
+        # Use custom pod_selector if provided, otherwise use KT service label for pods
         if pod_selector:
             pool_selector_for_specifier = pod_selector
         else:
             pool_selector_for_specifier = {
                 provisioning_constants.KT_SERVICE_LABEL: service_name,
-                provisioning_constants.KT_MODULE_LABEL: clean_module_name,
             }
         specifier = {
             "type": "label_selector",
@@ -844,18 +834,6 @@ class ServiceManager:
 
     def _get_deployment_timestamp(self) -> str:
         return datetime.now(timezone.utc).isoformat()
-
-    def _generate_deployment_id(self, service_name: str, timestamp: str) -> str:
-        """Generate a unique deployment ID from service name + timestamp."""
-        hash_input = f"{service_name}-{timestamp}"
-        short_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:6]
-        return f"{service_name}-{short_hash}"
-
-    def _get_deployment_timestamp_and_id(self, service_name: str, deployment_timestamp: str = None) -> Tuple[str, str]:
-        """Get both deployment timestamp and deployment ID."""
-        timestamp = deployment_timestamp or self._get_deployment_timestamp()
-        deployment_id = self._generate_deployment_id(service_name, timestamp)
-        return timestamp, deployment_id
 
     def _clean_module_name(self, module_name: str) -> str:
         """Clean module name to remove invalid characters for Kubernetes labels."""

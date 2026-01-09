@@ -81,7 +81,6 @@ A Helm chart for kubetorch
 | kubetorchController.storage.size | string | `"1Gi"` |  |
 | kubetorchController.tag | string | `"0.4.0"` |  |
 | kubetorchController.tolerations | list | `[]` |  |
-| kubetorchController.workers | int | `8` |  |
 | logStreaming.enabled | bool | `true` |  |
 | logStreaming.ingestionBurstSizeMb | int | `20` |  |
 | logStreaming.ingestionRateMb | int | `10` |  |

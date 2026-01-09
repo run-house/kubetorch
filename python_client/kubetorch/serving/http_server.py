@@ -300,6 +300,8 @@ class ControllerWebSocket:
             os.environ["KT_SERVICE_DNS"] = metadata["service_dns"]
         if metadata.get("deployment_mode"):
             os.environ["KT_DEPLOYMENT_MODE"] = metadata["deployment_mode"]
+        if metadata.get("username"):
+            os.environ["KT_USERNAME"] = metadata["username"]
 
         # Apply runtime config - these can change between deploys
         runtime_config = metadata.get("runtime_config", {})
@@ -322,41 +324,63 @@ class ControllerWebSocket:
         # Signal that metadata has been received
         _METADATA_RECEIVED.set()
 
-    def _handle_reload(self, metadata: dict):
+    async def _handle_reload(self, metadata: dict):
         """Handle a reload message from controller.
 
         This is called when /pool is called and the controller pushes
-        updated metadata to all pods.
+        updated metadata to all pods. Sends an acknowledgment back to
+        the controller so it can wait for all pods to process the reload.
+
+        Blocking operations (run_image_setup, load_callable) are run in a thread pool
+        to avoid blocking the event loop and dropping the WebSocket connection.
         """
         global SUPERVISOR, _CACHED_CALLABLES, _LAST_DEPLOYED
 
         logger.info("Received reload message from controller")
 
-        # Apply the new metadata
-        self._apply_metadata(metadata)
+        try:
+            # Apply the new metadata (sets env vars - fast, ok to run in event loop)
+            self._apply_metadata(metadata)
 
-        # Run image setup for the reload
-        deployed_as_of = metadata.get("deployed_as_of")
-        deployed_time = (
-            datetime.fromisoformat(deployed_as_of).timestamp()
-            if deployed_as_of
-            else datetime.now(timezone.utc).timestamp()
-        )
-        run_image_setup(deployed_time)
-        _LAST_DEPLOYED = deployed_time
+            # Run image setup for the reload - use thread pool to avoid blocking event loop
+            deployed_as_of = metadata.get("deployed_as_of")
+            deployed_time = (
+                datetime.fromisoformat(deployed_as_of).timestamp()
+                if deployed_as_of
+                else datetime.now(timezone.utc).timestamp()
+            )
+            await asyncio.to_thread(run_image_setup, deployed_time)
+            _LAST_DEPLOYED = deployed_time
 
-        # Clear caches
-        _CACHED_CALLABLES.clear()
+            # Clear caches
+            _CACHED_CALLABLES.clear()
 
-        # Cleanup existing supervisor
-        if SUPERVISOR:
-            try:
-                SUPERVISOR.cleanup()
-            except Exception as e:
-                logger.warning(f"Error during supervisor cleanup on reload: {e}")
-            SUPERVISOR = None
+            # Cleanup existing supervisor
+            if SUPERVISOR:
+                try:
+                    SUPERVISOR.cleanup()
+                except Exception as e:
+                    logger.warning(f"Error during supervisor cleanup on reload: {e}")
+                SUPERVISOR = None
 
-        logger.info("Reload complete - supervisor will be recreated on next request")
+            # Recreate supervisor in thread pool so it's ready for the next request
+            # This prevents race conditions where the request arrives before the supervisor is ready
+            if os.environ.get("KT_CLS_OR_FN_NAME"):
+                logger.info("Recreating supervisor during reload")
+                clear_cache()
+                await asyncio.to_thread(load_callable, deployed_as_of)
+                logger.info("Supervisor recreated successfully")
+
+            # Send acknowledgment to controller
+            if self._ws:
+                await self._ws.send(json.dumps({"action": "reload_ack", "status": "ok"}))
+                logger.debug("Sent reload acknowledgment to controller")
+
+        except Exception as e:
+            logger.error(f"Error handling reload: {e}")
+            # Send error acknowledgment
+            if self._ws:
+                await self._ws.send(json.dumps({"action": "reload_ack", "status": "error", "message": str(e)}))
 
     async def _run(self):
         """Main WebSocket connection loop with automatic reconnection."""
@@ -397,7 +421,7 @@ class ControllerWebSocket:
                                 self._apply_metadata(data)
                             elif action == "reload":
                                 # Reload triggered by /pool call
-                                self._handle_reload(data)
+                                await self._handle_reload(data)
                             elif action == "error":
                                 logger.error(f"Controller error: {data.get('message')}")
                             else:
@@ -517,7 +541,7 @@ def cached_image_setup():
             command = line[len("RUN ") :]
 
             if command.startswith("$KT_PIP_INSTALL_CMD"):
-                kt_pip_cmd = kt_pip_cmd or _get_kt_pip_install_cmd()
+                kt_pip_cmd = kt_pip_cmd or _get_kt_pip_install_cmd() or "pip install"
                 command = command.replace("$KT_PIP_INSTALL_CMD", kt_pip_cmd)
         elif line.startswith("COPY"):
             _, source, dest = line.split()
@@ -1551,32 +1575,33 @@ async def ws_reload(websocket: WebSocket):
             logger.info(f"Set POD_NAMESPACE to {namespace} for selector-only mode")
 
         # Set up callable env vars from module config
+        # Always update these on reload - they may change between deployments
         if module:
-            if module.get("module_name") and not os.getenv("KT_MODULE_NAME"):
+            if module.get("module_name"):
                 os.environ["KT_MODULE_NAME"] = module["module_name"]
-                logger.info(f"Set KT_MODULE_NAME to {module['module_name']} for selector-only mode")
+                logger.info(f"Set KT_MODULE_NAME to {module['module_name']}")
 
-            if module.get("cls_or_fn_name") and not os.getenv("KT_CLS_OR_FN_NAME"):
+            if module.get("cls_or_fn_name"):
                 os.environ["KT_CLS_OR_FN_NAME"] = module["cls_or_fn_name"]
-                logger.info(f"Set KT_CLS_OR_FN_NAME to {module['cls_or_fn_name']} for selector-only mode")
+                logger.info(f"Set KT_CLS_OR_FN_NAME to {module['cls_or_fn_name']}")
 
-            if module.get("file_path") and not os.getenv("KT_FILE_PATH"):
+            if module.get("file_path"):
                 os.environ["KT_FILE_PATH"] = module["file_path"]
-                logger.info(f"Set KT_FILE_PATH to {module['file_path']} for selector-only mode")
+                logger.info(f"Set KT_FILE_PATH to {module['file_path']}")
 
             init_args = module.get("init_args")
-            if init_args is not None and not os.getenv("KT_INIT_ARGS"):
+            if init_args is not None:
                 os.environ["KT_INIT_ARGS"] = json.dumps(init_args) if init_args else "None"
-                logger.info("Set KT_INIT_ARGS for selector-only mode")
+                logger.info("Set KT_INIT_ARGS")
 
-            if module.get("callable_type") and not os.getenv("KT_CALLABLE_TYPE"):
+            if module.get("callable_type"):
                 os.environ["KT_CALLABLE_TYPE"] = module["callable_type"]
-                logger.info(f"Set KT_CALLABLE_TYPE to {module['callable_type']} for selector-only mode")
+                logger.info(f"Set KT_CALLABLE_TYPE to {module['callable_type']}")
 
             distributed_config = module.get("distributed_config")
-            if distributed_config is not None and not os.getenv("KT_DISTRIBUTED_CONFIG"):
+            if distributed_config is not None:
                 os.environ["KT_DISTRIBUTED_CONFIG"] = json.dumps(distributed_config) if distributed_config else "None"
-                logger.info("Set KT_DISTRIBUTED_CONFIG for selector-only mode")
+                logger.info("Set KT_DISTRIBUTED_CONFIG")
 
         # Run the reload in a thread pool to avoid blocking the event loop
         # (run_image_setup does rsync, file I/O, and potentially time.sleep)
