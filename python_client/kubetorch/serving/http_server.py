@@ -679,49 +679,56 @@ def cached_image_setup():
                 stdout_thread.start()
                 stderr_thread.start()
 
-                if is_app_cmd and os.getenv("KT_APP_PORT"):
-                    # wait for internal app to be healthy/ready if run port is provided
-                    try:
-                        port = os.getenv("KT_APP_PORT")
-                        logger.debug(f"Waiting for internal app on port {port} to start:")
-                        wait_for_app_start(
-                            port=port,
-                            health_check=os.getenv("KT_APP_HEALTHCHECK"),
-                            process=process,
-                        )
-                        logger.info(f"App on port {port} is ready.")
-                    except Exception as e:
-                        logger.error(f"Caught exception waiting for app to start: {e}")
-                else:
-                    # Check if this is a background command (ends with &)
-                    is_background = command.rstrip().endswith("&")
-
-                    if is_background:
-                        # For background processes, give it a moment to start and check for immediate failures
-                        import time
-
-                        time.sleep(0.5)  # Brief pause to catch immediate errors
-
-                        # Check if process failed immediately
+                if is_app_cmd:
+                    # App commands run indefinitely - never block waiting for completion
+                    if os.getenv("KT_APP_PORT"):
+                        # Wait for internal app to be healthy/ready on specified port
+                        try:
+                            port = os.getenv("KT_APP_PORT")
+                            logger.debug(f"Waiting for internal app on port {port} to start:")
+                            wait_for_app_start(
+                                port=port,
+                                health_check=os.getenv("KT_APP_HEALTHCHECK"),
+                                process=process,
+                            )
+                            logger.info(f"App on port {port} is ready.")
+                        except Exception as e:
+                            logger.error(f"Caught exception waiting for app to start: {e}")
+                    else:
+                        # No port specified - app runs in background, just check for immediate failures
+                        time.sleep(0.5)
                         poll_result = process.poll()
                         if poll_result is not None and poll_result != 0:
-                            # Process exited with error
                             stdout_thread.join(timeout=1)
                             stderr_thread.join(timeout=1)
-                            return_code = poll_result
+                            with stderr_lock:
+                                if stderr_lines:
+                                    logger.error("App command failed immediately:")
+                                    for stderr_line in stderr_lines:
+                                        logger.error(stderr_line)
                         else:
-                            # Process is running in background successfully
-                            logger.info(f"Background process started successfully (PID: {process.pid})")
-                            return_code = 0  # Indicate success for background start
+                            logger.info(f"App command running in background (PID: {process.pid})")
+                elif command.rstrip().endswith("&"):
+                    # Background command (ends with &) - don't wait for completion
+                    time.sleep(0.5)
+                    poll_result = process.poll()
+                    if poll_result is not None and poll_result != 0:
+                        stdout_thread.join(timeout=1)
+                        stderr_thread.join(timeout=1)
+                        with stderr_lock:
+                            if stderr_lines:
+                                logger.error("Background command failed immediately:")
+                                for stderr_line in stderr_lines:
+                                    logger.error(stderr_line)
                     else:
-                        # Wait for process to complete
-                        return_code = process.wait()
+                        logger.info(f"Background process started successfully (PID: {process.pid})")
+                else:
+                    # Regular RUN command - wait for completion
+                    return_code = process.wait()
+                    stdout_thread.join()
+                    stderr_thread.join()
 
-                        # Wait for streaming threads to finish
-                        stdout_thread.join()
-                        stderr_thread.join()
-
-                    if return_code != 0 and not is_app_cmd:
+                    if return_code != 0:
                         with stderr_lock:
                             if stderr_lines:
                                 logger.error(f"Failed to run command '{command}' with stderr:")
@@ -1611,7 +1618,15 @@ async def ws_reload(websocket: WebSocket):
             else datetime.now(timezone.utc).timestamp()
         )
         await run_in_executor_with_context(None, run_image_setup, deployed_time)
-        _LAST_DEPLOYED = deployed_time
+
+        # For non-app deployments, reload the callable to pick up code changes
+        # This ensures all pods reinitialize when .to() is called, not just on next request
+        if os.getenv("KT_CALLABLE_TYPE") != "app" and os.getenv("KT_CLS_OR_FN_NAME"):
+            await run_in_executor_with_context(None, load_callable, deployed_as_of)
+        else:
+            # For app deployments, just update the timestamp (callable isn't managed by us)
+            global _LAST_DEPLOYED
+            _LAST_DEPLOYED = deployed_time
 
         # Send acknowledgment back to controller
         logger.info("WebSocket reload: completed successfully")
