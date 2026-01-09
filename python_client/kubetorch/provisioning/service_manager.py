@@ -5,7 +5,6 @@ This module provides a single ServiceManager class that handles all resource typ
 Resource-specific behavior is driven by its relevant config.
 """
 import copy
-import hashlib
 import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
@@ -176,25 +175,8 @@ class ServiceManager:
             primary_template = primary_spec.get("template", {})
             worker_spec["template"] = copy.deepcopy(primary_template)
 
-        # Update distributed config if provided
-        if distributed_config is not None:
-            import json
-
-            env_value = json.dumps(distributed_config)
-            for replica_name in [primary_replica, "Worker"]:
-                rs = replica_specs.get(replica_name, {})
-                pod_spec = rs.get("template", {}).get("spec", {})
-                containers = pod_spec.get("containers", [])
-                for container in containers:
-                    env_list = container.setdefault("env", [])
-                    updated = False
-                    for env_var in env_list:
-                        if env_var.get("name") == "KT_DISTRIBUTED_CONFIG":
-                            env_var["value"] = env_value
-                            updated = True
-                            break
-                    if not updated:
-                        env_list.append({"name": "KT_DISTRIBUTED_CONFIG", "value": env_value})
+        # Distributed config flows via WebSocket metadata from the controller,
+        # not via env vars in the manifest
 
     # =========================================================================
     # Labels and Annotations
@@ -219,11 +201,7 @@ class ServiceManager:
         inactivity_ttl: str = None,
     ) -> dict:
         """Get standard kubetorch annotations."""
-        annotations = {
-            "prometheus.io/scrape": "true",
-            "prometheus.io/path": provisioning_constants.PROMETHEUS_HEALTH_ENDPOINT,
-            "prometheus.io/port": "8080",
-        }
+        annotations = {}
         if self.service_annotations:
             annotations.update(self.service_annotations)
         if custom_annotations:
@@ -302,7 +280,6 @@ class ServiceManager:
         service_name: str,
         clean_module_name: str,
         deployment_timestamp: str,
-        deployment_id: str,
     ) -> dict:
         """Update manifest with service name and deployment timestamp."""
         updated = copy.deepcopy(manifest)
@@ -313,13 +290,12 @@ class ServiceManager:
         updated["metadata"]["labels"][provisioning_constants.KT_SERVICE_LABEL] = service_name
         updated["metadata"]["labels"][provisioning_constants.KT_MODULE_LABEL] = clean_module_name
         updated["metadata"]["labels"][provisioning_constants.KT_APP_LABEL] = service_name
-        updated["metadata"]["labels"][provisioning_constants.KT_DEPLOYMENT_ID_LABEL] = deployment_id
 
-        # For Deployments, update selector.matchLabels to match template labels
+        # For Deployments, update selector.matchLabels - only use service label for selection
+        # (module label is informational, not used for pod selection)
         if self.resource_type == "deployment":
             updated["spec"].setdefault("selector", {}).setdefault("matchLabels", {})
             updated["spec"]["selector"]["matchLabels"][provisioning_constants.KT_SERVICE_LABEL] = service_name
-            updated["spec"]["selector"]["matchLabels"][provisioning_constants.KT_MODULE_LABEL] = clean_module_name
 
         # Update template metadata
         if self.config.get("pod_template_path"):
@@ -359,81 +335,6 @@ class ServiceManager:
                     metadata["labels"][provisioning_constants.KT_MODULE_LABEL] = clean_module_name
 
         return updated
-
-    def _apply_launchtime_env_vars(
-        self,
-        manifest: dict,
-        service_name: str,
-        pointer_env_vars: dict,
-        metadata_env_vars: dict,
-        launch_id: str,
-        deployment_mode: str = None,
-        distributed_config: dict = None,
-    ) -> dict:
-        kt_env_vars = {
-            **pointer_env_vars,
-            **metadata_env_vars,
-            "KT_SERVICE_NAME": service_name,
-            "KT_SERVICE_DNS": (
-                f"{service_name}-headless.{self.namespace}.svc.cluster.local"
-                if distributed_config
-                else f"{service_name}.{self.namespace}.svc.cluster.local"
-            ),
-            "KT_DEPLOYMENT_MODE": deployment_mode,
-        }
-
-        pod_spec = self.pod_spec(manifest)
-        containers = pod_spec.get("containers", [])
-        has_otel = False
-        if containers:
-            existing_env = containers[0].get("env", [])
-            has_otel = any(env.get("name") == "OTEL_SERVICE_NAME" for env in existing_env)
-
-        if not has_otel:
-            kt_env_vars["OTEL_SERVICE_NAME"] = service_name
-
-        # Ensure cluster config env vars are set
-        if globals.config.cluster_config:
-            if globals.config.cluster_config.get("log_streaming_enabled", True):
-                kt_env_vars["KT_LOG_STREAMING_ENABLED"] = "True"
-            if globals.config.cluster_config.get("metrics_enabled", True):
-                kt_env_vars["KT_METRICS_ENABLED"] = "True"
-
-        # Ensure all environment variable values are strings for Kubernetes compatibility
-        kt_env_vars = self._serialize_env_vars(kt_env_vars)
-
-        for container in containers:
-            env_list = container.setdefault("env", [])
-            updated_names = set()
-            for env_var in env_list:
-                name = env_var.get("name")
-                if name in kt_env_vars:
-                    env_var["value"] = kt_env_vars[name]
-                    updated_names.add(name)
-            for name, value in kt_env_vars.items():
-                if name not in updated_names:
-                    env_list.append({"name": name, "value": value})
-
-        return manifest
-
-    def _serialize_env_vars(self, env_vars: dict) -> dict:
-        """Serialize env var values to strings for Kubernetes compatibility."""
-        import json
-
-        serialized_vars = {}
-        for key, value in env_vars.items():
-            if value is None:
-                serialized_vars[key] = "null"
-            elif isinstance(value, (dict, list)):
-                try:
-                    serialized_vars[key] = json.dumps(value)
-                except (TypeError, ValueError):
-                    serialized_vars[key] = str(value)
-            elif isinstance(value, (bool, int, float)):
-                serialized_vars[key] = str(value)
-            else:
-                serialized_vars[key] = value
-        return serialized_vars
 
     # =========================================================================
     # Service Config / Endpoint Resolution
@@ -477,11 +378,10 @@ class ServiceManager:
         create_headless_service: bool = False,
         endpoint: Optional[Endpoint] = None,
         pod_selector: Optional[Dict[str, str]] = None,
-        pointer_env_vars: dict = None,
-        metadata_env_vars: dict = None,
         launch_id: str = None,
         deployment_mode: str = None,
         distributed_config: dict = None,
+        runtime_config: dict = None,
     ) -> Tuple[dict, dict]:
         """Create or update a Kubernetes service and register it with the controller.
 
@@ -506,11 +406,12 @@ class ServiceManager:
                 registration. If provided, the controller watches pods matching this
                 selector instead of the default kubetorch labels. Used with ``from_manifest()``
                 when providing a custom selector with an existing K8s manifest.
-            pointer_env_vars (dict, optional): Environment variables for module pointers.
-            metadata_env_vars (dict, optional): Environment variables for module metadata.
             launch_id (str, optional): Unique launch identifier, auto-generated by Kubetorch.
             deployment_mode (str, optional): Deployment mode (e.g., "deployment", "knative").
             distributed_config (dict, optional): Distributed configuration.
+            runtime_config (dict, optional): Runtime configuration that flows via WebSocket.
+                Includes log_streaming_enabled, metrics_enabled, inactivity_ttl, log_level,
+                allowed_serialization. These can change between deploys without pod recreation.
 
         Returns:
             Tuple[dict, dict]: A tuple of (created_service, updated_manifest) where
@@ -519,27 +420,17 @@ class ServiceManager:
         """
         logger.info(f"Deploying {manifest.get('kind', self.resource_type)} service with name: {service_name}")
 
-        # Apply launch-time env vars first (before syncing to workers)
-        if pointer_env_vars is not None and metadata_env_vars is not None:
-            manifest = self._apply_launchtime_env_vars(
-                manifest=manifest,
-                service_name=service_name,
-                pointer_env_vars=pointer_env_vars,
-                metadata_env_vars=metadata_env_vars,
-                launch_id=launch_id or "",
-                deployment_mode=deployment_mode,
-                distributed_config=distributed_config,
-            )
+        # Note: Module metadata and runtime env vars (KT_SERVICE_NAME, KT_SERVICE_DNS, etc.)
+        # are now sent via controller WebSocket instead of being baked into the manifest.
+        # See http_server.py ControllerWebSocket for details.
 
         # Preprocess manifest (syncs worker pod specs from primary, including env vars)
         manifest = self._preprocess_manifest_for_launch(manifest)
 
         # Update manifest with service name and deployment metadata
         clean_module_name = self._clean_module_name(module_name)
-        timestamp, deployment_id = self._get_deployment_timestamp_and_id(service_name, deployment_timestamp)
-        updated_manifest = self._update_launchtime_manifest(
-            manifest, service_name, clean_module_name, timestamp, deployment_id
-        )
+        timestamp = deployment_timestamp or self._get_deployment_timestamp()
+        updated_manifest = self._update_launchtime_manifest(manifest, service_name, clean_module_name, timestamp)
 
         # Create or update the resource with the controller
         created_service = self._apply_and_register_pool(
@@ -552,6 +443,9 @@ class ServiceManager:
             create_headless_service=create_headless_service,
             endpoint=endpoint,
             pod_selector=pod_selector,
+            deployment_mode=deployment_mode,
+            distributed_config=distributed_config,
+            runtime_config=runtime_config,
         )
 
         return created_service, updated_manifest
@@ -612,28 +506,38 @@ class ServiceManager:
         return manifest
 
     def _is_distributed(self, manifest: dict) -> bool:
-        """Check if this is a distributed job."""
-        # Check KT_DISTRIBUTED_CONFIG env var
-        pod_spec = self.pod_spec(manifest)
-        containers = pod_spec.get("containers", [])
-        if containers:
-            env_vars = containers[0].get("env", [])
-            for env_var in env_vars:
-                if (
-                    env_var.get("name") == "KT_DISTRIBUTED_CONFIG"
-                    and env_var.get("value")
-                    and env_var.get("value") != "null"
-                ):
-                    return True
+        """Check if this is a distributed job.
 
-        # Check replicas for training jobs
+        Distributed config flows via WebSocket, so we check replicas for training jobs.
+        """
         if self.resource_type in SUPPORTED_TRAINING_JOBS:
             return self.get_replicas(manifest) > 1
 
         return False
 
-    def _load_pool_metadata(self):
-        return {"username": globals.config.username}
+    def _load_pool_metadata(
+        self,
+        deployment_mode: str = None,
+        distributed_config: dict = None,
+        runtime_config: dict = None,
+    ) -> dict:
+        """Build pool metadata dict for controller registration.
+
+        Args:
+            deployment_mode: Deployment mode (e.g., "deployment", "knative").
+            distributed_config: Distributed configuration for SPMD.
+            runtime_config: Runtime configuration that flows via WebSocket to pods.
+                Includes log_streaming_enabled, metrics_enabled, inactivity_ttl,
+                log_level, allowed_serialization.
+        """
+        metadata = {"username": globals.config.username}
+        if deployment_mode:
+            metadata["deployment_mode"] = deployment_mode
+        if distributed_config:
+            metadata["distributed_config"] = distributed_config
+        if runtime_config:
+            metadata["runtime_config"] = runtime_config
+        return metadata
 
     def _apply_and_register_pool(
         self,
@@ -646,6 +550,9 @@ class ServiceManager:
         create_headless_service: bool = False,
         endpoint: Optional[Endpoint] = None,
         pod_selector: Optional[Dict[str, str]] = None,
+        deployment_mode: str = None,
+        distributed_config: dict = None,
+        runtime_config: dict = None,
     ) -> dict:
         """Create or update resource via controller using the deploy endpoint. Applies the manifest and registers the pool."""
         pod_spec = self.pod_spec(manifest)
@@ -654,13 +561,12 @@ class ServiceManager:
         labels = manifest.get("metadata", {}).get("labels", {})
         annotations = manifest.get("metadata", {}).get("annotations", {})
 
-        # Use custom pod_selector if provided, otherwise use KT labels for pods created by kubetorch
+        # Use custom pod_selector if provided, otherwise use KT service label for pods
         if pod_selector:
             pool_selector_for_specifier = pod_selector
         else:
             pool_selector_for_specifier = {
                 provisioning_constants.KT_SERVICE_LABEL: service_name,
-                provisioning_constants.KT_MODULE_LABEL: clean_module_name,
             }
         specifier = {
             "type": "label_selector",
@@ -668,7 +574,11 @@ class ServiceManager:
         }
 
         service_config = self._resolve_service_config(endpoint, service_name, pool_selector_for_specifier)
-        pool_metadata = self._load_pool_metadata()
+        pool_metadata = self._load_pool_metadata(
+            deployment_mode=deployment_mode,
+            distributed_config=distributed_config,
+            runtime_config=runtime_config,
+        )
 
         try:
             manifest_replicas = manifest.get("spec", {}).get("replicas", "NOT_SET")
@@ -924,18 +834,6 @@ class ServiceManager:
 
     def _get_deployment_timestamp(self) -> str:
         return datetime.now(timezone.utc).isoformat()
-
-    def _generate_deployment_id(self, service_name: str, timestamp: str) -> str:
-        """Generate a unique deployment ID from service name + timestamp."""
-        hash_input = f"{service_name}-{timestamp}"
-        short_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:6]
-        return f"{service_name}-{short_hash}"
-
-    def _get_deployment_timestamp_and_id(self, service_name: str, deployment_timestamp: str = None) -> Tuple[str, str]:
-        """Get both deployment timestamp and deployment ID."""
-        timestamp = deployment_timestamp or self._get_deployment_timestamp()
-        deployment_id = self._generate_deployment_id(service_name, timestamp)
-        return timestamp, deployment_id
 
     def _clean_module_name(self, module_name: str) -> str:
         """Clean module name to remove invalid characters for Kubernetes labels."""

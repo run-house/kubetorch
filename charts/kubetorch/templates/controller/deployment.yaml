@@ -70,8 +70,6 @@ spec:
               value: {{ .Values.kubetorchController.tag | quote }}
             - name: PORT
               value: {{ .Values.kubetorchController.port | quote }}
-            - name: WORKERS
-              value: {{ .Values.kubetorchController.workers | quote }}
             - name: CONNECTION_POOL_SIZE
               value: {{ .Values.kubetorchController.connectionPoolSize | quote }}
             - name: KUBETORCH_DB_PATH

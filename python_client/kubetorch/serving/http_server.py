@@ -88,6 +88,11 @@ KT_METRICS_ENABLED = os.environ.get("KT_METRICS_ENABLED", "True").lower() == "tr
 
 # Global termination event that can be checked by running requests
 TERMINATION_EVENT = threading.Event()
+
+# Controller WebSocket - for receiving metadata from controller
+_METADATA_RECEIVED = threading.Event()
+_CONTROLLER_WS = None  # Will hold the ControllerWebSocket instance
+
 # Create a client for FastAPI service
 
 # Set the python breakpoint to kt.deep_breakpoint
@@ -128,6 +133,342 @@ async def _http_reverse_proxy(request: Request):
         headers=rp_resp.headers,
         background=BackgroundTask(rp_resp.aclose),
     )
+
+
+##########################################
+########### Controller WebSocket #########
+##########################################
+
+
+def _get_pod_name() -> str:
+    """Get pod name - from hostname (K8s sets hostname to pod name)."""
+    # Try env var first for backwards compatibility
+    if os.environ.get("POD_NAME"):
+        return os.environ["POD_NAME"]
+    # In K8s, hostname is set to pod name
+    import socket
+
+    return socket.gethostname()
+
+
+def _get_pod_namespace() -> str:
+    """Get pod namespace - from service account mount or env var."""
+    # Try env var first for backwards compatibility
+    if os.environ.get("POD_NAMESPACE"):
+        return os.environ["POD_NAMESPACE"]
+    # K8s mounts namespace in service account directory
+    namespace_file = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+    try:
+        with open(namespace_file) as f:
+            return f.read().strip()
+    except (FileNotFoundError, PermissionError):
+        return "default"
+
+
+def _get_pod_ip() -> str:
+    """Get pod IP - from resolving hostname or env var."""
+    # Try env var first for backwards compatibility
+    if os.environ.get("POD_IP"):
+        return os.environ["POD_IP"]
+    # Resolve hostname to get pod IP
+    import socket
+
+    try:
+        return socket.gethostbyname(socket.gethostname())
+    except socket.gaierror:
+        return ""
+
+
+def _populate_pod_env_vars():
+    """Populate POD_NAME, POD_NAMESPACE, POD_IP env vars at startup.
+
+    These were previously set via Kubernetes Downward API in the pod template.
+    Now we derive them locally and set them as env vars so they're available
+    throughout the codebase and in user code.
+    """
+    if not os.environ.get("POD_NAME"):
+        os.environ["POD_NAME"] = _get_pod_name()
+    if not os.environ.get("POD_NAMESPACE"):
+        os.environ["POD_NAMESPACE"] = _get_pod_namespace()
+    if not os.environ.get("POD_IP"):
+        pod_ip = _get_pod_ip()
+        if pod_ip:
+            os.environ["POD_IP"] = pod_ip
+
+
+# Populate pod env vars at module load time
+_populate_pod_env_vars()
+
+
+class ControllerWebSocket:
+    """WebSocket client for receiving metadata from the kubetorch controller.
+
+    On startup, pods connect to the controller via WebSocket to:
+    1. Register themselves (pod_name, namespace, service_name)
+    2. Request their metadata (module pointers, init_args, etc.)
+    3. Receive updates when /pool is called (redeployments)
+
+    This replaces the static env var approach where all metadata was baked
+    into the pod manifest at creation time. It also replaces the push-based
+    approach where the controller connected to pods - this pull-based approach
+    scales better and supports autoscaling pods requesting metadata on connect.
+    """
+
+    def __init__(self):
+        self._ws = None
+        self._running = False
+        self._task = None
+        self._reconnect_delay = 1.0  # Start with 1 second, exponential backoff
+
+    def _get_controller_url(self) -> Optional[str]:
+        """Get the WebSocket URL for the controller."""
+        controller_url = os.environ.get("KT_CONTROLLER_URL")
+        if not controller_url:
+            # Fall back to constructing from install namespace
+            install_namespace = os.environ.get("KT_INSTALL_NAMESPACE", "kubetorch")
+            controller_url = f"http://kubetorch-controller.{install_namespace}.svc.cluster.local:8080"
+
+        # Convert HTTP to WS
+        ws_url = controller_url.replace("http://", "ws://").replace("https://", "wss://")
+        return f"{ws_url}/controller/ws/pods"
+
+    def _get_registration_message(self) -> dict:
+        """Build the registration message to send to controller."""
+        return {
+            "action": "register",
+            "pod_name": _get_pod_name(),
+            "pod_ip": _get_pod_ip(),
+            "namespace": _get_pod_namespace(),
+            "service_name": os.environ.get("KT_SERVICE", ""),
+            "request_metadata": True,  # Always request metadata on connect
+        }
+
+    def _apply_metadata(self, metadata: dict):
+        """Apply received metadata by setting environment variables.
+
+        This maintains backwards compatibility with existing code that reads
+        from env vars. The supervisor and load_callable will use these env vars.
+        """
+        global _METADATA_RECEIVED
+
+        module_info = metadata.get("module", {})
+        service_name = metadata.get("service_name")
+        namespace = metadata.get("namespace")
+
+        # Set module pointer env vars
+        if module_info.get("module_name"):
+            os.environ["KT_MODULE_NAME"] = module_info["module_name"]
+        if module_info.get("cls_or_fn_name"):
+            os.environ["KT_CLS_OR_FN_NAME"] = module_info["cls_or_fn_name"]
+        if module_info.get("file_path"):
+            os.environ["KT_FILE_PATH"] = module_info["file_path"]
+        if module_info.get("callable_type"):
+            os.environ["KT_CALLABLE_TYPE"] = module_info["callable_type"]
+
+        # Set init args (always set, default to "null" if not provided)
+        init_args = module_info.get("init_args")
+        os.environ["KT_INIT_ARGS"] = json.dumps(init_args) if init_args else "null"
+
+        # Set distributed config (always set, default to "null" if not provided)
+        distributed_config = module_info.get("distributed_config")
+        os.environ["KT_DISTRIBUTED_CONFIG"] = json.dumps(distributed_config) if distributed_config else "null"
+
+        # Set service metadata
+        if service_name:
+            os.environ["KT_SERVICE_NAME"] = service_name
+            os.environ["KT_SERVICE"] = service_name
+            # Update LogCapture labels for log streaming
+            try:
+                from log_capture import get_log_capture
+            except ImportError:
+                from .log_capture import get_log_capture
+            log_capture = get_log_capture()
+            if log_capture and log_capture.labels.get("service") == "unknown":
+                log_capture.labels["service"] = service_name
+
+        if namespace:
+            os.environ["POD_NAMESPACE"] = namespace
+            try:
+                from log_capture import get_log_capture
+            except ImportError:
+                from .log_capture import get_log_capture
+            log_capture = get_log_capture()
+            if log_capture:
+                log_capture.labels["namespace"] = namespace
+
+        if metadata.get("service_dns"):
+            os.environ["KT_SERVICE_DNS"] = metadata["service_dns"]
+        if metadata.get("deployment_mode"):
+            os.environ["KT_DEPLOYMENT_MODE"] = metadata["deployment_mode"]
+        if metadata.get("username"):
+            os.environ["KT_USERNAME"] = metadata["username"]
+
+        # Apply runtime config - these can change between deploys
+        runtime_config = metadata.get("runtime_config", {})
+        if runtime_config.get("log_streaming_enabled") is not None:
+            os.environ["KT_LOG_STREAMING_ENABLED"] = str(runtime_config["log_streaming_enabled"])
+        if runtime_config.get("metrics_enabled") is not None:
+            os.environ["KT_METRICS_ENABLED"] = str(runtime_config["metrics_enabled"])
+        if runtime_config.get("inactivity_ttl"):
+            os.environ["KT_INACTIVITY_TTL"] = runtime_config["inactivity_ttl"]
+        if runtime_config.get("log_level"):
+            os.environ["KT_LOG_LEVEL"] = runtime_config["log_level"]
+        if runtime_config.get("allowed_serialization"):
+            os.environ["KT_ALLOWED_SERIALIZATION"] = runtime_config["allowed_serialization"]
+
+        logger.info(
+            f"Applied metadata from controller: module={module_info.get('module_name')}, "
+            f"callable={module_info.get('cls_or_fn_name')}"
+        )
+
+        # Signal that metadata has been received
+        _METADATA_RECEIVED.set()
+
+    async def _handle_reload(self, metadata: dict):
+        """Handle a reload message from controller.
+
+        This is called when /pool is called and the controller pushes
+        updated metadata to all pods. Sends an acknowledgment back to
+        the controller so it can wait for all pods to process the reload.
+
+        Blocking operations (run_image_setup, load_callable) are run in a thread pool
+        to avoid blocking the event loop and dropping the WebSocket connection.
+        """
+        global SUPERVISOR, _CACHED_CALLABLES, _LAST_DEPLOYED
+
+        logger.info("Received reload message from controller")
+
+        try:
+            # Apply the new metadata (sets env vars - fast, ok to run in event loop)
+            self._apply_metadata(metadata)
+
+            # Run image setup for the reload - use thread pool to avoid blocking event loop
+            deployed_as_of = metadata.get("deployed_as_of")
+            deployed_time = (
+                datetime.fromisoformat(deployed_as_of).timestamp()
+                if deployed_as_of
+                else datetime.now(timezone.utc).timestamp()
+            )
+            await asyncio.to_thread(run_image_setup, deployed_time)
+            _LAST_DEPLOYED = deployed_time
+
+            # Clear caches
+            _CACHED_CALLABLES.clear()
+
+            # Cleanup existing supervisor
+            if SUPERVISOR:
+                try:
+                    SUPERVISOR.cleanup()
+                except Exception as e:
+                    logger.warning(f"Error during supervisor cleanup on reload: {e}")
+                SUPERVISOR = None
+
+            # Recreate supervisor in thread pool so it's ready for the next request
+            # This prevents race conditions where the request arrives before the supervisor is ready
+            if os.environ.get("KT_CLS_OR_FN_NAME"):
+                logger.info("Recreating supervisor during reload")
+                clear_cache()
+                await asyncio.to_thread(load_callable, deployed_as_of)
+                logger.info("Supervisor recreated successfully")
+
+            # Send acknowledgment to controller
+            if self._ws:
+                await self._ws.send(json.dumps({"action": "reload_ack", "status": "ok"}))
+                logger.debug("Sent reload acknowledgment to controller")
+
+        except Exception as e:
+            logger.error(f"Error handling reload: {e}")
+            # Send error acknowledgment
+            if self._ws:
+                await self._ws.send(json.dumps({"action": "reload_ack", "status": "error", "message": str(e)}))
+
+    async def _run(self):
+        """Main WebSocket connection loop with automatic reconnection."""
+        try:
+            import websockets
+        except ImportError:
+            logger.warning("websockets package not installed - controller WebSocket disabled")
+            _METADATA_RECEIVED.set()
+            return
+
+        ws_url = self._get_controller_url()
+        if not ws_url:
+            logger.warning("No controller URL configured - metadata must be in env vars")
+            _METADATA_RECEIVED.set()
+            return
+
+        logger.info(f"Connecting to controller WebSocket: {ws_url}")
+
+        while self._running:
+            try:
+                async with websockets.connect(ws_url, close_timeout=10) as ws:
+                    self._ws = ws
+                    self._reconnect_delay = 1.0  # Reset backoff on successful connect
+
+                    # Send registration message
+                    reg_msg = self._get_registration_message()
+                    await ws.send(json.dumps(reg_msg))
+                    logger.info(f"Registered with controller as {reg_msg['pod_name']}")
+
+                    # Listen for messages
+                    async for message in ws:
+                        try:
+                            data = json.loads(message)
+                            action = data.get("action")
+
+                            if action == "metadata":
+                                # Initial metadata response
+                                self._apply_metadata(data)
+                            elif action == "reload":
+                                # Reload triggered by /pool call
+                                await self._handle_reload(data)
+                            elif action == "error":
+                                logger.error(f"Controller error: {data.get('message')}")
+                            else:
+                                logger.debug(f"Unknown message action: {action}")
+
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"Invalid JSON from controller: {e}")
+
+            except Exception as e:
+                if self._running:
+                    logger.warning(
+                        f"Controller WebSocket connection failed: {e}. " f"Reconnecting in {self._reconnect_delay}s..."
+                    )
+                    await asyncio.sleep(self._reconnect_delay)
+                    # Exponential backoff with max of 30 seconds
+                    self._reconnect_delay = min(self._reconnect_delay * 2, 30.0)
+
+        self._ws = None
+
+    async def start(self):
+        """Start the WebSocket connection in background."""
+        if not is_running_in_kubernetes():
+            # Not in K8s, metadata comes from env vars
+            logger.debug("Not running in Kubernetes - skipping controller WebSocket")
+            _METADATA_RECEIVED.set()
+            return
+
+        # Check if module env vars are already set (backwards compatibility)
+        if os.environ.get("KT_MODULE_NAME") and os.environ.get("KT_CLS_OR_FN_NAME"):
+            logger.debug("Module env vars already set - skipping controller WebSocket")
+            _METADATA_RECEIVED.set()
+            return
+
+        self._running = True
+        self._task = asyncio.create_task(self._run())
+
+    async def stop(self):
+        """Stop the WebSocket connection."""
+        self._running = False
+        if self._ws:
+            await self._ws.close()
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
 
 
 #####################################
@@ -200,7 +541,7 @@ def cached_image_setup():
             command = line[len("RUN ") :]
 
             if command.startswith("$KT_PIP_INSTALL_CMD"):
-                kt_pip_cmd = kt_pip_cmd or _get_kt_pip_install_cmd()
+                kt_pip_cmd = kt_pip_cmd or _get_kt_pip_install_cmd() or "pip install"
                 command = command.replace("$KT_PIP_INSTALL_CMD", kt_pip_cmd)
         elif line.startswith("COPY"):
             _, source, dest = line.split()
@@ -953,6 +1294,22 @@ async def lifespan(app: FastAPI):
     else:
         logger.debug("No TTL annotation found")
 
+    # Start controller WebSocket to receive metadata (if not already set via env vars)
+    global _CONTROLLER_WS
+    _CONTROLLER_WS = ControllerWebSocket()
+    await _CONTROLLER_WS.start()
+
+    # Wait for metadata to be received (with timeout)
+    # This blocks startup until we have the module info needed to load the callable
+    # Use asyncio-compatible wait to avoid blocking the event loop
+    metadata_timeout = 30  # seconds
+    start_time = time.time()
+    while not _METADATA_RECEIVED.is_set():
+        if time.time() - start_time > metadata_timeout:
+            logger.warning(f"Timeout waiting for metadata from controller after {metadata_timeout}s")
+            break
+        await asyncio.sleep(0.1)  # Yield to event loop so WebSocket task can run
+
     try:
         if os.getenv("KT_CALLABLE_TYPE") == "app":
             run_image_setup()
@@ -992,6 +1349,11 @@ async def lifespan(app: FastAPI):
         yield
 
     finally:
+        # Shutdown - stop controller WebSocket
+        if _CONTROLLER_WS:
+            await _CONTROLLER_WS.stop()
+            logger.info("Controller WebSocket stopped")
+
         # Shutdown - stop log capture and metrics collection
         log_capture = getattr(app.state, "log_capture", None)
         if log_capture:
@@ -1213,32 +1575,33 @@ async def ws_reload(websocket: WebSocket):
             logger.info(f"Set POD_NAMESPACE to {namespace} for selector-only mode")
 
         # Set up callable env vars from module config
+        # Always update these on reload - they may change between deployments
         if module:
-            if module.get("module_name") and not os.getenv("KT_MODULE_NAME"):
+            if module.get("module_name"):
                 os.environ["KT_MODULE_NAME"] = module["module_name"]
-                logger.info(f"Set KT_MODULE_NAME to {module['module_name']} for selector-only mode")
+                logger.info(f"Set KT_MODULE_NAME to {module['module_name']}")
 
-            if module.get("cls_or_fn_name") and not os.getenv("KT_CLS_OR_FN_NAME"):
+            if module.get("cls_or_fn_name"):
                 os.environ["KT_CLS_OR_FN_NAME"] = module["cls_or_fn_name"]
-                logger.info(f"Set KT_CLS_OR_FN_NAME to {module['cls_or_fn_name']} for selector-only mode")
+                logger.info(f"Set KT_CLS_OR_FN_NAME to {module['cls_or_fn_name']}")
 
-            if module.get("file_path") and not os.getenv("KT_FILE_PATH"):
+            if module.get("file_path"):
                 os.environ["KT_FILE_PATH"] = module["file_path"]
-                logger.info(f"Set KT_FILE_PATH to {module['file_path']} for selector-only mode")
+                logger.info(f"Set KT_FILE_PATH to {module['file_path']}")
 
             init_args = module.get("init_args")
-            if init_args is not None and not os.getenv("KT_INIT_ARGS"):
+            if init_args is not None:
                 os.environ["KT_INIT_ARGS"] = json.dumps(init_args) if init_args else "None"
-                logger.info("Set KT_INIT_ARGS for selector-only mode")
+                logger.info("Set KT_INIT_ARGS")
 
-            if module.get("callable_type") and not os.getenv("KT_CALLABLE_TYPE"):
+            if module.get("callable_type"):
                 os.environ["KT_CALLABLE_TYPE"] = module["callable_type"]
-                logger.info(f"Set KT_CALLABLE_TYPE to {module['callable_type']} for selector-only mode")
+                logger.info(f"Set KT_CALLABLE_TYPE to {module['callable_type']}")
 
             distributed_config = module.get("distributed_config")
-            if distributed_config is not None and not os.getenv("KT_DISTRIBUTED_CONFIG"):
+            if distributed_config is not None:
                 os.environ["KT_DISTRIBUTED_CONFIG"] = json.dumps(distributed_config) if distributed_config else "None"
-                logger.info("Set KT_DISTRIBUTED_CONFIG for selector-only mode")
+                logger.info("Set KT_DISTRIBUTED_CONFIG")
 
         # Run the reload in a thread pool to avoid blocking the event loop
         # (run_image_setup does rsync, file I/O, and potentially time.sleep)

@@ -92,8 +92,8 @@ class App(Module):
         stream_logs = not self._run_async
         self._launch_service(install_url, use_editable, deployment_timestamp, stream_logs)
 
-    def _get_service_dockerfile(self, metadata_env_vars):
-        image_instructions = super()._get_service_dockerfile(metadata_env_vars)
+    def _get_service_dockerfile(self):
+        image_instructions = super()._get_service_dockerfile()
 
         remote_script = os.path.join(self.remote_pointers[0], self.remote_pointers[1])
         local_script = r"\b" + re.escape(self.remote_pointers[1]) + r"\b"
@@ -166,7 +166,8 @@ class App(Module):
         else:
             client.call_method(
                 self.endpoint(),
-                stream_logs=stream_logs,
+                stream_logs,
+                self.logging_config,
                 headers={"X-Deployed-As-Of": deployment_timestamp},
             )
 

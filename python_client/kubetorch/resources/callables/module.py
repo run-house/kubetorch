@@ -276,28 +276,27 @@ class Module:
                         existing_volume = kt.Volume.from_name(name=v.get("name"))
                         volumes.append(existing_volume)
 
-            module_args = compute.get_env_vars(
-                [
-                    "KT_FILE_PATH",
-                    "KT_MODULE_NAME",
-                    "KT_CLS_OR_FN_NAME",
-                    "KT_CALLABLE_TYPE",
-                    "KT_INIT_ARGS",
-                ]
-            )
+            # Get module info from controller's pool database
+            pool_info = controller_client.get_pool(namespace, candidate)
+            if not pool_info or not pool_info.get("module"):
+                raise ValueError(f"No module info found for pool {candidate}")
+
+            module_info = pool_info["module"]
+            module_pointers = module_info.get("pointers", {})
             pointers = (
-                module_args["KT_FILE_PATH"],
-                module_args["KT_MODULE_NAME"],
-                module_args["KT_CLS_OR_FN_NAME"],
+                module_pointers.get("file_path"),
+                module_pointers.get("module_name"),
+                module_pointers.get("cls_or_fn_name"),
             )
 
-            if module_args.get("KT_CALLABLE_TYPE") == "cls":
-                init_args = json.loads(module_args.get("KT_INIT_ARGS") or "{}")
+            callable_type = module_info.get("type", "fn")
+            if callable_type == "cls":
+                init_args = module_pointers.get("init_args") or {}
                 reloaded_module = kt.Cls(name=candidate, pointers=pointers, init_args=init_args)
-            elif module_args.get("KT_CALLABLE_TYPE") == "fn":
+            elif callable_type == "fn":
                 reloaded_module = kt.Fn(name=candidate, pointers=pointers)
             else:
-                raise ValueError(f"Unknown module type: {module_args.get('KT_CALLABLE_TYPE')}")
+                raise ValueError(f"Unknown module type: {callable_type}")
 
             reloaded_module.service_name = candidate
             reloaded_module.compute = compute
@@ -608,9 +607,8 @@ class Module:
         if install_url.endswith(".whl") or (use_editable and install_url != str(source_dir)):
             rsync_dirs.append(install_url)
 
-        pointer_env_vars = self._get_pointer_env_vars(self.remote_pointers)
-        metadata_env_vars = self._get_metadata_env_vars(init_args)
-        service_dockerfile = self._get_service_dockerfile({**pointer_env_vars, **metadata_env_vars})
+        # Module metadata is now sent via controller WebSocket, not baked into dockerfile
+        service_dockerfile = self._get_service_dockerfile()
         return rsync_dirs, service_dockerfile
 
     def _rsync_repo_and_image_patches(self, install_url, use_editable, init_args):
@@ -661,10 +659,8 @@ class Module:
         try:
             startup_rsync_command = self._startup_rsync_command(use_editable, install_url, dryrun)
 
-            # Generate dockerfile and module spec for pool registration
-            pointer_env_vars = self._get_pointer_env_vars(self.remote_pointers)
-            metadata_env_vars = self._get_metadata_env_vars(init_args)
-            dockerfile = self._get_service_dockerfile({**pointer_env_vars, **metadata_env_vars})
+            # Generate dockerfile (module metadata sent via controller WebSocket)
+            dockerfile = self._get_service_dockerfile()
 
             # Build module spec for pool registration
             dispatch = self.compute.dispatch_method
@@ -682,11 +678,11 @@ class Module:
             }
 
             # Launch the compute in the form of a service with the requested resources
+            # Note: module metadata (pointers, init_args) is now sent via controller WebSocket
             service_config = self.compute._launch(
                 service_name=self.compute.service_name,
                 install_url=install_url if not use_editable else None,
-                pointer_env_vars=pointer_env_vars,
-                metadata_env_vars=metadata_env_vars,
+                module_name=self.remote_pointers[1],  # module_name for labels
                 startup_rsync_command=startup_rsync_command,
                 launch_id=launch_request_id,
                 deployment_timestamp=deployment_timestamp,
@@ -745,10 +741,8 @@ class Module:
         try:
             startup_rsync_command = self._startup_rsync_command(use_editable, install_url, dryrun)
 
-            # Generate dockerfile and module spec for pool registration
-            pointer_env_vars = self._get_pointer_env_vars(self.remote_pointers)
-            metadata_env_vars = self._get_metadata_env_vars(init_args)
-            dockerfile = self._get_service_dockerfile({**pointer_env_vars, **metadata_env_vars})
+            # Generate dockerfile (module metadata sent via controller WebSocket)
+            dockerfile = self._get_service_dockerfile()
 
             # Build module spec for pool registration
             dispatch = self.compute.dispatch_method
@@ -766,12 +760,11 @@ class Module:
             }
 
             # Launch the compute in the form of a service with the requested resources
-            # Use the async version of _launch
+            # Note: module metadata (pointers, init_args) is now sent via controller WebSocket
             service_config = await self.compute._launch_async(
                 service_name=self.compute.service_name,
                 install_url=install_url if not use_editable else None,
-                pointer_env_vars=pointer_env_vars,
-                metadata_env_vars=metadata_env_vars,
+                module_name=self.remote_pointers[1],  # module_name for labels
                 startup_rsync_command=startup_rsync_command,
                 launch_id=launch_request_id,
                 deployment_timestamp=deployment_timestamp,
@@ -800,16 +793,9 @@ class Module:
                     except asyncio.CancelledError:
                         pass
 
-    def _get_service_dockerfile(self, metadata_env_vars):
+    def _get_service_dockerfile(self):
+        # Module metadata is now sent via controller WebSocket, not baked into dockerfile
         image_instructions = self.compute._image_setup_and_instructions()
-
-        if image_instructions:
-            image_instructions += "\n"
-        for key, val in metadata_env_vars.items():
-            if isinstance(val, Dict):
-                val = json.dumps(val)
-            image_instructions += f"ENV {key} {val}\n"
-
         logger.debug(f"Generated Dockerfile for service {self.service_name}:\n{image_instructions}")
         return image_instructions
 
@@ -898,28 +884,6 @@ class Module:
             service_name=self.service_name,
             namespace=self.compute.namespace,
         )
-
-    def _get_pointer_env_vars(self, remote_pointers):
-        (container_file_path, module_name, cls_or_fn_name) = remote_pointers
-        return {
-            "KT_FILE_PATH": container_file_path,
-            "KT_MODULE_NAME": module_name,
-            "KT_CLS_OR_FN_NAME": cls_or_fn_name,
-        }
-
-    def _get_metadata_env_vars(
-        self,
-        init_args: Dict,
-    ) -> Dict:
-        # TODO: add other callable metadata in addition to pointers (`is_generator`, `is_async`, etc.)
-        import json
-
-        distributed_config = self.compute.distributed_config
-        return {
-            "KT_INIT_ARGS": init_args,
-            "KT_CALLABLE_TYPE": self.MODULE_TYPE,
-            "KT_DISTRIBUTED_CONFIG": json.dumps(distributed_config) if distributed_config else None,
-        }
 
     def _stream_launch_logs(
         self,

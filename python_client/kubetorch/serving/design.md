@@ -153,19 +153,72 @@ Pod HTTP requests → MetricsPusher → Metrics Store (Prometheus Pushgateway)
 - `KT_METRICS_ENABLED`: Enable metrics collection (default: true)
 - Required for TTL (auto-scaling) to work
 
+## Controller WebSocket (`ControllerWebSocket`)
+
+### Overview
+
+Pods connect to the kubetorch controller via WebSocket to receive module metadata dynamically.
+This replaces the previous approach of baking metadata into pod manifests as environment variables.
+
+### Architecture
+
+```
+Pod startup:
+  lifespan() starts
+    ↓
+  ControllerWebSocket.start()
+    ↓
+  Connect to ws://kubetorch-controller.{install_namespace}/ws/pods
+    ↓
+  Send registration: {pod_name, pod_ip, namespace, service_name}
+    ↓
+  Receive metadata: {module_name, cls_or_fn_name, file_path, init_args, ...}
+    ↓
+  _apply_metadata() sets env vars for backwards compatibility
+    ↓
+  load_callable() proceeds with module loading
+
+On /pool call (redeployment):
+  Controller sends "reload" message to all connected pods
+    ↓
+  _handle_reload() applies new metadata and triggers reload
+```
+
+### Benefits
+
+1. **Scalability**: Pull-based avoids connection storms with many pods
+2. **Autoscaling**: New pods can request metadata on connect
+3. **Dynamic updates**: Controller can push updates without pod restart
+4. **Simplified manifests**: Pod templates don't need module-specific env vars
+
+### Pod Identity (without Downward API)
+
+Pod metadata is derived without K8s Downward API env vars:
+- `POD_NAME`: from `socket.gethostname()` (K8s sets hostname to pod name)
+- `POD_NAMESPACE`: from `/var/run/secrets/kubernetes.io/serviceaccount/namespace`
+- `POD_IP`: from `socket.gethostbyname(socket.gethostname())`
+
+### Configuration
+
+- `KT_INSTALL_NAMESPACE`: Namespace where kubetorch controller is installed (for URL construction)
+- `KT_SERVICE`: Service name (still set via labels for log streaming)
+
 ## Lifecycle
 
 1. **Startup** (in `lifespan` context manager):
    - Initialize LogCapture if `KT_LOG_STREAMING_ENABLED`
    - Initialize MetricsPusher if `KT_METRICS_ENABLED`
+   - Start ControllerWebSocket and wait for metadata
    - Register SIGTERM handler for graceful shutdown
 
 2. **Runtime**:
    - Logs are captured and pushed continuously
    - Metrics are pushed every 15 seconds
    - Request middleware tracks active requests
+   - ControllerWebSocket maintains connection for reload messages
 
 3. **Shutdown**:
+   - Stop ControllerWebSocket
    - Stop LogCapture (flush remaining logs)
    - Stop MetricsPusher (push final metrics)
    - Cleanup distributed supervisor
@@ -178,8 +231,10 @@ Pod HTTP requests → MetricsPusher → Metrics Store (Prometheus Pushgateway)
 | `KT_LOG_STREAMING_ENABLED` | `True` | Enable log streaming |
 | `KT_METRICS_ENABLED` | `True` | Enable metrics collection |
 | `KT_LOG_LEVEL` | `INFO` | Logging level |
-| `POD_NAME` | - | Pod name for log labels |
-| `POD_NAMESPACE` | `default` | Namespace for service discovery |
 | `KT_SERVICE` | - | Service name for log/metrics labels (set by pod template) |
+| `KT_INSTALL_NAMESPACE` | `kubetorch` | Namespace for controller WebSocket URL |
 | `LOG_STORE_HOST` | auto | Log store hostname |
 | `LOG_STORE_PORT` | `3100` | Log store port |
+
+Note: `POD_NAME`, `POD_NAMESPACE`, and `POD_IP` are derived at runtime without Downward API.
+See "Pod Identity" section above.
