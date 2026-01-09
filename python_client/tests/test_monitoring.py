@@ -317,3 +317,151 @@ def test_metrics_config(remote_fn):
         expected_result=5,
         pod_name=pod_name,
     )
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_log_streaming_no_duplicates(remote_monitoring_fn):
+    """Test that log messages are only printed once (no duplicates in streamed output)."""
+    size = 3
+    out = ""
+    with capture_stdout() as stdout:
+        results = remote_monitoring_fn(size)
+        await asyncio.sleep(4)  # wait for logs to finish streaming
+        out = str(stdout)
+
+    assert len(results) == size
+
+    # Check that each message appears exactly once (no duplicates)
+    for i in range(size):
+        stdout_msg = f"Hello from the cluster stdout! {i}"
+        log_msg = f"INFO | Hello from the cluster logs! {i}"
+
+        stdout_count = out.count(stdout_msg)
+        log_count = out.count(log_msg)
+
+        assert stdout_count == 1, f"Expected '{stdout_msg}' to appear exactly once, but found {stdout_count} times"
+        assert log_count == 1, f"Expected '{log_msg}' to appear exactly once, but found {log_count} times"
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_logs_present_in_kubectl(remote_monitoring_fn):
+    """Test that logs are also available via kubectl logs (written to container stdout)."""
+    import subprocess
+
+    size = 3
+    # Run the function to generate logs
+    results = remote_monitoring_fn(size)
+    await asyncio.sleep(2)  # wait for logs to be written
+
+    assert len(results) == size
+
+    # Get pod name and namespace from the remote function
+    pod_names = remote_monitoring_fn.compute.pod_names()
+    namespace = remote_monitoring_fn.namespace
+
+    assert len(pod_names) >= 1, "Expected at least one pod"
+    pod_name = pod_names[0]
+
+    # Run kubectl logs to get the container logs
+    result = subprocess.run(
+        ["kubectl", "logs", pod_name, "-n", namespace, "--tail=100"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, f"kubectl logs failed: {result.stderr}"
+    kubectl_output = result.stdout
+
+    # Verify that the log messages are present in kubectl logs
+    for i in range(size):
+        # Check for both stdout prints and logger calls
+        assert (
+            f"Hello from the cluster stdout! {i}" in kubectl_output
+        ), f"Expected 'Hello from the cluster stdout! {i}' in kubectl logs output"
+        assert (
+            f"Hello from the cluster logs! {i}" in kubectl_output
+        ), f"Expected 'Hello from the cluster logs! {i}' in kubectl logs output"
+
+
+@pytest.mark.level("minimal")
+def test_log_streaming_no_duplicates_sync():
+    """Test that log messages are only printed once using sync .to() deployment."""
+    import kubetorch as kt
+
+    from .utils import slow_iteration_root_logger
+
+    # Deploy using sync .to() method
+    remote_fn = kt.fn(slow_iteration_root_logger).to(kt.Compute(cpus=".01", gpu_anti_affinity=True))
+
+    try:
+        size = 3
+        out = ""
+        with capture_stdout() as stdout:
+            results = remote_fn(size)
+            time.sleep(4)  # wait for logs to finish streaming
+            out = str(stdout)
+
+        assert len(results) == size
+
+        # Check that each message appears exactly once (no duplicates)
+        for i in range(size):
+            stdout_msg = f"Hello from the cluster stdout! {i}"
+            log_msg = f"Hello from the cluster logs! {i}"
+
+            stdout_count = out.count(stdout_msg)
+            log_count = out.count(log_msg)
+
+            assert stdout_count == 1, f"Expected '{stdout_msg}' to appear exactly once, but found {stdout_count} times"
+            assert log_count == 1, f"Expected '{log_msg}' to appear exactly once, but found {log_count} times"
+    finally:
+        remote_fn.teardown()
+
+
+@pytest.mark.level("minimal")
+def test_logs_present_in_kubectl_sync():
+    """Test that logs are available via kubectl logs using sync .to() deployment."""
+    import subprocess
+
+    import kubetorch as kt
+
+    from .utils import slow_iteration_root_logger
+
+    # Deploy using sync .to() method
+    remote_fn = kt.fn(slow_iteration_root_logger).to(kt.Compute(cpus=".01", gpu_anti_affinity=True))
+
+    try:
+        size = 3
+        results = remote_fn(size)
+        time.sleep(2)  # wait for logs to be written
+
+        assert len(results) == size
+
+        # Get pod name and namespace from the remote function
+        pod_names = remote_fn.compute.pod_names()
+        namespace = remote_fn.namespace
+
+        assert len(pod_names) >= 1, "Expected at least one pod"
+        pod_name = pod_names[0]
+
+        # Run kubectl logs to get the container logs
+        result = subprocess.run(
+            ["kubectl", "logs", pod_name, "-n", namespace, "--tail=100"],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, f"kubectl logs failed: {result.stderr}"
+        kubectl_output = result.stdout
+
+        # Verify that the log messages are present in kubectl logs
+        for i in range(size):
+            assert (
+                f"Hello from the cluster stdout! {i}" in kubectl_output
+            ), f"Expected 'Hello from the cluster stdout! {i}' in kubectl logs output"
+            assert (
+                f"Hello from the cluster logs! {i}" in kubectl_output
+            ), f"Expected 'Hello from the cluster logs! {i}' in kubectl logs output"
+    finally:
+        remote_fn.teardown()

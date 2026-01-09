@@ -313,6 +313,26 @@ def slow_iteration(array_len: int = 5):
     return final_res
 
 
+def slow_iteration_root_logger(array_len: int = 5):
+    """Same as slow_iteration but uses root logger to avoid pytest logging interference."""
+    import logging
+    import time
+
+    root_logger = logging.getLogger()
+    arr = [0.0] * array_len
+    final_res = []
+    for i in range(array_len):
+        start_time = time.time()
+        print(f"Hello from the cluster stdout! {i}")
+        root_logger.info(f"Hello from the cluster logs! {i}")
+        arr[i] = i
+        final_res.append(f"Hello from the cluster! {arr}")
+        time.sleep(1)
+        end_time = time.time()
+        root_logger.info(f"round: {i}, slept for {end_time - start_time}")
+    return final_res
+
+
 def log_n_messages(msg: str = "Hello from cluster logs!", n: int = 10, sleep_time: int = 1):
     for i in range(n):
         logger.info(f"{msg} {i}")
