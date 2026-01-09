@@ -8,6 +8,7 @@ import httpx
 from starlette.responses import JSONResponse
 
 from kubetorch.serving.distributed_supervisor import DistributedSupervisor
+from kubetorch.serving.global_http_clients import get_sync_client
 from kubetorch.serving.http_server import logger
 from kubetorch.serving.process_worker import ProcessWorker
 from kubetorch.serving.remote_worker_pool import RemoteWorkerPool
@@ -106,7 +107,6 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         method_name: Optional[str] = None,
         params: Optional[Dict] = None,
         distributed_subcall: bool = False,
-        deployed_as_of: Optional[str] = None,
     ):
         # Get the request ID from the headers
         request_id = request.headers.get("X-Request-ID", "-")
@@ -119,9 +119,6 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         if debugger:
             debug_mode = debugger.get("mode")
             debug_port = debugger.get("port")
-
-        # Note: If deployed_as_of is None, we pass it as-is.
-        # Workers will correctly skip reload when deployed_as_of is None.
 
         # Get all the pods in the service, and use the first one as the master.
         # Set the env vars based on whether this is a master or worker
@@ -270,7 +267,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         if params.get("restart_procs", False):
             logger.info("restart_procs parameter is True, restarting processes")
             self.cleanup()
-            self.setup(deployed_as_of)
+            self.setup()
 
         try:
             node_rank = worker_ips.index(this_pod_ip)
@@ -285,60 +282,61 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         def call_worker(worker_ip):
             # Keep this function for backward compatibility but it won't be used
             # when RemoteWorkerPool is available
-            with httpx.Client(timeout=None) as client:
-                port = os.environ["KT_SERVER_PORT"]
-                worker_url = f"http://{worker_ip}:{port}"
-                # First check that the worker is alive, replicas don't finish setup at exactly the same moment
-                # Use quorum_timeout to control how long to wait for workers
-                for i in range(int(self.quorum_timeout)):
-                    try:
-                        resp = client.get(f"{worker_url}/health")
-                        if resp.status_code == 200:
-                            break
-                    except httpx.RequestError:
-                        if workers_arg == "ready":
-                            logger.debug(f"Worker {worker_ip} not ready, skipping as per 'ready' workers argument")
-                            return None
-                        time.sleep(1)
-                else:
-                    # Timeout reached without successful health check
-                    logger.warning(f"Worker {worker_ip} failed to respond after {self.quorum_timeout}s timeout")
-                    if workers_arg != "ready":
-                        raise TimeoutError(
-                            f"Worker {worker_ip} did not become ready within {self.quorum_timeout} seconds. "
-                            "This may indicate the pod is still starting or there's a resource constraint. "
-                            "Consider increasing quorum_timeout in .distribute() call."
-                        )
-
-                call_url = (
-                    f"{worker_url}/{cls_or_fn_name}/{method_name}?distributed_subcall=true"
-                    if method_name is not None
-                    else f"{worker_url}/{cls_or_fn_name}?distributed_subcall=true"
-                )
-
-                # Clean headers to avoid potential Content-Length issues
-                clean_headers = {}
-                if request.headers:
-                    for key, value in request.headers.items():
-                        # Skip headers that could interfere with httpx's automatic handling
-                        if key.lower() not in [
-                            "content-length",
-                            "transfer-encoding",
-                            "connection",
-                        ]:
-                            clean_headers[key] = value
-
+            client = get_sync_client()
+            port = os.environ["KT_SERVER_PORT"]
+            worker_url = f"http://{worker_ip}:{port}"
+            # First check that the worker is alive, replicas don't finish setup at exactly the same moment
+            # Use quorum_timeout to control how long to wait for workers
+            for i in range(int(self.quorum_timeout)):
                 try:
-                    logger.debug(f"Making distributed call to {worker_url}")
-                    resp = client.post(
-                        url=call_url,
-                        json=params,
-                        headers=clean_headers,  # Includes deployed_as_of and request_id
+                    resp = client.get(f"{worker_url}/health", timeout=5.0)
+                    if resp.status_code == 200:
+                        break
+                except httpx.RequestError:
+                    if workers_arg == "ready":
+                        logger.debug(f"Worker {worker_ip} not ready, skipping as per 'ready' workers argument")
+                        return None
+                    time.sleep(1)
+            else:
+                # Timeout reached without successful health check
+                logger.warning(f"Worker {worker_ip} failed to respond after {self.quorum_timeout}s timeout")
+                if workers_arg != "ready":
+                    raise TimeoutError(
+                        f"Worker {worker_ip} did not become ready within {self.quorum_timeout} seconds. "
+                        "This may indicate the pod is still starting or there's a resource constraint. "
+                        "Consider increasing quorum_timeout in .distribute() call."
                     )
-                    return resp
-                except (httpx.RequestError, httpx.HTTPError) as e:
-                    logger.error(f"Failed to call worker {worker_url}: {e}")
-                    raise
+
+            call_url = (
+                f"{worker_url}/{cls_or_fn_name}/{method_name}?distributed_subcall=true"
+                if method_name is not None
+                else f"{worker_url}/{cls_or_fn_name}?distributed_subcall=true"
+            )
+
+            # Clean headers to avoid potential Content-Length issues
+            clean_headers = {}
+            if request.headers:
+                for key, value in request.headers.items():
+                    # Skip headers that could interfere with httpx's automatic handling
+                    if key.lower() not in [
+                        "content-length",
+                        "transfer-encoding",
+                        "connection",
+                    ]:
+                        clean_headers[key] = value
+
+            try:
+                logger.debug(f"Making distributed call to {worker_url}")
+                resp = client.post(
+                    url=call_url,
+                    json=params,
+                    headers=clean_headers,
+                    timeout=None,  # No timeout for distributed calls
+                )
+                return resp
+            except (httpx.RequestError, httpx.HTTPError) as e:
+                logger.error(f"Failed to call worker {worker_url}: {e}")
+                raise
 
         # Prepare per-process parameters
         num_procs = len(self.process_pool)
@@ -398,11 +396,9 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                                 "content-length",
                                 "transfer-encoding",
                                 "connection",
+                                "x-deployed-as-of",  # No longer needed with push-based reload
                             ]:
                                 clean_headers[key] = value
-                    # Always include deployed_as_of in headers for consistency
-                    if deployed_as_of:
-                        clean_headers["X-Deployed-As-Of"] = deployed_as_of
 
                     # Call remote workers asynchronously through the pool
                     logger.debug(f"Calling {len(subcall_ips)} remote workers via RemoteWorkerPool: {subcall_ips}")
@@ -468,7 +464,6 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
             return self.process_pool.call_all(
                 method_name=method_name,
                 params_list=params_list,
-                deployed_as_of=deployed_as_of,
                 request_id=request_id,
                 distributed_env_vars_list=distributed_env_vars_list,
                 debug_ports=debug_ports,

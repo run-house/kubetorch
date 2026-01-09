@@ -64,13 +64,40 @@ All user code runs in subprocesses (ProcessPool + ProcessWorker):
 - **Clean reload**: On redeployment, terminate subprocess and recreate
 - **Consistent pattern**: Same ProcessPool for local and distributed modes
 
-### Redeployment
+### ProcessWorker Concurrency Model
 
-When user code changes:
-1. Controller triggers reload via `/pool` endpoint (or `/_reload_image`)
-2. Supervisor's `cleanup()` terminates subprocesses
-3. Supervisor's `setup()` creates fresh subprocesses
-4. New subprocess imports fresh modules
+ProcessWorker matches FastAPI's concurrency model for user expectations:
+
+```
+ProcessWorker subprocess:
+  asyncio event loop
+    ├─→ Async callables: awaited directly (true async concurrency)
+    │     - Many can run concurrently via cooperative multitasking
+    │     - No thread overhead, scales to thousands of concurrent calls
+    │
+    └─→ Sync callables: run via run_in_executor()
+          - Offloaded to ThreadPoolExecutor (default: 40 threads)
+          - Don't block the event loop
+```
+
+Key implementation details:
+- `execute_callable_async()`: Used by ProcessWorker, handles async/sync dispatch
+- Thread pool size matches FastAPI's default (40 threads) for consistent behavior
+
+### Redeployment (Push-based via WebSocket)
+
+When user code changes (`.to()` called with new callable):
+1. Client rsyncs code to data store
+2. Client registers pool with controller via `/pool` endpoint
+3. Controller broadcasts reload to all connected pods via WebSocket
+4. Each pod's `_handle_reload()` receives the message:
+   - Applies new metadata (env vars)
+   - Runs image setup (rsync, pip installs)
+   - Clears callable cache
+   - Supervisor's `cleanup()` terminates subprocesses
+   - Supervisor's `setup()` creates fresh subprocesses
+5. Pod sends acknowledgment back to controller
+6. Controller returns success to client after all pods acknowledge
 
 ## Log Streaming (`log_capture.py`)
 
@@ -157,8 +184,10 @@ Pod HTTP requests → MetricsPusher → Metrics Store (Prometheus Pushgateway)
 
 ### Overview
 
-Pods connect to the kubetorch controller via WebSocket to receive module metadata dynamically.
-This replaces the previous approach of baking metadata into pod manifests as environment variables.
+Pods maintain a persistent WebSocket connection to the kubetorch controller. This enables:
+- Dynamic metadata delivery on pod startup
+- Push-based reload when callable changes (no polling required)
+- Acknowledgment-based deployment confirmation
 
 ### Architecture
 
@@ -168,27 +197,37 @@ Pod startup:
     ↓
   ControllerWebSocket.start()
     ↓
-  Connect to ws://kubetorch-controller.{install_namespace}/ws/pods
+  Connect to ws://kubetorch-controller.{install_namespace}/controller/ws/pods
     ↓
-  Send registration: {pod_name, pod_ip, namespace, service_name}
+  Send registration: {pod_name, pod_ip, namespace, service_name, request_metadata: true}
     ↓
-  Receive metadata: {module_name, cls_or_fn_name, file_path, init_args, ...}
+  Controller looks up pool in database
+    ├─→ Found: Send metadata {module, runtime_config, service_dns, ...}
+    └─→ Not found: Send {action: "waiting"} - pod waits for /pool call
     ↓
-  _apply_metadata() sets env vars for backwards compatibility
+  _apply_metadata() sets env vars
     ↓
-  load_callable() proceeds with module loading
+  run_image_setup() syncs files and runs pip installs
+    ↓
+  load_callable() creates supervisor
 
-On /pool call (redeployment):
-  Controller sends "reload" message to all connected pods
+On redeployment (.to() called):
+  Client calls /pool → Controller broadcasts reload to all connected pods
     ↓
-  _handle_reload() applies new metadata and triggers reload
+  _handle_reload() receives reload message
+    ↓
+  Apply new metadata, run image setup, recreate supervisor
+    ↓
+  Send acknowledgment: {action: "reload_ack", status: "ok"}
+    ↓
+  Controller waits for all acks before returning to client
 ```
 
 ### Benefits
 
-1. **Scalability**: Pull-based avoids connection storms with many pods
-2. **Autoscaling**: New pods can request metadata on connect
-3. **Dynamic updates**: Controller can push updates without pod restart
+1. **Push-based reload**: No polling or timestamp checking required
+2. **BYO compute support**: Pods can connect before pool is registered, receive metadata when ready
+3. **Acknowledgment-based**: Controller confirms all pods processed reload before returning
 4. **Simplified manifests**: Pod templates don't need module-specific env vars
 
 ### Pod Identity (without Downward API)

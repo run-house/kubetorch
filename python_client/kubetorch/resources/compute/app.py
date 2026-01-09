@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from typing import Dict
 
 from kubetorch.logger import get_logger
-
 from kubetorch.resources.callables.module import Module
 from kubetorch.resources.compute.compute import Compute
 from kubetorch.resources.compute.utils import ServiceTimeoutError
@@ -109,7 +108,6 @@ class App(Module):
         deployment_timestamp,
         stream_logs,
     ):
-        trigger_reload = self.compute.is_up()
         if self._run_async:
             thread = threading.Thread(
                 target=super()._launch_service,
@@ -124,17 +122,13 @@ class App(Module):
             )
             thread.start()
 
-            if trigger_reload:
-                self._update_service(stream_logs, deployment_timestamp)
-                time.sleep(1)
-            else:
-                # wait for pods to be ready before exiting out
-                start_time = time.time()
-                while not self.compute.is_up() and time.time() - start_time < 60:
-                    time.sleep(5)
+            # Wait for pods to be ready before exiting out
+            start_time = time.time()
+            while not self.compute.is_up() and time.time() - start_time < 60:
+                time.sleep(5)
 
-                if not self.compute.is_up():
-                    raise ServiceTimeoutError(f"Service {self.service_name} is not up after 60 seconds.")
+            if not self.compute.is_up():
+                raise ServiceTimeoutError(f"Service {self.service_name} is not up after 60 seconds.")
         else:
             super()._launch_service(
                 install_url,
@@ -145,38 +139,9 @@ class App(Module):
                 dryrun=False,
             )
 
-            if trigger_reload:
-                self._update_service(stream_logs, deployment_timestamp)
-
-    def _update_service(self, stream_logs, deployment_timestamp):
-        client = self._client()
-
-        if self._run_async:
-            thread = threading.Thread(
-                target=client.call_method,
-                args=(
-                    self.endpoint(),
-                    stream_logs,
-                ),
-                kwargs={"headers": {"X-Deployed-As-Of": deployment_timestamp}},
-            )
-            thread.start()
-            time.sleep(1)
-            sys.exit()
-        else:
-            client.call_method(
-                self.endpoint(),
-                stream_logs,
-                self.logging_config,
-                headers={"X-Deployed-As-Of": deployment_timestamp},
-            )
-
     def _print_kt_cmds(self):
         logger.info(f"To see logs, run: kt logs {self.service_name}.")
         logger.info(f"To teardown service, run: kt teardown {self.service_name}")
-
-    def endpoint(self):
-        return f"{self.base_endpoint}/_reload_image"
 
 
 def app(

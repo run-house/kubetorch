@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextvars
 import importlib
 import importlib.util
 import inspect
@@ -22,7 +23,7 @@ try:
 except:
     pass
 
-from fastapi import Body, FastAPI, Header, HTTPException, Query, Request, WebSocket
+from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -31,6 +32,7 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
 try:
+    from global_http_clients import close_clients
     from log_capture import init_log_capture, stop_log_capture
     from metrics_push import init_metrics_pusher, stop_metrics_pusher
     from server_metrics import get_inactivity_ttl_annotation
@@ -45,6 +47,7 @@ try:
         wait_for_app_start,
     )
 except ImportError:
+    from .global_http_clients import close_clients
     from .log_capture import init_log_capture, stop_log_capture
     from .metrics_push import init_metrics_pusher, stop_metrics_pusher
     from .server_metrics import get_inactivity_ttl_annotation
@@ -76,7 +79,6 @@ if kt_log_level:
     logger.setLevel(getattr(logging, kt_log_level, logging.INFO))
 
 _CACHED_CALLABLES = {}
-_LAST_DEPLOYED = 0
 _CACHED_IMAGE = []
 SUPERVISOR = None
 APP_PROCESS = None
@@ -334,7 +336,7 @@ class ControllerWebSocket:
         Blocking operations (run_image_setup, load_callable) are run in a thread pool
         to avoid blocking the event loop and dropping the WebSocket connection.
         """
-        global SUPERVISOR, _CACHED_CALLABLES, _LAST_DEPLOYED
+        global SUPERVISOR, _CACHED_CALLABLES
 
         logger.info("Received reload message from controller")
 
@@ -343,14 +345,7 @@ class ControllerWebSocket:
             self._apply_metadata(metadata)
 
             # Run image setup for the reload - use thread pool to avoid blocking event loop
-            deployed_as_of = metadata.get("deployed_as_of")
-            deployed_time = (
-                datetime.fromisoformat(deployed_as_of).timestamp()
-                if deployed_as_of
-                else datetime.now(timezone.utc).timestamp()
-            )
-            await asyncio.to_thread(run_image_setup, deployed_time)
-            _LAST_DEPLOYED = deployed_time
+            await asyncio.to_thread(run_image_setup)
 
             # Clear caches
             _CACHED_CALLABLES.clear()
@@ -368,7 +363,7 @@ class ControllerWebSocket:
             if os.environ.get("KT_CLS_OR_FN_NAME"):
                 logger.info("Recreating supervisor during reload")
                 clear_cache()
-                await asyncio.to_thread(load_callable, deployed_as_of)
+                await asyncio.to_thread(load_callable)
                 logger.info("Supervisor recreated successfully")
 
             # Send acknowledgment to controller
@@ -777,7 +772,12 @@ def cached_image_setup():
             logger.error(f"Failed to run pip freeze: {e}")
 
 
-def run_image_setup(deployed_time: Optional[float] = None):
+def run_image_setup():
+    """Run image setup (rsync files, run dockerfile instructions).
+
+    With push-based reloads, files are rsynced before the pool is registered,
+    so the dockerfile should already be present when this is called.
+    """
     if os.environ.get("KT_FREEZE", "False") == "True" or not is_running_in_kubernetes():
         return
 
@@ -789,16 +789,6 @@ def run_image_setup(deployed_time: Optional[float] = None):
         # Code has been rsynced above, callable will be reloaded on next request via load_callable().
         logger.info("No dockerfile found, skipping cached image setup (BYO image mode)")
         return
-    while (
-        # May need to give the dockerfile time to rsync over, so wait until the dockerfile timestamp is later than
-        # when we started the deployment (recorded in .to and passed here as deployed_time). We also should only
-        # wait if _LAST_DEPLOYED is not zero, as the first time the server is deployed the image is written before
-        # the server starts so we don't need to wait.
-        _LAST_DEPLOYED
-        and dockerfile_path.stat().st_mtime < deployed_time
-        and datetime.now(timezone.utc).timestamp() - deployed_time < 5
-    ):
-        time.sleep(0.1)
 
     cached_image_setup()
 
@@ -837,112 +827,76 @@ def is_running_in_container():
     return Path("/.dockerenv").exists()
 
 
-async def run_in_executor_with_context(executor, func, *args):
+async def run_in_executor_with_context(executor, func, *args, **kwargs):
     """
-    Helper to run a function in an executor while preserving the request_id context.
+    Helper to run a function in an executor while preserving context variables.
 
-    This wrapper captures the current request_id from the context before running
-    the function in a thread pool executor, then sets it in the new thread.
+    Uses contextvars.copy_context() to copy all context variables (including request_id)
+    to the executor thread. This ensures log capture and other context-dependent code
+    works correctly in thread pool threads.
     """
-
-    # Capture the current request_id before switching threads
-    current_request_id = request_id_ctx_var.get("-")
-
-    def wrapper(*args):
-        # Set the request_id in the executor thread
-        token = None
-        if current_request_id != "-":
-            token = request_id_ctx_var.set(current_request_id)
-        try:
-            return func(*args)
-        finally:
-            # Clean up the context to avoid leaking between requests
-            if token is not None:
-                request_id_ctx_var.reset(token)
-
-    return await asyncio.get_event_loop().run_in_executor(executor, wrapper, *args)
-
-
-def should_reload(deployed_as_of: Optional[str] = None) -> bool:
-    """
-    Determine if the server should reload based on the deployment timestamp.
-    If deployed_as_of is provided, it checks against the last deployed time.
-    If not provided, it defaults to False.
-    """
-    if deployed_as_of in [None, "null", "None"]:
-        return False
-
-    try:
-        deployed_time = datetime.fromisoformat(deployed_as_of).timestamp()
-        return deployed_time > _LAST_DEPLOYED
-    except ValueError as e:
-        logger.error(f"Invalid deployed_as_of format: {deployed_as_of}. Error: {e}")
-        return True
+    ctx = contextvars.copy_context()
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(executor, lambda: ctx.run(func, *args, **kwargs))
 
 
 def load_callable(
-    deployed_as_of: Optional[str] = None,
     distributed_subprocess: bool = False,
     reload_cleanup_fn: [Callable, None] = None,
 ):
-    global _LAST_DEPLOYED
+    """Load the callable from environment.
 
+    This function is called:
+    1. From _handle_reload() when a reload is pushed via WebSocket
+    2. From subprocesses to load the callable in the worker
+
+    With push-based reloads, this is always called fresh on reload - no need to
+    check timestamps since the reload is triggered externally.
+    """
     callable_name = os.environ["KT_CLS_OR_FN_NAME"]
 
     callable_obj = _CACHED_CALLABLES.get(callable_name, None)
-    if callable_obj and not should_reload(deployed_as_of):
-        # If the callable is cached and doesn't need reload, return it immediately
-        logger.debug("Returning cached callable.")
-        return callable_obj
+    if callable_obj:
+        # Return cached callable for subprocess calls
+        if distributed_subprocess:
+            logger.debug("Returning cached callable.")
+            return callable_obj
 
     # Slow path: need to load or reload - use lock for thread safety
     with _CALLABLE_LOAD_LOCK:
         # Double-check within lock (another thread might have loaded it)
         callable_obj = _CACHED_CALLABLES.get(callable_name, None)
-        if callable_obj and not should_reload(deployed_as_of):
+        if callable_obj and distributed_subprocess:
             logger.debug("Returning cached callable (found after acquiring lock).")
             return callable_obj
         # Proceed with loading/reloading
-        return _load_callable_internal(deployed_as_of, distributed_subprocess, reload_cleanup_fn, callable_obj)
+        return _load_callable_internal(distributed_subprocess, reload_cleanup_fn, callable_obj)
 
 
 def _load_callable_internal(
-    deployed_as_of: Optional[str] = None,
     distributed_subprocess: bool = False,
     reload_cleanup_fn: [Callable, None] = None,
     callable_obj=None,
 ):
     """Internal callable loading logic - should be called within lock for thread safety."""
-    global _LAST_DEPLOYED
-
     callable_name = os.environ["KT_CLS_OR_FN_NAME"]
 
     if not callable_obj:
         logger.debug("Callable not found in cache, loading from environment.")
     else:
-        logger.debug(
-            f"Callable found in cache, but reloading because deployed_as_of {deployed_as_of} is newer than last deployed time {_LAST_DEPLOYED}"
-        )
+        logger.debug("Reloading callable.")
 
-    # If not in cache or we have a more recent deployment timestamp, update metadata and reload
-    if reload_cleanup_fn and _LAST_DEPLOYED:
-        # If a reload cleanup function is provided and we've already deployed at least once, call it before
-        # reloading the callable
+    # If a reload cleanup function is provided, call it before reloading
+    if reload_cleanup_fn:
         reload_cleanup_fn()
 
-    deployed_time = (
-        datetime.fromisoformat(deployed_as_of).timestamp() if deployed_as_of else datetime.now(timezone.utc).timestamp()
-    )
     if not distributed_subprocess:
         # We don't reload the image in distributed subprocess/es, as we already did it in the
         # main process and we don't want to do it multiple times (in each subprocess).
-        if _LAST_DEPLOYED:
-            logger.info("Patching image and code changes in-place.")
-        else:
-            logger.info("Building image in-place and loading callable.")
-        run_image_setup(deployed_time)
+        logger.info("Running image setup and loading callable.")
+        run_image_setup()
 
-    distributed_config = os.environ["KT_DISTRIBUTED_CONFIG"]
+    distributed_config = os.environ.get("KT_DISTRIBUTED_CONFIG", "null")
     deployment_mode = os.environ.get("KT_DEPLOYMENT_MODE", "deployment")
 
     # For RayCluster deployments, we need to start Ray even if there's no explicit distributed config.
@@ -961,7 +915,7 @@ def _load_callable_internal(
 
     if distributed_config not in ["null", "None"] and not distributed_subprocess:
         logger.debug(f"Loading supervisor: {distributed_config}")
-        callable_obj = load_supervisor(deployed_as_of=deployed_as_of)
+        callable_obj = load_supervisor()
         logger.debug("Supervisor loaded successfully.")
     else:
         # Only called from subprocesses now
@@ -969,13 +923,12 @@ def _load_callable_internal(
         callable_obj = load_callable_from_env()
         logger.debug("Callable loaded successfully.")
 
-    _LAST_DEPLOYED = deployed_time
     _CACHED_CALLABLES[callable_name] = callable_obj
 
     return callable_obj
 
 
-def load_supervisor(deployed_as_of: Optional[str] = None):
+def load_supervisor():
     global SUPERVISOR
 
     if os.environ["KT_FILE_PATH"] not in sys.path:
@@ -1001,7 +954,7 @@ def load_supervisor(deployed_as_of: Optional[str] = None):
         # If there are any errors during setup, we catch and log them, and then undo the setup
         # so that the distributed supervisor is not left in a broken state (and otherwise can still fail
         # when we call SUPERVISOR.cleanup() in lifespan).
-        SUPERVISOR.setup(deployed_as_of=deployed_as_of)
+        SUPERVISOR.setup()
     except Exception as e:
         logger.error(f"Failed to set up distributed supervisor with config {distributed_config}: {e}")
         SUPERVISOR = None
@@ -1373,6 +1326,13 @@ async def lifespan(app: FastAPI):
         # Clear any remaining debugging sessions
         clear_debugging_sessions()
 
+        # Close global HTTP clients
+        close_clients()
+
+        # Close proxy client if it exists
+        if proxy_client is not None:
+            await proxy_client.aclose()
+
 
 # Add the filter to uvicorn's access logger
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
@@ -1496,137 +1456,108 @@ async def generic_exception_handler(request: Request, exc: Exception):
     return package_exception(exc)
 
 
-@app.post("/_reload_image", response_class=JSONResponse)
-def _reload_image(
-    request: Request,
-    deployed_as_of: Optional[str] = Header(None, alias="X-Deployed-As-Of"),
-):
+def _apply_metadata_from_dict(metadata: dict):
+    """Apply metadata from a dict (used by test endpoint).
+
+    Similar to ControllerWebSocket._apply_metadata() but takes a dict directly.
     """
-    Endpoint to reload the image and metadata configuration.
-    This is used to reload the image in cases where we're not calling the callable directly,
-    e.g. kt.app and Ray workers.
+    module = metadata.get("module", {})
+    runtime_config = metadata.get("runtime_config", {})
+
+    # Set module env vars
+    if module.get("module_name"):
+        os.environ["KT_MODULE_NAME"] = module["module_name"]
+    if module.get("cls_or_fn_name"):
+        os.environ["KT_CLS_OR_FN_NAME"] = module["cls_or_fn_name"]
+    if module.get("file_path"):
+        os.environ["KT_FILE_PATH"] = module["file_path"]
+
+    init_args = module.get("init_args")
+    if init_args is not None:
+        os.environ["KT_INIT_ARGS"] = json.dumps(init_args) if init_args else "None"
+    else:
+        os.environ["KT_INIT_ARGS"] = "None"
+
+    if module.get("callable_type"):
+        os.environ["KT_CALLABLE_TYPE"] = module["callable_type"]
+
+    distributed_config = module.get("distributed_config")
+    if distributed_config is not None:
+        os.environ["KT_DISTRIBUTED_CONFIG"] = json.dumps(distributed_config) if distributed_config else "None"
+    else:
+        os.environ["KT_DISTRIBUTED_CONFIG"] = "None"
+
+    # Set runtime config env vars
+    if runtime_config.get("log_streaming_enabled") is not None:
+        os.environ["KT_LOG_STREAMING_ENABLED"] = str(runtime_config["log_streaming_enabled"]).lower()
+    if runtime_config.get("metrics_enabled") is not None:
+        os.environ["KT_METRICS_ENABLED"] = str(runtime_config["metrics_enabled"]).lower()
+
+    # Set other metadata
+    if metadata.get("service_name"):
+        os.environ["KT_SERVICE_NAME"] = metadata["service_name"]
+    if metadata.get("namespace"):
+        os.environ["POD_NAMESPACE"] = metadata["namespace"]
+    if metadata.get("deployment_mode"):
+        os.environ["KT_DEPLOYMENT_MODE"] = metadata["deployment_mode"]
+    if metadata.get("username"):
+        os.environ["KT_USERNAME"] = metadata["username"]
+
+
+@app.post("/_test_reload", include_in_schema=False)
+async def test_reload(request: Request, metadata: Dict = Body(...)):
+    """Test endpoint to trigger reload with new metadata.
+
+    This endpoint simulates the WebSocket push-based reload for testing purposes.
+    It applies metadata, runs image setup, and recreates the supervisor.
+
+    Example metadata:
+    {
+        "module": {
+            "module_name": "my_module",
+            "cls_or_fn_name": "my_function",
+            "file_path": "/path/to/module",
+            "init_args": null,
+            "callable_type": "fn"
+        },
+        "runtime_config": {}
+    }
     """
-    global _LAST_DEPLOYED
-    deployed_time = (
-        datetime.fromisoformat(deployed_as_of).timestamp() if deployed_as_of else datetime.now(timezone.utc).timestamp()
-    )
-    run_image_setup(deployed_time)
-    _LAST_DEPLOYED = deployed_time
-    return JSONResponse(
-        status_code=200,
-        content={"message": "Image and metadata reloaded successfully."},
-    )
+    global SUPERVISOR, _CACHED_CALLABLES
 
-
-@app.websocket("/_ws/reload")
-async def ws_reload(websocket: WebSocket):
-    """WebSocket endpoint to receive reload config from controller.
-
-    Receives a JSON config with module info and triggers reload.
-    More efficient than HTTP when broadcasting to many pods since
-    the controller serializes the config once and sends the same
-    payload to all pods.
-    """
-    global _LAST_DEPLOYED
-
-    await websocket.accept()
-    logger.info("WebSocket reload: connection accepted from controller")
     try:
-        # Receive the pre-serialized config JSON from controller
-        config_json = await websocket.receive_text()
-        config = json.loads(config_json)
-        logger.info(f"WebSocket reload: received config for module={config.get('module', {}).get('module_name')}")
+        # Apply the new metadata (sets env vars)
+        _apply_metadata_from_dict(metadata)
 
-        # Extract reload parameters from config
-        service_name = config.get("service_name")
-        namespace = config.get("namespace")
-        deployed_as_of = config.get("deployed_as_of")
-        module = config.get("module", {})
+        # Run image setup - use thread pool to avoid blocking event loop
+        await asyncio.to_thread(run_image_setup)
 
-        # For selector-only mode, set up rsync env vars if provided
-        if service_name and not os.getenv("KT_SERVICE_NAME"):
-            os.environ["KT_SERVICE_NAME"] = service_name
-            logger.info(f"Set KT_SERVICE_NAME to {service_name} for selector-only mode")
+        # Clear caches
+        _CACHED_CALLABLES.clear()
 
-        # Update KT_SERVICE and LogCapture labels for log streaming
-        # This is critical for selector-only mode where pods are created without KT_SERVICE
-        if service_name and os.getenv("KT_SERVICE", "unknown") == "unknown":
-            os.environ["KT_SERVICE"] = service_name
-            # Update LogCapture labels so logs are correctly labeled for streaming
+        # Cleanup existing supervisor
+        if SUPERVISOR:
             try:
-                from log_capture import get_log_capture
-            except ImportError:
-                from .log_capture import get_log_capture
-            log_capture = get_log_capture()
-            if log_capture and log_capture.labels.get("service") == "unknown":
-                log_capture.labels["service"] = service_name
-                logger.info(f"Updated LogCapture service label to {service_name} for selector-only mode")
+                SUPERVISOR.cleanup()
+            except Exception as e:
+                logger.warning(f"Error during supervisor cleanup on test reload: {e}")
+            SUPERVISOR = None
 
-        if namespace and not os.getenv("POD_NAMESPACE"):
-            os.environ["POD_NAMESPACE"] = namespace
-            # Also update LogCapture namespace label
-            try:
-                from log_capture import get_log_capture
-            except ImportError:
-                from .log_capture import get_log_capture
-            log_capture = get_log_capture()
-            if log_capture:
-                log_capture.labels["namespace"] = namespace
-            logger.info(f"Set POD_NAMESPACE to {namespace} for selector-only mode")
+        # Recreate supervisor
+        if os.environ.get("KT_CLS_OR_FN_NAME"):
+            logger.info("Recreating supervisor during test reload")
+            clear_cache()
+            await asyncio.to_thread(load_callable)
+            logger.info("Supervisor recreated successfully")
 
-        # Set up callable env vars from module config
-        # Always update these on reload - they may change between deployments
-        if module:
-            if module.get("module_name"):
-                os.environ["KT_MODULE_NAME"] = module["module_name"]
-                logger.info(f"Set KT_MODULE_NAME to {module['module_name']}")
-
-            if module.get("cls_or_fn_name"):
-                os.environ["KT_CLS_OR_FN_NAME"] = module["cls_or_fn_name"]
-                logger.info(f"Set KT_CLS_OR_FN_NAME to {module['cls_or_fn_name']}")
-
-            if module.get("file_path"):
-                os.environ["KT_FILE_PATH"] = module["file_path"]
-                logger.info(f"Set KT_FILE_PATH to {module['file_path']}")
-
-            init_args = module.get("init_args")
-            if init_args is not None:
-                os.environ["KT_INIT_ARGS"] = json.dumps(init_args) if init_args else "None"
-                logger.info("Set KT_INIT_ARGS")
-
-            if module.get("callable_type"):
-                os.environ["KT_CALLABLE_TYPE"] = module["callable_type"]
-                logger.info(f"Set KT_CALLABLE_TYPE to {module['callable_type']}")
-
-            distributed_config = module.get("distributed_config")
-            if distributed_config is not None:
-                os.environ["KT_DISTRIBUTED_CONFIG"] = json.dumps(distributed_config) if distributed_config else "None"
-                logger.info("Set KT_DISTRIBUTED_CONFIG")
-
-        # Run the reload in a thread pool to avoid blocking the event loop
-        # (run_image_setup does rsync, file I/O, and potentially time.sleep)
-        deployed_time = (
-            datetime.fromisoformat(deployed_as_of).timestamp()
-            if deployed_as_of
-            else datetime.now(timezone.utc).timestamp()
-        )
-        await run_in_executor_with_context(None, run_image_setup, deployed_time)
-        _LAST_DEPLOYED = deployed_time
-
-        # Send acknowledgment back to controller
-        logger.info("WebSocket reload: completed successfully")
-        await websocket.send_text(json.dumps({"status": "ok", "message": "Reload complete"}))
+        return {"status": "ok", "message": "Reload completed successfully"}
 
     except Exception as e:
-        logger.error(f"WebSocket reload failed: {e}")
-        try:
-            await websocket.send_text(json.dumps({"status": "error", "message": str(e)}))
-        except Exception:
-            pass
-    finally:
-        await websocket.close()
+        logger.error(f"Error in test reload: {e}")
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
 
 
+# Catch-all routes for callable invocation - must be defined AFTER specific routes
 @app.post("/{cls_or_fn_name}", response_class=JSONResponse)
 @app.post("/{cls_or_fn_name}/{method_name}", response_class=JSONResponse)
 def run_callable(
@@ -1635,7 +1566,6 @@ def run_callable(
     method_name: Optional[str] = None,
     distributed_subcall: bool = Query(False),
     params: Optional[Union[Dict, str]] = Body(default=None),
-    deployed_as_of: Optional[str] = Header(None, alias="X-Deployed-As-Of"),
     serialization: str = Header("json", alias="X-Serialization"),
 ):
     """Execute a callable through the supervisor.
@@ -1659,9 +1589,6 @@ def run_callable(
             detail=f"Callable '{cls_or_fn_name}' not found in metadata configuration. Found '{configured_callable}' instead",
         )
 
-    # Load supervisor (runs image setup if needed)
-    load_callable(deployed_as_of)
-
     # Route call through supervisor to subprocess
     result = SUPERVISOR.call(
         request,
@@ -1669,21 +1596,19 @@ def run_callable(
         method_name,
         params,
         distributed_subcall,
-        deployed_as_of,
     )
     clear_debugging_sessions()
     return result
 
 
-def execute_callable(
+def _parse_callable_params(
     callable_obj: Callable,
     cls_or_fn_name: str,
-    method_name: Optional[str] = None,
-    params: Optional[Union[Dict, str]] = None,
-    serialization: str = "json",
+    method_name: Optional[str],
+    params: Optional[Union[Dict, str]],
+    serialization: str,
 ):
-    """Synchronous wrapper for run_callable_internal, used by distributed subprocesses."""
-
+    """Parse and validate callable parameters. Returns (user_method, args, kwargs, debug_port, debug_mode, is_async)."""
     # Check if serialization is allowed
     allowed_serialization = os.getenv("KT_ALLOWED_SERIALIZATION", DEFAULT_ALLOWED_SERIALIZATION).split(",")
     if serialization not in allowed_serialization:
@@ -1729,37 +1654,17 @@ def execute_callable(
     else:
         user_method = callable_obj
 
-    # Check if the user method is async
     is_async_method = inspect.iscoroutinefunction(user_method)
+    return user_method, args, kwargs, debug_port, debug_mode, is_async_method
 
-    callable_name = f"{cls_or_fn_name}.{method_name}" if method_name else cls_or_fn_name
-    if debug_port:
-        logger.info(f"Debugging remote callable {callable_name} on port {debug_port}")
-        deep_breakpoint(debug_port, debug_mode)
-        # If using the debugger, step in here ("s") to enter your function/class method.
-        if is_async_method:
-            # For async methods in sync context, we need to run them in a new event loop
-            result = asyncio.run(user_method(*args, **kwargs))
-        else:
-            result = user_method(*args, **kwargs)
-    else:
-        logger.debug(f"Calling remote callable {callable_name}")
-        if is_async_method:
-            # For async methods in sync context, we need to run them in a new event loop
-            result = asyncio.run(user_method(*args, **kwargs))
-        else:
-            result = user_method(*args, **kwargs)
 
-    # Handle case where sync method returns an awaitable
-    if isinstance(result, Awaitable):
-        result = asyncio.run(result)
-
-    # Serialize response based on format
+def _serialize_result(result, serialization: str):
+    """Serialize the result based on the format."""
     if serialization == "pickle":
         try:
             pickled_result = pickle.dumps(result)
             encoded_result = base64.b64encode(pickled_result).decode("utf-8")
-            result = {"data": encoded_result}
+            return {"data": encoded_result}
         except Exception as e:
             logger.error(f"Failed to pickle result: {str(e)}")
             raise SerializationError(f"Result could not be serialized with pickle: {str(e)}")
@@ -1770,9 +1675,55 @@ def execute_callable(
         except (TypeError, ValueError) as e:
             logger.error(f"Result is not JSON serializable: {str(e)}")
             raise SerializationError(f"Result could not be serialized to JSON: {str(e)}")
+    return result
 
+
+async def execute_callable_async(
+    callable_obj: Callable,
+    cls_or_fn_name: str,
+    method_name: Optional[str] = None,
+    params: Optional[Union[Dict, str]] = None,
+    serialization: str = "json",
+    executor=None,
+):
+    """Execute a callable asynchronously. Used by ProcessWorker's event loop.
+
+    Matches FastAPI's concurrency model:
+    - Async callables: awaited directly on the event loop (true async concurrency)
+    - Sync callables: run in thread pool via run_in_executor() (doesn't block event loop)
+
+    This allows async callables to benefit from cooperative multitasking - many can
+    run concurrently on a single thread. Sync callables are offloaded to threads.
+
+    Args:
+        executor: ThreadPoolExecutor for running sync callables. If None, uses default executor.
+    """
+    user_method, args, kwargs, debug_port, debug_mode, is_async = _parse_callable_params(
+        callable_obj, cls_or_fn_name, method_name, params, serialization
+    )
+
+    callable_name = f"{cls_or_fn_name}.{method_name}" if method_name else cls_or_fn_name
+    if debug_port:
+        logger.info(f"Debugging remote callable {callable_name} on port {debug_port}")
+        deep_breakpoint(debug_port, debug_mode)
+
+    if is_async:
+        # Async callable: await directly on the event loop
+        # This enables true async concurrency - many async calls can run concurrently
+        logger.debug(f"Calling async callable {callable_name}")
+        result = await user_method(*args, **kwargs)
+    else:
+        # Sync callable: run in thread pool to avoid blocking the event loop
+        # This matches FastAPI's behavior for sync route handlers
+        logger.debug(f"Calling sync callable {callable_name} in thread pool")
+        result = await run_in_executor_with_context(executor, user_method, *args, **kwargs)
+
+    # Handle case where method returns an awaitable
+    if isinstance(result, Awaitable):
+        result = await result
+
+    result = _serialize_result(result, serialization)
     clear_debugging_sessions()
-
     return result
 
 

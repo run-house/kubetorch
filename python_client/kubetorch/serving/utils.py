@@ -22,6 +22,8 @@ import yaml
 from kubetorch.constants import LOCALHOST
 from kubetorch.logger import get_logger
 from kubetorch.provisioning.constants import DEFAULT_DEBUG_PORT
+
+from kubetorch.serving.global_http_clients import get_sync_client
 from kubetorch.utils import ServerLogsFormatter
 
 logger = get_logger(__name__)
@@ -747,7 +749,7 @@ def wait_for_app_start(port, health_check: str, process: subprocess.Popen, timeo
             if process.poll() is not None and process.poll() != 0:
                 raise RuntimeError(f"App exited with code {process.poll()}")
             try:
-                response = httpx.get(url)
+                response = get_sync_client().get(url)
                 if response.status_code == 200:
                     return True
             except httpx.ConnectError:

@@ -1,8 +1,8 @@
 import os
 
+import httpx
 import kubetorch as kt
 import pytest
-import requests
 
 from kubetorch.resources.secrets import Secret
 from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecretsClient
@@ -21,7 +21,7 @@ def test_controller_health():
     controller_client = kt.globals.controller_client()
 
     # Test health endpoint through the controller base URL
-    response = requests.get(f"{controller_client.base_url}/health")
+    response = httpx.get(f"{controller_client.base_url}/health")
 
     assert response.status_code == 200
     data = response.json()
