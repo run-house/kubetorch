@@ -66,14 +66,14 @@ class DistributedSupervisor(ExecutionSupervisor):
         self._last_dns_check: float = 0
         self._dns_check_interval: int = 5  # seconds
 
-    def setup(self, deployed_as_of: Optional[str] = None):
+    def setup(self):
         """Set up distributed environment including process pool.
 
         Note: RemoteWorkerPool is created lazily when needed (i.e., when there are
         actually remote workers to call). This avoids spawning unnecessary processes
         for single-pod distributed jobs.
         """
-        super().setup(deployed_as_of)
+        super().setup()
 
     def cleanup(self):
         """Clean up distributed resources."""

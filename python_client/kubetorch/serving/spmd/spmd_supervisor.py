@@ -107,7 +107,6 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         method_name: Optional[str] = None,
         params: Optional[Dict] = None,
         distributed_subcall: bool = False,
-        deployed_as_of: Optional[str] = None,
     ):
         # Get the request ID from the headers
         request_id = request.headers.get("X-Request-ID", "-")
@@ -120,9 +119,6 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         if debugger:
             debug_mode = debugger.get("mode")
             debug_port = debugger.get("port")
-
-        # Note: If deployed_as_of is None, we pass it as-is.
-        # Workers will correctly skip reload when deployed_as_of is None.
 
         # Get all the pods in the service, and use the first one as the master.
         # Set the env vars based on whether this is a master or worker
@@ -271,7 +267,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         if params.get("restart_procs", False):
             logger.info("restart_procs parameter is True, restarting processes")
             self.cleanup()
-            self.setup(deployed_as_of)
+            self.setup()
 
         try:
             node_rank = worker_ips.index(this_pod_ip)
@@ -334,7 +330,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                 resp = client.post(
                     url=call_url,
                     json=params,
-                    headers=clean_headers,  # Includes deployed_as_of and request_id
+                    headers=clean_headers,
                     timeout=None,  # No timeout for distributed calls
                 )
                 return resp
@@ -400,11 +396,9 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                                 "content-length",
                                 "transfer-encoding",
                                 "connection",
+                                "x-deployed-as-of",  # No longer needed with push-based reload
                             ]:
                                 clean_headers[key] = value
-                    # Always include deployed_as_of in headers for consistency
-                    if deployed_as_of:
-                        clean_headers["X-Deployed-As-Of"] = deployed_as_of
 
                     # Call remote workers asynchronously through the pool
                     logger.debug(f"Calling {len(subcall_ips)} remote workers via RemoteWorkerPool: {subcall_ips}")
@@ -470,7 +464,6 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
             return self.process_pool.call_all(
                 method_name=method_name,
                 params_list=params_list,
-                deployed_as_of=deployed_as_of,
                 request_id=request_id,
                 distributed_env_vars_list=distributed_env_vars_list,
                 debug_ports=debug_ports,

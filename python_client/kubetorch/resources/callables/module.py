@@ -44,7 +44,6 @@ class Module:
         pointers: tuple,
     ):
         self._compute = None
-        self._deployment_timestamp = None
         self._service_config = None
         self._http_client = None
         self._get_if_exists = True
@@ -111,18 +110,6 @@ class Module:
         self._compute = compute
 
     @property
-    def deployment_timestamp(self):
-        if not self._deployment_timestamp:
-            self._deployment_timestamp = self.compute.service_manager.get_deployment_timestamp_annotation(
-                self.service_name
-            )
-        return self._deployment_timestamp
-
-    @deployment_timestamp.setter
-    def deployment_timestamp(self, value: str):
-        self._deployment_timestamp = value
-
-    @property
     def remote_pointers(self):
         if self._remote_pointers:
             return self._remote_pointers
@@ -167,12 +154,6 @@ class Module:
 
     @property
     def request_headers(self):
-        if self.compute.freeze:
-            return {}
-
-        if self.deployment_timestamp:
-            return {"X-Deployed-As-Of": self.deployment_timestamp}
-
         return {}
 
     @property
@@ -692,9 +673,6 @@ class Module:
             )
             self.service_config = service_config
 
-            if not self.compute.freeze and not dryrun:
-                # Timestamp is now included in the initial manifest, no need to patch
-                self.deployment_timestamp = deployment_timestamp
             if not dryrun:
                 self.compute._check_service_ready()
                 # Additional health check to ensure HTTP server is ready
@@ -770,9 +748,6 @@ class Module:
             )
             self.service_config = service_config
 
-            # Timestamp is now included in the initial manifest, no need to patch
-            if not self.compute.freeze and not dryrun:
-                self.deployment_timestamp = deployment_timestamp
             if not dryrun:
                 await self.compute._check_service_ready_async()
                 await self._wait_for_http_health_async()

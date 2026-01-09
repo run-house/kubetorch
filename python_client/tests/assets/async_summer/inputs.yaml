@@ -1,0 +1,6 @@
+async_summer:
+  valid:
+    - args: [1, 2]
+      expected: 3
+    - args: [10, 20]
+      expected: 30

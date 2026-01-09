@@ -60,12 +60,8 @@ class ExecutionSupervisor:
         self.process_pool: Optional[ProcessPool] = None
         self.config_hash: Optional[int] = None  # Used by factory to detect config changes
 
-    def setup(self, deployed_as_of: Optional[str] = None):
-        """Set up execution environment with process pool.
-
-        Args:
-            deployed_as_of (str, optional): Deployment timestamp for cache invalidation. (Default: None)
-        """
+    def setup(self):
+        """Set up execution environment with process pool."""
         # Set multiprocessing to spawn if not already
         if multiprocessing.get_start_method() != "spawn":
             multiprocessing.set_start_method("spawn", force=True)
@@ -113,7 +109,6 @@ class ExecutionSupervisor:
         method_name: Optional[str] = None,
         params: Optional[Dict] = None,
         distributed_subcall: bool = False,
-        deployed_as_of: Optional[str] = None,
     ):
         """Execute a call through the subprocess pool.
 
@@ -127,7 +122,6 @@ class ExecutionSupervisor:
             method_name: Method name to call (for class instances).
             params: Parameters for the call.
             distributed_subcall: Whether this is a subcall from another node.
-            deployed_as_of: Deployment timestamp.
 
         Returns:
             The result of the callable execution.
@@ -141,16 +135,12 @@ class ExecutionSupervisor:
             debug_mode = debugger.get("mode")
             debug_port = debugger.get("port")
 
-        # Note: If deployed_as_of is None, we pass it as-is to subprocesses.
-        # The subprocess's load_callable() will correctly skip reload when None.
-
         # For local execution, route to the first (and typically only) subprocess
         logger.debug(f"Routing call to subprocess: {cls_or_fn_name}.{method_name}")
         result = self.process_pool.call(
             idx=0,
             method_name=method_name,
             params=params,
-            deployed_as_of=deployed_as_of,
             request_id=request_id,
             distributed_env_vars={},  # No distributed env vars for local execution
             debug_port=debug_port,
