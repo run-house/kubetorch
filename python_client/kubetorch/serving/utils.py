@@ -51,29 +51,21 @@ LOG_CONFIG = {
 
 
 def ensure_structured_logging():
-    """Add our structured JSON handler to all loggers without removing user's handlers. We do this both when we
-    set up the HTTP server and also after re-importing user code, as their modules might include logging setup
-    of their own."""
+    """Ensure logging is properly configured.
+
+    With the simplified LogCapture design, _LogCaptureHandler handles BOTH:
+    1. Writing to stdout (kubectl logs)
+    2. Pushing to Loki (client streaming)
+
+    So we don't need a separate StreamHandler here. This function now just:
+    1. Sets log level from environment
+    2. Ensures context fields filter is attached
+    3. Ensures LogCapture's handler is present
+    """
     import logging
-    import logging.handlers
     import os
-    import sys
 
-    # First ensure logging is initialized - this is crucial!
-    # If no handlers exist, we need to initialize the logging system
     root_logger = logging.getLogger()
-
-    # Create a human-readable formatter for kubectl logs
-    # Loki labels are added separately by LogCapture when pushing to the log store
-    plain_formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    # Create our handler for stdout (kubectl logs)
-    structured_handler = logging.StreamHandler(sys.stdout)
-    structured_handler.setFormatter(plain_formatter)
-    structured_handler.name = "kubetorch_structured"  # Name it so we can identify it
 
     # Set root logger level based on KT_LOG_LEVEL if it's set
     kt_log_level = os.getenv("KT_LOG_LEVEL")
@@ -81,25 +73,7 @@ def ensure_structured_logging():
         kt_log_level = kt_log_level.upper()
         root_logger.setLevel(getattr(logging, kt_log_level, logging.INFO))
 
-    # Check if our handler is already there (to avoid adding duplicates)
-    existing_structured = None
-    for h in root_logger.handlers:
-        if getattr(h, "name", None) == "kubetorch_structured":
-            existing_structured = h
-            break
-
-    if existing_structured:
-        # Update the existing handler's stream to use current sys.stdout
-        # This is important because LogCapture may have replaced sys.stdout with _StreamInterceptor
-        # after the handler was created, and we want logging to go through the interceptor
-        existing_structured.setStream(sys.stdout)
-    else:
-        # Add our structured handler alongside any user-installed handlers
-        # so both formats are emitted to pod logs
-        root_logger.addHandler(structured_handler)
-
-    # Ensure request context fields are attached to all records even if the user
-    # reconfigured logging and removed our filters. Do this idempotently.
+    # Ensure request context fields are attached to all records
     class _ContextFieldsFilter(logging.Filter):
         def filter(self, record):
             if not hasattr(record, "request_id") or record.request_id in (None, "-"):
@@ -111,31 +85,13 @@ def ensure_structured_logging():
                 record.pod = os.getenv("POD_NAME", "unknown-pod")
             return True
 
-    # Attach the filter to root and all of its handlers (idempotent: duplicate adds are ignored)
     context_filter = _ContextFieldsFilter()
     try:
         root_logger.addFilter(context_filter)
     except Exception:
         pass
-    for h in root_logger.handlers:
-        try:
-            h.addFilter(context_filter)
-        except Exception:
-            pass
 
-    # Ensure print_redirect logger also has proper configuration
-    # This is important for the StreamToLogger output
-    print_logger = logging.getLogger("print_redirect")
-    print_logger.setLevel(logging.INFO)
-    # Ensure it propagates to root so the structured handler formats it
-    print_logger.propagate = True
-    try:
-        print_logger.addFilter(context_filter)
-    except Exception:
-        pass
-
-    # Ensure LogCapture's handler is also on the root logger
-    # (user's dictConfig might have removed it)
+    # Ensure LogCapture's handler is on the root logger
     try:
         from .log_capture import get_log_capture
     except ImportError:

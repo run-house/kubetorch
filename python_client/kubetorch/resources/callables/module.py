@@ -1235,11 +1235,14 @@ class Module:
                                             print(f"{color}{prefix} {event_ts} | {reason}: {msg}{reset}")
                                         continue
 
-                                    # Skip if we've already seen this timestamp
                                     if last_timestamp is not None and value[0] <= last_timestamp:
                                         continue
                                     last_timestamp = value[0]
-                                    # Show logs for debug/info levels
+
+                                    log_request_id = labels.get("request_id", "-")
+                                    if log_request_id not in ("-", request_id):
+                                        continue
+
                                     if log_level in ["debug", "info"]:
                                         try:
                                             log_dict = json.loads(log_line)
@@ -1248,8 +1251,8 @@ class Module:
                                             log_dict = None
 
                                         if log_dict is not None:
-                                            # at this stage we are post setup
-                                            pod_name = log_dict.get("pod", request_id)
+                                            # Use pod from Loki stream labels (set by LogCapture)
+                                            pod_name = labels.get("pod", request_id)
                                             levelname = log_dict.get("levelname", "INFO")
                                             ts = log_dict.get("asctime")
                                             message = log_dict.get("message", "")
