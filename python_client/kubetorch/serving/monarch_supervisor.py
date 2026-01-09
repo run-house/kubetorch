@@ -265,7 +265,6 @@ class MonarchProcess(ProcessWorker):
             request_unique_id = request["request_unique_id"]
             method_name = request["method_name"]
             params = request["params"]
-            deployed_as_of = request["deployed_as_of"]
             request_id = request["request_id"]
             distributed_env_vars = request["distributed_env_vars"]
 
@@ -277,9 +276,8 @@ class MonarchProcess(ProcessWorker):
             token = request_id_ctx_var.set(request_id)
 
             try:
-                # Load callable
+                # Load callable - with push-based reloads, the subprocess is recreated on reload
                 callable_obj = load_callable(
-                    deployed_as_of=deployed_as_of,
                     distributed_subprocess=True,
                     reload_cleanup_fn=self.framework_cleanup,
                 )
@@ -387,7 +385,7 @@ class MonarchDistributed(DistributedSupervisor):
         )
         self.allocator_proc = None
 
-    def setup(self, deployed_as_of: Optional[str] = None):
+    def setup(self):
         """Setup Monarch distributed environment."""
         # Start process_allocator service (like Ray starts its server)
         self._start_allocator_service()
@@ -395,7 +393,7 @@ class MonarchDistributed(DistributedSupervisor):
         # Call parent setup to create ProcessPool
         # Note: Monarch doesn't use RemoteWorkerPool - it handles distributed
         # coordination via its own process_allocator service
-        super().setup(deployed_as_of)
+        super().setup()
         logger.debug("Finished setting up Monarch distributed processes")
 
     def _start_allocator_service(self):
@@ -507,7 +505,6 @@ class MonarchDistributed(DistributedSupervisor):
         method_name: Optional[str] = None,
         params: Optional[Dict] = None,
         distributed_subcall: bool = False,
-        deployed_as_of: Optional[str] = None,
     ):
         """Monarch distributed call - executes on controller node (rank 0)."""
         logger.info("MonarchDistributed.call called")
@@ -515,7 +512,7 @@ class MonarchDistributed(DistributedSupervisor):
         # Ensure setup has been called
         if self.process_pool is None:
             logger.info("Process pool not initialized, calling setup()")
-            self.setup(deployed_as_of=deployed_as_of)
+            self.setup()
 
         request_id = request.headers.get("X-Request-ID", "-")
         serialization = request.headers.get("X-Serialization", "json")
@@ -525,9 +522,6 @@ class MonarchDistributed(DistributedSupervisor):
         if debugger:
             debug_mode = debugger.get("mode")
             debug_port = debugger.get("port")
-
-        # Note: If deployed_as_of is None, we pass it as-is.
-        # Workers will correctly skip reload when deployed_as_of is None.
 
         # Start DNS monitoring for worker discovery
         self.start_dns_monitoring()
@@ -575,7 +569,6 @@ class MonarchDistributed(DistributedSupervisor):
             idx=0,
             method_name=method_name,
             params=params,
-            deployed_as_of=deployed_as_of,
             request_id=request_id,
             distributed_env_vars=self.distributed_env_vars,
             debug_port=debug_port,

@@ -380,6 +380,8 @@ def test_from_manifest_getters_setters():
     # Create a comprehensive config dict mapping key to (original_value, new_value)
     original_image = kt.images.Debian()
     new_image = kt.images.Ray()
+    # Properties that flow through manifest and can be tested with from_manifest
+    # Note: allowed_serialization and freeze flow via WebSocket metadata, not manifest
     config = {
         "cpus": ("2.0", "3.0"),
         "memory": ("4Gi", "8Gi"),
@@ -408,9 +410,7 @@ def test_from_manifest_getters_setters():
         "launch_timeout": (600, 900),
         "working_dir": ("/kt", "/new-dir"),
         "shared_memory_limit": ("1Gi", "2Gi"),
-        "allowed_serialization": (["json", "pickle"], ["json", "pickle", "cloudpickle"]),
         "replicas": (2, 3),
-        "freeze": (False, True),
         "kubeconfig_path": (None, "/custom/path/kubeconfig"),
     }
 
