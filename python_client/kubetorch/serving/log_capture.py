@@ -269,10 +269,12 @@ class LogCapture:
             if isinstance(h, _LogCaptureHandler) and h.log_capture is self:
                 return  # Already present
 
-        # Add our handler
+        # Add our handler at the FRONT of the handlers list
+        # This ensures it runs BEFORE any StreamHandlers that write to stdout,
+        # so the _in_logging_emit flag is set before stdout writes happen
         handler = _LogCaptureHandler(self)
         handler.setFormatter(logging.Formatter("%(message)s"))
-        logging.root.addHandler(handler)
+        logging.root.handlers.insert(0, handler)
 
     def _flush_loop(self):
         """Background thread: flush buffer periodically."""
@@ -341,15 +343,42 @@ class LogCapture:
 class _StreamInterceptor:
     """Intercepts writes to stdout/stderr."""
 
+    # Thread-local flag to detect when we're inside _LogCaptureHandler.emit()
+    # This prevents double-capture when logging output also goes through StreamHandler -> stdout
+    _in_logging_emit = threading.local()
+
     def __init__(self, original, log_capture: LogCapture, stream_name: str):
         self.original = original
         self.log_capture = log_capture
         self.stream_name = stream_name
 
-    def _is_from_logging(self):
-        """Check if the current write call is coming from the logging system."""
+    @classmethod
+    def set_in_logging(cls, value: bool):
+        """Set flag indicating we're inside logging handler emit."""
+        cls._in_logging_emit.active = value
+
+    @classmethod
+    def is_in_logging(cls) -> bool:
+        """Check if we're inside logging handler emit."""
+        return getattr(cls._in_logging_emit, "active", False)
+
+    def _is_from_logging(self) -> bool:
+        """Check if the current write is from the logging system.
+
+        Uses hybrid approach:
+        1. Fast path: check thread-local flag (set by _LogCaptureHandler)
+        2. Slow path: limited frame walk to detect child logger handlers
+        """
+        # Fast path: flag is set by _LogCaptureHandler
+        if self.is_in_logging():
+            return True
+
+        # Slow path: check call stack for logging module (handles child logger handlers)
+        # Limit to 15 frames to avoid walking entire stack
         frame = sys._getframe()
-        while frame:
+        for _ in range(15):
+            if frame is None:
+                return False
             if frame.f_globals.get("__name__", "").startswith("logging"):
                 return True
             frame = frame.f_back
@@ -358,8 +387,11 @@ class _StreamInterceptor:
     def write(self, msg: str):
         # Always forward to original (kubectl logs, user handlers)
         self.original.write(msg)
+        # Flush immediately to ensure output appears in kubectl logs
+        # Container stdout may be fully buffered (not line-buffered)
+        self.original.flush()
 
-        # Skip if from logging system (already captured via handler)
+        # Skip if from logging system (already captured via _LogCaptureHandler)
         if self._is_from_logging():
             return
 
@@ -409,28 +441,34 @@ class _LogCaptureHandler(logging.Handler):
         self._time_formatter = logging.Formatter(datefmt="%Y-%m-%d %H:%M:%S")
 
     def emit(self, record):
-        # Get request_id from record if set by filter, otherwise from context variable.
-        # Filters on root logger don't run for records that propagate from child loggers,
-        # so we need to check the context variable directly.
-        request_id = getattr(record, "request_id", None)
-        if request_id is None or request_id == "-":
-            try:
-                from .utils import request_id_ctx_var
+        # Set flag so _StreamInterceptor knows not to double-capture
+        # (logging output also goes through StreamHandler -> stdout -> interceptor)
+        _StreamInterceptor.set_in_logging(True)
+        try:
+            # Get request_id from record if set by filter, otherwise from context variable.
+            # Filters on root logger don't run for records that propagate from child loggers,
+            # so we need to check the context variable directly.
+            request_id = getattr(record, "request_id", None)
+            if request_id is None or request_id == "-":
+                try:
+                    from .utils import request_id_ctx_var
 
-                request_id = request_id_ctx_var.get("-")
-            except Exception:
-                request_id = "-"
+                    request_id = request_id_ctx_var.get("-")
+                except Exception:
+                    request_id = "-"
 
-        # Format timestamp
-        asctime = self._time_formatter.formatTime(record, self._time_formatter.datefmt)
+            # Format timestamp
+            asctime = self._time_formatter.formatTime(record, self._time_formatter.datefmt)
 
-        self.log_capture.add_log(
-            message=self.format(record),
-            level=record.levelname,
-            request_id=request_id,
-            name=record.name,
-            asctime=asctime,
-        )
+            self.log_capture.add_log(
+                message=self.format(record),
+                level=record.levelname,
+                request_id=request_id,
+                name=record.name,
+                asctime=asctime,
+            )
+        finally:
+            _StreamInterceptor.set_in_logging(False)
 
 
 # Global instance for easy access
@@ -501,6 +539,16 @@ def init_log_capture(
 
     _log_capture = LogCapture(log_store_url=log_store_url, labels=labels)
     _log_capture.start()
+
+    # Update the StreamHandler's stream to point to the new _StreamInterceptor
+    # This is important because http_server.py's module-level ensure_structured_logging()
+    # may have already added a StreamHandler pointing to the original stdout (before interception)
+    try:
+        from .utils import ensure_structured_logging
+    except ImportError:
+        from utils import ensure_structured_logging
+    ensure_structured_logging()
+
     return _log_capture
 
 
@@ -535,5 +583,14 @@ def create_subprocess_log_capture(output_queue: mp.Queue) -> Optional[LogCapture
 
     # Set as global so get_log_capture() works in a subprocess (needed for ensure_handler calls)
     _log_capture = log_capture
+
+    # Update the StreamHandler's stream to point to the new _StreamInterceptor
+    # This is important because http_server.py's module-level ensure_structured_logging()
+    # may have already added a StreamHandler pointing to the original stdout (before interception)
+    try:
+        from .utils import ensure_structured_logging
+    except ImportError:
+        from utils import ensure_structured_logging
+    ensure_structured_logging()
 
     return log_capture

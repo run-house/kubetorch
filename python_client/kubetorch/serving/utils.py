@@ -86,7 +86,12 @@ def ensure_structured_logging():
             existing_structured = h
             break
 
-    if not existing_structured:
+    if existing_structured:
+        # Update the existing handler's stream to use current sys.stdout
+        # This is important because LogCapture may have replaced sys.stdout with _StreamInterceptor
+        # after the handler was created, and we want logging to go through the interceptor
+        existing_structured.setStream(sys.stdout)
+    else:
         # Add our structured handler alongside any user-installed handlers
         # so both formats are emitted to pod logs
         root_logger.addHandler(structured_handler)
