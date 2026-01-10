@@ -2,8 +2,10 @@ import contextlib
 import json
 import logging
 import os
+import pickle
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -13,6 +15,31 @@ from kubetorch.constants import PYSPY_SAMPLE_RATE_HZ
 from kubetorch.globals import ProfilerConfig
 
 logger = logging.getLogger(__name__)
+
+# Script run in subprocess for py-spy profiling. Uses -c (not -m) to avoid runpy frames.
+# Loads pickled function before signaling ready, so imports aren't captured in the profile.
+_PYSPY_RUNNER_SCRIPT = """
+import pickle
+import time
+import traceback
+from pathlib import Path
+
+with open("{args_path}", "rb") as f:
+    fn, args, kwargs = pickle.load(f)
+
+Path("{ready_path}").touch()
+
+while Path("{ready_path}").exists():
+    time.sleep(0.01)
+
+try:
+    result = fn(*args, **kwargs)
+    with open("{result_path}", "wb") as f:
+        pickle.dump(("success", result), f)
+except Exception as e:
+    with open("{result_path}", "wb") as f:
+        pickle.dump(("error", str(e), traceback.format_exc()), f)
+"""
 
 
 # Using a high duration (e.g., 5000s) since we don't know the exact fn runtime.
@@ -49,7 +76,7 @@ def pyspy_profiler(output: dict, output_format: str, pid=None, rate=PYSPY_SAMPLE
 
             logger.debug(f"Starting py-spy to profile PID {pid_to_profile} to {temp_out_path}")
 
-            pyspy_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            pyspy_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
             # This is the point where the profiler is yielding control back to the caller
             yield pyspy_process
@@ -67,6 +94,12 @@ def pyspy_profiler(output: dict, output_format: str, pid=None, rate=PYSPY_SAMPLE
 
             # Give a small buffer time for I/O flush
             time.sleep(0.2)
+
+            # Log any stderr from py-spy
+            if pyspy_process.stderr:
+                stderr_output = pyspy_process.stderr.read()
+                if stderr_output:
+                    logger.warning(f"py-spy stderr: {stderr_output}")
 
             # Read the output file contents
             try:
@@ -105,12 +138,23 @@ def run_with_profile(
 ):
     """Run the function with optional profiling, using Pyroscope as the backend."""
 
+    # Skip profiling if disabled (e.g., invalid profiler type)
+    if getattr(profiler, "_disabled", False):
+        result = fn(*args, **kwargs)
+        return result, None
+
     profiler_type = profiler.profiler_type
     output_format = profiler.output_format
 
     if profiler_type == "pytorch":
-        import torch
-        from torch.profiler import profile, ProfilerActivity, record_function
+        try:
+            import torch
+            from torch.profiler import profile, ProfilerActivity, record_function
+        except ImportError:
+            raise ImportError(
+                "PyTorch profiler requires torch to be installed, but it is not available in this environment. "
+                "Please install torch in your image."
+            )
 
         analyze_stack_traces = profiler.analyze_stack_traces
 
@@ -138,22 +182,76 @@ def run_with_profile(
         return result, profiler_output
 
     elif profiler_type == "pyspy":
+        logger.info(f"Starting pyspy profiler for {callable_name} in subprocess")
+
+        # Create temp files for IPC (input args, output result, ready signal)
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".pkl", delete=False) as args_file:
+            args_path = args_file.name
+            pickle.dump((fn, args, kwargs), args_file)
+
+        result_path = tempfile.mktemp(suffix=".pkl")
+        ready_path = tempfile.mktemp(suffix=".ready")
+
+        # Start subprocess with inline script. We use -c instead of -m because
+        # -m adds runpy frames to the stack. The inline script gives the cleanest
+        # flamegraph: just <module> -> user_function
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                _PYSPY_RUNNER_SCRIPT.format(args_path=args_path, result_path=result_path, ready_path=ready_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        # Wait for subprocess to be ready (imports done)
+        logger.debug("Waiting for subprocess to be ready...")
+        while not os.path.exists(ready_path):
+            time.sleep(0.01)
+            if proc.poll() is not None:
+                stderr = proc.stderr.read().decode() if proc.stderr else ""
+                raise RuntimeError(f"Subprocess failed during startup: {stderr}")
+        logger.debug("Subprocess is ready, attaching py-spy...")
+
         pyspy_output_data = {"result": None}
 
-        with pyspy_profiler(output=pyspy_output_data, output_format=output_format) as pyspy_proc:
-            try:
-                logger.debug(f"Running {callable_name} with pyspy profiler")
-                result = fn(*args, **kwargs)
-            finally:
-                if pyspy_proc and pyspy_proc.poll() is None:
-                    logger.debug("Function finished. Terminating py-spy sampling now to collect trace.")
-                    pyspy_proc.send_signal(signal.SIGINT)
-                    try:
-                        # Wait for process to exit gracefully after SIGINT
-                        pyspy_proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        pyspy_proc.kill()
+        try:
+            with pyspy_profiler(output=pyspy_output_data, output_format=output_format, pid=proc.pid):
+                # Give py-spy a moment to attach
+                time.sleep(0.1)
 
+                # Signal subprocess to start by removing the ready file
+                logger.debug(f"Signaling subprocess to run '{callable_name}'")
+                os.remove(ready_path)
+
+                # Wait for subprocess to complete
+                proc.wait()
+                logger.debug(f"Subprocess completed with exit code {proc.returncode}")
+
+        finally:
+            # Cleanup
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=5)
+            if os.path.exists(args_path):
+                os.remove(args_path)
+            if os.path.exists(ready_path):
+                os.remove(ready_path)
+
+        # Read the result
+        if not os.path.exists(result_path):
+            stderr = proc.stderr.read().decode() if proc.stderr else ""
+            raise RuntimeError(f"Subprocess did not produce result: {stderr}")
+
+        with open(result_path, "rb") as f:
+            status, *rest = pickle.load(f)
+        os.remove(result_path)
+
+        if status == "error":
+            error_msg, error_tb = rest
+            raise RuntimeError(f"Function failed in subprocess: {error_msg}\n{error_tb}")
+
+        result = rest[0]
         profiler_output = pyspy_output_data.get("result")
 
         if profiler_output is None:
@@ -175,6 +273,23 @@ def generate_profiler_output_filename(filename: str, file_suffix: str, service_n
         return f"{service_name}_{request_id}{file_suffix}"
 
 
+def _is_valid_profiler_output(profiler_output: str, output_format: str) -> bool:
+    """Check if the profiler output is valid and contains actual profiling data."""
+    if not profiler_output:
+        return False
+
+    # Check for py-spy error messages in SVG output
+    if output_format == "flamegraph" and "ERROR:" in profiler_output:
+        return False
+
+    # Check for empty/minimal SVG (no actual flame data)
+    if output_format == "flamegraph" and 'height="60"' in profiler_output:
+        # Height of 60 typically means no frames were captured
+        return False
+
+    return True
+
+
 def parse_profiler_output_helper(
     single_call_output: dict,
     profiler: ProfilerConfig,
@@ -187,6 +302,15 @@ def parse_profiler_output_helper(
 
     if not profiler_output:
         logger.warning(f"No profiling information found for service '{service_name}'.")
+        return fn_output, None
+
+    # Validate the profiler output before saving
+    if not _is_valid_profiler_output(profiler_output, profiler.output_format):
+        logger.warning(
+            f"Profiler captured no valid samples for service '{service_name}'. "
+            "This usually means the function completed too quickly or was mostly sleeping/waiting. "
+            "For meaningful profiles, ensure the function does CPU-bound work."
+        )
         return fn_output, None
 
     profiler_output_path = profiler.output_path
@@ -211,7 +335,7 @@ def parse_profiler_output_helper(
             output_file.write(profiler_output)
         else:
             output_file.write(json.dumps(profiler_output))
-        logger.info(f"profiler output can be found in {output_full_path}")
+        logger.info(f"Profiler output saved to: {output_full_path}")
 
     return fn_output, None
 

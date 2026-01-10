@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from kubetorch.constants import SUPPORTED_PYSPY_OUTPUTS, SUPPORTED_PYTORCH_OUTPUTS
 from kubetorch.globals import ProfilerConfig
 
 logging.getLogger("kubetorch").propagate = True
@@ -286,26 +285,190 @@ def test_profiling_pytorch_output_paths(remote_profiling_torch_fn, caplog):
 @pytest.mark.level("unit")
 @pytest.mark.asyncio
 def test_profiling_invalid_config_setup(caplog):
+    caplog.set_level("WARNING", logger="kubetorch")
 
     invalid_profiler_type = "unknown_profiler"
     invalid_output_format = "invalid_output"
 
-    # case 1: invalid profiler
-    with pytest.raises(ValueError) as raised_exception:
-        ProfilerConfig(profiler_type=invalid_profiler_type)
+    # case 1: invalid profiler - should warn and disable, not raise
+    config = ProfilerConfig(profiler_type=invalid_profiler_type)
+    assert config._disabled is True
+    assert f"Invalid profiler_type '{invalid_profiler_type}'" in caplog.text
+    assert "Profiling will be skipped" in caplog.text
 
-    assert f"profiler_type must be 'pyspy' or 'pytorch', got '{invalid_profiler_type}'" in str(raised_exception.value)
+    # case 2: invalid pyspy profiler output - should warn and disable, not raise
+    caplog.clear()
+    config2 = ProfilerConfig(profiler_type="pyspy", output_format=invalid_output_format)
+    assert config2._disabled is True
+    assert f"Invalid output_format '{invalid_output_format}' for pyspy profiler" in caplog.text
+    assert "Profiling will be skipped" in caplog.text
 
-    # case 2: invalid pyspy profiler output
-    with pytest.raises(ValueError) as raised_exception:
-        ProfilerConfig(profiler_type="pyspy", output_format=invalid_output_format)
+    # case 3: invalid pytorch profiler output - should warn and disable, not raise
+    caplog.clear()
+    config3 = ProfilerConfig(profiler_type="pytorch", output_format=invalid_output_format)
+    assert config3._disabled is True
+    assert f"Invalid output_format '{invalid_output_format}' for pytorch profiler" in caplog.text
+    assert "Profiling will be skipped" in caplog.text
 
-    assert f"Invalid profiler_output for Pyspy profiler: '{invalid_output_format}'" in str(raised_exception.value)
-    assert f"Must be one of {SUPPORTED_PYSPY_OUTPUTS}" in str(raised_exception.value)
 
-    # case 3: invalid pytorch profiler output
-    with pytest.raises(ValueError) as raised_exception:
-        ProfilerConfig(profiler_type="pytorch", output_format=invalid_output_format)
+@pytest.mark.level("unit")
+def test_profiling_invalid_table_sort_by(caplog):
+    caplog.set_level("WARNING", logger="kubetorch")
 
-    assert f"Invalid profiler_output for Pytorch profiler: '{invalid_output_format}'" in str(raised_exception.value)
-    assert f"Must be one of {SUPPORTED_PYTORCH_OUTPUTS}" in str(raised_exception.value)
+    invalid_sort_key = "invalid_sort_key"
+
+    # table_sort_by is only validated when output_format is "table" - should warn and disable
+    config = ProfilerConfig(profiler_type="pytorch", output_format="table", table_sort_by=invalid_sort_key)
+    assert config._disabled is True
+    assert f"Invalid table_sort_by '{invalid_sort_key}' for pytorch profiler" in caplog.text
+    assert "Profiling will be skipped" in caplog.text
+
+
+@pytest.mark.level("unit")
+def test_profiling_table_sort_by_ignored_for_non_table_format():
+    # table_sort_by should NOT raise an error when output_format is not "table"
+    # (the sort key is simply ignored)
+    config = ProfilerConfig(profiler_type="pytorch", output_format="chrometrace", table_sort_by="cpu_time")
+    assert config.table_sort_by == "cpu_time"
+    assert config.output_format == "chrometrace"
+
+
+@pytest.mark.level("unit")
+def test_profiling_pyspy_output_format_on_pytorch_disables(caplog):
+    # pyspy-specific output formats should disable profiling for pytorch profiler
+    caplog.set_level("WARNING", logger="kubetorch")
+    pyspy_only_formats = ["flamegraph", "raw", "speedscope"]
+
+    for fmt in pyspy_only_formats:
+        caplog.clear()
+        config = ProfilerConfig(profiler_type="pytorch", output_format=fmt)
+        assert config._disabled is True
+        assert f"Invalid output_format '{fmt}' for pytorch profiler" in caplog.text
+
+
+@pytest.mark.level("unit")
+def test_profiling_pytorch_output_format_on_pyspy_disables(caplog):
+    # pytorch-specific output formats should disable profiling for pyspy profiler
+    caplog.set_level("WARNING", logger="kubetorch")
+    pytorch_only_formats = ["table", "memory_timeline", "stacks"]
+
+    for fmt in pytorch_only_formats:
+        caplog.clear()
+        config = ProfilerConfig(profiler_type="pyspy", output_format=fmt)
+        assert config._disabled is True
+        assert f"Invalid output_format '{fmt}' for pyspy profiler" in caplog.text
+
+
+@pytest.mark.level("unit")
+def test_profiling_pytorch_missing_torch_import():
+    import builtins
+    import sys
+    from unittest.mock import patch
+
+    from kubetorch.serving.profiling import run_with_profile
+
+    config = ProfilerConfig(profiler_type="pytorch")
+
+    original_import = builtins.__import__
+
+    # Create a mock that raises ImportError when torch is imported
+    def mock_import(name, *args, **kwargs):
+        if name == "torch" or name.startswith("torch."):
+            raise ImportError("No module named 'torch'")
+        return original_import(name, *args, **kwargs)
+
+    # Mock torch not being installed by patching the import
+    with patch.dict(sys.modules, {"torch": None, "torch.profiler": None}):
+        with patch("builtins.__import__", side_effect=mock_import):
+            with pytest.raises(ImportError) as raised_exception:
+                run_with_profile(lambda: None, profiler=config, callable_name="test_fn")
+
+            assert "torch" in str(raised_exception.value).lower()
+
+
+@pytest.mark.level("unit")
+def test_profiling_default_output_formats():
+    # Test that defaults are set correctly
+    pyspy_config = ProfilerConfig(profiler_type="pyspy")
+    assert pyspy_config.output_format == "flamegraph"
+
+    pytorch_config = ProfilerConfig(profiler_type="pytorch")
+    assert pytorch_config.output_format == "chrometrace"
+
+
+@pytest.mark.level("unit")
+def test_profiling_output_file_suffix():
+    # Test output_file_suffix method returns correct extensions
+    assert ProfilerConfig(profiler_type="pyspy", output_format="flamegraph").output_file_suffix() == "svg"
+    assert ProfilerConfig(profiler_type="pyspy", output_format="raw").output_file_suffix() == "txt"
+    assert ProfilerConfig(profiler_type="pyspy", output_format="speedscope").output_file_suffix() == "json"
+    assert ProfilerConfig(profiler_type="pyspy", output_format="chrometrace").output_file_suffix() == "json"
+
+    assert ProfilerConfig(profiler_type="pytorch", output_format="chrometrace").output_file_suffix() == "json"
+    assert ProfilerConfig(profiler_type="pytorch", output_format="table").output_file_suffix() == "json"
+    assert ProfilerConfig(profiler_type="pytorch", output_format="stacks").output_file_suffix() == "json"
+
+    # memory_timeline has different suffixes based on memory_timeline_output_type
+    assert (
+        ProfilerConfig(
+            profiler_type="pytorch", output_format="memory_timeline", memory_timeline_output_type="html"
+        ).output_file_suffix()
+        == "html"
+    )
+    assert (
+        ProfilerConfig(
+            profiler_type="pytorch", output_format="memory_timeline", memory_timeline_output_type="json"
+        ).output_file_suffix()
+        == "json"
+    )
+    assert (
+        ProfilerConfig(
+            profiler_type="pytorch", output_format="memory_timeline", memory_timeline_output_type="raw"
+        ).output_file_suffix()
+        == "raw.json.gz"
+    )
+    assert (
+        ProfilerConfig(
+            profiler_type="pytorch", output_format="memory_timeline", memory_timeline_output_type="json_zip"
+        ).output_file_suffix()
+        == "json.gz"
+    )
+
+
+@pytest.mark.level("unit")
+def test_profiling_valid_table_sort_keys():
+    from kubetorch.constants import SUPPORTED_PYTORCH_TABLE_SORT_KEYS
+
+    # All valid sort keys should work without raising
+    for sort_key in SUPPORTED_PYTORCH_TABLE_SORT_KEYS:
+        config = ProfilerConfig(profiler_type="pytorch", output_format="table", table_sort_by=sort_key)
+        assert config.table_sort_by == sort_key
+
+
+@pytest.mark.level("unit")
+def test_profiling_config_to_dict():
+    config = ProfilerConfig(
+        profiler_type="pytorch",
+        output_format="chrometrace",
+        output_path="/tmp/output",
+        output_filename="test_profile",
+        analyze_stack_traces=False,
+        memory_timeline_output_type="json",
+        table_sort_by="cpu_time",
+        consolidate_table=True,
+        group_by_input_shape=True,
+        group_by_stack_n=5,
+    )
+
+    config_dict = config.to_dict()
+
+    assert config_dict["profiler_type"] == "pytorch"
+    assert config_dict["output_format"] == "chrometrace"
+    assert config_dict["output_path"] == "/tmp/output"
+    assert config_dict["output_filename"] == "test_profile"
+    assert config_dict["analyze_stack_traces"] is False
+    assert config_dict["memory_timeline_output_type"] == "json"
+    assert config_dict["table_sort_by"] == "cpu_time"
+    assert config_dict["consolidate_table"] is True
+    assert config_dict["group_by_input_shape"] is True
+    assert config_dict["group_by_stack_n"] == 5

@@ -1765,15 +1765,20 @@ def execute_callable(
 
         profiler = ProfilerConfig(**profiler)
 
-        request_id = request_id_ctx_var.get("-")
-        logger.debug(
-            f"Running {cls_or_fn_name} with profiler: {profiler} (callable_name={callable_name}, request_id={request_id})"
-        )
+        # If profiler config is invalid/disabled, just run without profiling
+        if getattr(profiler, "_disabled", False):
+            if is_async_method:
+                result = asyncio.run(user_method(*args, **kwargs))
+            else:
+                result = user_method(*args, **kwargs)
+        else:
+            request_id = request_id_ctx_var.get("-")
+            logger.info(f"Running '{cls_or_fn_name}' (request_id={request_id}): {profiler}")
 
-        fn_output, profiler_output = run_with_profile(
-            user_method, *args, profiler=profiler, callable_name=callable_name, **kwargs
-        )
-        result = {"fn_output": fn_output, "profiler_output": profiler_output}
+            fn_output, profiler_output = run_with_profile(
+                user_method, *args, profiler=profiler, callable_name=callable_name, **kwargs
+            )
+            result = {"fn_output": fn_output, "profiler_output": profiler_output}
 
     else:
         logger.debug(f"Calling remote callable {callable_name}")
