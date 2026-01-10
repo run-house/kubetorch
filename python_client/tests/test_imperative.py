@@ -357,6 +357,45 @@ def test_image_update():
 
 
 @pytest.mark.level("minimal")
+def test_image_env_vars_in_manifest():
+    """Test that image env vars are properly included in the K8s manifest."""
+    import kubetorch as kt
+
+    # First deploy - verify env vars appear in manifest
+    image1 = kt.images.Debian().set_env_vars({"empty": "", "val": "old_val", "val2": "some_other_val"})
+    compute = kt.Compute(cpus=".01", image=image1, gpu_anti_affinity=True)
+
+    # Check manifest env vars before deploy
+    container_env = compute._container().get("env", [])
+    manifest_vars = {
+        e["name"]: e.get("value", "NO_VALUE") for e in container_env if e["name"] in ["empty", "val", "val2"]
+    }
+    assert manifest_vars.get("val") == "old_val", f"val should be in manifest, got {manifest_vars}"
+    assert manifest_vars.get("val2") == "some_other_val", f"val2 should be in manifest, got {manifest_vars}"
+    assert manifest_vars.get("empty") == "", f"empty should be in manifest, got {manifest_vars}"
+
+    # Deploy and verify runtime
+    remote_fn = kt.fn(get_env_var, name=get_test_fn_name()).to(compute)
+    assert remote_fn("val") == "old_val"
+    assert remote_fn("val2") == "some_other_val"
+    assert remote_fn("empty") == ""
+
+    # Update image - verify manifest is updated
+    compute.image = kt.images.Debian().set_env_vars({"val": "new_val"})
+
+    container_env2 = compute._container().get("env", [])
+    manifest_vars2 = {
+        e["name"]: e.get("value", "NO_VALUE") for e in container_env2 if e["name"] in ["empty", "val", "val2"]
+    }
+    assert manifest_vars2.get("val") == "new_val", f"val should be updated in manifest, got {manifest_vars2}"
+
+    # Deploy and verify runtime - val2 should persist from first image
+    remote_fn = kt.fn(get_env_var, name=get_test_fn_name()).to(compute)
+    assert remote_fn("val") == "new_val"
+    assert remote_fn("val2") == "some_other_val"
+
+
+@pytest.mark.level("minimal")
 def test_env_var_expansion():
     """Test that environment variables are properly expanded in Image.set_env_vars()."""
     import kubetorch as kt
