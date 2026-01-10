@@ -83,8 +83,11 @@ def test_autodown_deployment():
     assert pods
 
     pod = pods[0]
+    # Try to find kubetorch container, fall back to first container
     container = next((x for x in pod["spec"]["containers"] if x["name"] == "kubetorch"), None)
-    kt_otel_env = next((env for env in container["env"] if env["name"] == "KT_METRICS_ENABLED"), None)
+    if container is None:
+        container = pod["spec"]["containers"][0]
+    kt_otel_env = next((env for env in container.get("env", []) if env["name"] == "KT_METRICS_ENABLED"), None)
     assert kt_otel_env["value"] == "True"
 
     # Check that the service has the autodown annotation
@@ -148,8 +151,11 @@ def test_autodown_raycluster():
     assert pods
 
     pod = pods[0]
+    # Try to find kubetorch container, fall back to first container (Ray pods may have different names)
     container = next((x for x in pod["spec"]["containers"] if x["name"] == "kubetorch"), None)
-    kt_otel_env = next((env for env in container["env"] if env["name"] == "KT_METRICS_ENABLED"), None)
+    if container is None:
+        container = pod["spec"]["containers"][0]
+    kt_otel_env = next((env for env in container.get("env", []) if env["name"] == "KT_METRICS_ENABLED"), None)
     assert kt_otel_env["value"] == "True"
 
     # Check that the service has the autodown annotation
@@ -198,8 +204,11 @@ def test_autodown_custom_image():
     assert pods
 
     pod = pods[0]
+    # Try to find kubetorch container, fall back to first container
     container = next((x for x in pod["spec"]["containers"] if x["name"] == "kubetorch"), None)
-    kt_otel_env = next((env for env in container["env"] if env["name"] == "KT_METRICS_ENABLED"), None)
+    if container is None:
+        container = pod["spec"]["containers"][0]
+    kt_otel_env = next((env for env in container.get("env", []) if env["name"] == "KT_METRICS_ENABLED"), None)
     assert kt_otel_env["value"] == "True"
 
     # Check that the service has the autodown annotation
