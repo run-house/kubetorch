@@ -29,6 +29,7 @@ DEFAULT_SERVICE_ACCOUNT_NAME = "kubetorch-service-account"
 # Annotations
 INACTIVITY_TTL_ANNOTATION = "kubetorch.com/inactivity-ttl"
 KUBECONFIG_PATH_ANNOTATION = "kubetorch.com/kubeconfig-path"
+ALLOWED_SERIALIZATION_ANNOTATION = "kubetorch.com/allowed-serialization"
 
 # Labels
 KT_SERVICE_LABEL = "kubetorch.com/service"

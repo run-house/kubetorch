@@ -232,6 +232,10 @@ class Compute:
         manifest_annotations.update(gpu_annotations)
         if self._kubeconfig_path is not None:
             manifest_annotations[provisioning_constants.KUBECONFIG_PATH_ANNOTATION] = self._kubeconfig_path
+        if template_vars.get("allowed_serialization"):
+            manifest_annotations[provisioning_constants.ALLOWED_SERIALIZATION_ANNOTATION] = template_vars[
+                "allowed_serialization"
+            ]
 
         # Build initial manifest based on deployment type
         from kubetorch.provisioning.utils import build_deployment_manifest
@@ -1183,10 +1187,19 @@ class Compute:
     @property
     def allowed_serialization(self):
         """Get allowed_serialization. Flows to pods via WebSocket runtime config."""
+        # First check template_vars
         template_vars = getattr(self, "_template_vars", None) or {}
         value = template_vars.get("allowed_serialization")
         if value:
             return value.split(",") if isinstance(value, str) else value
+
+        # Fall back to manifest annotation
+        metadata = self._get_manifest_metadata()
+        annotations = metadata.get("annotations", {})
+        annotation_value = annotations.get(provisioning_constants.ALLOWED_SERIALIZATION_ANNOTATION)
+        if annotation_value:
+            return annotation_value.split(",")
+
         return None
 
     @allowed_serialization.setter
@@ -1195,7 +1208,19 @@ class Compute:
         # Store in template_vars for inclusion in runtime_config sent via WebSocket
         if not hasattr(self, "_template_vars") or self._template_vars is None:
             self._template_vars = {}
-        self._template_vars["allowed_serialization"] = ",".join(value) if value else None
+        serialized_value = ",".join(value) if value else None
+        self._template_vars["allowed_serialization"] = serialized_value
+
+        # Also persist to manifest annotation for from_manifest reconstruction
+        self._manifest.setdefault("metadata", {}).setdefault("annotations", {})
+        if serialized_value:
+            self._manifest["metadata"]["annotations"][
+                provisioning_constants.ALLOWED_SERIALIZATION_ANNOTATION
+            ] = serialized_value
+        elif provisioning_constants.ALLOWED_SERIALIZATION_ANNOTATION in self._manifest["metadata"].get(
+            "annotations", {}
+        ):
+            del self._manifest["metadata"]["annotations"][provisioning_constants.ALLOWED_SERIALIZATION_ANNOTATION]
 
     @property
     def secrets(self):
