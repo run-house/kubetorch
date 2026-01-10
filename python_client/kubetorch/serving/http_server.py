@@ -1710,7 +1710,7 @@ def execute_callable(
     # Process the call
     args = []
     kwargs = {}
-    debug_port, debug_mode = None, None
+    debug_port, debug_mode, profiler = None, None, None
 
     if params:
         if serialization == "pickle":
@@ -1729,6 +1729,7 @@ def execute_callable(
         # Default JSON handling
         args = params.get("args", [])
         kwargs = params.get("kwargs", {})
+        profiler = params.get("profiler", None)
         debugger: dict = params.get("debugger", None) if params else None
         if debugger:
             debug_mode = debugger.get("mode")
@@ -1757,6 +1758,23 @@ def execute_callable(
             result = asyncio.run(user_method(*args, **kwargs))
         else:
             result = user_method(*args, **kwargs)
+
+    elif profiler:
+        from kubetorch.globals import ProfilerConfig
+        from kubetorch.serving.profiling import run_with_profile
+
+        profiler = ProfilerConfig(**profiler)
+
+        request_id = request_id_ctx_var.get("-")
+        logger.debug(
+            f"Running {cls_or_fn_name} with profiler: {profiler} (callable_name={callable_name}, request_id={request_id})"
+        )
+
+        fn_output, profiler_output = run_with_profile(
+            user_method, *args, profiler=profiler, callable_name=callable_name, **kwargs
+        )
+        result = {"fn_output": fn_output, "profiler_output": profiler_output}
+
     else:
         logger.debug(f"Calling remote callable {callable_name}")
         if is_async_method:
