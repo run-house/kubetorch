@@ -731,6 +731,8 @@ async def test_byo_manifest_with_endpoint_url():
             "ports": [{"port": user_port, "targetPort": DEFAULT_KT_SERVER_PORT}],
         },
     }
+    # Delete existing service if it exists (cleanup from previous test runs)
+    controller.delete_service(namespace=namespace, name=user_service_name, ignore_not_found=True)
     controller.create_service(namespace=namespace, body=user_service)
 
     # Create Compute from manifest with selector and endpoint
