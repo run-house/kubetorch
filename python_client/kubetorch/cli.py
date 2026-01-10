@@ -2398,11 +2398,11 @@ def kt_pool(
         "-v",
         help="Show detailed module, specifier, labels, and annotations",
     ),
-    watchers: bool = typer.Option(
+    connections: bool = typer.Option(
         False,
-        "--watchers",
-        "-w",
-        help="Show pod watcher metadata",
+        "--connections",
+        "-c",
+        help="Show connected pods via WebSocket",
     ),
 ):
     """
@@ -2412,11 +2412,11 @@ def kt_pool(
 
     controller = kt.globals.controller_client()
 
-    # Show watcher debug info if requested
-    if watchers:
-        watcher_data = controller.get_watchers()
-        if not watcher_data:
-            console.print("[yellow]No pools with BYO manifests found[/yellow]")
+    # Show WebSocket connection debug info if requested
+    if connections:
+        connection_data = controller.get_connections()
+        if not connection_data:
+            console.print("[yellow]No pools found[/yellow]")
             raise typer.Exit()
 
         table = Table(
@@ -2429,9 +2429,10 @@ def kt_pool(
         table.add_column("Pods", style="green", no_wrap=True)
         table.add_column("Pod IPs", style="yellow", overflow="fold")
 
-        for pool_name, info in watcher_data.items():
-            ips = info.get("ips", [])
-            pod_count = info.get("pod_count", len(ips))
+        for pool_name, info in connection_data.items():
+            connected_pods = info.get("connected_pods", [])
+            pod_count = info.get("pod_count", len(connected_pods))
+            ips = [p["ip"] for p in connected_pods if p.get("ip")]
             table.add_row(
                 pool_name,
                 info.get("namespace", "-"),
