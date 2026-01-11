@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
 try:
+    from global_http_clients import close_clients
     from log_capture import init_log_capture, stop_log_capture
     from metrics_push import init_metrics_pusher, stop_metrics_pusher
     from server_metrics import get_inactivity_ttl_annotation
@@ -45,6 +46,7 @@ try:
         wait_for_app_start,
     )
 except ImportError:
+    from .global_http_clients import close_clients
     from .log_capture import init_log_capture, stop_log_capture
     from .metrics_push import init_metrics_pusher, stop_metrics_pusher
     from .server_metrics import get_inactivity_ttl_annotation
@@ -1379,6 +1381,13 @@ async def lifespan(app: FastAPI):
 
         # Clear any remaining debugging sessions
         clear_debugging_sessions()
+
+        # Close global HTTP clients
+        close_clients()
+
+        # Close proxy client if it exists
+        if proxy_client is not None:
+            await proxy_client.aclose()
 
 
 # Add the filter to uvicorn's access logger
