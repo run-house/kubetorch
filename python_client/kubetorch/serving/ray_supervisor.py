@@ -2,14 +2,11 @@ import os
 import subprocess
 import threading
 import time
-from concurrent.futures import as_completed, ThreadPoolExecutor
 from typing import Dict, Optional
 
 from starlette.responses import JSONResponse
 
 from kubetorch.serving.distributed_supervisor import DistributedSupervisor
-
-from kubetorch.serving.global_http_clients import get_sync_client
 from kubetorch.serving.http_server import logger, patch_sys_path
 from kubetorch.serving.process_worker import ProcessWorker
 
@@ -65,8 +62,13 @@ class RayDistributed(DistributedSupervisor):
         )
         self.distributed_env_vars = None
 
-    def setup(self, deployed_as_of: Optional[str] = None):
-        """Set up Ray distributed environment."""
+    def setup(self):
+        """Set up Ray distributed environment.
+
+        With push-based reloads via WebSocket, all pods (including Ray workers)
+        receive reload messages directly from the controller. There's no need
+        to manually trigger reloads on worker pods from the head node.
+        """
         # Start the Ray server here, if we allow KubeRay to start it in the pod template
         # it's hard to wait for it start properly and we lose the ability to restart if needed.
         global RAY_START_PROC
@@ -142,20 +144,10 @@ class RayDistributed(DistributedSupervisor):
             if env_var in os.environ:
                 self.distributed_env_vars[env_var] = os.environ[env_var]
 
-        # Check if we need to reload other pods (only if previously initialized)
-        # Note: We check process_pool, not remote_worker_pool, since RemoteWorkerPool
-        # is now created lazily when there are actually remote workers to call.
-        previously_initialized = self.process_pool is not None
-
-        if self.restart_procs and previously_initialized:
-            pod_ips = self.pod_ips()
-            # Send reload requests to other pods if needed
-            self._reload_image_on_other_pods(pod_ips, this_pod_ip, deployed_as_of)
-
         # Call parent setup to create ProcessPool
         # Note: Ray doesn't use RemoteWorkerPool - it handles distributed
         # coordination via Ray's own GCS server
-        super().setup(deployed_as_of)
+        super().setup()
         logger.debug("Finished setting up Ray distributed process")
 
     def call(
@@ -165,7 +157,6 @@ class RayDistributed(DistributedSupervisor):
         method_name: Optional[str] = None,
         params: Optional[Dict] = None,
         distributed_subcall: bool = False,
-        deployed_as_of: Optional[str] = None,
     ):
         """Ray distributed call - only executes on head node."""
         request_id = request.headers.get("X-Request-ID", "-")
@@ -176,9 +167,6 @@ class RayDistributed(DistributedSupervisor):
         if debugger:
             debug_mode = debugger.get("mode")
             debug_port = debugger.get("port")
-
-        # Note: If deployed_as_of is None, we pass it as-is.
-        # Workers will correctly skip reload when deployed_as_of is None.
 
         if not os.environ["POD_NAME"].endswith("-head"):
             # This should never happen, because the service only points to the head node, Raise an error if it does.
@@ -217,7 +205,6 @@ class RayDistributed(DistributedSupervisor):
             idx=0,
             method_name=method_name,
             params=params,
-            deployed_as_of=deployed_as_of,
             request_id=request_id,
             distributed_env_vars=self.distributed_env_vars,
             debug_port=debug_port,
@@ -232,88 +219,6 @@ class RayDistributed(DistributedSupervisor):
             raise result
 
         return result
-
-    def _reload_image_on_other_pods(self, pod_ips, this_pod_ip, deployed_as_of):
-        """Send /_reload_image requests to all other pods in parallel, with retries for pods that aren't ready."""
-        other_pod_ips = [ip for ip in pod_ips if ip != this_pod_ip]
-
-        if not other_pod_ips:
-            logger.debug("No other pods to reload")
-            return
-
-        logger.info(f"Sending reload requests to {len(other_pod_ips)} other pods: {other_pod_ips}")
-
-        server_port = os.environ.get("KT_SERVER_PORT", "32300")
-        total_timeout = self.quorum_timeout  # Use configurable quorum timeout
-        retry_interval = 2  # Wait 2 seconds between retry attempts
-        start_time = time.time()
-
-        successful_pods = set()
-        remaining_pods = set(other_pod_ips)
-
-        while remaining_pods and (time.time() - start_time) < total_timeout:
-            logger.debug(f"Attempting to reload {len(remaining_pods)} remaining pods: {list(remaining_pods)}")
-
-            def reload_pod(pod_ip):
-                """Send reload request to a single pod."""
-                try:
-                    client = get_sync_client()
-                    url = f"http://{pod_ip}:{server_port}/_reload_image"
-                    # First try a quick health check to see if pod is ready
-                    health_url = f"http://{pod_ip}:{server_port}/health"
-                    health_response = client.get(health_url, timeout=5)
-
-                    if health_response.status_code != 200:
-                        logger.debug(f"Pod {pod_ip} health check failed, will retry later")
-                        return False
-
-                    # Pod is healthy, send reload request (no timeout, installs can be long-running)
-                    response = client.post(url, headers={"X-Deployed-As-Of": deployed_as_of}, timeout=None)
-                    if response.status_code == 200:
-                        logger.debug(f"Successfully reloaded image on pod {pod_ip}")
-                        return True
-                    else:
-                        logger.warning(f"Pod {pod_ip} reload returned status {response.status_code}")
-                        return False
-
-                except Exception as e:
-                    logger.debug(f"Failed to reload image on pod {pod_ip}: {e}")
-                    raise
-
-            # Try to reload all remaining pods in parallel
-            current_attempt_pods = list(remaining_pods)
-
-            with ThreadPoolExecutor(max_workers=min(len(current_attempt_pods), 10)) as executor:
-                # Submit reload tasks for remaining pods
-                future_to_pod = {executor.submit(reload_pod, pod_ip): pod_ip for pod_ip in current_attempt_pods}
-
-                # Process completed futures
-                for future in as_completed(future_to_pod, timeout=None):
-                    pod_ip = future_to_pod[future]
-                    try:
-                        success = future.result()
-                        if success:
-                            successful_pods.add(pod_ip)
-                            remaining_pods.discard(pod_ip)
-                    except Exception as e:
-                        logger.debug(f"Reload task for pod {pod_ip} failed: {e}")
-
-            if remaining_pods:
-                elapsed = time.time() - start_time
-                remaining_time = total_timeout - elapsed
-                if remaining_time > retry_interval:
-                    logger.info(f"Waiting {retry_interval}s before retrying {len(remaining_pods)} pods...")
-                    time.sleep(retry_interval)
-                else:
-                    logger.warning("Timeout approaching, stopping retry attempts")
-                    break
-
-        # Log final results
-        if successful_pods:
-            logger.info(f"Successfully reloaded {len(successful_pods)} pod images: {list(successful_pods)}")
-
-        if remaining_pods:
-            logger.warning(f"Failed to reload {len(remaining_pods)} pod images after timeout: {list(remaining_pods)}")
 
     def _is_ray_running(self):
         """Check if Ray is actually running by trying to connect to the Ray GCS port."""
