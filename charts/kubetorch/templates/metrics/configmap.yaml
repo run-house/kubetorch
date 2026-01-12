@@ -67,6 +67,12 @@ data:
             target_label: exporter_pod
       {{- end }}
 
+      {{- if .Values.metrics.prometheus.additionalScrapeConfigs }}
+      {{- range .Values.metrics.prometheus.additionalScrapeConfigs }}
+      - {{ toYaml . | nindent 8 | trim }}
+      {{- end }}
+      {{- end }}
+
       # allow for namespace filtering
       - job_name: 'pods'
         kubernetes_sd_configs:
