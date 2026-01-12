@@ -120,16 +120,17 @@ metrics:
     resources:
       cpu: 200m
       memory: 512Mi
+    # DCGM exporter scrape config (auto-discovers on GKE, EKS, AKS)
     additionalScrapeConfigs:
-      - job_name: "gke-managed-dcgm"
+      - job_name: "dcgm-exporter"
         honor_labels: true
         kubernetes_sd_configs:
           - role: pod
             namespaces:
-              names: ["gke-managed-system"]
+              names: ["gke-managed-system", "gpu-operator", "nvidia-gpu-operator"]
         relabel_configs:
           - source_labels: [__meta_kubernetes_pod_name]
-            regex: "dcgm-exporter.*"
+            regex: ".*dcgm-exporter.*"
             action: keep
           - source_labels: [__meta_kubernetes_pod_container_port_number]
             regex: "9400"
@@ -143,7 +144,7 @@ metrics:
             target_label: pod
 
 dcgm-exporter:
-  enabled: false # set to `true` if deploying an EKS or rolling your own DCGM metrics collection
+  enabled: false  # set to true to deploy DCGM exporter with this chart
   namespaceOverride: "kubetorch"
   serviceMonitor:
     enabled: false  # kubetorch deploys its own service monitoring deployment
