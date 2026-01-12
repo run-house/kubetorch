@@ -968,9 +968,9 @@ class ControllerClient:
         """List all compute pools."""
         return self.get(f"/controller/pools/{namespace}")
 
-    def get_watchers(self) -> Dict[str, Any]:
-        """Get pod watcher debug info (IPs being tracked for each pool)."""
-        return self.get("/controller/debug/watchers")
+    def get_connections(self) -> Dict[str, Any]:
+        """Get WebSocket connection debug info (connected pods for each pool)."""
+        return self.get("/controller/debug/connections")
 
     def discover_resources(
         self,
