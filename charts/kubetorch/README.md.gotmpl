@@ -1,0 +1,18 @@
+{{ template "chart.header" . }}
+{{ template "chart.badgesSection" . }}
+{{ template "chart.description" . }}
+{{ template "chart.requirementsSection" . }}
+
+## GPU Metrics (DCGM)
+
+DCGM exporter metrics are automatically discovered on any cloud provider. No configuration required.
+
+The chart scrapes any pod matching `*dcgm-exporter*` in these namespaces:
+- `gke-managed-system` (GKE managed DCGM)
+- `gpu-operator` (NVIDIA GPU Operator)
+- `nvidia-gpu-operator` (NVIDIA GPU Operator alternate namespace)
+
+For self-managed DCGM, set `dcgm-exporter.enabled: true` to deploy the exporter with the chart.
+
+{{ template "chart.valuesSection" . }}
+{{ template "helm-docs.versionFooter" . }}

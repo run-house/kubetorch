@@ -1,15 +1,24 @@
 # kubetorch
 
 ![Version: 0.3.0](https://img.shields.io/badge/Version-0.3.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.3.0](https://img.shields.io/badge/AppVersion-0.3.0-informational?style=flat-square)
-
 A Helm chart for kubetorch
-
 ## Requirements
 
 | Repository | Name | Version |
 |------------|------|---------|
 | https://nvidia.github.io/dcgm-exporter/helm-charts | dcgm-exporter | 4.5.0 |
 | https://nvidia.github.io/k8s-device-plugin | nvidia-device-plugin | 0.14.1 |
+
+## GPU Metrics (DCGM)
+
+DCGM exporter metrics are automatically discovered on any cloud provider. No configuration required.
+
+The chart scrapes any pod matching `*dcgm-exporter*` in these namespaces:
+- `gke-managed-system` (GKE managed DCGM)
+- `gpu-operator` (NVIDIA GPU Operator)
+- `nvidia-gpu-operator` (NVIDIA GPU Operator alternate namespace)
+
+For self-managed DCGM, set `dcgm-exporter.enabled: true` to deploy the exporter with the chart.
 
 ## Values
 

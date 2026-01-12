@@ -121,15 +121,17 @@ metrics:
       cpu: 200m
       memory: 512Mi
     additionalScrapeConfigs:
-      - job_name: "gke-managed-dcgm"
+      # DCGM Exporter - automatically discovers GPU metrics on any cloud
+      # Matches: gke-managed-dcgm-exporter, nvidia-dcgm-exporter, dcgm-exporter
+      - job_name: "dcgm-exporter"
         honor_labels: true
         kubernetes_sd_configs:
           - role: pod
             namespaces:
-              names: ["gke-managed-system"]
+              names: ["gke-managed-system", "gpu-operator", "nvidia-gpu-operator"]
         relabel_configs:
           - source_labels: [__meta_kubernetes_pod_name]
-            regex: "dcgm-exporter.*"
+            regex: ".*dcgm-exporter.*"
             action: keep
           - source_labels: [__meta_kubernetes_pod_container_port_number]
             regex: "9400"
