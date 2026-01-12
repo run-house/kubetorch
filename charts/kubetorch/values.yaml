@@ -120,9 +120,8 @@ metrics:
     resources:
       cpu: 200m
       memory: 512Mi
+    # DCGM exporter scrape config (auto-discovers on GKE, EKS, AKS)
     additionalScrapeConfigs:
-      # DCGM Exporter - automatically discovers GPU metrics on any cloud
-      # Matches: gke-managed-dcgm-exporter, nvidia-dcgm-exporter, dcgm-exporter
       - job_name: "dcgm-exporter"
         honor_labels: true
         kubernetes_sd_configs:
@@ -145,7 +144,7 @@ metrics:
             target_label: pod
 
 dcgm-exporter:
-  enabled: false # set to `true` if deploying an EKS or rolling your own DCGM metrics collection
+  enabled: false  # set to true to deploy DCGM exporter with this chart
   namespaceOverride: "kubetorch"
   serviceMonitor:
     enabled: false  # kubetorch deploys its own service monitoring deployment
