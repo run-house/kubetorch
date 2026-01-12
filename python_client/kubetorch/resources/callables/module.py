@@ -576,28 +576,32 @@ class Module:
                 f"and reload_prefixes={reload_prefixes}: {str(e)}"
             )
 
-    def _get_rsync_dirs_and_dockerfile(self, install_url, use_editable):
+    def _get_rsync_dirs_and_dockerfile(self, install_url, use_editable, sync_workdir: bool = True):
         if self.pointers[0] is None or self.pointers[1] is None:
             raise ValueError("Cannot deploy functions defined interactively. Please define your function in a file.")
 
-        source_dir, has_kt_dir, matched_file = locate_working_dir(self.pointers[0])
-        rsync_dirs = [str(source_dir)]
-        if not has_kt_dir:
-            # Use the source file (.py) instead of directory
-            source_file = Path(f"{self.pointers[0]}/{self.pointers[1]}.py")
-            rsync_dirs = [str(source_file)]
-            logger.info(f"No project markers found, syncing file {source_file}")
-        else:
-            source_dir_name = Path(source_dir).name
-            if self.compute.working_dir:
-                remote_path = f"{self.compute.working_dir}/{source_dir_name}"
-                logger.info(
-                    f"Syncing project directory {source_dir} -> {remote_path} (working directory detected via {matched_file})"
-                )
+        rsync_dirs = []
+        source_dir = None
+        if sync_workdir:
+            source_dir, has_kt_dir, matched_file = locate_working_dir(self.pointers[0])
+            rsync_dirs.append(str(source_dir))
+            if not has_kt_dir:
+                if self.pointers[1]:
+                    # Use the source file (.py) instead of directory
+                    source_file = Path(f"{self.pointers[0]}/{self.pointers[1]}.py")
+                    rsync_dirs = [str(source_file)]
+                    logger.info(f"No project markers found, syncing file {source_file}")
             else:
-                logger.info(
-                    f"Syncing project directory {source_dir} -> ./{source_dir_name} (working directory detected via {matched_file})"
-                )
+                source_dir_name = Path(source_dir).name
+                if self.compute.working_dir:
+                    remote_path = f"{self.compute.working_dir}/{source_dir_name}"
+                    logger.info(
+                        f"Syncing project directory {source_dir} -> {remote_path} (working directory detected via {matched_file})"
+                    )
+                else:
+                    logger.info(
+                        f"Syncing project directory {source_dir} -> ./{source_dir_name} (working directory detected via {matched_file})"
+                    )
 
         if install_url.endswith(".whl") or (use_editable and install_url != str(source_dir)):
             rsync_dirs.append(install_url)

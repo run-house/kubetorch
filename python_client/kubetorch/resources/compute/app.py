@@ -27,6 +27,9 @@ class App(Module):
         pointers: tuple,
         name: str = None,
         run_async: bool = False,
+        port: int = None,
+        health_check: str = None,
+        _skip_path_substitution: bool = False,
     ):
         """
         Initialize an App object for remote execution.
@@ -43,6 +46,9 @@ class App(Module):
             name (str, optional): Name to assign the app. If not provided, will be based on the name of the file in
                 which the app was defined.
             run_async (bool, optional): Whether to run the app async. (Default: ``False``)
+            port (int, optional): Server port that the app listens on. If provided, enables HTTP proxying
+                to the app via the /http endpoint.
+            health_check (str, optional): Health check endpoint path (e.g., '/health') to verify the app is ready.
         """
         super().__init__(name=name, pointers=pointers)
         self.cli_command = cli_command
@@ -50,6 +56,9 @@ class App(Module):
         self.name = name or self.module_name
         self._compute = compute
         self._run_async = run_async
+        self._port = port
+        self._health_check = health_check
+        self._skip_path_substitution = _skip_path_substitution
         self._remote_pointers = None
 
         self._http_client = None
@@ -79,6 +88,14 @@ class App(Module):
         """
         self.compute.service_name = self.service_name
 
+        app_env_vars = {}
+        if self._port is not None:
+            app_env_vars["KT_APP_PORT"] = str(self._port)
+        if self._health_check is not None:
+            app_env_vars["KT_APP_HEALTHCHECK"] = self._health_check
+        if app_env_vars:
+            self.compute.add_env_vars(app_env_vars)
+
         install_url, use_editable = get_kt_install_url(self.compute.freeze)
         if not self.compute.freeze:
             deployment_timestamp = datetime.now(timezone.utc).isoformat()
@@ -94,12 +111,22 @@ class App(Module):
     def _get_service_dockerfile(self):
         image_instructions = super()._get_service_dockerfile()
 
-        remote_script = os.path.join(self.remote_pointers[0], self.remote_pointers[1])
-        local_script = r"\b" + re.escape(self.remote_pointers[1]) + r"\b"
-        remote_cmd = re.sub(local_script, remote_script, self.cli_command)
+        if self._skip_path_substitution:
+            # For kt apply, no need to update command
+            remote_cmd = self.cli_command
+        else:
+            # For kt run, substitute local paths with remote paths
+            remote_script = os.path.join(self.remote_pointers[0], self.remote_pointers[1])
+            local_script = r"\b" + re.escape(self.remote_pointers[1]) + r"\b"
+            remote_cmd = re.sub(local_script, remote_script, self.cli_command)
 
         image_instructions += f"CMD {remote_cmd}\n"
         return image_instructions
+
+    def _get_rsync_dirs_and_dockerfile(self, install_url, use_editable, sync_workdir: bool = True):
+        return super()._get_rsync_dirs_and_dockerfile(
+            install_url, use_editable, sync_workdir=not self._skip_path_substitution
+        )
 
     def _wait_for_http_health(self, timeout=120, retry_interval=0.5, backoff=1.5, max_interval=2):
         """Wait for the HTTP server to be ready. For apps, only check /health (server up).
@@ -140,16 +167,26 @@ class App(Module):
         stream_logs,
     ):
         if self._run_async:
+
+            def _launch_in_background():
+                """Wrapper to suppress errors when daemon thread is terminated during shutdown."""
+                try:
+                    super(App, self)._launch_service(
+                        install_url,
+                        use_editable,
+                        {},
+                        deployment_timestamp,
+                        stream_logs,
+                        False,
+                    )
+                except Exception:
+                    # Daemon thread may be terminated during process shutdown;
+                    # suppress errors from interrupted HTTP requests
+                    pass
+
             thread = threading.Thread(
-                target=super()._launch_service,
-                args=(
-                    install_url,
-                    use_editable,
-                    {},
-                    deployment_timestamp,
-                    stream_logs,
-                    False,
-                ),
+                target=_launch_in_background,
+                daemon=True,
             )
             thread.start()
 
@@ -159,6 +196,7 @@ class App(Module):
                 time.sleep(5)
 
             if not self.compute.is_up():
+                logger.error(self.compute.manifest)
                 raise ServiceTimeoutError(f"Service {self.service_name} is not up after 60 seconds.")
         else:
             super()._launch_service(
@@ -322,14 +360,8 @@ def app(
         )
     name = name or os.getenv("KT_RUN_NAME")
     cli_command = os.getenv("KT_RUN_CMD")  # set in kt run
-    run_async = os.getenv("KT_RUN_ASYNC") == 1
+    run_async = os.getenv("KT_RUN_ASYNC") == "1"
 
-    env_vars = kwargs.get("env_vars", {})
-    if port:
-        env_vars["KT_APP_PORT"] = port
-    if health_check:
-        env_vars["KT_APP_HEALTHCHECK"] = health_check
-    kwargs["env_vars"] = env_vars
     compute = Compute(**kwargs)
 
     main_file = os.getenv("KT_RUN_FILE") or os.path.abspath(sys.modules["__main__"].__file__)
@@ -343,5 +375,7 @@ def app(
         pointers=pointers,
         name=name,
         run_async=run_async,
+        port=port,
+        health_check=health_check,
     )
     return kt_app

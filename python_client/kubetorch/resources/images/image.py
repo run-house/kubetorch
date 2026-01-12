@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Union
 class Image:
     """Kubetorch Image object, specifying cluster setup properties and steps."""
 
-    SUPPORTED_DOCKERFILE_INSTRUCTIONS = {"FROM", "RUN", "ENV", "COPY"}
+    SUPPORTED_DOCKERFILE_INSTRUCTIONS = {"FROM", "RUN", "ENV", "COPY", "CMD", "ENTRYPOINT"}
 
     def __init__(
         self,
@@ -78,7 +78,9 @@ class Image:
         # List of copy operations to rsync to datastore at deploy time
         self.copy_operations: List[Dict[str, Any]] = []
 
-        self.docker_secret = None
+        # CMD and ENTRYPOINT from Dockerfile (for kt apply)
+        self._cmd: List[str] = []
+        self._entrypoint: List[str] = []
 
     @property
     def contents(self) -> str:
@@ -107,7 +109,9 @@ class Image:
         """
         Construct an Image from an existing Dockerfile.
 
-        Only supports: FROM, RUN, ENV, COPY instructions. Comments (#) are preserved.
+        Supports: FROM, RUN, ENV, COPY, CMD, ENTRYPOINT instructions. Comments (#) are preserved.
+        CMD and ENTRYPOINT are used to determine the command to run only for kt apply, and are ignored
+        in other use cases.
 
         Args:
             dockerfile_path (str): Path to the Dockerfile
@@ -212,6 +216,35 @@ class Image:
                     "force": False,
                 }
             )
+        elif instruction == "CMD":
+            self._cmd = self._parse_cmd_entrypoint(parts[1], line_num)
+        elif instruction == "ENTRYPOINT":
+            self._entrypoint = self._parse_cmd_entrypoint(parts[1], line_num)
+
+    def _parse_cmd_entrypoint(self, value: str, line_num: int) -> List[str]:
+        """Parse CMD or ENTRYPOINT value, supporting both exec and shell forms."""
+        import json
+
+        value = value.strip()
+
+        # Exec form: starts with [ and ends with ]
+        if value.startswith("["):
+            try:
+                parsed = json.loads(value)
+                return " ".join(parsed)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSON in CMD/ENTRYPOINT at line {line_num}: {e}")
+
+        # String format
+        return value
+
+    @property
+    def dockerfile_command(self) -> str:
+        """Extract and format the command to run from dockerfile CMD and ENTRYPOINT."""
+        if self._entrypoint and self._cmd:
+            # ENTRYPOINT + CMD: CMD provides arguments to ENTRYPOINT
+            return f"{self._entrypoint} {self._cmd}"
+        return self._cmd or self._entrypoint
 
     ########################################################
     # Steps to build the image
