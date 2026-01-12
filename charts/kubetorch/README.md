@@ -55,7 +55,7 @@ A Helm chart for kubetorch
 | kubetorchConfig.metricsEnabled | bool | `true` |  |
 | kubetorchConfig.serviceAccountAnnotations | object | `{}` |  |
 | kubetorchController.affinity | object | `{}` |  |
-| kubetorchController.authEndpoint | string | `""` |  |
+| kubetorchController.authEndpoint | string | `"http://kubetorch-mgmt-controller-api.kubetorch.svc.cluster.local:8000/api/v1/auth/validate"` |  |
 | kubetorchController.connectionPoolSize | int | `20` |  |
 | kubetorchController.eventWatcher.batchSize | int | `10` |  |
 | kubetorchController.eventWatcher.enabled | bool | `true` |  |
@@ -79,7 +79,7 @@ A Helm chart for kubetorch
 | kubetorchController.resources.cpu.request | string | `"200m"` |  |
 | kubetorchController.resources.memory.limit | string | `"2Gi"` |  |
 | kubetorchController.resources.memory.request | string | `"1Gi"` |  |
-| kubetorchController.tag | string | `"0.3.0"` |  |
+| kubetorchController.tag | string | `"dev-auth"` |  |
 | kubetorchController.tolerations | list | `[]` |  |
 | kubetorchController.workers | int | `8` |  |
 | logStreaming.enabled | bool | `true` |  |

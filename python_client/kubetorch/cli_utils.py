@@ -1024,17 +1024,6 @@ def load_runhouse_dashboard(
         cmd = f"kubectl port-forward -n {namespace} svc/{serving_constants.KUBETORCH_UI_SERVICE_NAME} {local_port}:3000 -n {namespace}"
         process.append(subprocess.Popen(cmd.split()))
 
-    # Check if the controller API service is available
-    cmd = f"kubectl get svc/kubetorch-mgmt-controller-api -n {namespace}"
-    result = subprocess.run(cmd.split(), capture_output=True, text=True)
-    if result.returncode != 0:
-        console.print("[red]Control plane API service is not available[/red]")
-        raise typer.Exit(1)
-
-    # Add kubectl port-forward -n kubetorch svc/kubetorch-mgmt-controller-api 8000:8000
-    cmd = f"kubectl port-forward -n {namespace} svc/kubetorch-mgmt-controller-api 8000:8000"
-    process.append(subprocess.Popen(cmd.split()))
-
     dashboard_url = f"http://localhost:{local_port}"
 
     time.sleep(1)
