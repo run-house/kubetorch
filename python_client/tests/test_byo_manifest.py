@@ -733,29 +733,33 @@ async def test_byo_manifest_with_endpoint_url():
     }
     controller.create_service(namespace=namespace, body=user_service)
 
-    # Create Compute from manifest with selector and endpoint
-    byo_manifest = get_pool_manifest(pool_name, namespace)
-    user_service_url = f"http://{user_service_name}.{namespace}.svc.cluster.local:{user_port}"
-    endpoint = kt.Endpoint(url=user_service_url)
+    try:
+        # Create Compute from manifest with selector and endpoint
+        byo_manifest = get_pool_manifest(pool_name, namespace)
+        user_service_url = f"http://{user_service_name}.{namespace}.svc.cluster.local:{user_port}"
+        endpoint = kt.Endpoint(url=user_service_url)
 
-    compute = kt.Compute.from_manifest(
-        manifest=byo_manifest,
-        selector={"app": pool_name},
-        endpoint=endpoint,
-    )
-    assert compute._endpoint_config == endpoint
-    assert compute.endpoint == user_service_url
+        compute = kt.Compute.from_manifest(
+            manifest=byo_manifest,
+            selector={"app": pool_name},
+            endpoint=endpoint,
+        )
+        assert compute._endpoint_config == endpoint
+        assert compute.endpoint == user_service_url
 
-    remote_fn = kt.fn(summer).to(compute)
+        remote_fn = kt.fn(summer).to(compute)
 
-    # Verify kubetorch did not create its own service (endpoint URL mode should skip service creation)
-    kt_service_name = remote_fn.service_name
-    with pytest.raises(Exception):
-        controller.get_service(name=kt_service_name, namespace=namespace)
+        # Verify kubetorch did not create its own service (endpoint URL mode should skip service creation)
+        kt_service_name = remote_fn.service_name
+        with pytest.raises(Exception):
+            controller.get_service(name=kt_service_name, namespace=namespace)
 
-    # Traffic flows through user's service here since no KT created service exists
-    result = remote_fn(5, 10, sleep_time=5)
-    assert result == 15, f"Expected 15, got {result}"
+        # Traffic flows through user's service here since no KT created service exists
+        result = remote_fn(5, 10, sleep_time=5)
+        assert result == 15, f"Expected 15, got {result}"
+
+    finally:
+        controller.delete_service(namespace=namespace, name=user_service_name, ignore_not_found=True)
 
 
 @pytest.mark.level("minimal")

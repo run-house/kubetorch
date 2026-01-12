@@ -1979,8 +1979,25 @@ class Compute:
         # Remove None values to keep the payload clean
         runtime_config = {k: v for k, v in runtime_config.items() if v is not None}
 
+        # Auto-enable distributed execution for training jobs with replicas > 1
+        from kubetorch.provisioning.service_manager import SUPPORTED_TRAINING_JOBS
+
+        distributed_config = self.distributed_config
+        if not distributed_config and self.deployment_mode in SUPPORTED_TRAINING_JOBS:
+            replicas = self.service_manager.get_replicas(self._manifest)
+            if replicas > 1:
+                distributed_config = {
+                    "distribution_type": "spmd",
+                    "quorum_workers": replicas,
+                    "quorum_timeout": self.launch_timeout,
+                }
+                logger.info(f"Auto-enabled distributed execution for {self.deployment_mode} with {replicas} replicas")
+
         # Create service using the appropriate service manager
-        # Create headless service only when distributed config is set (for SPMD/distributed pod discovery)
+        # Create headless service for distributed pod discovery when:
+        # - distributed_config is set (explicit SPMD/distributed)
+        # - deployment_mode is "raycluster" (Ray auto-enables distributed mode for worker connectivity)
+        needs_headless = bool(distributed_config) or self.deployment_mode == "raycluster"
         created_service, updated_manifest = self.service_manager.create_or_update_service(
             service_name=service_name,
             module_name=module_name,
@@ -1989,12 +2006,12 @@ class Compute:
             dryrun=dryrun,
             dockerfile=dockerfile,
             module=module,
-            create_headless_service=bool(self.distributed_config),
+            create_headless_service=needs_headless,
             endpoint=getattr(self, "_endpoint_config", None),
             pod_selector=getattr(self, "_pod_selector", None),
             launch_id=launch_id,
             deployment_mode=self.deployment_mode,
-            distributed_config=self.distributed_config,
+            distributed_config=distributed_config,
             runtime_config=runtime_config,
         )
         self._manifest = updated_manifest
