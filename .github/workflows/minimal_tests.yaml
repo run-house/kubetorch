@@ -1061,19 +1061,20 @@ jobs:
 
           NAMESPACE=${{ steps.generate_ns.outputs.NAMESPACE }}
 
-          if kubectl get namespace "$CONTROLLER_NS" >/dev/null 2>&1; then
-            echo "Controller namespace $CONTROLLER_NS exists, setting kt config"
-            kt config set namespace "$CONTROLLER_NS"
-            kt config set install_namespace "$CONTROLLER_NS"
+          # Check if namespace exists
+          if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+            echo "Namespace $NAMESPACE exists, setting kt config"
+            kt config set namespace "$NAMESPACE"
+            kt config set install_namespace "$NAMESPACE"
           else
-            echo "Controller namespace $CONTROLLER_NS does not exist, kt config unchanged"
+            echo "Namespace $NAMESPACE does not exist, kt config remains unchanged"
           fi
 
 
       - name: Ensure Kueue LocalQueue exists in controller namespace
         shell: bash
         run: |
-          CONTROLLER_NS="${{ steps.controller-ns.outputs.NAMESPACE }}"
+          CONTROLLER_NS="${{ steps.generate_ns.outputs.NAMESPACE }}"
 
           if kubectl get namespace "$CONTROLLER_NS" >/dev/null 2>&1; then
             echo "Ensuring LocalQueue gpu-queue in $CONTROLLER_NS"
@@ -1172,6 +1173,7 @@ jobs:
         run: |
 
           NAMESPACE=${{ steps.generate_ns.outputs.NAMESPACE }}
+
           # Check if namespace exists
           if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
             echo "Namespace $NAMESPACE exists, setting kt config"
