@@ -101,6 +101,37 @@ class App(Module):
         image_instructions += f"CMD {remote_cmd}\n"
         return image_instructions
 
+    def _wait_for_http_health(self, timeout=120, retry_interval=0.5, backoff=1.5, max_interval=2):
+        """Wait for the HTTP server to be ready. For apps, only check /health (server up).
+
+        Apps have a different lifecycle - the app process starts after image setup,
+        and we track its status via /app/status in _wait_for_app_exit.
+        """
+        logger.info(f"Polling {self.service_name} service health endpoint")
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            try:
+                client = self._client()
+                response = client.get(
+                    endpoint=f"{self.base_endpoint}/health",
+                    headers=self.request_headers,
+                    timeout=5,
+                )
+                if response.status_code == 200:
+                    logger.info(f"Service {self.service_name} server is up")
+                    return
+                else:
+                    logger.debug(f"Health check returned status {response.status_code}, retrying...")
+            except Exception as e:
+                if "502" not in str(e) and "503" not in str(e):
+                    logger.debug(f"Health check failed: {e}, retrying...")
+
+            time.sleep(retry_interval)
+            retry_interval = min(retry_interval * backoff, max_interval)
+
+        raise ServiceTimeoutError(f"Service {self.service_name} server not ready after {timeout}s")
+
     def _launch_service(
         self,
         install_url,
@@ -138,6 +169,106 @@ class App(Module):
                 stream_logs=stream_logs,
                 dryrun=False,
             )
+
+            # After service is ready, continue streaming logs until the app process exits
+            if stream_logs:
+                # Use current time if no deployment_timestamp (frozen apps)
+                log_start_timestamp = deployment_timestamp or datetime.now(timezone.utc).isoformat()
+                self._wait_for_app_exit(log_start_timestamp)
+
+    def _wait_for_app_exit(self, deployment_timestamp: str, poll_interval: float = 1.0):
+        """Poll app status and continue streaming logs until app exits.
+
+        Args:
+            deployment_timestamp (str): Timestamp for log filtering
+            poll_interval (float, optional): Seconds between status polls
+        """
+        import asyncio
+        import urllib.parse
+
+        from kubetorch.globals import service_url
+        from kubetorch.utils import extract_host_port
+
+        logger.debug("Waiting for app process to exit, streaming logs in the meantime...")
+
+        stop_event = threading.Event()
+        log_thread = None
+
+        try:
+            # Start a log streaming thread similar to _stream_launch_logs
+            base_url = service_url()
+            host, port = extract_host_port(base_url)
+
+            # Build query for app logs
+            pod_query = f'{{service=~"{self.service_name}.*", namespace="{self.namespace}"}}'
+            encoded_query = urllib.parse.quote_plus(pod_query)
+
+            def stream_app_logs():
+                """Stream logs from the app until stop_event is set."""
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(
+                        self._stream_logs_websocket(
+                            request_id="app_run",
+                            stop_event=stop_event,
+                            host=host,
+                            port=port,
+                            query=encoded_query,
+                            deployment_timestamp=deployment_timestamp,
+                            namespace=self.namespace,
+                            dedup=True,
+                        )
+                    )
+                finally:
+                    pending = asyncio.all_tasks(loop)
+                    for task in pending:
+                        task.cancel()
+                    if pending:
+                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                    loop.close()
+
+            log_thread = threading.Thread(target=stream_app_logs, daemon=True)
+            log_thread.start()
+
+            # Poll /app/status until the app exits
+            client = self._client()
+
+            while True:
+                try:
+                    response = client.get(
+                        endpoint=f"{self.base_endpoint}/app/status",
+                        headers=self.request_headers,
+                        timeout=5,
+                    )
+                    if response.status_code == 200:
+                        status = response.json()
+                        if status.get("running") is False:
+                            exit_code = status.get("exit_code", 0)
+                            if exit_code != 0:
+                                logger.warning(f"App exited with code {exit_code}")
+                            else:
+                                logger.info("App exited successfully")
+                            break
+                        elif status.get("running") is None:
+                            # Not an app deployment (shouldn't happen)
+                            logger.debug("No app process found, stopping wait")
+                            break
+                    else:
+                        logger.debug(f"App status check returned {response.status_code}")
+                except Exception as e:
+                    logger.debug(f"Error checking app status: {e}")
+
+                time.sleep(poll_interval)
+
+            # Give logs a grace period to catch up
+            time.sleep(self.logging_config.grace_period)
+
+        finally:
+            # Stop log streaming
+            stop_event.set()
+            if log_thread:
+                log_thread.join(timeout=2.0)
 
     def _print_kt_cmds(self):
         logger.info(f"To see logs, run: kt logs {self.service_name}.")
