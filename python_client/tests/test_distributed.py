@@ -453,7 +453,7 @@ async def test_mixed_distribution_types():
 
     # Run all distributed configs concurrently
     async def launch_distributed_fns(dist_type, expected_name):
-        compute = kt.Compute(cpus="1", memory="1Gi", launch_timeout=450)
+        compute = kt.Compute(cpus="1", memory="1Gi", launch_timeout=450, image=kt.images.pytorch())
 
         if dist_type:
             compute = compute.distribute(dist_type, workers=1, num_proc=2)

@@ -88,7 +88,8 @@ def test_autodown_deployment():
     if container is None:
         container = pod["spec"]["containers"][0]
     kt_otel_env = next((env for env in container.get("env", []) if env["name"] == "KT_METRICS_ENABLED"), None)
-    assert kt_otel_env["value"] == "True"
+    # KT_METRICS_ENABLED defaults to True if not explicitly set, so we check it's not set to False
+    assert kt_otel_env is None or kt_otel_env["value"] == "True"
 
     # Check that the service has the autodown annotation
     assert service["metadata"]["labels"][provisioning_constants.KT_MODULE_LABEL] is not None
@@ -156,7 +157,8 @@ def test_autodown_raycluster():
     if container is None:
         container = pod["spec"]["containers"][0]
     kt_otel_env = next((env for env in container.get("env", []) if env["name"] == "KT_METRICS_ENABLED"), None)
-    assert kt_otel_env["value"] == "True"
+    # KT_METRICS_ENABLED defaults to True if not explicitly set, so we check it's not set to False
+    assert kt_otel_env is None or kt_otel_env["value"] == "True"
 
     # Check that the service has the autodown annotation
     assert service["metadata"]["labels"][provisioning_constants.KT_MODULE_LABEL] is not None
@@ -209,7 +211,8 @@ def test_autodown_custom_image():
     if container is None:
         container = pod["spec"]["containers"][0]
     kt_otel_env = next((env for env in container.get("env", []) if env["name"] == "KT_METRICS_ENABLED"), None)
-    assert kt_otel_env["value"] == "True"
+    # KT_METRICS_ENABLED defaults to True if not explicitly set, so we check it's not set to False
+    assert kt_otel_env is None or kt_otel_env["value"] == "True"
 
     # Check that the service has the autodown annotation
     assert service["metadata"]["labels"][provisioning_constants.KT_MODULE_LABEL] is not None
