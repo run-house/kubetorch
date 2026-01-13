@@ -1583,6 +1583,25 @@ async def ready():
     return {"status": "ready", "callable": callable_name}
 
 
+@app.get("/app/status", include_in_schema=False)
+async def app_status():
+    """Check the status of the app process (for kt run).
+
+    Returns:
+        - {"running": True, "pid": int} if app process is running
+        - {"running": False, "exit_code": int} if app process has exited
+        - {"running": null} if this is not an app deployment
+    """
+    if APP_PROCESS is None:
+        return {"running": None}
+
+    exit_code = APP_PROCESS.poll()
+    if exit_code is None:
+        return {"running": True, "pid": APP_PROCESS.pid}
+    else:
+        return {"running": False, "exit_code": exit_code}
+
+
 # Catch-all routes for callable invocation - must be defined AFTER specific routes
 @app.post("/{cls_or_fn_name}", response_class=JSONResponse)
 @app.post("/{cls_or_fn_name}/{method_name}", response_class=JSONResponse)
