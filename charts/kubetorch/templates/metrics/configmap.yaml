@@ -10,6 +10,21 @@ data:
       scrape_interval: {{ .Values.metrics.prometheus.scrapeInterval }}
       evaluation_interval: {{ .Values.metrics.prometheus.scrapeInterval }}
 
+    {{- if .Values.metrics.prometheus.remoteWrite.enabled }}
+    remote_write:
+      - url: {{ .Values.metrics.prometheus.remoteWrite.url }}
+        {{- if .Values.metrics.prometheus.remoteWrite.basicAuthSecret }}
+        basic_auth:
+          username_file: /etc/prometheus/secrets/username
+          password_file: /etc/prometheus/secrets/password
+        {{- end }}
+        tls_config:
+          insecure_skip_verify: {{ .Values.metrics.prometheus.remoteWrite.insecureSkipVerify }}
+        write_relabel_configs:
+          - regex: '.*\..*'
+            action: labeldrop
+    {{- end }}
+
     scrape_configs:
       # Prometheus itself
       - job_name: 'self'

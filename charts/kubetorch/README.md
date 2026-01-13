@@ -110,6 +110,10 @@ A Helm chart for kubetorch
 | metrics.prometheus.additionalScrapeConfigs[0].relabel_configs[4].target_label | string | `"pod"` |  |
 | metrics.prometheus.image | string | `"prom/prometheus:v3.7.2"` |  |
 | metrics.prometheus.port | int | `9090` |  |
+| metrics.prometheus.remoteWrite.basicAuthSecret | string | `""` |  |
+| metrics.prometheus.remoteWrite.enabled | bool | `false` |  |
+| metrics.prometheus.remoteWrite.insecureSkipVerify | bool | `true` |  |
+| metrics.prometheus.remoteWrite.url | string | `""` |  |
 | metrics.prometheus.resources.cpu | string | `"200m"` |  |
 | metrics.prometheus.resources.memory | string | `"512Mi"` |  |
 | metrics.prometheus.retention | string | `"24h"` |  |
