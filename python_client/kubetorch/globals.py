@@ -377,22 +377,27 @@ class ControllerClient:
             base_url (str): Base URL for the controller (e.g., "http://localhost:8080")
         """
         self.base_url = base_url.rstrip("/")
-        # https://www.python-httpx.org/advanced/timeouts/
-        timeout = httpx.Timeout(
+        # Quick operations (e.g.: list, basic get) that should use a timeout
+        self._read_timeout = httpx.Timeout(
             connect=CONTROLLER_CONNECT_TIMEOUT,
             read=CONTROLLER_READ_TIMEOUT,
             write=CONTROLLER_WRITE_TIMEOUT,
             pool=CONTROLLER_POOL_TIMEOUT,
         )
-        self.session = httpx.Client(headers={"Content-Type": "application/json"}, timeout=timeout)
 
-    def _request(self, method: str, path: str, ignore_not_found=False, **kwargs) -> httpx.Response:
+        # No default timeout - long-running operations (e.g.: deploy, check-ready) should not time out
+        self.session = httpx.Client(headers={"Content-Type": "application/json"}, timeout=None)
+
+    def _request(self, method: str, path: str, ignore_not_found=False, timeout=None, **kwargs) -> httpx.Response:
         """Make HTTP request to controller.
 
         Retries connection errors and controller unavailability (502/503).
         The controller already retries K8s API errors (429, 500, 504).
         """
         from kubetorch import ControllerRequestError
+
+        if timeout is not None:
+            kwargs["timeout"] = timeout
 
         url = f"{self.base_url}{path}"
 
@@ -487,27 +492,31 @@ class ControllerClient:
                 raise
 
     def get(self, path: str, ignore_not_found=False, **kwargs) -> Dict[str, Any]:
-        """GET request to controller"""
-        response = self._request("GET", path, ignore_not_found=ignore_not_found, **kwargs)
+        """GET request to controller. Defaults to read timeout, pass timeout=None for no timeout."""
+        timeout = kwargs.pop("timeout", self._read_timeout)
+        response = self._request("GET", path, ignore_not_found=ignore_not_found, timeout=timeout, **kwargs)
         if response is None:
             return None
         return response.json()
 
     def post(self, path: str, json: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """POST request to controller"""
-        response = self._request("POST", path, json=json, **kwargs)
+        """POST request to controller. Defaults to read timeout, pass timeout=None for no timeout."""
+        timeout = kwargs.pop("timeout", self._read_timeout)
+        response = self._request("POST", path, json=json, timeout=timeout, **kwargs)
         return response.json()
 
     def delete(self, path: str, ignore_not_found=False, **kwargs) -> Dict[str, Any]:
-        """DELETE request to controller"""
-        response = self._request("DELETE", path, ignore_not_found=ignore_not_found, **kwargs)
+        """DELETE request to controller. Defaults to read timeout, pass timeout=None for no timeout."""
+        timeout = kwargs.pop("timeout", self._read_timeout)
+        response = self._request("DELETE", path, ignore_not_found=ignore_not_found, timeout=timeout, **kwargs)
         if response is None:
             return None
         return response.json()
 
     def patch(self, path: str, json: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """PATCH request to controller"""
-        response = self._request("PATCH", path, json=json, **kwargs)
+        """PATCH request to controller. Defaults to read timeout, pass timeout=None for no timeout."""
+        timeout = kwargs.pop("timeout", self._read_timeout)
+        response = self._request("PATCH", path, json=json, timeout=timeout, **kwargs)
         return response.json()
 
     # PersistentVolumeClaims
@@ -771,7 +780,9 @@ class ControllerClient:
         """List custom resources in a namespace"""
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get(
-            f"/apis/{group}/{version}/namespaces/{namespace}/{plural}", params=params, ignore_not_found=ignore_not_found
+            f"/apis/{group}/{version}/namespaces/{namespace}/{plural}",
+            params=params,
+            ignore_not_found=ignore_not_found,
         )
 
     def list_ingresses(self, namespace: str, label_selector: str = None):
@@ -878,7 +889,7 @@ class ControllerClient:
         filtered_args = {k: v for k, v in args.items() if v not in (None, False)}
         body.update(filtered_args)
 
-        return self.post("/controller/pool", json=body)
+        return self.post("/controller/pool", json=body, timeout=None)
 
     def get_pool(self, namespace: str, name: str) -> Dict[str, Any]:
         """Get information about a registered pool."""
@@ -915,7 +926,7 @@ class ControllerClient:
             "resource_type": resource_type,
             "resource_manifest": resource_manifest,
         }
-        return self.post("/controller/apply", json=body)
+        return self.post("/controller/apply", json=body, timeout=None)
 
     def deploy(
         self,
@@ -975,7 +986,7 @@ class ControllerClient:
         filtered_args = {k: v for k, v in args.items() if v not in (None, False)}
         body.update(filtered_args)
 
-        return self.post("/controller/deploy", json=body)
+        return self.post("/controller/deploy", json=body, timeout=None)
 
     def list_pools(self, namespace: str) -> Dict[str, Any]:
         """List all compute pools."""
