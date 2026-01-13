@@ -190,10 +190,15 @@ class DistributedSupervisor(ExecutionSupervisor):
             with self._workers_lock:
                 return list(self._current_workers)
 
-    def start_dns_monitoring(self):
+    def start_dns_monitoring(self, initial_workers: Optional[Set[str]] = None):
         """Start DNS monitoring if not already running.
 
         Should be called by coordinator nodes only.
+
+        Args:
+            initial_workers (set, optional): Pre-discovered worker IPs to use as the baseline.
+                If provided, avoids re-querying DNS which can return different results
+                during DNS propagation delays. If None, queries DNS to discover workers.
         """
         if not self.monitor_members:
             logger.debug("DNS monitoring disabled for this supervisor")
@@ -203,9 +208,13 @@ class DistributedSupervisor(ExecutionSupervisor):
             if self._dns_monitor_thread and self._dns_monitor_thread.is_alive():
                 return  # Already running
 
-            # Initialize with current workers
-            self._current_workers = set(self.pod_ips())
-            logger.debug(f"Starting DNS monitor with {len(self._current_workers)} workers")
+            # Initialize with provided workers or query DNS
+            if initial_workers is not None:
+                self._current_workers = set(initial_workers)
+                logger.debug(f"Starting DNS monitor with {len(self._current_workers)} pre-discovered workers")
+            else:
+                self._current_workers = set(self.pod_ips())
+                logger.debug(f"Starting DNS monitor with {len(self._current_workers)} workers from DNS")
 
             self._dns_monitor_running = True
             self._dns_monitor_thread = threading.Thread(
@@ -296,6 +305,7 @@ class DistributedSupervisor(ExecutionSupervisor):
                 if current_ips != self._current_workers:
                     added = current_ips - self._current_workers
                     removed = self._current_workers - current_ips
+                    previous_ips = self._current_workers.copy()
 
                     # Update current workers
                     self._current_workers = current_ips
@@ -308,7 +318,7 @@ class DistributedSupervisor(ExecutionSupervisor):
                     raise WorkerMembershipChanged(
                         added_ips=added,
                         removed_ips=removed,
-                        previous_ips=self._current_workers.copy(),
+                        previous_ips=previous_ips,
                         current_ips=current_ips,
                     )
 
