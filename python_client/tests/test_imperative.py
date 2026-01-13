@@ -493,9 +493,7 @@ def test_callable_launch_timeout():
     with pytest.raises(kt.ServiceTimeoutError):
         remote_cls = kt.cls(SlowNumpyArray, name=get_test_fn_name()).to(
             kt.Compute(
-                cpus=".1",
-                launch_timeout=5,
-                gpu_anti_affinity=True,
+                cpus=".1", launch_timeout=5, gpu_anti_affinity=True, image=kt.images.Python312().pip_install(["numpy"])
             ),
             init_args={"size": 10},
         )

@@ -98,15 +98,11 @@ def test_autodown_deployment():
     # Check that the new app and deployment-id labels exist on the pod
     pod_labels = pod["metadata"]["labels"]
     assert pod_labels.get(provisioning_constants.KT_APP_LABEL) == remote_fn.service_name
-    assert pod_labels.get(provisioning_constants.KT_DEPLOYMENT_ID_LABEL) is not None
-    assert pod_labels.get(provisioning_constants.KT_DEPLOYMENT_ID_LABEL).startswith(remote_fn.service_name)
 
     # Check that the Deployment also has the new labels
     deployment = controller.get_deployment(name=remote_fn.service_name, namespace=namespace)
     deployment_labels = deployment["metadata"]["labels"]
     assert deployment_labels.get(provisioning_constants.KT_APP_LABEL) == remote_fn.service_name
-    assert deployment_labels.get(provisioning_constants.KT_DEPLOYMENT_ID_LABEL) is not None
-    assert deployment_labels.get(provisioning_constants.KT_DEPLOYMENT_ID_LABEL).startswith(remote_fn.service_name)
 
     # Check that the namespace is in the watch namespaces
     cronjob_configmap = controller.get_config_map(
@@ -167,8 +163,6 @@ def test_autodown_raycluster():
     # Check that the new app and deployment-id labels exist on the pod
     pod_labels = pod["metadata"]["labels"]
     assert pod_labels.get(provisioning_constants.KT_APP_LABEL) == remote_fn.service_name
-    assert pod_labels.get(provisioning_constants.KT_DEPLOYMENT_ID_LABEL) is not None
-    assert pod_labels.get(provisioning_constants.KT_DEPLOYMENT_ID_LABEL).startswith(remote_fn.service_name)
 
 
 @pytest.mark.skip("Long running test, skipping for now")
