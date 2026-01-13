@@ -14,6 +14,12 @@ from typing import Any, Dict, List, Literal, Optional
 import httpx
 
 from kubetorch.config import KubetorchConfig
+from kubetorch.constants import (
+    CONTROLLER_CONNECT_TIMEOUT,
+    CONTROLLER_POOL_TIMEOUT,
+    CONTROLLER_READ_TIMEOUT,
+    CONTROLLER_WRITE_TIMEOUT,
+)
 from kubetorch.logger import get_logger
 from kubetorch.provisioning.constants import (
     DEFAULT_NGINX_HEALTH_ENDPOINT,
@@ -371,7 +377,14 @@ class ControllerClient:
             base_url (str): Base URL for the controller (e.g., "http://localhost:8080")
         """
         self.base_url = base_url.rstrip("/")
-        self.session = httpx.Client(headers={"Content-Type": "application/json"})
+        # https://www.python-httpx.org/advanced/timeouts/
+        timeout = httpx.Timeout(
+            connect=CONTROLLER_CONNECT_TIMEOUT,
+            read=CONTROLLER_READ_TIMEOUT,
+            write=CONTROLLER_WRITE_TIMEOUT,
+            pool=CONTROLLER_POOL_TIMEOUT,
+        )
+        self.session = httpx.Client(headers={"Content-Type": "application/json"}, timeout=timeout)
 
     def _request(self, method: str, path: str, ignore_not_found=False, **kwargs) -> httpx.Response:
         """Make HTTP request to controller.

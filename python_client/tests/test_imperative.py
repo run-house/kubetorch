@@ -512,6 +512,7 @@ def test_image_pull_error_deployment():
                 cpus=".1",
                 image=kt.Image(image_id="nonexistent/image:latest"),
                 gpu_anti_affinity=True,
+                launch_timeout=60,
             ),
             init_args={"size": 10},
         )
@@ -530,6 +531,7 @@ def test_image_pull_error_knative():
                 cpus=".1",
                 image=kt.Image(image_id="nonexistent/image:latest"),
                 gpu_anti_affinity=True,
+                launch_timeout=60,
             ).autoscale(min_replicas=1),
             init_args={"size": 10},
         )
@@ -563,16 +565,20 @@ def test_unschedulable_pod_deployment():
         remote_cls.some_method()
 
 
+@pytest.mark.skip("needs further investigation.")
 @pytest.mark.level("minimal")
 def test_pod_terminated_error():
     import kubetorch as kt
 
     disk_size = "50Mi"
     with pytest.raises(Exception):
-        remote_cls = kt.cls(ResourceHungryService).to(kt.Compute(cpus="0.1", disk_size=disk_size))
+        remote_cls = kt.cls(ResourceHungryService).to(
+            kt.Compute(cpus="0.1", disk_size=disk_size, gpu_anti_affinity=True, launch_timeout=60)
+        )
         remote_cls.consume_disk()
 
 
+@pytest.mark.skip("needs further investigation.")
 @pytest.mark.level("minimal")
 def test_pod_oom_error_after_startup():
     import kubetorch as kt

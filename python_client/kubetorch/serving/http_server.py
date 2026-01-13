@@ -1595,6 +1595,11 @@ def run_callable(
             status_code=404,
             detail=f"Callable '{cls_or_fn_name}' not found in metadata configuration. Found '{configured_callable}' instead",
         )
+    if SUPERVISOR is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Server is loading the callable. Please retry in a moment.",
+        )
 
     # Route call through supervisor to subprocess
     result = SUPERVISOR.call(
