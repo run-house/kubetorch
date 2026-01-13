@@ -823,16 +823,27 @@ async def test_byo_manifest_with_endpoint_selector():
     pod_types = {p["metadata"]["labels"].get("training.kubeflow.org/replica-type") for p in pool_pods}
     assert pod_types == {"master", "worker"}, f"Expected master and worker pods, got {pod_types}"
 
-    # Check that function calls consistently go to worker pod (not master)
+    # Check that function calls work. Note: In distributed mode (PyTorchJob with SPMD),
+    # ALL replicas participate in execution and return results - the endpoint selector
+    # only controls which pod receives the initial request, but doesn't filter results.
     for _ in range(3):
         hostnames = hostname_fn()
         if isinstance(hostnames, list):
             # Distributed jobs return a list of results from all replicas
-            assert all("worker" in h.lower() for h in hostnames), (
-                f"Expected calls to go to worker pods, but got hostnames: {hostnames}. "
-                f"Endpoint selector should route only to workers."
-            )
+            # Both master and worker participate in SPMD execution
+            assert len(hostnames) == 2, f"Expected 2 hostnames from master+worker, got {len(hostnames)}"
+            hostname_types = set()
+            for h in hostnames:
+                if "worker" in h.lower():
+                    hostname_types.add("worker")
+                elif "master" in h.lower():
+                    hostname_types.add("master")
+            assert hostname_types == {
+                "master",
+                "worker",
+            }, f"Expected hostnames from both master and worker in SPMD mode, got: {hostnames}"
         else:
+            # Single result - should be from worker (endpoint selector target)
             assert "worker" in hostnames.lower(), (
                 f"Expected call to go to worker pod, but got hostname: {hostnames}. "
                 f"Endpoint selector should route only to worker."
