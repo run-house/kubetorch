@@ -1,24 +1,15 @@
 # kubetorch
 
 ![Version: 0.3.0](https://img.shields.io/badge/Version-0.3.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.3.0](https://img.shields.io/badge/AppVersion-0.3.0-informational?style=flat-square)
+
 A Helm chart for kubetorch
+
 ## Requirements
 
 | Repository | Name | Version |
 |------------|------|---------|
 | https://nvidia.github.io/dcgm-exporter/helm-charts | dcgm-exporter | 4.5.0 |
 | https://nvidia.github.io/k8s-device-plugin | nvidia-device-plugin | 0.14.1 |
-
-## GPU Metrics (DCGM)
-
-DCGM exporter metrics are automatically discovered on any cloud provider. No configuration required.
-
-The chart scrapes any pod matching `*dcgm-exporter*` in these namespaces:
-- `gke-managed-system` (GKE managed DCGM)
-- `gpu-operator` (NVIDIA GPU Operator)
-- `nvidia-gpu-operator` (NVIDIA GPU Operator alternate namespace)
-
-For self-managed DCGM, set `dcgm-exporter.enabled: true` to deploy the exporter with the chart.
 
 ## Values
 
@@ -99,11 +90,13 @@ For self-managed DCGM, set `dcgm-exporter.enabled: true` to deploy the exporter 
 | logStreaming.retentionPeriod | string | `"24h"` |  |
 | metrics.enabled | bool | `true` |  |
 | metrics.prometheus.additionalScrapeConfigs[0].honor_labels | bool | `true` |  |
-| metrics.prometheus.additionalScrapeConfigs[0].job_name | string | `"gke-managed-dcgm"` |  |
+| metrics.prometheus.additionalScrapeConfigs[0].job_name | string | `"dcgm-exporter"` |  |
 | metrics.prometheus.additionalScrapeConfigs[0].kubernetes_sd_configs[0].namespaces.names[0] | string | `"gke-managed-system"` |  |
+| metrics.prometheus.additionalScrapeConfigs[0].kubernetes_sd_configs[0].namespaces.names[1] | string | `"gpu-operator"` |  |
+| metrics.prometheus.additionalScrapeConfigs[0].kubernetes_sd_configs[0].namespaces.names[2] | string | `"nvidia-gpu-operator"` |  |
 | metrics.prometheus.additionalScrapeConfigs[0].kubernetes_sd_configs[0].role | string | `"pod"` |  |
 | metrics.prometheus.additionalScrapeConfigs[0].relabel_configs[0].action | string | `"keep"` |  |
-| metrics.prometheus.additionalScrapeConfigs[0].relabel_configs[0].regex | string | `"dcgm-exporter.*"` |  |
+| metrics.prometheus.additionalScrapeConfigs[0].relabel_configs[0].regex | string | `".*dcgm-exporter.*"` |  |
 | metrics.prometheus.additionalScrapeConfigs[0].relabel_configs[0].source_labels[0] | string | `"__meta_kubernetes_pod_name"` |  |
 | metrics.prometheus.additionalScrapeConfigs[0].relabel_configs[1].action | string | `"keep"` |  |
 | metrics.prometheus.additionalScrapeConfigs[0].relabel_configs[1].regex | string | `"9400"` |  |
