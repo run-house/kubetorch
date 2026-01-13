@@ -825,8 +825,15 @@ async def test_byo_manifest_with_endpoint_selector():
 
     # Check that function calls consistently go to worker pod (not master)
     for _ in range(3):
-        hostname = hostname_fn()
-        assert "worker" in hostname.lower(), (
-            f"Expected call to go to worker pod, but got hostname: {hostname}. "
-            f"Endpoint selector should route only to worker."
-        )
+        hostnames = hostname_fn()
+        if isinstance(hostnames, list):
+            # Distributed jobs return a list of results from all replicas
+            assert all("worker" in h.lower() for h in hostnames), (
+                f"Expected calls to go to worker pods, but got hostnames: {hostnames}. "
+                f"Endpoint selector should route only to workers."
+            )
+        else:
+            assert "worker" in hostnames.lower(), (
+                f"Expected call to go to worker pod, but got hostname: {hostnames}. "
+                f"Endpoint selector should route only to worker."
+            )

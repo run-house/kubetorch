@@ -14,6 +14,7 @@ from kubetorch import globals
 from kubetorch.logger import get_logger
 from kubetorch.provisioning.utils import get_resource_config, SUPPORTED_TRAINING_JOBS
 from kubetorch.resources.compute.endpoint import Endpoint
+from kubetorch.resources.compute.utils import ServiceTimeoutError
 from kubetorch.utils import http_conflict, http_not_found
 
 logger = get_logger(__name__)
@@ -649,7 +650,7 @@ class ServiceManager:
             remaining = launch_timeout - elapsed
 
             if remaining <= 0:
-                raise TimeoutError(f"Service {service_name} not ready after {launch_timeout}s")
+                raise ServiceTimeoutError(f"Service {service_name} not ready after {launch_timeout}s")
 
             # Use shorter of remaining time or server_timeout
             this_timeout = min(server_timeout, max(5, remaining))
@@ -673,7 +674,19 @@ class ServiceManager:
                 error_type = details.get("error_type")
                 if error_type:
                     error_msg = response.get("message", "Service not ready")
-                    if error_type in ("replicaset_error", "pod_error", "resource_error"):
+
+                    # Check for image pull errors based on message content
+                    error_msg_lower = error_msg.lower()
+                    if (
+                        "image pull" in error_msg_lower
+                        or "imagepullbackoff" in error_msg_lower
+                        or "errimagepull" in error_msg_lower
+                    ):
+                        from kubetorch import ImagePullError
+
+                        raise ImagePullError(f"Container image failed to pull: {error_msg}")
+
+                    if error_type in ("replicaset_error", "pod_error", "resource_error", "revision_error"):
                         from kubetorch import ResourceNotAvailableError
 
                         raise ResourceNotAvailableError(error_msg)
