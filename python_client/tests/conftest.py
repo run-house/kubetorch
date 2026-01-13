@@ -4,7 +4,7 @@ import os
 import pytest
 
 TEST_SESSION_HASH = None
-KUBETORCH_IMAGE = "ghcr.io/run-house/kubetorch:callable-readiness-fix"  # TODO: update with "main" tag
+KUBETORCH_IMAGE = "ghcr.io/run-house/kubetorch:main"
 
 
 @pytest.fixture
