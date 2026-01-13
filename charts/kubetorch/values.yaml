@@ -120,6 +120,13 @@ metrics:
     resources:
       cpu: 200m
       memory: 512Mi
+    # Remote write configuration (e.g., for Grafana Cloud)
+    remoteWrite:
+      enabled: false
+      url: ""  # e.g., https://prometheus-prod-XX-prod-us-central-0.grafana.net/api/prom/push
+      # Name of existing secret with 'username' and 'password' keys
+      basicAuthSecret: ""  # e.g., grafana-cloud-credentials
+      insecureSkipVerify: true  # Set to false for strict TLS verification
     # DCGM exporter scrape config (auto-discovers on GKE, EKS, AKS)
     additionalScrapeConfigs:
       - job_name: "dcgm-exporter"

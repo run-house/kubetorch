@@ -36,11 +36,16 @@ spec:
             - name: k8s-ca-certs
               mountPath: /etc/ssl/certs
               readOnly: true
+            {{- if and .Values.metrics.prometheus.remoteWrite.enabled .Values.metrics.prometheus.remoteWrite.basicAuthSecret }}
+            - name: remote-write-auth
+              mountPath: /etc/prometheus/secrets
+              readOnly: true
+            {{- end }}
       volumes:
         - name: config
           configMap:
             name: kubetorch-metrics-config
-        # Mount the cluster’s CA cert (auto-created ConfigMap)
+        # Mount the cluster's CA cert (auto-created ConfigMap)
         - name: k8s-ca-certs
           projected:
             sources:
@@ -49,4 +54,9 @@ spec:
                   items:
                     - key: ca.crt
                       path: ca-certificates.crt
+        {{- if and .Values.metrics.prometheus.remoteWrite.enabled .Values.metrics.prometheus.remoteWrite.basicAuthSecret }}
+        - name: remote-write-auth
+          secret:
+            secretName: {{ .Values.metrics.prometheus.remoteWrite.basicAuthSecret }}
+        {{- end }}
 {{- end }}
