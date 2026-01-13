@@ -1564,6 +1564,25 @@ async def test_reload(request: Request, metadata: Dict = Body(...)):
         return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
 
 
+# Health and readiness endpoints (note: must be defined before catch-all routes)
+@app.get("/health", include_in_schema=False)
+@app.get("/", include_in_schema=False)
+async def health():
+    return {"status": "healthy"}
+
+
+@app.get("/ready", include_in_schema=False)
+async def ready():
+    """Readiness check - returns 200 only when callable is loaded and ready to serve."""
+    callable_name = os.getenv("KT_CLS_OR_FN_NAME")
+    if not callable_name:
+        raise HTTPException(
+            status_code=503,
+            detail="Callable not loaded yet",
+        )
+    return {"status": "ready", "callable": callable_name}
+
+
 # Catch-all routes for callable invocation - must be defined AFTER specific routes
 @app.post("/{cls_or_fn_name}", response_class=JSONResponse)
 @app.post("/{cls_or_fn_name}/{method_name}", response_class=JSONResponse)
@@ -1737,12 +1756,6 @@ async def execute_callable_async(
     result = _serialize_result(result, serialization)
     clear_debugging_sessions()
     return result
-
-
-@app.get("/health", include_in_schema=False)
-@app.get("/", include_in_schema=False)
-async def health():
-    return {"status": "healthy"}
 
 
 #####################################

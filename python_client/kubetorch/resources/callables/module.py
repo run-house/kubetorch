@@ -20,6 +20,7 @@ from kubetorch.resources.compute.utils import (
     delete_cached_service_data,
     delete_configmaps,
     load_configmaps,
+    ServiceTimeoutError,
     VersionMismatchError,
 )
 from kubetorch.serving.http_client import HTTPClient
@@ -1314,7 +1315,7 @@ class Module:
                     pass
 
     def _wait_for_http_health(self, timeout=60, retry_interval=0.2, backoff=1.5, max_interval=2):
-        """Wait for the HTTP server to be ready by checking the /health endpoint.
+        """Wait for the HTTP server to be ready by checking the /health and /ready endpoints.
 
         Args:
             timeout: Maximum time to wait in seconds
@@ -1324,39 +1325,56 @@ class Module:
 
         logger.info(f"Polling {self.service_name} service health endpoint")
         start_time = time.time()
+        health_ok = False
 
         while time.time() - start_time < timeout:
             try:
                 client = self._client()
+
+                # First check /health (server is up)
+                if not health_ok:
+                    response = client.get(
+                        endpoint=f"{self.base_endpoint}/health",
+                        headers=self.request_headers,
+                        timeout=5,
+                    )
+                    if response.status_code == 200:
+                        health_ok = True
+                        logger.debug(f"Service {self.service_name} health check passed, checking readiness...")
+                    else:
+                        logger.debug(f"Health check returned status {response.status_code}, retrying...")
+                        time.sleep(retry_interval)
+                        retry_interval = min(retry_interval * backoff, max_interval)
+                        continue
+
+                # Then check /ready (callable is loaded)
                 response = client.get(
-                    endpoint=f"{self.base_endpoint}/health",
+                    endpoint=f"{self.base_endpoint}/ready",
                     headers=self.request_headers,
-                    timeout=5,  # timeout per health check attempt
+                    timeout=5,
                 )
                 if response.status_code == 200:
                     logger.info(f"Service {self.service_name} ready")
                     return
                 else:
-                    logger.debug(f"Health check returned status {response.status_code}, retrying...")
+                    logger.debug(f"Readiness check returned status {response.status_code}, retrying...")
 
             except VersionMismatchError as e:
                 raise e
 
             except Exception as e:
-                # Don't log 502 errors - they're expected during startup as nginx DNS updates
-                if "502" not in str(e):
-                    logger.debug(f"Health check failed: {e}, retrying...")
+                # Don't log 502/503 errors - they're expected during startup
+                if "502" not in str(e) and "503" not in str(e):
+                    logger.debug(f"Health/readiness check failed: {e}, retrying...")
 
             time.sleep(retry_interval)
-            retry_interval *= backoff  # Exponential backoff
-            # Cap the retry interval to a maximum value
-            retry_interval = min(retry_interval, max_interval)
+            retry_interval = min(retry_interval * backoff, max_interval)
 
         # If we get here, we've timed out
-        logger.warning(f"HTTP health check timed out after {timeout}s for service {self.service_name}")
+        raise ServiceTimeoutError(f"Service {self.service_name} not ready after {timeout}s")
 
     async def _wait_for_http_health_async(self, timeout=60, retry_interval=0.2, backoff=1.5, max_interval=2):
-        """Async version of _wait_for_http_health. Wait for the HTTP server to be ready by checking the /health endpoint.
+        """Async version of _wait_for_http_health. Wait for the HTTP server to be ready by checking the /health and /ready endpoints.
 
         Args:
             timeout: Maximum time to wait in seconds
@@ -1366,32 +1384,50 @@ class Module:
 
         logger.debug(f"Waiting for HTTP server to be ready for service {self.service_name}")
         start_time = time.time()
+        health_ok = False
 
         while time.time() - start_time < timeout:
             try:
                 client = self._client()
+
+                # First check /health (server is up)
+                if not health_ok:
+                    response = client.get(
+                        endpoint=f"{self.base_endpoint}/health",
+                        headers=self.request_headers,
+                        timeout=5,
+                    )
+                    if response.status_code == 200:
+                        health_ok = True
+                        logger.debug(f"Service {self.service_name} health check passed, checking readiness...")
+                    else:
+                        logger.debug(f"Health check returned status {response.status_code}, retrying...")
+                        await asyncio.sleep(retry_interval)
+                        retry_interval = min(retry_interval * backoff, max_interval)
+                        continue
+
+                # Then check /ready (callable is loaded)
                 response = client.get(
-                    endpoint=f"{self.base_endpoint}/health",
+                    endpoint=f"{self.base_endpoint}/ready",
                     headers=self.request_headers,
-                    timeout=5,  # add timeout per health check attempt to allow retries
+                    timeout=5,
                 )
                 if response.status_code == 200:
                     logger.info(f"Service {self.service_name} ready")
                     return
                 else:
-                    logger.debug(f"Health check returned status {response.status_code}, retrying...")
+                    logger.debug(f"Readiness check returned status {response.status_code}, retrying...")
+
             except Exception as e:
-                # Don't log 502 errors - they're expected during startup as nginx DNS updates
-                if "502" not in str(e):
-                    logger.debug(f"Health check failed: {e}, retrying...")
+                # Don't log 502/503 errors - they're expected during startup
+                if "502" not in str(e) and "503" not in str(e):
+                    logger.debug(f"Health/readiness check failed: {e}, retrying...")
 
             await asyncio.sleep(retry_interval)
-            retry_interval *= backoff  # Exponential backoff
-            # Cap the retry interval to a maximum value
-            retry_interval = min(retry_interval, max_interval)
+            retry_interval = min(retry_interval * backoff, max_interval)
 
         # If we get here, we've timed out
-        logger.warning(f"HTTP health check timed out after {timeout}s for service {self.service_name}")
+        raise ServiceTimeoutError(f"Service {self.service_name} not ready after {timeout}s")
 
     def __getstate__(self):
         """Remove local stateful values before pickle serialization."""
