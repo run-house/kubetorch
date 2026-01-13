@@ -94,11 +94,11 @@ def get_compute(compute_type: str):
 
     if compute_type == "ray":
         return kt.Compute(
-            cpus="2",
-            memory="3Gi",
+            cpus="0.5",
+            memory="1Gi",
             labels={"test-label": "test_value"},
             gpu_anti_affinity=True,
-            launch_timeout=450,
+            launch_timeout=600,
             image=kt.images.Ray()
             .pip_install(["pytest", "pytest-asyncio", "typer", "rich"])
             .run_bash("uv pip install --system --break-system-packages numpy"),
@@ -214,11 +214,11 @@ async def remote_cls():
 
     if compute_type == "ray":
         compute = kt.Compute(
-            cpus="2",
-            memory="3Gi",
+            cpus="0.5",
+            memory="1Gi",
             labels={"test-label": "test_value"},
             gpu_anti_affinity=True,
-            launch_timeout=300,
+            launch_timeout=600,
             image=kt.images.Ray()
             .pip_install(["pytest", "pytest-asyncio", "typer", "rich"])
             .run_bash("uv pip install --system --break-system-packages numpy"),

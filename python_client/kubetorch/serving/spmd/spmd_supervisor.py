@@ -148,15 +148,13 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
             should_monitor = workers_arg not in ["ready", "any"]
 
             if should_monitor:
-                # Now that we have quorum, start DNS monitoring
-                # Start monitoring (idempotent - won't start if already running)
-                self.start_dns_monitoring()
+                # Now that we have quorum, start DNS monitoring with the discovered IPs
+                # Pass the known worker_ips to avoid re-querying DNS (which may return
+                # different results during DNS propagation delays)
+                self.start_dns_monitoring(initial_workers=set(worker_ips))
 
                 # Subscribe to membership changes
                 change_event = self.subscribe_to_membership_changes()
-
-                # Check for any pending changes after starting monitor
-                self.check_for_membership_changes(force_dns_check=True)
             else:
                 logger.debug("Skipping DNS monitoring for workers='ready' call")
 
