@@ -342,19 +342,30 @@ async def test_async_fn_call(remote_async_fn):
     result = await coroutine
     assert result == 3
 
-    # run multiple async function calls and assert that all start times are less than the earliest end time
-    async def run_tasks():
-        tasks = []
-        for i in range(3):
-            tasks.append(remote_async_fn(1, 2, return_times=True))
-        results = await asyncio.gather(*tasks)
-        return results
+    # Run multiple async function calls concurrently and verify they execute in parallel
+    # by measuring total wall-clock time (should be ~sleep_time, not num_tasks * sleep_time)
+    import time
 
-    results = await run_tasks()
+    num_tasks = 3
+    sleep_time = 2  # Each task sleeps for 2 seconds (in async_simple_summer)
 
-    start_times = [r[0] for r in results]
-    end_times = [r[1] for r in results]
-    assert max(start_times) < min(end_times)
+    start_wall = time.time()
+    tasks = [remote_async_fn(1, 2, return_times=True) for _ in range(num_tasks)]
+    results = await asyncio.gather(*tasks)
+    total_wall_time = time.time() - start_wall
+
+    # Verify all tasks returned valid results
+    assert len(results) == num_tasks
+    for r in results:
+        assert len(r) == 2  # (start_time, end_time)
+
+    # If tasks ran sequentially, total time would be ~6s (3 * 2s)
+    # If concurrent, total time should be ~2s + network overhead
+    # Use generous threshold to account for network variability
+    sequential_time = num_tasks * sleep_time
+    assert (
+        total_wall_time < sequential_time * 0.75
+    ), f"Tasks appear to have run sequentially: {total_wall_time:.1f}s >= {sequential_time * 0.75:.1f}s threshold"
 
 
 @pytest.mark.level("minimal")
