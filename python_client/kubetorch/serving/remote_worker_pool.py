@@ -2,10 +2,38 @@ import multiprocessing
 import os
 import queue
 import signal
+import subprocess
 import threading
 import uuid
 
 from kubetorch.serving.http_server import logger
+
+
+def _get_child_pids(pid):
+    """Get all child PIDs of a process using pgrep (works on Linux and macOS)."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-P", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return [int(p) for p in result.stdout.strip().split("\n") if p.isdigit()]
+    except Exception:
+        pass
+    return []
+
+
+def _kill_process_tree(pid, sig=signal.SIGTERM):
+    """Recursively kill a process and all its descendants."""
+    children = _get_child_pids(pid)
+    for child_pid in children:
+        _kill_process_tree(child_pid, sig)
+    try:
+        os.kill(pid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 class RemoteWorkerPool:
@@ -61,23 +89,11 @@ class RemoteWorkerPool:
             self.request_queue.put(("SHUTDOWN", None))
             self.process.join(timeout=5)
             if self.process and self.process.is_alive():
-                # Kill the process group to terminate any child processes
-                try:
-                    os.killpg(self.process.pid, signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
-                    try:
-                        self.process.terminate()
-                    except Exception:
-                        pass
+                # Kill the process tree to terminate any child processes
+                _kill_process_tree(self.process.pid, signal.SIGTERM)
                 self.process.join(timeout=1)
                 if self.process and self.process.is_alive():
-                    try:
-                        os.killpg(self.process.pid, signal.SIGKILL)
-                    except (ProcessLookupError, PermissionError):
-                        try:
-                            self.process.kill()
-                        except Exception:
-                            pass
+                    _kill_process_tree(self.process.pid, signal.SIGKILL)
             self.process = None
 
         # Clear response events
@@ -197,12 +213,6 @@ class RemoteWorkerPool:
         import queue
 
         import httpx
-
-        # Create a new process group so parent can kill all descendants on shutdown
-        try:
-            os.setpgrp()
-        except OSError:
-            pass
 
         async def wait_for_worker_health(client, worker_ip, workers_arg, quorum_timeout):
             """Wait for a worker to become healthy within timeout."""

@@ -1,11 +1,45 @@
 import multiprocessing
 import os
 import signal
+import subprocess
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from kubetorch.serving.http_server import logger
+
+
+def _get_child_pids(pid):
+    """Get all child PIDs of a process using pgrep (works on Linux and macOS)."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-P", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return [int(p) for p in result.stdout.strip().split("\n") if p.isdigit()]
+    except Exception:
+        pass
+    return []
+
+
+def _kill_process_tree(pid, sig=signal.SIGTERM):
+    """Recursively kill a process and all its descendants.
+
+    Kills children first (bottom-up) to avoid orphaning processes.
+    """
+    # First, recursively kill all children
+    children = _get_child_pids(pid)
+    for child_pid in children:
+        _kill_process_tree(child_pid, sig)
+
+    # Then kill the process itself
+    try:
+        os.kill(pid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass  # Process already dead or not accessible
 
 
 class ProcessPool:
@@ -88,39 +122,30 @@ class ProcessPool:
         if self._router_thread:
             self._router_thread.join(timeout=0.5)
 
-        # Kill all processes and their descendants by killing the process group.
-        # Each ProcessWorker calls os.setpgrp() on startup to become a process group leader,
-        # so killing the group terminates all child processes (e.g., vLLM, Ray workers).
-        for process in self.processes:
-            if process.is_alive():
-                try:
-                    # First try SIGTERM to the process group for graceful shutdown
-                    os.killpg(process.pid, signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
-                    # Process may have already exited or not be a group leader
-                    try:
-                        process.terminate()
-                    except Exception:
-                        pass
-
-        # Give processes a brief chance to terminate gracefully
+        # Give processes a chance to exit gracefully via the SHUTDOWN message
         for process in self.processes:
             process.join(timeout=0.5)
 
-        # Force kill any remaining processes and their descendants
+        # Send SIGTERM to any remaining processes - ProcessWorker has a signal handler
+        # that will kill its child processes (vLLM, Ray, etc.) before exiting
         for process in self.processes:
             if process.is_alive():
-                logger.warning(f"Force killing process group {process.pid}")
+                logger.debug(f"Sending SIGTERM to process {process.pid}")
                 try:
-                    # SIGKILL the entire process group
-                    os.killpg(process.pid, signal.SIGKILL)
+                    os.kill(process.pid, signal.SIGTERM)
                 except (ProcessLookupError, PermissionError):
-                    # Fallback to just killing the process
-                    try:
-                        process.kill()
-                    except Exception:
-                        pass
-                process.join(timeout=0.1)  # Brief wait to confirm kill
+                    pass
+
+        # Wait for SIGTERM handling
+        for process in self.processes:
+            process.join(timeout=1.0)
+
+        # Force kill any remaining processes and their descendants as last resort
+        for process in self.processes:
+            if process.is_alive():
+                logger.warning(f"Force killing process tree rooted at {process.pid}")
+                _kill_process_tree(process.pid, signal.SIGKILL)
+                process.join(timeout=0.1)
 
         # Clear all queues
         self._clear_queues()
