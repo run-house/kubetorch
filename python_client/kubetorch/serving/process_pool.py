@@ -1,45 +1,12 @@
 import multiprocessing
 import os
 import signal
-import subprocess
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from kubetorch.serving.http_server import logger
-
-
-def _get_child_pids(pid):
-    """Get all child PIDs of a process using pgrep (works on Linux and macOS)."""
-    try:
-        result = subprocess.run(
-            ["pgrep", "-P", str(pid)],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return [int(p) for p in result.stdout.strip().split("\n") if p.isdigit()]
-    except Exception:
-        pass
-    return []
-
-
-def _kill_process_tree(pid, sig=signal.SIGTERM):
-    """Recursively kill a process and all its descendants.
-
-    Kills children first (bottom-up) to avoid orphaning processes.
-    """
-    # First, recursively kill all children
-    children = _get_child_pids(pid)
-    for child_pid in children:
-        _kill_process_tree(child_pid, sig)
-
-    # Then kill the process itself
-    try:
-        os.kill(pid, sig)
-    except (ProcessLookupError, PermissionError):
-        pass  # Process already dead or not accessible
+from kubetorch.serving.utils import kill_process_tree
 
 
 class ProcessPool:
@@ -144,7 +111,7 @@ class ProcessPool:
         for process in self.processes:
             if process.is_alive():
                 logger.warning(f"Force killing process tree rooted at {process.pid}")
-                _kill_process_tree(process.pid, signal.SIGKILL)
+                kill_process_tree(process.pid, signal.SIGKILL)
                 process.join(timeout=0.1)
 
         # Clear all queues

@@ -51,6 +51,8 @@ class ProcessWorker(multiprocessing.Process):
 
     def proc_cleanup(self):
         """Full process cleanup called on shutdown. Cleans up framework state, debugging sessions, and executor."""
+        from kubetorch.serving.utils import get_child_pids, kill_process_tree
+
         # Call framework cleanup first
         self.framework_cleanup()
 
@@ -59,42 +61,15 @@ class ProcessWorker(multiprocessing.Process):
         logger.info("Debugging sessions cleaned up.")
 
         # Kill any child processes (e.g., vLLM engine processes, Ray workers)
-        # Import here to avoid any module-level side effects
         logger.info("Killing child processes...")
-        self._kill_children()
+        for child_pid in get_child_pids(os.getpid()):
+            kill_process_tree(child_pid, sig=9)  # SIGKILL
         logger.info("Child processes killed.")
 
         # Cleanup thread pool (only on full shutdown, not during reload)
         if self._executor:
             self._executor.shutdown(wait=False)
             self._executor = None
-
-    def _kill_children(self):
-        """Kill all child processes of this process."""
-        import subprocess
-
-        my_pid = os.getpid()
-
-        def get_children(pid):
-            try:
-                result = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True, timeout=5)
-                if result.returncode == 0 and result.stdout.strip():
-                    return [int(p) for p in result.stdout.strip().split("\n") if p.isdigit()]
-            except Exception:
-                pass
-            return []
-
-        def kill_tree(pid):
-            children = get_children(pid)
-            for child in children:
-                kill_tree(child)
-            if pid != my_pid:
-                try:
-                    os.kill(pid, 9)  # SIGKILL
-                except (ProcessLookupError, PermissionError):
-                    pass
-
-        kill_tree(my_pid)
 
     @classmethod
     def get_distributed_env_vars(
