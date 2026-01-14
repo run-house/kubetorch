@@ -183,6 +183,7 @@ class Compute:
         self._logging_config = logging_config or LoggingConfig()
         self._manifest = None
         self._template_vars = {}  # Will be populated by _build_kubetorch_pod_spec
+        self._pod_template_path_override = None  # For BYO manifests with non-standard pod template paths
 
         # Skip template initialization if loading from existing service
         if _skip_template_init:
@@ -272,6 +273,7 @@ class Compute:
         manifest: Union[Dict, str],
         selector: Optional[Dict[str, str]] = None,
         endpoint: Optional["Endpoint"] = None,
+        pod_template_path: Optional[Union[str, List[str]]] = None,
         image: Optional["Image"] = None,
     ):
         """Create a Compute instance from a user-provided Kubernetes manifest.
@@ -281,18 +283,23 @@ class Compute:
         via kubectl, or one you want kubetorch to apply for you.
 
         Args:
-            manifest: Kubernetes manifest dict or path to YAML file
-            selector: Label selector to identify pods belonging to this compute.
-                     If not provided, uses the manifest's spec.selector.matchLabels.
-                     Example: {"app": "my-workers", "team": "ml"}
-            endpoint: Custom endpoint configuration for routing calls to pods.
-                     Use ``Endpoint(url="...")`` for your own Service/Ingress, or
-                     ``Endpoint(selector={...})`` to route to a subset of pool pods.
-            image: Image instance to use for the compute environment.
-                   Use ``Image.from_dockerfile("./Dockerfile")`` to load from a Dockerfile.
+            manifest (dict or str): Kubernetes manifest dict or path to YAML file.
+            selector (dict, optional): Label selector to identify pods belonging to this
+                compute. If not provided, uses the manifest's spec.selector.matchLabels.
+                Example: ``{"app": "my-workers", "team": "ml"}``
+            endpoint (Endpoint, optional): Custom endpoint configuration for routing calls
+                to pods. Use ``Endpoint(url="...")`` for your own Service/Ingress, or
+                ``Endpoint(selector={...})`` to route to a subset of pool pods.
+            pod_template_path (str or list, optional): Path to the pod template within the
+                manifest. Use this for custom CRDs where the pod template is not at the
+                standard ``spec.template`` location. Can be a dot-separated string
+                (e.g., ``"spec.workload.template"``) or a list of keys
+                (e.g., ``["spec", "workload", "template"]``).
+            image (Image): Image instance to use for the compute environment.
+                Use ``Image.from_dockerfile("./Dockerfile")`` to load from a Dockerfile.
 
         Returns:
-            Compute instance
+            Compute: Compute instance configured from the manifest.
 
         Examples:
 
@@ -323,6 +330,13 @@ class Compute:
                 selector={"app": "ray"},  # Pool: all ray pods
                 endpoint=kt.Endpoint(selector={"app": "ray", "role": "head"})  # Route: head only
             )
+
+            # Custom CRD with non-standard pod template path
+            compute = kt.Compute.from_manifest(
+                manifest=custom_crd_manifest,
+                selector={"app": "my-app"},
+                pod_template_path="spec.workload.template"  # or ["spec", "workload", "template"]
+            )
         """
         # Load manifest from file if provided as a string
         if isinstance(manifest, str):
@@ -351,6 +365,12 @@ class Compute:
         if endpoint:
             compute._endpoint_config = endpoint
 
+        # Store custom pod template path if provided (normalize string to list)
+        if pod_template_path:
+            if isinstance(pod_template_path, str):
+                pod_template_path = pod_template_path.split(".")
+            compute._pod_template_path_override = pod_template_path
+
         # Extract kubeconfig_path from manifest annotations if present
         user_annotations = compute._manifest["metadata"].get("annotations", {})
         compute._kubeconfig_path = user_annotations.get(provisioning_constants.KUBECONFIG_PATH_ANNOTATION)
@@ -371,9 +391,17 @@ class Compute:
         # Store template vars for use in _launch (for setup script generation)
         self._template_vars = template_vars
 
-        # Merge kubetorch pod spec into user pod spec
-        # This keeps user values where they exist, adds kubetorch defaults where missing
-        self._merge_pod_specs(pod_spec)
+        # Merge kubetorch pod spec into user pod spec (only if we know where the pod template is)
+        if self._get_pod_template_path():
+            if self._pod_template_path_override:
+                # User provided custom pod_template_path - only set essential command for startup script
+                # Don't merge full pod spec (preserve user's image, resources, env, etc.)
+                container = self._container()
+                if container is not None:
+                    container["command"] = ["/bin/bash", "-c"]
+            else:
+                # Standard merge for known resource types
+                self._merge_pod_specs(pod_spec)
 
         manifest_annotations = {}
         if self._kubeconfig_path is not None:
@@ -618,32 +646,43 @@ class Compute:
         """
         self._logging_config = value
 
+    def _get_pod_template_path(self):
+        """Get the pod template path, checking for user override first."""
+        if self._pod_template_path_override:
+            return self._pod_template_path_override
+        return self.service_manager.config.get("pod_template_path")
+
     @property
     def pod_spec(self):
         """Get the pod spec from the manifest."""
-        template_path = self.service_manager.get_pod_template_path()
+        template_path = self._get_pod_template_path()
+        if not template_path:
+            # Unknown resource type - no pod template path configured
+            return None
         path = template_path + ["spec"]
 
-        if path:
-            current = self._manifest
-            for key in path:
-                if current is None:
-                    return None
-                current = current.get(key)
-            return current
-        return None
+        current = self._manifest
+        for key in path:
+            if current is None:
+                return None
+            current = current.get(key)
+        return current
 
     @pod_spec.setter
     def pod_spec(self, value: dict):
         """Set the pod spec in the manifest."""
-        template_path = self.service_manager.get_pod_template_path()
+        template_path = self._get_pod_template_path()
+        if not template_path:
+            raise ValueError(
+                f"No pod template path configured for resource type '{self.kind}'. "
+                f"Use the `pod_template_path` parameter in `Compute.from_manifest()` to specify the path."
+            )
         path = template_path + ["spec"]
 
-        if path:
-            current = self._manifest
-            for key in path[:-1]:
-                current = current.setdefault(key, {})
-            current[path[-1]] = value
+        current = self._manifest
+        for key in path[:-1]:
+            current = current.setdefault(key, {})
+        current[path[-1]] = value
 
     @property
     def service_manager(self):
@@ -1708,7 +1747,7 @@ class Compute:
     @property
     def pod_template(self):
         """Get the pod template from the manifest (includes metadata and spec)."""
-        template_path = self.service_manager.get_pod_template_path()
+        template_path = self._get_pod_template_path()
         if template_path:
             current = self._manifest
             for key in template_path:

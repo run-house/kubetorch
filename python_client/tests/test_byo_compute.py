@@ -278,7 +278,6 @@ def test_byo_compute_run_bash(byo_pod_compute):
     # Deploy a simple function to get a reference to the compute
     remote_fn = kt.fn(summer, name=service_name).to(compute)
 
-    # Verify function works
     assert remote_fn(1, 2) == 3
 
     # Run bash command via compute

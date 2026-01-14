@@ -525,6 +525,183 @@ def test_from_manifest_getters_setters():
     assert dist_config["quorum_workers"] == 2
 
 
+@pytest.mark.level("unit")
+def test_from_manifest_custom_pod_template_path():
+    """Test BYO manifest with custom pod_template_path for deeply nested pod templates."""
+    # Custom CRD manifest where pod template is nested deeper than standard spec.template
+    custom_manifest = {
+        "apiVersion": "custom.example.io/v1",
+        "kind": "MyCustomWorkload",
+        "metadata": {
+            "name": "test-custom-workload",
+            "namespace": kubetorch.globals.config.namespace,
+        },
+        "spec": {
+            "workload": {
+                "template": {
+                    "metadata": {"labels": {"app": "custom-app"}},
+                    "spec": {
+                        "containers": [
+                            {
+                                "name": "main",
+                                "image": "my-image:latest",
+                                "resources": {"requests": {"cpu": "100m"}},
+                            }
+                        ],
+                    },
+                },
+            },
+        },
+    }
+
+    # Without pod_template_path, kubetorch defaults to spec.template (wrong location)
+    # It won't find the user's "main" container since it's at spec.workload.template
+    compute_without_path = kt.Compute.from_manifest(
+        manifest=copy.deepcopy(custom_manifest),
+        selector={"app": "custom-app"},
+    )
+    container_names = [c["name"] for c in compute_without_path.pod_spec.get("containers", [])]
+    assert "main" not in container_names, "Without custom path, user's container should not be found"
+
+    # With pod_template_path, Compute correctly finds the pod spec at the nested location
+    compute = kt.Compute.from_manifest(
+        manifest=copy.deepcopy(custom_manifest),
+        selector={"app": "custom-app"},
+        pod_template_path="spec.workload.template",
+    )
+
+    # Now it finds the user's container
+    container_names = [c["name"] for c in compute.pod_spec.get("containers", [])]
+    assert "main" in container_names, "With custom path, user's container should be found"
+    assert compute.pod_spec["containers"][0]["image"] == "my-image:latest"
+
+    # Verify setters work at the correct location
+    compute.cpus = "500m"
+    assert (
+        compute._manifest["spec"]["workload"]["template"]["spec"]["containers"][0]["resources"]["requests"]["cpu"]
+        == "500m"
+    )
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_byo_manifest_with_pod_template_path_override():
+    """Test BYO manifest with explicit pod_template_path override deploys correctly.
+
+    Uses a Deployment with an explicit pod_template_path to verify the override
+    mechanism works end-to-end. When pod_template_path is provided, kubetorch
+    skips merging defaults and uses the manifest as-is.
+    """
+    from .conftest import KUBETORCH_IMAGE
+
+    pool_name = f"{kt.config.username}-byo-path-override"
+    namespace = kt.globals.config.namespace
+
+    # Note: We use "spec.template" here which is already the standard path for Deployments.
+    # The purpose of this test is to verify that the pod_template_path override mechanism
+    # works correctly end-to-end, not to test a non-standard path. When the override is
+    # provided, kubetorch skips auto-detection and uses the path directly.
+    deployment_manifest = {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": pool_name,
+            "namespace": namespace,
+        },
+        "spec": {
+            "replicas": 1,
+            "selector": {"matchLabels": {"app": pool_name}},
+            "template": {
+                "metadata": {"labels": {"app": pool_name}},
+                "spec": {
+                    "containers": [
+                        {
+                            "name": "kubetorch",
+                            "image": KUBETORCH_IMAGE,
+                            "imagePullPolicy": "Always",
+                            "resources": {"requests": {"cpu": "100m", "memory": "256Mi"}},
+                        }
+                    ],
+                    "affinity": copy.deepcopy(GPU_ANTI_AFFINITY),
+                },
+            },
+        },
+    }
+
+    # Create Compute with explicit pod_template_path override
+    # This skips kubetorch's default merging and uses manifest as-is
+    compute = kt.Compute.from_manifest(
+        manifest=deployment_manifest,
+        selector={"app": pool_name},
+        pod_template_path="spec.template",
+    )
+
+    # Verify the override is set and pod_spec is found
+    assert compute._pod_template_path_override == ["spec", "template"]
+    assert compute.pod_spec is not None
+    assert compute.pod_spec["containers"][0]["name"] == "kubetorch"
+
+    # Deploy and verify function works
+    remote_fn = kt.fn(summer).to(compute)
+    result = remote_fn(5, 10)
+    assert result == 15
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_byo_manifest_statefulset():
+    """Test BYO manifest with a StatefulSet resource type.
+
+    This tests the generic dynamic apply path with a StatefulSet.
+    """
+    from .conftest import KUBETORCH_IMAGE
+
+    sts_name = f"{kt.config.username}-byo-sts"
+    namespace = kt.globals.config.namespace
+
+    # Create a StatefulSet manifest (not one of the built-in supported types)
+    statefulset_manifest = {
+        "apiVersion": "apps/v1",
+        "kind": "StatefulSet",
+        "metadata": {
+            "name": sts_name,
+            "namespace": namespace,
+        },
+        "spec": {
+            "serviceName": sts_name,
+            "replicas": 1,
+            "selector": {"matchLabels": {"app": sts_name}},
+            "template": {
+                "metadata": {
+                    "labels": {"app": sts_name},
+                },
+                "spec": {
+                    "containers": [
+                        {
+                            "name": "kubetorch",
+                            "image": KUBETORCH_IMAGE,
+                            "imagePullPolicy": "Always",
+                            "resources": {"requests": {"cpu": "100m", "memory": "256Mi"}},
+                        }
+                    ],
+                    "affinity": copy.deepcopy(GPU_ANTI_AFFINITY),
+                },
+            },
+        },
+    }
+
+    # Create Compute from StatefulSet manifest with selector
+    compute = kt.Compute.from_manifest(
+        manifest=statefulset_manifest,
+        selector={"app": sts_name},
+    )
+
+    remote_fn = kt.fn(summer).to(compute)
+
+    result = remote_fn(5, 10)
+    assert result == 15
+
+
 @pytest.mark.level("minimal")
 @pytest.mark.asyncio
 async def test_byo_manifest_with_selector():
@@ -565,7 +742,7 @@ async def test_byo_manifest_with_selector():
 
     # 3. Call the function and verify it works
     result = remote_fn(5, 10)
-    assert result == 15, f"Expected 15, got {result}"
+    assert result == 15
 
 
 @pytest.mark.level("minimal")
@@ -675,7 +852,7 @@ async def test_selector_only():
 
         # 4. Call the function and verify it works
         result = remote_fn(5, 10, sleep_time=5)
-        assert result == 15, f"Expected 15, got {result}"
+        assert result == 15
 
         # 5. Test event streaming by scaling up during a function call
         import threading
@@ -757,7 +934,7 @@ async def test_byo_manifest_with_endpoint_url():
 
         # Traffic flows through user's service here since no KT created service exists
         result = remote_fn(5, 10, sleep_time=5)
-        assert result == 15, f"Expected 15, got {result}"
+        assert result == 15
 
     finally:
         subprocess.run(["kt", "teardown", user_service_name, "-n", namespace, "-y"])

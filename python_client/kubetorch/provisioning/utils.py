@@ -370,12 +370,21 @@ RESOURCE_CONFIGS: Dict[str, dict] = {
 
 
 def get_resource_config(resource_type: str) -> dict:
-    """Get configuration for a resource type."""
+    """Get configuration for a resource type.
+
+    For unknown resource types (e.g., BYO manifests with StatefulSet, DaemonSet, etc.),
+    returns a generic config that works with selector-based routing. The controller
+    handles arbitrary resource types via the dynamic K8s client.
+    """
     resource_type = resource_type.lower()
     if resource_type not in RESOURCE_CONFIGS:
-        raise ValueError(
-            f"Unknown resource type: {resource_type}. " f"Supported types: {', '.join(RESOURCE_CONFIGS.keys())}"
-        )
+        # Use generic config for BYO manifests - these are handled via the dynamic client on the controller side
+        # Note: most K8s workloads (StatefulSet, DaemonSet, Job, ReplicaSet) use spec.template
+        return {
+            "pod_template_path": ["spec", "template"],
+            "default_routing": None,
+            "template_label": resource_type,
+        }
     return RESOURCE_CONFIGS[resource_type]
 
 
