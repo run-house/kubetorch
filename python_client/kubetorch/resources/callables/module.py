@@ -666,7 +666,6 @@ class Module:
                 install_url=install_url if not use_editable else None,
                 module_name=self.remote_pointers[1],  # module_name for labels
                 startup_rsync_command=startup_rsync_command,
-                launch_id=launch_request_id,
                 deployment_timestamp=deployment_timestamp,
                 dryrun=dryrun,
                 dockerfile=dockerfile,
@@ -741,7 +740,6 @@ class Module:
                 install_url=install_url if not use_editable else None,
                 module_name=self.remote_pointers[1],  # module_name for labels
                 startup_rsync_command=startup_rsync_command,
-                launch_id=launch_request_id,
                 deployment_timestamp=deployment_timestamp,
                 dryrun=dryrun,
                 dockerfile=dockerfile,
