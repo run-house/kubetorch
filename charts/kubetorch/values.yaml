@@ -29,10 +29,8 @@ kubetorchController:
   resources:
     cpu:
       request: "200m"   # Minimum guaranteed CPU (0.2 cores)
-      limit: "2000m"    # Maximum burst CPU (2 cores) for 8 workers
     memory:
       request: "2Gi"    # Minimum guaranteed memory
-      limit: "4Gi"      # Maximum memory for 8 workers + connection pools + headroom
 
   tolerations: []
   affinity: {}
