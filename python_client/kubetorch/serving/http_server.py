@@ -1265,15 +1265,15 @@ async def lifespan(app: FastAPI):
             # Call the original handler if it exists and isn't ignored
             if original_sigterm_handler and original_sigterm_handler != signal.SIG_IGN:
                 if original_sigterm_handler == signal.SIG_DFL:
-                    # Default behavior is to terminate - do that explicitly
+                    # Default behavior is to terminate - force exit
                     logger.info("Exiting process after cleanup...")
-                    sys.exit(0)
+                    os._exit(0)
                 else:
                     original_sigterm_handler(signum, frame)
             else:
-                # No original handler, exit explicitly
+                # No original handler, force exit
                 logger.info("Exiting process after cleanup...")
-                sys.exit(0)
+                os._exit(0)
 
         # Register SIGTERM handler
         signal.signal(signal.SIGTERM, handle_sigterm)

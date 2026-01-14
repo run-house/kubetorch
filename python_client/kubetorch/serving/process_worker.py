@@ -1,8 +1,6 @@
 import asyncio
 import multiprocessing
 import os
-import signal
-import subprocess
 from bdb import BdbQuit
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
@@ -13,39 +11,6 @@ from kubetorch.serving.utils import clear_debugging_sessions, request_id_ctx_var
 
 # Match FastAPI/Starlette default thread pool size for sync operations
 DEFAULT_THREADPOOL_SIZE = 40
-
-
-def _get_child_pids(pid):
-    """Get all child PIDs of a process using pgrep."""
-    try:
-        result = subprocess.run(
-            ["pgrep", "-P", str(pid)],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return [int(p) for p in result.stdout.strip().split("\n") if p.isdigit()]
-    except Exception:
-        pass
-    return []
-
-
-def _kill_descendant_processes(sig=signal.SIGKILL):
-    """Kill all descendant processes of the current process."""
-    my_pid = os.getpid()
-
-    def kill_tree(pid):
-        children = _get_child_pids(pid)
-        for child in children:
-            kill_tree(child)
-        if pid != my_pid:  # Don't kill ourselves
-            try:
-                os.kill(pid, sig)
-            except (ProcessLookupError, PermissionError):
-                pass
-
-    kill_tree(my_pid)
 
 
 class ProcessWorker(multiprocessing.Process):
@@ -94,14 +59,42 @@ class ProcessWorker(multiprocessing.Process):
         logger.info("Debugging sessions cleaned up.")
 
         # Kill any child processes (e.g., vLLM engine processes, Ray workers)
-        logger.info("Killing descendant processes...")
-        _kill_descendant_processes(signal.SIGKILL)
-        logger.info("Descendant processes killed.")
+        # Import here to avoid any module-level side effects
+        logger.info("Killing child processes...")
+        self._kill_children()
+        logger.info("Child processes killed.")
 
         # Cleanup thread pool (only on full shutdown, not during reload)
         if self._executor:
             self._executor.shutdown(wait=False)
             self._executor = None
+
+    def _kill_children(self):
+        """Kill all child processes of this process."""
+        import subprocess
+
+        my_pid = os.getpid()
+
+        def get_children(pid):
+            try:
+                result = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0 and result.stdout.strip():
+                    return [int(p) for p in result.stdout.strip().split("\n") if p.isdigit()]
+            except Exception:
+                pass
+            return []
+
+        def kill_tree(pid):
+            children = get_children(pid)
+            for child in children:
+                kill_tree(child)
+            if pid != my_pid:
+                try:
+                    os.kill(pid, 9)  # SIGKILL
+                except (ProcessLookupError, PermissionError):
+                    pass
+
+        kill_tree(my_pid)
 
     @classmethod
     def get_distributed_env_vars(
