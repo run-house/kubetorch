@@ -112,6 +112,8 @@ logStreaming:
 metrics:
   enabled: true # set to `false` to disable live metrics streaming
   scrapeKubelet: true
+  cadvisor:
+    scrapeInterval: 30s
   prometheus:
     image: prom/prometheus:v3.7.2
     port: 9090
@@ -127,6 +129,7 @@ metrics:
       # Name of existing secret with 'username' and 'password' keys
       basicAuthSecret: ""  # e.g., grafana-cloud-credentials
       insecureSkipVerify: true  # Set to false for strict TLS verification
+      retryOn429: true
     # DCGM exporter scrape config (auto-discovers on GKE, EKS, AKS)
     additionalScrapeConfigs:
       - job_name: "dcgm-exporter"

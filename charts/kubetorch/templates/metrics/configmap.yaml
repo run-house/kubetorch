@@ -20,6 +20,9 @@ data:
         {{- end }}
         tls_config:
           insecure_skip_verify: {{ .Values.metrics.prometheus.remoteWrite.insecureSkipVerify }}
+        {{- if .Values.metrics.prometheus.remoteWrite.retryOn429 | default true }}
+        retry_on_http_429: true
+        {{- end }}
         write_relabel_configs:
           - regex: '.*\..*'
             action: labeldrop
@@ -34,6 +37,7 @@ data:
       {{- if .Values.metrics.scrapeKubelet }}
       # Kubelet cAdvisor (container-level metrics)
       - job_name: 'kubelet-cadvisor'
+        scrape_interval: {{ .Values.metrics.cadvisor.scrapeInterval | default "30s" }}
         kubernetes_sd_configs:
           - role: node
         scheme: https
