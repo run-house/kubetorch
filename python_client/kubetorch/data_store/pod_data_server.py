@@ -72,6 +72,11 @@ SERVER_PID_FILE = "/tmp/kt-gpu-data-server.pid"
 KT_NCCL_TIMEOUT_SECONDS = int(os.environ.get("KT_NCCL_TIMEOUT_SECONDS", "60"))
 KT_NCCL_MAX_FAILURES = int(os.environ.get("KT_NCCL_MAX_FAILURES", "3"))
 
+# NCCL process group mode:
+# - "concurrent": Create ProcessGroupNCCL directly, allows parallel NCCL operations
+# - "global": Use semaphore + global process group (safer fallback)
+KT_NCCL_PG_MODE = os.environ.get("KT_NCCL_PG_MODE", "concurrent")
+
 # Prevent NCCL from aborting the process on timeout/failure - raise exception instead
 os.environ.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
 
@@ -300,6 +305,7 @@ class PodDataServer:
         tcp_port: int = DEFAULT_TCP_PORT,
         nccl_port_start: int = DEFAULT_NCCL_PORT_RANGE_START,
         nccl_port_end: int = DEFAULT_NCCL_PORT_RANGE_END,
+        nccl_pg_mode: str = KT_NCCL_PG_MODE,
     ):
         self.socket_path = socket_path
         self.tcp_port = tcp_port
@@ -357,9 +363,15 @@ class PodDataServer:
         # TTL for completed broadcasts (10 minutes)
         self._fs_broadcast_ttl = 600
 
-        # Semaphore to serialize NCCL process group operations.
-        # PyTorch's dist module only supports one global process group at a time,
-        # so concurrent broadcasts would clobber each other.
+        # NCCL process group mode configuration (server default, can be overridden per-request)
+        if nccl_pg_mode not in ("concurrent", "global"):
+            raise ValueError(f"Invalid nccl_pg_mode: {nccl_pg_mode}. Must be 'concurrent' or 'global'")
+        self._nccl_pg_mode = nccl_pg_mode
+
+        # Semaphore for global mode only.
+        # In global mode, PyTorch's dist module only supports one global process group
+        # at a time, so concurrent broadcasts would clobber each other.
+        # In concurrent mode, we create ProcessGroupNCCL directly without global state.
         self._nccl_semaphore = threading.Semaphore(1)
         self._nccl_semaphore_timeout = 240
 
@@ -390,7 +402,7 @@ class PodDataServer:
             os._exit(1)
 
     @contextmanager
-    def _init_nccl_process_group(
+    def _init_nccl_process_group_concurrent(
         self,
         master_addr: str,
         master_port: int,
@@ -399,13 +411,58 @@ class PodDataServer:
         timeout_seconds: int = KT_NCCL_TIMEOUT_SECONDS,
     ):
         """
-        Initialize NCCL process group using explicit TCPStore.
+        Initialize NCCL process group using ProcessGroupNCCL directly.
 
-        Uses TCPStore directly instead of env vars, allowing concurrent NCCL
-        operations on different ports without interference.
+        Creates ProcessGroupNCCL without using init_process_group(), avoiding
+        global state and allowing true concurrent NCCL operations.
 
-        Acquires semaphore to serialize NCCL operations (PyTorch only supports
-        one global process group at a time).
+        Yields the process group and cleans it up on exit.
+        """
+        from datetime import timedelta
+
+        from torch.distributed import TCPStore
+        from torch.distributed.distributed_c10d import ProcessGroupNCCL
+
+        pg = None
+
+        try:
+            # Create explicit TCPStore
+            store = TCPStore(
+                host_name=master_addr,
+                port=master_port,
+                world_size=world_size,
+                is_master=(rank == 0),
+                timeout=timedelta(seconds=timeout_seconds),
+            )
+
+            # Create ProcessGroupNCCL directly - no global state
+            options = ProcessGroupNCCL.Options()
+            options._timeout = timedelta(seconds=timeout_seconds)
+
+            pg = ProcessGroupNCCL(store, rank, world_size, options)
+
+            yield pg
+
+        finally:
+            # ProcessGroupNCCL cleanup happens when reference is dropped
+            if pg is not None:
+                del pg
+
+    @contextmanager
+    def _init_nccl_process_group_global(
+        self,
+        master_addr: str,
+        master_port: int,
+        rank: int,
+        world_size: int,
+        timeout_seconds: int = KT_NCCL_TIMEOUT_SECONDS,
+    ):
+        """
+        Initialize NCCL process group using global init_process_group.
+
+        Uses TCPStore directly instead of env vars. Acquires semaphore to
+        serialize NCCL operations (PyTorch only supports one global process
+        group at a time).
 
         Yields the process group and cleans it up on exit.
         """
@@ -426,7 +483,7 @@ class PodDataServer:
                     "Another NCCL operation may be stuck."
                 )
 
-            # Create explicit TCPStore - no env vars needed, supports concurrency
+            # Create explicit TCPStore - no env vars needed
             store = TCPStore(
                 host_name=master_addr,
                 port=master_port,
@@ -468,6 +525,59 @@ class PodDataServer:
             if semaphore_acquired:
                 self._nccl_semaphore.release()
 
+    @contextmanager
+    def _init_nccl_process_group(
+        self,
+        master_addr: str,
+        master_port: int,
+        rank: int,
+        world_size: int,
+        timeout_seconds: int = KT_NCCL_TIMEOUT_SECONDS,
+        nccl_pg_mode: Optional[str] = None,
+    ):
+        """
+        Initialize NCCL process group based on configured mode.
+
+        In concurrent mode: Creates ProcessGroupNCCL directly, allowing parallel operations.
+        In global mode: Uses global init_process_group with semaphore serialization.
+
+        Args:
+            nccl_pg_mode: Override the server default. If None, uses self._nccl_pg_mode.
+
+        Yields the process group and cleans it up on exit.
+        """
+        mode = nccl_pg_mode if nccl_pg_mode is not None else self._nccl_pg_mode
+
+        if mode == "concurrent":
+            with self._init_nccl_process_group_concurrent(
+                master_addr, master_port, rank, world_size, timeout_seconds
+            ) as pg:
+                yield pg
+        else:
+            with self._init_nccl_process_group_global(
+                master_addr, master_port, rank, world_size, timeout_seconds
+            ) as pg:
+                yield pg
+
+    def _do_broadcast(self, tensor, src: int, process_group):
+        """
+        Broadcast tensor using the appropriate API for the process group type.
+
+        In concurrent mode (ProcessGroupNCCL): Uses native pg.broadcast() API.
+        In global mode (global process group): Uses dist.broadcast().
+        """
+        import torch.distributed as dist
+        from torch.distributed.distributed_c10d import ProcessGroupNCCL
+
+        if isinstance(process_group, ProcessGroupNCCL):
+            # Direct ProcessGroupNCCL - use native broadcast API
+            opts = dist.BroadcastOptions()
+            opts.rootRank = src
+            process_group.broadcast([tensor], opts).wait()
+        else:
+            # Standard dist.broadcast for global process group
+            dist.broadcast(tensor, src=src, group=process_group)
+
     def start(self):
         """Start the GPU data server."""
         # Remove stale socket file
@@ -481,6 +591,7 @@ class PodDataServer:
         logger.info(f"Pod Data Server starting (PID: {os.getpid()})")
         logger.info(f"Unix socket: {self.socket_path}")
         logger.info(f"TCP port: {self.tcp_port}")
+        logger.info(f"NCCL PG mode: {self._nccl_pg_mode}")
         logger.info(f"PID file: {SERVER_PID_FILE}")
 
         # Create Unix socket for local process communication
@@ -857,7 +968,7 @@ class PodDataServer:
 
         The getter GPU servers will connect as ranks 1..N.
         """
-        dist = _get_torch_distributed()
+        _get_torch_distributed()
         pod_ip = os.getenv("POD_IP", "127.0.0.1")
 
         logger.info(
@@ -873,7 +984,7 @@ class PodDataServer:
                 world_size=world_size,
             ) as process_group:
                 # Broadcast the tensor
-                dist.broadcast(tensor, src=0, group=process_group)
+                self._do_broadcast(tensor, src=0, process_group=process_group)
 
             logger.info(f"Broadcast {broadcast_id} complete")
             self._record_nccl_success()
@@ -1079,8 +1190,9 @@ class PodDataServer:
         sends = message.get("sends", [])
         receives = message.get("receives", [])
         local_transfers = message.get("local_transfers", [])
+        nccl_pg_mode = message.get("nccl_pg_mode")
 
-        dist = _get_torch_distributed()
+        _get_torch_distributed()
 
         logger.info(
             f"Executing broadcast group {group_id}: rank={rank}/{world_size}, "
@@ -1205,6 +1317,7 @@ class PodDataServer:
                 master_port=master_port,
                 rank=rank,
                 world_size=world_size,
+                nccl_pg_mode=nccl_pg_mode,
             ) as process_group:
                 # Execute broadcasts
                 for bc in all_broadcasts:
@@ -1213,7 +1326,7 @@ class PodDataServer:
                     tensor = bc["tensor"]
 
                     logger.debug(f"Broadcast {key}: src={src_rank}, shape={list(tensor.shape)}")
-                    dist.broadcast(tensor, src=src_rank, group=process_group)
+                    self._do_broadcast(tensor, src=src_rank, process_group=process_group)
 
             logger.info(f"Broadcast group {group_id} complete")
             self._record_nccl_success()
@@ -1241,7 +1354,7 @@ class PodDataServer:
         Args:
             tensors: Single tensor or list of tensors to broadcast
         """
-        dist = _get_torch_distributed()
+        _get_torch_distributed()
         pod_ip = os.getenv("POD_IP", "127.0.0.1")
 
         # Normalize to list
@@ -1262,7 +1375,7 @@ class PodDataServer:
             ) as process_group:
                 # Broadcast all tensors in same NCCL session
                 for tensor in tensors:
-                    dist.broadcast(tensor, src=0, group=process_group)
+                    self._do_broadcast(tensor, src=0, process_group=process_group)
 
             logger.info(f"NCCL broadcast {broadcast_id} complete: {len(tensors)} tensor(s)")
             self._record_nccl_success()
@@ -1289,7 +1402,7 @@ class PodDataServer:
             dest_tensors: Single tensor or list of tensors to receive into
             nccl_timeout: Optional timeout override in seconds (for testing)
         """
-        dist = _get_torch_distributed()
+        _get_torch_distributed()
 
         # Normalize to list
         if not isinstance(dest_tensors, list):
@@ -1313,7 +1426,7 @@ class PodDataServer:
             ) as process_group:
                 # Receive broadcast into all destination tensors
                 for tensor in dest_tensors:
-                    dist.broadcast(tensor, src=0, group=process_group)
+                    self._do_broadcast(tensor, src=0, process_group=process_group)
 
             logger.info(f"NCCL broadcast {broadcast_id} received {len(dest_tensors)} tensor(s) successfully")
             self._record_nccl_success()
@@ -1482,6 +1595,7 @@ class PodDataServer:
         broadcast_group_id: str,
         broadcast_timeout: float,
         broadcast_world_size: Optional[int],
+        nccl_pg_mode: Optional[str] = None,
     ) -> dict:
         """
         Join a broadcast group via MDS WebSocket.
@@ -1510,6 +1624,7 @@ class PodDataServer:
                             broadcast_group_id,
                             broadcast_timeout,
                             broadcast_world_size,
+                            nccl_pg_mode,
                         ),
                     )
                     return future.result()
@@ -1521,6 +1636,7 @@ class PodDataServer:
                         broadcast_group_id,
                         broadcast_timeout,
                         broadcast_world_size,
+                        nccl_pg_mode,
                     )
                 )
         except RuntimeError:
@@ -1531,6 +1647,7 @@ class PodDataServer:
                     broadcast_group_id,
                     broadcast_timeout,
                     broadcast_world_size,
+                    nccl_pg_mode,
                 )
             )
 
@@ -1541,6 +1658,7 @@ class PodDataServer:
         broadcast_group_id: str,
         broadcast_timeout: float,
         broadcast_world_size: Optional[int],
+        nccl_pg_mode: Optional[str] = None,
     ) -> dict:
         """Async implementation of broadcast group join."""
         import asyncio
@@ -1672,6 +1790,7 @@ class PodDataServer:
                             "sends": sends,
                             "receives": receives,
                             "local_transfers": local_transfers,
+                            "nccl_pg_mode": nccl_pg_mode,
                         }
                     )
 
@@ -1976,6 +2095,7 @@ class PodDataServer:
             broadcast_group_id=broadcast["group_id"],
             broadcast_timeout=broadcast.get("timeout", 600.0),
             broadcast_world_size=broadcast.get("world_size"),
+            nccl_pg_mode=broadcast.get("nccl_pg_mode"),
         )
 
     def _handle_get_tensors_broadcast(self, message: dict) -> dict:
@@ -2006,6 +2126,7 @@ class PodDataServer:
             broadcast_group_id=broadcast["group_id"],
             broadcast_timeout=broadcast.get("timeout", 600.0),
             broadcast_world_size=broadcast.get("world_size"),
+            nccl_pg_mode=broadcast.get("nccl_pg_mode"),
         )
 
     # ==================== Filesystem Broadcast Methods ====================
@@ -2720,59 +2841,74 @@ def _forward_subprocess_output_to_log_capture(pipe, stream_name: str, source: st
             pass  # Don't crash the reader thread
 
 
+SERVER_LOCK_FILE = "/tmp/kt-gpu-data-server.lock"
+
+
 def start_server_if_needed(socket_path: str = DEFAULT_SOCKET_PATH) -> int:
     """
     Start the GPU data server if not already running.
 
+    Uses a file lock to prevent race conditions when multiple processes
+    (e.g., SPMD ranks) try to start the server simultaneously.
+
     Returns:
         PID of the server (existing or newly started)
     """
-    if is_server_running(socket_path):
-        # Read existing PID
-        if os.path.exists(SERVER_PID_FILE):
-            with open(SERVER_PID_FILE) as f:
-                return int(f.read().strip())
-        return -1
-
-    # Start new server process
+    import fcntl
     import subprocess
     import threading
 
-    # Set PYTHONUNBUFFERED to ensure logs are flushed immediately for log forwarding
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
+    # Use file lock to prevent race condition with concurrent startup
+    lock_fd = os.open(SERVER_LOCK_FILE, os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
-    process = subprocess.Popen(
-        [sys.executable, "-u", "-m", "kubetorch.data_store.pod_data_server"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-        env=env,
-    )
-
-    # Start daemon threads to forward subprocess output to LogCapture
-    # These threads will also ensure pipes don't fill up and block the subprocess
-    stdout_thread = threading.Thread(
-        target=_forward_subprocess_output_to_log_capture,
-        args=(process.stdout, "stdout", "pds"),
-        daemon=True,
-    )
-    stderr_thread = threading.Thread(
-        target=_forward_subprocess_output_to_log_capture,
-        args=(process.stderr, "stderr", "pds"),
-        daemon=True,
-    )
-    stdout_thread.start()
-    stderr_thread.start()
-
-    # Wait for server to be ready
-    for _ in range(50):  # 5 seconds timeout
-        time.sleep(0.1)
+        # Check again inside the lock (another process may have started it)
         if is_server_running(socket_path):
-            logger.info(f"Pod Data Server started (PID: {process.pid})")
-            return process.pid
+            if os.path.exists(SERVER_PID_FILE):
+                with open(SERVER_PID_FILE) as f:
+                    return int(f.read().strip())
+            return -1
 
-    raise RuntimeError("Failed to start Pod Data Server")
+        # Set PYTHONUNBUFFERED to ensure logs are flushed immediately for log forwarding
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+
+        process = subprocess.Popen(
+            [sys.executable, "-u", "-m", "kubetorch.data_store.pod_data_server"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            env=env,
+        )
+
+        # Start daemon threads to forward subprocess output to LogCapture
+        # These threads will also ensure pipes don't fill up and block the subprocess
+        stdout_thread = threading.Thread(
+            target=_forward_subprocess_output_to_log_capture,
+            args=(process.stdout, "stdout", "pds"),
+            daemon=True,
+        )
+        stderr_thread = threading.Thread(
+            target=_forward_subprocess_output_to_log_capture,
+            args=(process.stderr, "stderr", "pds"),
+            daemon=True,
+        )
+        stdout_thread.start()
+        stderr_thread.start()
+
+        # Wait for server to be ready
+        for _ in range(50):  # 5 seconds timeout
+            time.sleep(0.1)
+            if is_server_running(socket_path):
+                logger.info(f"Pod Data Server started (PID: {process.pid})")
+                return process.pid
+
+        raise RuntimeError("Failed to start Pod Data Server")
+
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 def main():

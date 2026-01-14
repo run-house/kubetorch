@@ -168,6 +168,7 @@ class GPUTransferManager:
         nccl_port: int = DEFAULT_NCCL_PORT,
         broadcast: Optional["BroadcastWindow"] = None,
         verbose: bool = False,
+        nccl_pg_mode: Optional[str] = None,
     ) -> Optional[Dict]:
         """
         Publish GPU data (tensor or state dict) for broadcast.
@@ -186,6 +187,9 @@ class GPUTransferManager:
                 For state_dicts, all tensors are transferred in the same NCCL session.
                 Use broadcast.pack=True for maximum efficiency (single packed buffer).
             verbose: Show detailed progress
+            nccl_pg_mode: NCCL process group mode:
+                - "concurrent" (default): Create ProcessGroupNCCL directly, allows parallel transfers
+                - "global": Use global process group with semaphore serialization
 
         Returns:
             When broadcast is provided: Dict with transfer results including rank, world_size
@@ -223,6 +227,7 @@ class GPUTransferManager:
                 broadcast=broadcast,
                 gpu_client=gpu_client,
                 verbose=verbose,
+                nccl_pg_mode=nccl_pg_mode,
             )
 
         # Build list of all tensor info
@@ -243,6 +248,7 @@ class GPUTransferManager:
                 "group_id": broadcast.group_id,
                 "timeout": broadcast.timeout or 600.0,
                 "world_size": broadcast.world_size,
+                "nccl_pg_mode": nccl_pg_mode,
             }
 
             # Single path handles both single tensor and multi-tensor broadcasts
@@ -289,6 +295,7 @@ class GPUTransferManager:
         broadcast: "BroadcastWindow",
         gpu_client,
         verbose: bool = False,
+        nccl_pg_mode: Optional[str] = None,
     ) -> Dict:
         """
         Publish state_dict using packed mode - concatenate all tensors into one buffer.
@@ -334,6 +341,7 @@ class GPUTransferManager:
             "world_size": broadcast.world_size,
             "pack": True,
             "tensor_keys": sorted_keys,  # Send metadata about original structure
+            "nccl_pg_mode": nccl_pg_mode,
         }
 
         response = gpu_client.put_tensors_broadcast(
@@ -356,6 +364,7 @@ class GPUTransferManager:
         dest: Union[Any, Dict],
         broadcast: Optional["BroadcastWindow"] = None,
         verbose: bool = False,
+        nccl_pg_mode: Optional[str] = None,
     ) -> Optional[Dict]:
         """
         Retrieve GPU data via NCCL broadcast into a pre-allocated destination.
@@ -373,6 +382,9 @@ class GPUTransferManager:
                 Use broadcast.pack=True for maximum efficiency (single packed buffer).
                 Use broadcast.timeout to control how long to wait for participants.
             verbose: Show detailed progress
+            nccl_pg_mode: NCCL process group mode:
+                - "concurrent" (default): Create ProcessGroupNCCL directly, allows parallel transfers
+                - "global": Use global process group with semaphore serialization
 
         Returns:
             When broadcast is provided: Dict with transfer results including rank, world_size
@@ -410,6 +422,7 @@ class GPUTransferManager:
                 broadcast=broadcast,
                 gpu_client=gpu_client,
                 verbose=verbose,
+                nccl_pg_mode=nccl_pg_mode,
             )
 
         # Broadcast mode: use unified get_tensors_broadcast for all cases (1 or N tensors)
@@ -418,6 +431,7 @@ class GPUTransferManager:
                 "group_id": broadcast.group_id,
                 "timeout": broadcast.timeout or 600.0,
                 "world_size": broadcast.world_size,
+                "nccl_pg_mode": nccl_pg_mode,
             }
 
             # Build list of all tensors to receive
@@ -472,6 +486,7 @@ class GPUTransferManager:
         broadcast: "BroadcastWindow",
         gpu_client,
         verbose: bool = False,
+        nccl_pg_mode: Optional[str] = None,
     ) -> Dict:
         """
         Retrieve state_dict using packed mode - receive single packed buffer and unpack.
@@ -512,6 +527,7 @@ class GPUTransferManager:
             "timeout": broadcast.timeout or 600.0,
             "world_size": broadcast.world_size,
             "pack": True,
+            "nccl_pg_mode": nccl_pg_mode,
         }
 
         response = gpu_client.get_tensors_broadcast(
@@ -554,7 +570,7 @@ class GPUTransferManager:
 
         Called when the quorum is ready and all participants are waiting.
         """
-        dist = _get_torch_distributed()
+        _get_torch_distributed()
 
         pending = self._pending_data.get(key)
         if pending is None:
@@ -603,7 +619,7 @@ class GPUTransferManager:
 
     def _broadcast_data(self, data: Union[Any, Dict]) -> None:
         """Broadcast tensor or state dict (sender side)."""
-        dist = _get_torch_distributed()
+        _get_torch_distributed()
         torch = _get_torch()
 
         # Get sorted keys for consistent ordering
@@ -616,7 +632,7 @@ class GPUTransferManager:
 
     def _receive_into(self, dest: Union[Any, Dict]) -> None:
         """Receive broadcast into destination tensor or state dict."""
-        dist = _get_torch_distributed()
+        _get_torch_distributed()
         torch = _get_torch()
 
         # Get sorted keys for consistent ordering (must match sender)
