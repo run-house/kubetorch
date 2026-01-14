@@ -18,7 +18,6 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Optional
 
-import httpx
 import typer
 import yaml
 from pydantic import BaseModel
@@ -36,6 +35,8 @@ from kubetorch.constants import MAX_PORT_TRIES
 from kubetorch.provisioning.utils import wait_for_port_forward
 
 from kubetorch.resources.compute.utils import is_port_available
+
+from kubetorch.serving.global_http_clients import get_sync_client
 from kubetorch.serving.utils import stream_logs_websocket_helper, StreamType
 from kubetorch.utils import hours_to_ns, http_not_found
 
@@ -251,7 +252,7 @@ def upload_report(
     )
 
     url = "https://auth.run.house/v1/billing/report"
-    resp = httpx.post(url, json=billing_request.model_dump())
+    resp = get_sync_client().post(url, json=billing_request.model_dump())
     if resp.status_code != 200:
         console.print("[red]Failed to send billing report[/red]")
         raise typer.Exit(1)

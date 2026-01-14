@@ -36,7 +36,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+import httpx
+
 from kubetorch.logger import get_logger
+from kubetorch.serving.global_http_clients import get_sync_client
 
 logger = get_logger(__name__)
 
@@ -1402,8 +1405,6 @@ class PodDataServer:
 
     def _mds_publish_gpu(self, keys: Union[str, List[str]]) -> bool:
         """Publish GPU data key(s) to metadata server. Accepts single key or list."""
-        import httpx
-
         if not self._pod_ip or not self._pod_name or not self._namespace:
             logger.error("Missing POD_IP, POD_NAME, or KT_NAMESPACE environment variables")
             return False
@@ -1425,7 +1426,7 @@ class PodDataServer:
                 "gpu_server_socket": self.socket_path,
             }
 
-            response = httpx.post(url, json=payload, timeout=30)
+            response = get_sync_client().post(url, json=payload, timeout=30)
             response.raise_for_status()
             return True
         except httpx.RequestError as e:
@@ -1434,8 +1435,6 @@ class PodDataServer:
 
     def _mds_get_gpu_source(self, keys: Union[str, List[str]]) -> Dict[str, Optional[dict]]:
         """Get GPU data source info from metadata server. Supports batch lookup."""
-        import httpx
-
         key_list = [keys] if isinstance(keys, str) else keys
 
         # Use batch endpoint with placeholder path key
@@ -1443,7 +1442,7 @@ class PodDataServer:
         payload = {"keys": key_list}
 
         try:
-            response = httpx.post(url, json=payload, timeout=30)
+            response = get_sync_client().post(url, json=payload, timeout=30)
             response.raise_for_status()
             data = response.json()
 

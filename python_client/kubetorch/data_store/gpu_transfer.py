@@ -27,7 +27,10 @@ BroadcastWindow support:
 import os
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
 
+import httpx
+
 from kubetorch.logger import get_logger
+from kubetorch.serving.global_http_clients import get_sync_client
 from kubetorch.serving.utils import is_running_in_kubernetes
 
 if TYPE_CHECKING:
@@ -643,13 +646,11 @@ class GPUTransferManager:
         """Notify that broadcast is complete."""
         from urllib.parse import quote
 
-        import httpx
-
         encoded_key = quote(key, safe="")
         url = f"{self.metadata_client.base_url}/api/v1/keys/{encoded_key}/gpu/quorum/{broadcast_id}/complete"
 
         try:
-            response = httpx.post(url, params={"pod_ip": pod_ip}, timeout=5)
+            response = get_sync_client().post(url, params={"pod_ip": pod_ip}, timeout=5)
             response.raise_for_status()
         except httpx.RequestError as e:
             logger.warning(f"Failed to notify broadcast completion: {e}")

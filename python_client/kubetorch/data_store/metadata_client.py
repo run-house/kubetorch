@@ -11,6 +11,7 @@ from urllib.parse import quote
 import httpx
 
 from kubetorch.logger import get_logger
+from kubetorch.serving.global_http_clients import get_sync_client
 from kubetorch.serving.utils import is_running_in_kubernetes
 
 from .types import BroadcastWindow, Lifespan
@@ -82,7 +83,7 @@ class MetadataClient:
             if external:
                 url += "?external=true"
 
-            response = httpx.get(url, timeout=5)
+            response = get_sync_client().get(url, timeout=5)
 
             # Handle 503 (all sources at max concurrent) - retry with random peer
             if response.status_code == 503 and retry_with_peers:
@@ -161,7 +162,7 @@ class MetadataClient:
             if service_name:
                 payload["service_name"] = service_name
 
-            response = httpx.post(
+            response = get_sync_client().post(
                 f"{self.base_url}/api/v1/keys/{encoded_key}/publish",
                 json=payload,
                 timeout=5,
@@ -187,7 +188,7 @@ class MetadataClient:
         try:
             # URL-encode the key to handle special characters
             encoded_key = quote(key, safe="")
-            response = httpx.post(
+            response = get_sync_client().post(
                 f"{self.base_url}/api/v1/keys/{encoded_key}/source/complete",
                 json={"ip": ip},
                 timeout=5,
@@ -217,7 +218,7 @@ class MetadataClient:
         """
         # URL-encode the key to handle special characters
         encoded_key = quote(key, safe="")
-        response = httpx.get(
+        response = get_sync_client().get(
             f"{self.base_url}/api/v1/keys/{encoded_key}",
             timeout=5,
         )
@@ -247,7 +248,7 @@ class MetadataClient:
         try:
             # URL-encode the key to handle special characters
             encoded_key = quote(key, safe="")
-            response = httpx.delete(
+            response = get_sync_client().delete(
                 f"{self.base_url}/api/v1/keys/{encoded_key}/sources/{pod_ip}",
                 timeout=5,
             )
@@ -275,7 +276,7 @@ class MetadataClient:
             url = f"{self.base_url}/api/v1/keys/{encoded_key}"
             if recursive:
                 url += "?recursive=true"
-            response = httpx.delete(url, timeout=30)  # Longer timeout for filesystem operations
+            response = get_sync_client().delete(url, timeout=30)  # Longer timeout for filesystem operations
             response.raise_for_status()
             return response.json()
         except httpx.RequestError as e:
@@ -295,7 +296,7 @@ class MetadataClient:
         try:
             encoded_key = quote(key, safe="")
             url = f"{self.base_url}/api/v1/keys/{encoded_key}/mkdir"
-            response = httpx.post(url, timeout=30)
+            response = get_sync_client().post(url, timeout=30)
             response.raise_for_status()
             return response.json()
         except httpx.RequestError as e:
@@ -317,7 +318,7 @@ class MetadataClient:
         """
         try:
             encoded_prefix = quote(prefix, safe="")
-            response = httpx.get(
+            response = get_sync_client().get(
                 f"{self.base_url}/api/v1/keys/list?prefix={encoded_prefix}",
                 timeout=5,
             )
@@ -354,7 +355,7 @@ class MetadataClient:
             if service_name:
                 payload["service_name"] = service_name
 
-            response = httpx.post(
+            response = get_sync_client().post(
                 f"{self.base_url}/api/v1/keys/{encoded_key}/store",
                 json=payload,
                 timeout=5,
@@ -402,7 +403,7 @@ class MetadataClient:
                 payload["ips"] = broadcast.ips
                 payload["group_id"] = broadcast.group_id
 
-            response = httpx.post(
+            response = get_sync_client().post(
                 f"{self.base_url}/api/v1/broadcast/join",
                 json=payload,
                 timeout=10,
@@ -425,7 +426,7 @@ class MetadataClient:
             dict with status, putters, getters, and other info
         """
         try:
-            response = httpx.get(
+            response = get_sync_client().get(
                 f"{self.base_url}/api/v1/broadcast/{broadcast_id}/status",
                 params={"pod_ip": pod_ip},
                 timeout=5,
@@ -448,7 +449,7 @@ class MetadataClient:
             True if successful, False otherwise
         """
         try:
-            response = httpx.post(
+            response = get_sync_client().post(
                 f"{self.base_url}/api/v1/broadcast/{broadcast_id}/complete",
                 params={"pod_ip": pod_ip},
                 timeout=5,
@@ -471,7 +472,7 @@ class MetadataClient:
             dict with deleted_count and success status
         """
         try:
-            response = httpx.delete(
+            response = get_sync_client().delete(
                 f"{self.base_url}/api/v1/services/{quote(service_name, safe='')}/cleanup",
                 params={"namespace": self.namespace},
                 timeout=30,

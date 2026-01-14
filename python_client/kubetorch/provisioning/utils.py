@@ -7,12 +7,11 @@ import warnings
 from pathlib import Path
 from typing import Dict, Optional
 
-import httpx
-
 from kubetorch import globals
 from kubetorch.logger import get_logger
 from kubetorch.provisioning.autoscaling import AutoscalingConfig
 from kubetorch.provisioning.constants import PROMETHEUS_SERVICE_NAME
+from kubetorch.serving.global_http_clients import get_sync_client
 from kubetorch.serving.utils import is_running_in_kubernetes
 from kubetorch.utils import http_not_found
 
@@ -105,7 +104,7 @@ def wait_for_port_forward(
             url = f"http://localhost:{local_port}" + health_endpoint
             try:
                 # Check if HTTP endpoint is ready
-                resp = httpx.get(url, timeout=2)
+                resp = get_sync_client().get(url, timeout=2)
                 if resp.status_code == 200:
                     if validate_kubetorch_versions:
                         check_kubetorch_versions(resp)
@@ -159,7 +158,7 @@ def check_loki_enabled(namespace: str = "default") -> bool:
         if is_running_in_kubernetes():
             loki_url = f"http://kubetorch-data-store.{namespace}.svc.cluster.local:3100/loki/api/v1/labels"
             try:
-                resp = httpx.get(loki_url, timeout=2)
+                resp = get_sync_client().get(loki_url, timeout=2)
                 if resp.status_code == 200:
                     return True
             except Exception:
@@ -189,7 +188,7 @@ def check_prometheus_enabled() -> bool:
         if is_running_in_kubernetes():
             prom_url = f"http://{PROMETHEUS_SERVICE_NAME}.{kt_namespace}.svc.cluster.local/api/v1/labels"
             try:
-                resp = httpx.get(prom_url, timeout=2)
+                resp = get_sync_client().get(prom_url, timeout=2)
                 if resp.status_code == 200:
                     return True
             except Exception:
