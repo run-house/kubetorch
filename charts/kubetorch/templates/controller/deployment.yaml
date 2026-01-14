@@ -81,6 +81,9 @@ spec:
               value: {{ .Values.kubetorchController.eventWatcher.batchSize | quote }}
             - name: EVENT_FLUSH_INTERVAL
               value: {{ .Values.kubetorchController.eventWatcher.flushInterval | quote }}
+            # Data store configuration
+            - name: DATA_STORE_METADATA_PORT
+              value: {{ .Values.dataStore.metadataPort | default 8081 | quote }}
           ports:
             - containerPort: {{ .Values.kubetorchController.port }}
               name: controller

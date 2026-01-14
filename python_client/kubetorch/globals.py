@@ -557,21 +557,22 @@ class ControllerClient:
         username: Optional[str] = None,
         exact_match: Optional[bool] = None,
     ):
-        params = {
-            "name": name,
+        """Fetch K8s resources that would be deleted by a teardown request."""
+        body = {
             "namespace": namespace,
+            "services": name,
             "prefix": prefix,
             "teardown_all": teardown_all,
             "username": username,
             "exact_match": exact_match,
         }
-        params = {k: v for k, v in params.items() if v is not None}
-        return self.get("/controller/teardown/list", json=params)
+        body = {k: v for k, v in body.items() if v is not None}
+        return self.get("/controller/teardown/list", json=body)
 
     def delete_services(
         self,
         namespace: str,
-        services: Optional[Union[str, dict, list]] = None,
+        services: Optional[Union[str, dict]] = None,
         force: Optional[bool] = None,
         prefix: Optional[bool] = None,
         teardown_all: Optional[bool] = None,
@@ -579,18 +580,18 @@ class ControllerClient:
         exact_match: Optional[bool] = None,
         ignore_not_found: Optional[bool] = None,
     ) -> Dict[str, Any]:
-        """Delete k8 Services + pools"""
-        params = {
-            "services": services,
+        """Delete K8s services and associated resources."""
+        body = {
             "namespace": namespace,
+            "services": services,
             "force": force,
             "prefix": prefix,
             "teardown_all": teardown_all,
             "username": username,
             "exact_match": exact_match,
         }
-        params = {k: v for k, v in params.items() if v is not None}
-        return self.delete("/controller/teardown", ignore_not_found=ignore_not_found, json=params)
+        body = {k: v for k, v in body.items() if v is not None and v != "" and v != []}
+        return self.delete("/controller/teardown", ignore_not_found=ignore_not_found, json=body)
 
     def list_services(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
         """List Services"""

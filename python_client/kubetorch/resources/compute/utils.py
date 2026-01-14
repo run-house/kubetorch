@@ -4,7 +4,7 @@ import os
 import socket
 import sys
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import kubetorch.globals
 from kubetorch.logger import get_logger
@@ -245,7 +245,45 @@ def load_configmaps(
         return []
 
 
-# ----------------- Resource Deletion Utils ----------------- #
+def delete_resources_for_services(
+    services: Union[str, List],
+    namespace: str = None,
+    force: bool = False,
+    prefix: Optional[bool] = None,
+    teardown_all: Optional[bool] = None,
+    username: Optional[str] = None,
+    exact_match: Optional[bool] = None,
+):
+    """Delete the relevant k8s resource(s) based on service type.
+
+    Uses the same teardown path as the Python API (module.teardown() -> service_manager.teardown_service()).
+    """
+
+    from kubetorch import globals
+
+    controller_client = globals.controller_client()
+    delete_result = controller_client.delete_services(
+        namespace=namespace,
+        services=services,
+        force=force,
+        prefix=prefix,
+        teardown_all=teardown_all,
+        username=username,
+        exact_match=exact_match,
+    )
+    return delete_result
+
+
+def print_byo_deletion_warning(byo_deleted_services: list, console=None):
+    byo_resources_teardown_msg = (
+        f"Resources for {','.join(byo_deleted_services)} were created outside Kubetorch. You are responsible for "
+        f"deleting the Kubernetes resources (pods, deployments, services, etc.)."
+    )
+
+    if console:
+        console.print(f"[bold yellow]{byo_resources_teardown_msg}[/bold yellow]")
+    else:
+        logger.warning(byo_resources_teardown_msg)
 
 
 def handle_controller_delete_error(service_name: str, controller_error: str, console=None):
@@ -311,17 +349,14 @@ def fetch_resources_for_teardown(
     teardown_all: bool = False,
     username: Optional[str] = None,
     exact_match: bool = False,
-) -> dict:
-    """Fetches the resources for a given service.
+) -> Dict[str, Any]:
+    """Fetches K8s resources that would be deleted for a given service.
 
-    Returns a dictionary with the following keys:
-    - services: {
-        [service_name]: {
-            "configmaps": List[str],
-            "pods": List[str],
-            "type": str,
-        }
-    }
+    Returns:
+        Dict with 'resources' key containing list of resource dicts, each with:
+            - name: Resource name
+            - kind: K8s kind (e.g., "Deployment", "Service", "RayCluster")
+            - api_version: K8s API version (e.g., "apps/v1", "serving.knative.dev/v1")
     """
     from kubetorch.resources.callables.module import Module
 
@@ -347,10 +382,9 @@ def fetch_resources_for_teardown(
             if username and not exact_match and not target.startswith(username + "-"):
                 services.append(username + "-" + target)
 
-    # Initialize controller client
     controller_client = kubetorch.globals.controller_client()
     try:
-        fetched_resources = controller_client.fetch_resources_for_teardown(
+        return controller_client.fetch_resources_for_teardown(
             namespace=namespace,
             name=services,
             prefix=prefix,
@@ -358,9 +392,9 @@ def fetch_resources_for_teardown(
             username=username,
             exact_match=exact_match,
         )
-        return fetched_resources
     except Exception as e:
         logger.warning(f"Failed to fetch resources for teardown: {e}")
+        return {"resources": []}
 
 
 # ----------------- Image Builder Utils ----------------- #

@@ -85,14 +85,16 @@ def validate_teardown_output(
     force_delete: bool = False,
     prefix: str = None,
 ):
+    # Strip ANSI codes for comparison
+    teardown_output = strip_ansi_codes(teardown_output)
+
     force_prefix_info_msg = "Force deleting" if force_delete else "Deleting"
     prefix_msg = f"all services with prefix {prefix}" if prefix else f"resources for service {service_name}"
     deletion_msg = f"{force_prefix_info_msg} {prefix_msg} in {namespace} namespace..."
     assert deletion_msg in teardown_output
 
     force_prefix_deletion_msg = "Force deleted" if force_delete else "Deleted"
-    assert f"✓ {force_prefix_deletion_msg} {service_name}" in teardown_output
-    assert f"✓ Deleted cached data for {service_name}" in teardown_output
+    assert f"✓ {force_prefix_deletion_msg} deployment {service_name}" in teardown_output
 
     validate_service_not_in_kt_list(service_name=service_name)
 
@@ -634,14 +636,16 @@ def test_cli_kt_teardown_wrong_usage():
     teardown_result = runner.invoke(app, ["teardown"], color=False, env={"COLUMNS": "200"})
 
     assert teardown_result.exit_code == 1
-    assert "Please provide a service name or use the --all or --prefix flags" in teardown_result.output
+    assert "Please provide a service name or use the --all or --prefix flags" in strip_ansi_codes(
+        teardown_result.output
+    )
 
     # Part B: teardown non-existing service
     service_name = "noSuchService"
     teardown_result = runner.invoke(app, ["teardown", service_name, "-y"], color=False, env={"COLUMNS": "200"})
 
     assert teardown_result.exit_code == 0
-    output = teardown_result.output
+    output = strip_ansi_codes(teardown_result.output)
     assert f"Deleting resources for service {service_name.lower()} in {kt.config.namespace} namespace..." in output
     assert f"Service {service_name.lower()} not found" in output
 
@@ -649,7 +653,7 @@ def test_cli_kt_teardown_wrong_usage():
     teardown_result = runner.invoke(app, ["teardown", "-p", service_name, "-y"], color=False, env={"COLUMNS": "200"})
 
     assert teardown_result.exit_code == 0
-    output = teardown_result.output
+    output = strip_ansi_codes(teardown_result.output)
     assert f"Deleting all services with prefix {service_name} in {kt.config.namespace} namespace" in output
     assert "No services found" in output
 
@@ -665,9 +669,9 @@ def test_cli_kt_teardown_wrong_usage():
     )
 
     assert teardown_result.exit_code == 0
-    output = teardown_result.output
+    output = strip_ansi_codes(teardown_result.output)
     assert f"Deleting resources for service {service_name.lower()} in {service_namespace}1 namespace..." in output
-    assert f"Service {service_name.lower()} not found"
+    assert f"Service {service_name.lower()} not found" in output
 
 
 #########################################

@@ -80,6 +80,7 @@ dataStore:
   image: ghcr.io/run-house/kubetorch-data-store:0.4.0
   imagePullPolicy: Always
   # serviceAccount: kubetorch-service-account  # Optional: use specific service account for Workload Identity
+  metadataPort: 8081  # Port for metadata server API
   maxConnections: 500  # Maximum concurrent rsync connections (increase for many worker pods)
   timeout: 600  # Connection timeout in seconds
   maxVerbosity: 0  # Log verbosity (0-4, use 0 for production, higher for debugging)

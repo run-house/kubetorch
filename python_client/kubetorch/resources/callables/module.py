@@ -10,13 +10,18 @@ from typing import Dict, List, Union
 
 import websockets
 
-import kubetorch.globals
 from kubetorch.globals import config, LoggingConfig, service_url, service_url_async
 from kubetorch.logger import get_logger
 from kubetorch.provisioning.constants import DEFAULT_K8S_SERVICE_PORT
 from kubetorch.provisioning.utils import has_k8s_credentials, KubernetesCredentialsError
 from kubetorch.resources.callables.utils import get_names_for_reload_fallbacks, locate_working_dir
-from kubetorch.resources.compute.utils import ControllerRequestError, ServiceTimeoutError, VersionMismatchError
+from kubetorch.resources.compute.utils import (
+    ControllerRequestError,
+    delete_resources_for_services,
+    print_byo_deletion_warning,
+    ServiceTimeoutError,
+    VersionMismatchError,
+)
 from kubetorch.serving.http_client import HTTPClient
 from kubetorch.serving.utils import clean_and_validate_k8s_name, generate_unique_request_id, is_running_in_kubernetes
 from kubetorch.utils import (
@@ -820,22 +825,22 @@ class Module:
         return None
 
     def teardown(self):
-        """Delete the service and all associated resources."""
-        logger.info(f"Deleting service: {self.service_name}")
+        """Delete the service and its associated resources."""
+        logger.debug(f"Deleting service {self.service_name}")
 
         try:
-            controller_client = kubetorch.globals.controller_client()
-            delete_result = controller_client.delete_services(
-                namespace=self.namespace, services=self.service_name, force=True, exact_match=True
+            delete_result = delete_resources_for_services(
+                services=[self.service_name],
+                namespace=self.namespace,
+                force=True,
+                exact_match=True,
             )
             msg = f"Successfully force deleted {self.service_name}"
 
-            # BYO (selector-based) compute mode:
-            # The user applied the Kubernetes manifest themselves (e.g., via kubectl, Helm, or ArgoCD).
-            # Kubetorch did not create or own the K8s resources, so teardown only removes
-            # Kubetorch controller state and associated metadata — not the underlying pods/deployments/services
+            # BYO compute: kubetorch does not own the K8s resource lifecycle
             byo_deleted_services = delete_result.pop("byo_deleted_services")
             if byo_deleted_services:
+                print_byo_deletion_warning(byo_deleted_services)
                 msg_suffix = "."
             else:
                 msg_suffix = " and its associated resources."
