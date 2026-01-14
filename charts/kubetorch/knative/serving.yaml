@@ -29,3 +29,6 @@ spec:
     deployment:
       # https://knative.dev/docs/serving/configuration/deployment/
       registries-skipping-tag-resolving: "kind.local,ko.local,dev.local,docker.io,index.docker.io,ghcr.io,dkr.ecr.amazonaws.com,gcr.io,us.gcr.io,eu.gcr.io,asia.gcr.io,pkg.dev,container-registry.oracle.com,ocir.io" # noqa
+    observability:
+      # https://knative.dev/docs/serving/observability/metrics/collecting-metrics/
+      metrics.request-metrics-backend-destination: "prometheus"

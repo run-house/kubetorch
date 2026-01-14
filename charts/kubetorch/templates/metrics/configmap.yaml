@@ -101,6 +101,6 @@ data:
           - source_labels: [__meta_kubernetes_pod_label_kubetorch_com_service]
             target_label: service
           - source_labels: [__meta_kubernetes_pod_container_port_number]
-            regex: "32300|8080|8000|9090"
+            regex: "32300|8080|8000|9090|9091"
             action: keep
 {{- end }}
