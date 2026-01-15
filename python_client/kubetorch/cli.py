@@ -15,8 +15,9 @@ from urllib.parse import urlparse
 
 import httpx
 
+from kubetorch.resources.compute.utils import ControllerRequestError, handle_controller_delete_error
+
 from kubetorch.serving.utils import is_running_in_kubernetes
-from kubetorch.utils import http_not_found
 
 from .cli_utils import (
     create_table_for_output,
@@ -53,7 +54,6 @@ try:
 except ImportError:
     raise ImportError("Please install the required CLI dependencies: `pip install 'kubetorch[client]'`")
 
-
 import kubetorch.provisioning.constants as provisioning_constants
 
 from kubetorch import globals
@@ -79,7 +79,6 @@ console = Console()
 # Register internal CLI commands if available
 if _INTERNAL_COMMANDS_AVAILABLE:
     register_internal_commands(app)
-
 
 logger = get_logger(__name__)
 
@@ -1478,10 +1477,14 @@ def kt_teardown(
         $ kt teardown --prefix test  # teardown resources with prefix "test"
     """
     from kubetorch import config
-    from kubetorch.resources.compute.utils import delete_resources_for_service, fetch_resources_for_teardown
+    from kubetorch.resources.callables.module import Module
+    from kubetorch.resources.compute.utils import _collect_modules, fetch_resources_for_teardown
 
-    name, yes, teardown_all, namespace, prefix = default_typer_values(name, yes, teardown_all, namespace, prefix)
+    name, yes, teardown_all, namespace, prefix, force, exact_match = default_typer_values(
+        name, yes, teardown_all, namespace, prefix, force, exact_match
+    )
 
+    force_deleting_prefix_msg = "Force deleting" if force else "Deleting"
     if teardown_all:
         if not config.username:
             console.print(
@@ -1490,160 +1493,135 @@ def kt_teardown(
             )
             raise typer.Exit(1)
 
-        console.print(f"Deleting all services for username [blue]{config.username}[/blue]...")
+        console.print(f"{force_deleting_prefix_msg} all services for username [blue]{config.username}[/blue]...")
 
     elif prefix:
         console.print(
-            f"Deleting all services with prefix [blue]{prefix}[/blue] in [blue]{namespace}[/blue] namespace..."
+            f"{force_deleting_prefix_msg} all services with prefix [blue]{prefix}[/blue] in [blue]{namespace}[/blue] namespace..."
         )
     else:
         if not name:
             console.print("[red]Please provide a service name or use the --all or --prefix flags[/red]")
             raise typer.Exit(1)
 
-        console.print(f"Finding resources for service [blue]{name}[/blue] in [blue]{namespace}[/blue] namespace...")
+        console.print(
+            f"{force_deleting_prefix_msg} resources for service [blue]{name}[/blue] in [blue]{namespace}[/blue] namespace..."
+        )
 
-    resources = fetch_resources_for_teardown(
-        namespace=namespace,
-        target=name,
-        prefix=prefix,
-        username=config.username if teardown_all else None,
-        exact_match=exact_match,
-    )
-
-    services = list(resources["services"].keys())
-    service_count = len(services)
-
-    if teardown_all or prefix:
-        service_word = "service" if service_count == 1 else "services"
-        if not services:
-            console.print("[yellow]No services found[/yellow]")
-            raise typer.Exit(0)
-        else:
-            console.print(f"[yellow]Found [bold]{service_count}[/bold] {service_word} to delete.[/yellow]")
-
-    if name and not services:
-        console.print(f"[red]Service [bold]{name}[/bold] not found[/red]")
-        raise typer.Exit(1)
-
-    # Confirmation prompt for multiple services
-    if not yes and service_count > 1:
-        for service_name in services:
-            console.print(f" • {service_name}")
-
-    # Confirmation prompt for single service
+    # Case 1: conformation or force flags are not provided. The flow will be as follows:
+    #   1. List the services that will be deleted
+    #   2. Ask for user's conformation
+    #   3. Delete if user confirms
     if not yes and not force:  # if --force is provided, we don't need additional confirmation
+        services = fetch_resources_for_teardown(
+            namespace=namespace,
+            target=name,
+            prefix=prefix,
+            teardown_all=teardown_all,
+            username=config.username if teardown_all else None,
+            exact_match=exact_match,
+        )
+        services_names = []
+        for service_type, service_names in services.items():
+            if service_type != "pools" and service_names:
+                services_names = services_names + list(service_names)
+
+        service_count = len(services_names)
+
+        if teardown_all or prefix:
+            service_word = "service" if service_count == 1 else "services"
+            if not services:
+                console.print("[red]No services found[/red]")
+                raise typer.Exit(0)
+            else:
+                console.print(f"[yellow]Found [bold]{service_count}[/bold] {service_word} to delete.[/yellow]")
+
+        if name and not services:
+            console.print(f"[red]Service [bold]{name}[/bold] not found[/red]")
+            raise typer.Exit(1)
+
+        # Confirmation prompt for multiple services
+        if not yes:
+            if service_count >= 1:
+                console.print("The following resources will be deleted:")
+                for service_name in services_names:
+                    console.print(f" • [reset]{service_name}")
+
+        # Confirmation prompt for single service
         confirm = typer.confirm("\nDo you want to proceed?")
         if not confirm:
             console.print("[yellow]Teardown cancelled[/yellow]")
             raise typer.Exit(0)
 
-    # Delete resources
-    if force:
-        console.print("\n[yellow]Force deleting resources...[/yellow]")
+        prefix = None  # we already listed the services, not prefix is required
+        teardown_all = None  # we already listed the services, not prefix is required
+
     else:
-        console.print("\n[dim]Deleting resources...[/dim]")
+        # Case when service_name is a module or file path (i.e. the `kt deploy` usage path)
+        if ":" in name or ".py" in name or "." in name:
+            to_down, _ = _collect_modules(name)
+            name = [mod.service_name for mod in to_down if isinstance(mod, Module)]
 
-    controller_client = globals.controller_client()
+        services = name
+        # Case 2: conformation or force flags are provided. We will list the services we need to delete based on one of the follwing:
+        #  * provided name
+        #  * the prefix flag
+        #  * all flag
+        # We already made sure that at least on of those is provided by the user.
 
-    service_types = set()
-    for name in services:
-        service_info = resources["services"][name]
-        configmaps = service_info["configmaps"]
-        service_type = service_info.get("type", "knative")
-        service_types.add(service_type)
+    try:
+        username = config.username if teardown_all else None
 
-        delete_resources_for_service(
-            configmaps=configmaps,
-            name=name,
-            service_type=service_type,
+        controller_client = globals.controller_client()
+        delete_result = controller_client.delete_services(
             namespace=namespace,
-            console=console,
+            services=services,
             force=force,
+            prefix=prefix,
+            teardown_all=teardown_all,
+            username=username,
+            exact_match=exact_match,
         )
 
-    # Force delete any remaining pods if --force flag is set
-    if force:
-        # Build list of service names to check for pods
-        # Include both found services and the original target name (in case service was already deleted)
-        service_names_to_check = list(services)
-        if name and name not in service_names_to_check:
-            service_names_to_check.append(name)
+        if isinstance(delete_result, str):
+            console.print(delete_result)
+        else:
+            deleted_services: dict = delete_result.get("services")
 
-        if service_names_to_check:
-            console.print("\n[yellow]Force deleting any remaining pods...[/yellow]")
-            for service_name in service_names_to_check:
-                try:
-                    # Get pods matching the service
-                    pods_result = controller_client.list_pods(
-                        namespace=namespace,
-                        label_selector=f"kubetorch.com/service={service_name}",
-                    )
-                    pods = pods_result.get("items", [])
+            # BYO (selector-based) compute mode:
+            # The user applied the Kubernetes manifest themselves (e.g., via kubectl, Helm, or ArgoCD).
+            # Kubetorch did not create or own the K8s resources, so teardown only removes
+            # Kubetorch controller state and associated metadata — not the underlying pods/deployments/services
 
-                    if pods:
-                        for pod in pods:
-                            pod_name = pod.get("metadata", {}).get("name")
-                            try:
-                                controller_client.delete_pod(
-                                    name=pod_name,
-                                    namespace=namespace,
-                                    grace_period_seconds=0,
-                                    propagation_policy="Background",
-                                )
-                                console.print(f"✓ Force deleted pod [blue]{pod_name}[/blue]")
-                            except Exception as e:
-                                if not http_not_found(e):
-                                    console.print(f"[red]Failed to delete pod {pod_name}: {e}[/red]")
-                except Exception as e:
-                    console.print(f"[red]Failed to list pods for service {service_name}: {e}[/red]")
+            byo_deleted_services = delete_result.pop("byo_deleted_services")
+            if byo_deleted_services:
+                byo_resources_teardown_msg = "Resources for the following services were created outside of Kubetorch. You are responsible for deleting the actual Kubernetes resources (pods, deployments, services, etc.)."
+                console.print(f"[bold yellow]{byo_resources_teardown_msg}[/bold yellow]")
+                for resource in byo_deleted_services:
+                    console.print(f"[bold yellow] • {resource}[/bold yellow]")
 
-        # Also check for any orphaned pods with kubetorch labels if using --all or --prefix
-        if teardown_all or prefix:
-            try:
-                label_selector = "kubetorch.com/service"
-                if teardown_all and config.username:
-                    label_selector += f",kubetorch.com/username={config.username}"
+            deleted_services = {
+                resource_type: deleted_resources
+                for resource_type, deleted_resources in deleted_services.items()
+                if deleted_resources
+            }
 
-                all_pods_result = controller_client.list_pods(namespace=namespace, label_selector=label_selector)
-                all_pods = all_pods_result.get("items", [])
+            force_deleted_msg_prefix = "✓ Force deleted" if force else "✓ Deleted"
 
-                # Filter by prefix if specified
-                if prefix:
-                    all_pods = [
-                        p
-                        for p in all_pods
-                        if p.get("metadata", {}).get("labels", {}).get("kubetorch.com/service", "").startswith(prefix)
-                    ]
+            for service_type in deleted_services:
+                deleted_resources = deleted_services.get(service_type)
+                for resource in deleted_resources:
+                    console.print(f"{force_deleted_msg_prefix} [blue]{resource}[/blue]")
+                    console.print(f"✓ Deleted cached data for [reset]{resource}")
 
-                # Delete any remaining pods not already handled
-                for pod in all_pods:
-                    pod_name = pod.get("metadata", {}).get("name")
-                    if pod_name not in [
-                        p.get("metadata", {}).get("name")
-                        for s in service_names_to_check
-                        for p in globals.controller_client()
-                        .list_pods(
-                            namespace=namespace,
-                            label_selector=f"kubetorch.com/service={s}",
-                        )
-                        .get("items", [])
-                    ]:
-                        try:
-                            controller_client.delete_pod(
-                                name=pod_name,
-                                namespace=namespace,
-                                grace_period_seconds=0,
-                                propagation_policy="Background",
-                            )
-                            console.print(f"✓ Force deleted orphaned pod [blue]{pod_name}[/blue]")
-                        except Exception as e:
-                            if not http_not_found(e):
-                                console.print(f"[red]Failed to delete orphaned pod {pod_name}: {e}[/red]")
-            except Exception as e:
-                console.print(f"[red]Failed to list orphaned pods: {e}[/red]")
+            console.print("\n[green]Teardown completed successfully[/green]")
 
-    console.print("\n[green]Teardown completed successfully[/green]")
+    except Exception as e:
+        if isinstance(e, ControllerRequestError):
+            handle_controller_delete_error(service_name=name, controller_error=str(e), console=console)
+        else:
+            console.print(f"[red] Failed to run `kt teardown`: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command("volumes")

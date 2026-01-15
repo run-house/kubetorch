@@ -10,19 +10,13 @@ from typing import Dict, List, Union
 
 import websockets
 
+import kubetorch.globals
 from kubetorch.globals import config, LoggingConfig, service_url, service_url_async
 from kubetorch.logger import get_logger
 from kubetorch.provisioning.constants import DEFAULT_K8S_SERVICE_PORT
 from kubetorch.provisioning.utils import has_k8s_credentials, KubernetesCredentialsError
 from kubetorch.resources.callables.utils import get_names_for_reload_fallbacks, locate_working_dir
-
-from kubetorch.resources.compute.utils import (
-    delete_cached_service_data,
-    delete_configmaps,
-    load_configmaps,
-    ServiceTimeoutError,
-    VersionMismatchError,
-)
+from kubetorch.resources.compute.utils import ControllerRequestError, ServiceTimeoutError, VersionMismatchError
 from kubetorch.serving.http_client import HTTPClient
 from kubetorch.serving.utils import clean_and_validate_k8s_name, generate_unique_request_id, is_running_in_kubernetes
 from kubetorch.utils import (
@@ -829,31 +823,26 @@ class Module:
         """Delete the service and all associated resources."""
         logger.info(f"Deleting service: {self.service_name}")
 
-        # Use the compute's service manager - it already knows the correct type!
-        teardown_success = self.compute.service_manager.teardown_service(
-            service_name=self.service_name,
-        )
-
-        if not teardown_success:
-            logger.error(f"Failed to teardown service {self.service_name}")
-            return
-
-        configmaps = load_configmaps(
-            service_name=self.service_name,
-            namespace=self.compute.namespace,
-        )
-        if configmaps:
-            logger.info(f"Deleting {len(configmaps)} configmap{'' if len(configmaps) == 1 else 's'}")
-            delete_configmaps(
-                configmaps=configmaps,
-                namespace=self.compute.namespace,
+        try:
+            controller_client = kubetorch.globals.controller_client()
+            delete_result = controller_client.delete_services(
+                namespace=self.namespace, services=self.service_name, force=True, exact_match=True
             )
+            msg = f"Successfully force deleted {self.service_name}"
 
-        logger.info("Deleting service data from cache in rsync pod")
-        delete_cached_service_data(
-            service_name=self.service_name,
-            namespace=self.compute.namespace,
-        )
+            # BYO (selector-based) compute mode:
+            # The user applied the Kubernetes manifest themselves (e.g., via kubectl, Helm, or ArgoCD).
+            # Kubetorch did not create or own the K8s resources, so teardown only removes
+            # Kubetorch controller state and associated metadata — not the underlying pods/deployments/services
+            byo_deleted_services = delete_result.pop("byo_deleted_services")
+            if byo_deleted_services:
+                msg_suffix = "."
+            else:
+                msg_suffix = " and its associated resources."
+            logger.info(f"{msg}{msg_suffix}")
+        except ControllerRequestError as e:
+            error_msg = str(e).split(":")[-1]
+            logger.error(f"Failed to delete {self.service_name}: {error_msg}")
 
     def _stream_launch_logs(
         self,

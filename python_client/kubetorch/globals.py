@@ -9,7 +9,7 @@ import time
 
 from dataclasses import dataclass
 from functools import cache
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import httpx
 
@@ -548,9 +548,49 @@ class ControllerClient:
         """Get a Service"""
         return self.get(f"/api/v1/namespaces/{namespace}/services/{name}", ignore_not_found=ignore_not_found)
 
-    def delete_service(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
-        """Delete a Service"""
-        return self.delete(f"/api/v1/namespaces/{namespace}/services/{name}", ignore_not_found=ignore_not_found)
+    def fetch_resources_for_teardown(
+        self,
+        namespace: str,
+        name: Optional[Union[str, dict, list]] = None,
+        prefix: Optional[bool] = None,
+        teardown_all: Optional[bool] = None,
+        username: Optional[str] = None,
+        exact_match: Optional[bool] = None,
+    ):
+        params = {
+            "name": name,
+            "namespace": namespace,
+            "prefix": prefix,
+            "teardown_all": teardown_all,
+            "username": username,
+            "exact_match": exact_match,
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        return self.get("/controller/teardown/list", json=params)
+
+    def delete_services(
+        self,
+        namespace: str,
+        services: Optional[Union[str, dict, list]] = None,
+        force: Optional[bool] = None,
+        prefix: Optional[bool] = None,
+        teardown_all: Optional[bool] = None,
+        username: Optional[str] = None,
+        exact_match: Optional[bool] = None,
+        ignore_not_found: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Delete k8 Services + pools"""
+        params = {
+            "services": services,
+            "namespace": namespace,
+            "force": force,
+            "prefix": prefix,
+            "teardown_all": teardown_all,
+            "username": username,
+            "exact_match": exact_match,
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        return self.delete("/controller/teardown", ignore_not_found=ignore_not_found, json=params)
 
     def list_services(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
         """List Services"""
@@ -565,25 +605,6 @@ class ControllerClient:
     def get_deployment(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
         """Get a Deployment"""
         return self.get(f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}", ignore_not_found=ignore_not_found)
-
-    def delete_deployment(
-        self,
-        namespace: str,
-        name: str,
-        grace_period_seconds: Optional[int] = None,
-        propagation_policy: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Delete a Deployment"""
-        params = {}
-        if grace_period_seconds is not None:
-            params["grace_period_seconds"] = grace_period_seconds
-        if propagation_policy is not None:
-            params["propagation_policy"] = propagation_policy
-        return self.delete(
-            f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}",
-            params=params if params else None,
-            ignore_not_found=True,
-        )
 
     def patch_deployment(self, namespace: str, name: str, body: Dict[str, Any]) -> Dict[str, Any]:
         """Patch a Deployment"""
@@ -635,21 +656,6 @@ class ControllerClient:
     def get_pod(self, namespace: str, name: str) -> Dict[str, Any]:
         """Get a Pod"""
         return self.get(f"/api/v1/namespaces/{namespace}/pods/{name}")
-
-    def delete_pod(
-        self,
-        namespace: str,
-        name: str,
-        grace_period_seconds: Optional[int] = None,
-        propagation_policy: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Delete a Pod"""
-        params = {}
-        if grace_period_seconds is not None:
-            params["grace_period_seconds"] = str(grace_period_seconds)
-        if propagation_policy is not None:
-            params["propagation_policy"] = propagation_policy
-        return self.delete(f"/api/v1/namespaces/{namespace}/pods/{name}", params=params, ignore_not_found=True)
 
     def get_pod_logs(
         self, namespace: str, name: str, container: Optional[str] = None, tail_lines: Optional[int] = None
@@ -714,21 +720,6 @@ class ControllerClient:
         """Get a ConfigMap"""
         return self.get(f"/api/v1/namespaces/{namespace}/configmaps/{name}")
 
-    def delete_config_map(
-        self,
-        namespace: str,
-        name: str,
-        grace_period_seconds: Optional[int] = None,
-        propagation_policy: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Delete a ConfigMap"""
-        params = {}
-        if grace_period_seconds is not None:
-            params["grace_period_seconds"] = str(grace_period_seconds)
-        if propagation_policy:
-            params["propagation_policy"] = propagation_policy
-        return self.delete(f"/api/v1/namespaces/{namespace}/configmaps/{name}", params=params)
-
     # Custom Resource Definitions (CRDs)
     def create_namespaced_custom_object(
         self, group: str, version: str, namespace: str, plural: str, body: Dict[str, Any], params: Dict[str, Any] = None
@@ -749,24 +740,6 @@ class ControllerClient:
     ) -> Dict[str, Any]:
         """Patch a custom resource"""
         return self.patch(f"/apis/{group}/{version}/namespaces/{namespace}/{plural}/{name}", json=body)
-
-    def delete_namespaced_custom_object(
-        self,
-        group: str,
-        version: str,
-        namespace: str,
-        plural: str,
-        name: str,
-        grace_period_seconds: Optional[int] = None,
-        propagation_policy: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Delete a custom resource"""
-        params = {}
-        if grace_period_seconds is not None:
-            params["grace_period_seconds"] = str(grace_period_seconds)
-        if propagation_policy:
-            params["propagation_policy"] = propagation_policy
-        return self.delete(f"/apis/{group}/{version}/namespaces/{namespace}/{plural}/{name}", params=params)
 
     def list_namespaced_custom_object(
         self,
@@ -798,21 +771,6 @@ class ControllerClient:
     def get_namespaced_replica_set(self, namespace: str, name: str) -> Dict[str, Any]:
         """Get a ReplicaSet"""
         return self.get(f"/apis/apps/v1/namespaces/{namespace}/replicasets/{name}")
-
-    def delete_namespaced_replica_set(
-        self,
-        namespace: str,
-        name: str,
-        grace_period_seconds: Optional[int] = None,
-        propagation_policy: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Delete a ReplicaSet"""
-        params = {}
-        if grace_period_seconds is not None:
-            params["grace_period_seconds"] = str(grace_period_seconds)
-        if propagation_policy:
-            params["propagation_policy"] = propagation_policy
-        return self.delete(f"/apis/apps/v1/namespaces/{namespace}/replicasets/{name}", params=params)
 
     def list_cluster_custom_object(
         self,
