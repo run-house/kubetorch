@@ -3,6 +3,7 @@ import os
 import kubetorch.globals
 import kubetorch.provisioning.constants as provisioning_constants
 import pytest
+from kubernetes import client as k8s_client
 
 from .utils import create_random_name_prefix, simple_summer
 
@@ -19,7 +20,6 @@ def setup_test_env():
 def test_autodown_annotation():
     import kubetorch as kt
 
-    controller = kt.globals.controller_client()
     name = f"{create_random_name_prefix()}-autodown-annotation"
     namespace = kt.globals.config.namespace
     inactivity_ttl = "10m"
@@ -32,7 +32,8 @@ def test_autodown_annotation():
 
     # For Knative, check the Knative Service resource (CRD) for annotations
     # Knative manages its own K8s Service which doesn't have our annotations
-    knative_service = controller.get_namespaced_custom_object(
+    custom_api = k8s_client.CustomObjectsApi()
+    knative_service = custom_api.get_namespaced_custom_object(
         group="serving.knative.dev",
         version="v1",
         namespace=namespace,
@@ -48,11 +49,12 @@ def test_autodown_annotation():
     )
 
     # Check that the namespace is in the watch namespaces
-    cronjob_configmap = controller.get_config_map(
+    v1 = k8s_client.CoreV1Api()
+    cronjob_configmap = v1.read_namespaced_config_map(
         name=provisioning_constants.TTL_CONTROLLER_CONFIGMAP_NAME,
         namespace=kubetorch.globals.config.install_namespace,
     )
-    assert namespace in cronjob_configmap["data"]["WATCH_NAMESPACES"].split(",")
+    assert namespace in cronjob_configmap.data["WATCH_NAMESPACES"].split(",")
 
 
 @pytest.mark.level("minimal")
@@ -105,11 +107,12 @@ def test_autodown_deployment():
     assert deployment_labels.get(provisioning_constants.KT_APP_LABEL) == remote_fn.service_name
 
     # Check that the namespace is in the watch namespaces
-    cronjob_configmap = controller.get_config_map(
+    v1 = k8s_client.CoreV1Api()
+    cronjob_configmap = v1.read_namespaced_config_map(
         name=provisioning_constants.TTL_CONTROLLER_CONFIGMAP_NAME,
         namespace=kubetorch.globals.config.install_namespace,
     )
-    assert namespace in cronjob_configmap["data"]["WATCH_NAMESPACES"].split(",")
+    assert namespace in cronjob_configmap.data["WATCH_NAMESPACES"].split(",")
 
 
 @pytest.mark.level("minimal")

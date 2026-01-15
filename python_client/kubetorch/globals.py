@@ -593,11 +593,6 @@ class ControllerClient:
         body = {k: v for k, v in body.items() if v is not None and v != "" and v != []}
         return self.delete("/controller/teardown", ignore_not_found=ignore_not_found, json=body)
 
-    def list_services(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List Services"""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/api/v1/namespaces/{namespace}/services", params=params)
-
     # Deployments
     def create_deployment(self, namespace: str, body: Dict[str, Any]) -> Dict[str, Any]:
         """Create a Deployment"""
@@ -606,20 +601,6 @@ class ControllerClient:
     def get_deployment(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
         """Get a Deployment"""
         return self.get(f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}", ignore_not_found=ignore_not_found)
-
-    def patch_deployment(self, namespace: str, name: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        """Patch a Deployment"""
-        return self.patch(f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}", json=body)
-
-    def list_deployments(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List Deployments"""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/apis/apps/v1/namespaces/{namespace}/deployments", params=params)
-
-    # Endpoints
-    def get_endpoints(self, namespace: str, name: str) -> Dict[str, Any]:
-        """Get Endpoints for a Service"""
-        return self.get(f"/api/v1/namespaces/{namespace}/endpoints/{name}")
 
     # Secrets
     def create_secret(self, namespace: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -654,9 +635,9 @@ class ControllerClient:
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get(f"/api/v1/namespaces/{namespace}/pods", params=params)
 
-    def get_pod(self, namespace: str, name: str) -> Dict[str, Any]:
+    def get_pod(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
         """Get a Pod"""
-        return self.get(f"/api/v1/namespaces/{namespace}/pods/{name}")
+        return self.get(f"/api/v1/namespaces/{namespace}/pods/{name}", ignore_not_found=ignore_not_found)
 
     def get_pod_logs(
         self, namespace: str, name: str, container: Optional[str] = None, tail_lines: Optional[int] = None
@@ -677,49 +658,22 @@ class ControllerClient:
             logger.error(f"GET {url} - {e}")
             raise
 
-    # Namespaces
-    def get_namespace(self, name: str) -> Dict[str, Any]:
-        """Get a Namespace"""
-        return self.get(f"/api/v1/namespaces/{name}")
-
-    def list_namespaces(self) -> Dict[str, Any]:
-        """List Namespaces"""
-        return self.get("/api/v1/namespaces")
-
     # Nodes
     def list_nodes(self, label_selector: Optional[str] = None) -> Dict[str, Any]:
         """List Nodes"""
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get("/api/v1/nodes", params=params)
 
-    def get_node(self, name: str) -> Dict[str, Any]:
-        """Get a Node"""
-        return self.get(f"/api/v1/nodes/{name}")
-
     # StorageClasses
     def list_storage_classes(self) -> Dict[str, Any]:
         """List StorageClasses"""
         return self.get("/apis/storage.k8s.io/v1/storageclasses")
-
-    def get_storage_class(self, name: str) -> Dict[str, Any]:
-        """Get a StorageClass"""
-        return self.get(f"/apis/storage.k8s.io/v1/storageclasses/{name}")
-
-    # Events
-    def list_events(self, namespace: str, field_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List Kubernetes Events via controller."""
-        params = {"field_selector": field_selector} if field_selector else {}
-        return self.get(f"/api/v1/namespaces/{namespace}/events", params=params)
 
     # ConfigMaps
     def list_config_maps(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
         """List ConfigMaps"""
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get(f"/api/v1/namespaces/{namespace}/configmaps", params=params)
-
-    def get_config_map(self, namespace: str, name: str) -> Dict[str, Any]:
-        """Get a ConfigMap"""
-        return self.get(f"/api/v1/namespaces/{namespace}/configmaps/{name}")
 
     # Custom Resource Definitions (CRDs)
     def create_namespaced_custom_object(
@@ -736,53 +690,9 @@ class ControllerClient:
             f"/apis/{group}/{version}/namespaces/{namespace}/{plural}/{name}", ignore_not_found=ignore_not_found
         )
 
-    def patch_namespaced_custom_object(
-        self, group: str, version: str, namespace: str, plural: str, name: str, body: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Patch a custom resource"""
-        return self.patch(f"/apis/{group}/{version}/namespaces/{namespace}/{plural}/{name}", json=body)
-
-    def list_namespaced_custom_object(
-        self,
-        group: str,
-        version: str,
-        namespace: str,
-        plural: str,
-        label_selector: Optional[str] = None,
-        ignore_not_found=False,
-    ) -> Dict[str, Any]:
-        """List custom resources in a namespace"""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(
-            f"/apis/{group}/{version}/namespaces/{namespace}/{plural}",
-            params=params,
-            ignore_not_found=ignore_not_found,
-        )
-
     def list_ingresses(self, namespace: str, label_selector: str = None):
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get(f"/apis/networking.k8s.io/v1/namespaces/{namespace}/ingresses", params=params)
-
-    # ReplicaSets
-    def list_namespaced_replica_set(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List ReplicaSets in a namespace."""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/apis/apps/v1/namespaces/{namespace}/replicasets", params=params)
-
-    def get_namespaced_replica_set(self, namespace: str, name: str) -> Dict[str, Any]:
-        """Get a ReplicaSet"""
-        return self.get(f"/apis/apps/v1/namespaces/{namespace}/replicasets/{name}")
-
-    def list_cluster_custom_object(
-        self,
-        group: str,
-        version: str,
-        plural: str,
-        label_selector: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """List cluster-scoped custom resources"""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/apis/{group}/{version}/{plural}", params=params)
 
     def register_pool(
         self,

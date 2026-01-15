@@ -701,19 +701,13 @@ class ServiceManager:
 
     def get_resource(self, service_name: str) -> dict:
         """Get a resource by name."""
-        if self.resource_type == "deployment":
-            return self.controller_client.get_deployment(
-                namespace=self.namespace,
-                name=service_name,
-            )
-        else:
-            return self.controller_client.get_namespaced_custom_object(
-                group=self.api_group,
-                version=self.api_version,
-                namespace=self.namespace,
-                plural=self.api_plural,
-                name=service_name,
-            )
+        return self.controller_client.get_namespaced_custom_object(
+            group=self.api_group,
+            version=self.api_version,
+            namespace=self.namespace,
+            plural=self.api_plural,
+            name=service_name,
+        )
 
     def get_deployment_timestamp_annotation(self, service_name: str) -> Optional[str]:
         """Get deployment timestamp annotation from a resource."""
