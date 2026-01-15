@@ -253,7 +253,7 @@ class ControllerWebSocket:
         """
         global _METADATA_RECEIVED
 
-        module_info = metadata.get("module", {})
+        module_info = metadata.get("module") or {}
         service_name = metadata.get("service_name")
         namespace = metadata.get("namespace")
 
@@ -308,7 +308,7 @@ class ControllerWebSocket:
             os.environ["KT_USERNAME"] = metadata["username"]
 
         # Apply runtime config - these can change between deploys
-        runtime_config = metadata.get("runtime_config", {})
+        runtime_config = metadata.get("runtime_config") or {}
         if runtime_config.get("log_streaming_enabled") is not None:
             os.environ["KT_LOG_STREAMING_ENABLED"] = str(runtime_config["log_streaming_enabled"])
         if runtime_config.get("metrics_enabled") is not None:
@@ -1488,8 +1488,8 @@ def _apply_metadata_from_dict(metadata: dict):
 
     Similar to ControllerWebSocket._apply_metadata() but takes a dict directly.
     """
-    module = metadata.get("module", {})
-    runtime_config = metadata.get("runtime_config", {})
+    module = metadata.get("module") or {}
+    runtime_config = metadata.get("runtime_config") or {}
 
     # Set module env vars
     if module.get("module_name"):
@@ -1708,7 +1708,7 @@ def _parse_callable_params(
 
         # Default JSON handling
         args = params.get("args", [])
-        kwargs = params.get("kwargs", {})
+        kwargs = params.get("kwargs") or {}
         debugger: dict = params.get("debugger", None) if params else None
         if debugger:
             debug_mode = debugger.get("mode")
