@@ -1464,8 +1464,10 @@ def package_exception(exc: Exception):
     if hasattr(exc, "__getstate__"):
         try:
             state = exc.__getstate__()
+            json.dumps(state)
         except Exception as e:
             logger.debug(f"Could not serialize exception state for {error_type}: {e}")
+            state = None
 
     error_response = ErrorResponse(
         error_type=error_type,
