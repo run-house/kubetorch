@@ -28,11 +28,9 @@ kubetorchController:
 
   resources:
     cpu:
-      request: "200m"   # Minimum guaranteed CPU (0.2 cores)
-      limit: "2000m"    # Maximum burst CPU (2 cores) for 8 workers
+      request: "1"   # Minimum guaranteed CPU
     memory:
       request: "2Gi"    # Minimum guaranteed memory
-      limit: "4Gi"      # Maximum memory for 8 workers + connection pools + headroom
 
   tolerations: []
   affinity: {}
@@ -51,10 +49,8 @@ kubetorchController:
     resources:
       cpu:
         request: "200m"
-        limit: "1"
       memory:
         request: "256Mi"
-        limit: "512Mi"
 
 nvidia-device-plugin:
   enabled: true # set to `false` to disable GPU support
@@ -89,10 +85,8 @@ dataStore:
     request: 1
   memory:
     request: 4Gi
-    limit: 8Gi
   ephemeralStorage: # adjust based on expected node disk size
     request: 5Gi
-    limit: 10Gi
   storage:
     size: 100Gi  # Size of persistent volume
     storageClassName: ""  # Leave empty to use default storage class
