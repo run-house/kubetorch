@@ -880,63 +880,17 @@ def get_ingress_host(ingress):
 
 
 def detect_deployment_mode(name: str, namespace: str):
-    """Detect if a service is deployed as Knative, Deployment, or RayCluster."""
     controller_client = globals.controller_client()
-
-    # First try Deployment
-    try:
-        obj = controller_client.get_deployment(name=name, namespace=namespace)
-        if isinstance(obj, dict) and obj.get("kind") == "Deployment":
-            return "deployment"
-    except Exception as e:
-        if not http_not_found(e):
-            raise
-
-    # Then try Knative
-    try:
-        obj = controller_client.get_namespaced_custom_object(
-            group="serving.knative.dev",
-            version="v1",
-            namespace=namespace,
-            plural="services",
-            name=name,
-        )
-        if isinstance(obj, dict) and obj.get("kind") == "Service":
-            return "knative"
-    except Exception as e:
-        if not http_not_found(e):
-            raise
-
-    # Then try RayCluster
-    try:
-        obj = controller_client.get_namespaced_custom_object(
-            group="ray.io",
-            version="v1",
-            namespace=namespace,
-            plural="rayclusters",
-            name=name,
-        )
-        return "raycluster"
-    except Exception as e:
-        if not http_not_found(e):
-            raise
-
-    # Then try TrainJobs
-    from kubetorch.provisioning.utils import SUPPORTED_TRAINING_JOBS
-
-    for kind in SUPPORTED_TRAINING_JOBS:
-        try:
-            controller_client.get_namespaced_custom_object(
-                group="kubeflow.org",
-                version="v1",
-                namespace=namespace,
-                plural=kind.lower() + "s",
-                name=name,
-            )
-            return kind.lower()
-        except Exception as e:
-            if not http_not_found(e):
-                raise
+    resources = controller_client.discover_resources(namespace=namespace, name_filter=name)
+    # extract resource_kind from the controller DB
+    for pool in resources.get("pools", []):
+        if pool.get("name") == name:
+            resource_kind = pool.get("resource_kind", "")
+            if resource_kind:
+                kind_lower = resource_kind.lower()
+                if kind_lower == "knativeservice":
+                    return "knative"
+                return kind_lower
 
     return None
 

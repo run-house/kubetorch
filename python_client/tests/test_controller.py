@@ -3,6 +3,7 @@ import os
 import httpx
 import kubetorch as kt
 import pytest
+from kubernetes import client as k8s_client, config as k8s_config
 
 from kubetorch.resources.secrets import Secret
 from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecretsClient
@@ -370,10 +371,6 @@ def test_storageclass_operations():
     assert "items" in scs
     assert len(scs["items"]) > 0
 
-    sc_name = scs["items"][0]["metadata"]["name"]
-    sc = controller_client.get_storage_class(name=sc_name)
-    assert sc["kind"] == "StorageClass"
-
 
 # =============================================================================
 # Ingress Tests - /apis/networking.k8s.io/v1/namespaces/{ns}/ingresses
@@ -409,11 +406,13 @@ def test_controller_http_methods():
     """Test base HTTP methods (GET/POST/PATCH/DELETE)"""
     controller_client = kt.globals.controller_client()
 
-    result = controller_client.get(f"/api/v1/namespaces/{kt.config.namespace}/services")
+    # Test GET with list endpoint
+    result = controller_client.list_pods(namespace=kt.config.namespace)
     assert result is not None
     assert "items" in result
 
-    result = controller_client.get(f"/api/v1/namespaces/{kt.config.namespace}/pods/nonexistent", ignore_not_found=True)
+    # Test GET with ignore_not_found
+    result = controller_client.get_pod(namespace=kt.config.namespace, name="nonexistent", ignore_not_found=True)
     assert result is None
 
 
@@ -473,8 +472,6 @@ def test_all_list_operations_structure():
     # Only test namespace-scoped resources (controller has namespace-level permissions)
     list_ops = [
         ("list_pvcs", {"namespace": namespace}),
-        ("list_services", {"namespace": namespace}),
-        ("list_deployments", {"namespace": namespace}),
         ("list_secrets", {"namespace": namespace}),
         ("list_pods", {"namespace": namespace}),
         ("list_config_maps", {"namespace": namespace}),
@@ -566,11 +563,11 @@ def test_integration_full_stack():
 
 
 # =============================================================================
-# Service & Endpoints Tests
+# Service Tests
 # =============================================================================
 @pytest.mark.level("minimal")
 def test_service_operations():
-    """Test GET /api/v1/namespaces/{ns}/services and /{name}"""
+    """Test GET /api/v1/namespaces/{ns}/services/{name}"""
     from tests.utils import get_test_fn_name, summer
 
     service_name = get_test_fn_name()
@@ -588,45 +585,13 @@ def test_service_operations():
     assert service["metadata"]["name"] == actual_service_name
     assert service["kind"] == "Service"
 
-    services = controller_client.list_services(namespace=namespace)
-    assert "items" in services
-    service_names = [s["metadata"]["name"] for s in services["items"]]
-    assert actual_service_name in service_names
-
-    labeled_services = controller_client.list_services(
-        namespace=namespace, label_selector=f"kubetorch.com/service={actual_service_name}"
-    )
-    assert len(labeled_services["items"]) > 0
-
-
-@pytest.mark.level("minimal")
-def test_get_endpoints():
-    """Test GET /api/v1/namespaces/{ns}/endpoints/{name}"""
-    from tests.utils import get_test_fn_name, summer
-
-    service_name = get_test_fn_name()
-
-    remote_fn = kt.fn(summer, name=service_name).to(kt.Compute(cpus=".01", gpu_anti_affinity=True))
-    result = remote_fn(1, 2)
-    assert result == 3
-
-    controller_client = kt.globals.controller_client()
-    namespace = remote_fn.compute.namespace
-    actual_service_name = remote_fn.service_name
-
-    endpoints = controller_client.get_endpoints(namespace=namespace, name=actual_service_name)
-
-    assert endpoints is not None
-    assert endpoints["kind"] == "Endpoints"
-    assert endpoints["metadata"]["name"] == actual_service_name
-
 
 # =============================================================================
 # Deployment Tests
 # =============================================================================
 @pytest.mark.level("minimal")
 def test_deployment_operations():
-    """Test Deployment CRUD and PATCH operations"""
+    """Test GET /apis/apps/v1/namespaces/{ns}/deployments/{name}"""
     from tests.utils import get_test_fn_name, summer
 
     service_name = get_test_fn_name()
@@ -641,13 +606,6 @@ def test_deployment_operations():
     deployment = controller_client.get_deployment(namespace=namespace, name=actual_service_name)
     assert deployment is not None
     assert deployment["kind"] == "Deployment"
-
-    patch_body = {"metadata": {"labels": {"test-label": "patched"}}}
-    patched = controller_client.patch_deployment(namespace=namespace, name=actual_service_name, body=patch_body)
-    assert patched["metadata"]["labels"]["test-label"] == "patched"
-
-    deployments = controller_client.list_deployments(namespace=namespace)
-    assert actual_service_name in [d["metadata"]["name"] for d in deployments["items"]]
 
 
 # =============================================================================
@@ -669,15 +627,6 @@ def test_configmap_operations():
 
     configmaps = controller_client.list_config_maps(namespace=namespace)
     assert "items" in configmaps
-
-    cms = controller_client.list_config_maps(
-        namespace=namespace, label_selector=f"kubetorch.com/service={service_name}"
-    )
-
-    if len(cms["items"]) > 0:
-        cm_name = cms["items"][0]["metadata"]["name"]
-        cm = controller_client.get_config_map(namespace=namespace, name=cm_name)
-        assert cm["kind"] == "ConfigMap"
 
 
 # =============================================================================
@@ -714,67 +663,11 @@ def test_pod_get_and_logs():
 
 
 # =============================================================================
-# Events Tests
-# =============================================================================
-@pytest.mark.level("minimal")
-def test_events_operations():
-    """Test GET /api/v1/namespaces/{ns}/events"""
-    from tests.utils import get_test_fn_name, summer
-
-    service_name = get_test_fn_name()
-    remote_fn = kt.fn(summer, name=service_name).to(kt.Compute(cpus=".01", gpu_anti_affinity=True))
-    result = remote_fn(1, 2)
-    assert result == 3
-
-    controller_client = kt.globals.controller_client()
-    namespace = remote_fn.compute.namespace
-
-    events = controller_client.list_events(namespace=namespace)
-    assert "items" in events
-
-    pods = controller_client.list_pods(namespace=namespace, label_selector=f"kubetorch.com/service={service_name}")
-    if len(pods["items"]) > 0:
-        pod_name = pods["items"][0]["metadata"]["name"]
-        pod_events = controller_client.list_events(
-            namespace=namespace, field_selector=f"involvedObject.name={pod_name}"
-        )
-        assert "items" in pod_events
-
-
-# =============================================================================
-# ReplicaSet Tests
-# =============================================================================
-@pytest.mark.level("minimal")
-def test_replicaset_operations():
-    """Test GET /apis/apps/v1/namespaces/{ns}/replicasets"""
-    from tests.utils import get_test_fn_name, summer
-
-    service_name = get_test_fn_name()
-    remote_fn = kt.fn(summer, name=service_name).to(kt.Compute(cpus=".01", gpu_anti_affinity=True))
-    result = remote_fn(1, 2)
-    assert result == 3
-
-    controller_client = kt.globals.controller_client()
-    namespace = remote_fn.compute.namespace
-    actual_service_name = remote_fn.service_name
-
-    replicasets = controller_client.list_namespaced_replica_set(
-        namespace=namespace, label_selector=f"kubetorch.com/service={actual_service_name}"
-    )
-    assert "items" in replicasets
-    assert len(replicasets["items"]) > 0
-
-    rs_name = replicasets["items"][0]["metadata"]["name"]
-    rs = controller_client.get_namespaced_replica_set(namespace=namespace, name=rs_name)
-    assert rs["kind"] == "ReplicaSet"
-
-
-# =============================================================================
 # Custom Resource Tests
 # =============================================================================
 @pytest.mark.level("minimal")
 def test_custom_object_knative():
-    """Test Custom Object operations for Knative Services"""
+    """Test Custom Object GET for Knative Services"""
     from tests.utils import get_test_fn_name, summer
 
     service_name = get_test_fn_name()
@@ -784,11 +677,17 @@ def test_custom_object_knative():
     result = remote_fn(1, 2)
     assert result == 3
 
-    controller_client = kt.globals.controller_client()
     namespace = remote_fn.compute.namespace
     actual_service_name = remote_fn.service_name
 
-    ksvc = controller_client.get_namespaced_custom_object(
+    # Load k8s config
+    try:
+        k8s_config.load_incluster_config()
+    except k8s_config.ConfigException:
+        k8s_config.load_kube_config()
+
+    custom_api = k8s_client.CustomObjectsApi()
+    ksvc = custom_api.get_namespaced_custom_object(
         group="serving.knative.dev",
         version="v1",
         namespace=namespace,
@@ -798,29 +697,10 @@ def test_custom_object_knative():
     assert ksvc["kind"] == "Service"
     assert ksvc["apiVersion"] == "serving.knative.dev/v1"
 
-    ksvcs = controller_client.list_namespaced_custom_object(
-        group="serving.knative.dev",
-        version="v1",
-        namespace=namespace,
-        plural="services",
-    )
-    assert actual_service_name in [s["metadata"]["name"] for s in ksvcs["items"]]
-
-    patch_body = {"metadata": {"labels": {"custom-label": "patched"}}}
-    patched = controller_client.patch_namespaced_custom_object(
-        group="serving.knative.dev",
-        version="v1",
-        namespace=namespace,
-        plural="services",
-        name=actual_service_name,
-        body=patch_body,
-    )
-    assert patched["metadata"]["labels"]["custom-label"] == "patched"
-
 
 @pytest.mark.level("minimal")
 def test_custom_object_ray():
-    """Test Custom Object operations for Ray Clusters"""
+    """Test Custom Object GET for Ray Clusters"""
     from tests.utils import get_test_fn_name, summer
 
     service_name = get_test_fn_name()
@@ -836,12 +716,17 @@ def test_custom_object_ray():
     result = remote_fn(1, 2)
     assert result == 3
 
-    controller_client = kt.globals.controller_client()
     namespace = remote_fn.compute.namespace
     actual_service_name = remote_fn.service_name
 
-    # Test get RayCluster
-    raycluster = controller_client.get_namespaced_custom_object(
+    # Load k8s config
+    try:
+        k8s_config.load_incluster_config()
+    except k8s_config.ConfigException:
+        k8s_config.load_kube_config()
+
+    custom_api = k8s_client.CustomObjectsApi()
+    raycluster = custom_api.get_namespaced_custom_object(
         group="ray.io",
         version="v1",
         namespace=namespace,
@@ -850,22 +735,3 @@ def test_custom_object_ray():
     )
     assert raycluster["kind"] == "RayCluster"
     assert raycluster["apiVersion"] == "ray.io/v1"
-
-    rayclusters = controller_client.list_namespaced_custom_object(
-        group="ray.io",
-        version="v1",
-        namespace=namespace,
-        plural="rayclusters",
-    )
-    assert actual_service_name in [rc["metadata"]["name"] for rc in rayclusters["items"]]
-
-    patch_body = {"metadata": {"labels": {"custom-label": "ray-patched"}}}
-    patched = controller_client.patch_namespaced_custom_object(
-        group="ray.io",
-        version="v1",
-        namespace=namespace,
-        plural="rayclusters",
-        name=actual_service_name,
-        body=patch_body,
-    )
-    assert patched["metadata"]["labels"]["custom-label"] == "ray-patched"
