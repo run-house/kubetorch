@@ -51,6 +51,7 @@ class Module:
         self._serialization = "json"  # Default serialization format
         self._async = False
         self._remote_pointers = None
+        self._container_project_root = None
         self._service_name = None
 
         self.pointers = pointers
@@ -119,15 +120,25 @@ class Module:
         source_dir_name = Path(source_dir).name
         if self.compute.working_dir is not None:
             container_module_path = str(Path(self.compute.working_dir) / source_dir_name / relative_module_path)
+            self._container_project_root = str(Path(self.compute.working_dir) / source_dir_name)
         else:
             # Leave it as relative path
             container_module_path = str(Path(source_dir_name) / relative_module_path)
+            self._container_project_root = source_dir_name
         self._remote_pointers = (
             container_module_path,
             self.pointers[1],
             self.pointers[2],
         )
         return self._remote_pointers
+
+    @property
+    def container_project_root(self):
+        """Returns the project root path in the container."""
+        if self._container_project_root is None:
+            # Trigger computation via remote_pointers
+            _ = self.remote_pointers
+        return self._container_project_root
 
     @property
     def service_config(self) -> dict:
@@ -652,6 +663,7 @@ class Module:
                     "file_path": self.remote_pointers[0],
                     "module_name": self.remote_pointers[1],
                     "cls_or_fn_name": self.remote_pointers[2],
+                    "project_root": self.container_project_root,
                     "init_args": init_args,
                 },
                 "dispatch": dispatch,
@@ -726,6 +738,7 @@ class Module:
                     "file_path": self.remote_pointers[0],
                     "module_name": self.remote_pointers[1],
                     "cls_or_fn_name": self.remote_pointers[2],
+                    "project_root": self.container_project_root,
                     "init_args": init_args,
                 },
                 "dispatch": dispatch,

@@ -264,6 +264,8 @@ class ControllerWebSocket:
             os.environ["KT_CLS_OR_FN_NAME"] = module_info["cls_or_fn_name"]
         if module_info.get("file_path"):
             os.environ["KT_FILE_PATH"] = module_info["file_path"]
+        if module_info.get("project_root"):
+            os.environ["KT_PROJECT_ROOT"] = module_info["project_root"]
         if module_info.get("callable_type"):
             os.environ["KT_CALLABLE_TYPE"] = module_info["callable_type"]
 
@@ -975,11 +977,29 @@ def patch_sys_path():
         sys.path.insert(0, abs_path)
         logger.debug(f"Added {abs_path} to sys.path")
 
+    # Add project root to sys.path to enable imports from sibling directories
+    # This allows scripts in subdirectories (e.g., experimental/script.py) to import
+    # from sibling packages at the project root (e.g., from utils.module import func)
+    project_root = os.environ.get("KT_PROJECT_ROOT")
+    abs_project_root = str(Path(project_root).expanduser().resolve()) if project_root else None
+    if abs_project_root and abs_project_root not in sys.path:
+        sys.path.insert(0, abs_project_root)
+        logger.debug(f"Added project root {abs_project_root} to sys.path")
+
     # Maybe needed for subprocesses (e.g. distributed) to find the callable's module
     # Needed for distributed subprocesses to find the file path
     existing_path = os.environ.get("PYTHONPATH", "")
-    if os.environ["KT_FILE_PATH"] not in existing_path:
-        os.environ["PYTHONPATH"] = f"{abs_path}{os.pathsep}{existing_path}" if existing_path else abs_path
+    existing_path_list = existing_path.split(os.pathsep) if existing_path else []
+    paths_to_add = []
+
+    if abs_path not in existing_path_list:
+        paths_to_add.append(abs_path)
+    if abs_project_root and abs_project_root not in existing_path_list:
+        paths_to_add.append(abs_project_root)
+
+    if paths_to_add:
+        new_paths = os.pathsep.join(paths_to_add)
+        os.environ["PYTHONPATH"] = f"{new_paths}{os.pathsep}{existing_path}" if existing_path else new_paths
         logger.debug(f"Set PYTHONPATH to {os.environ['PYTHONPATH']}")
 
 
