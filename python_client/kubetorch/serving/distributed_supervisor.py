@@ -12,7 +12,7 @@ import queue
 import socket
 import threading
 import time
-from typing import Optional, Set
+from typing import Dict, Optional, Set
 
 from kubetorch.serving.execution_supervisor import ExecutionSupervisor
 from kubetorch.serving.http_server import logger
@@ -36,6 +36,8 @@ class DistributedSupervisor(ExecutionSupervisor):
         quorum_workers: Optional[int] = None,
         quorum_timeout: int = 300,
         monitor_members: bool = True,
+        dns_grace_period: int = 10,
+        removal_stability_threshold: int = 30,
         **kwargs,
     ):
         """Initialize distributed supervisor.
@@ -46,12 +48,20 @@ class DistributedSupervisor(ExecutionSupervisor):
             quorum_timeout (int, optional): Maximum seconds to wait for quorum. (Default: 300)
             monitor_members (bool, optional): Whether to monitor for worker membership changes.
                 Set to False for frameworks like Ray that manage their own membership. (Default: True)
+            dns_grace_period (int, optional): Grace period in seconds after monitoring starts where
+                DNS changes are silently absorbed (for DNS settling during startup). (Default: 10)
+            removal_stability_threshold (int, optional): Seconds a worker removal must persist before
+                raising WorkerMembershipChanged exception. Protects against readiness probe flapping.
+                Should be at least: (failureThreshold × periodSeconds) + (successThreshold × periodSeconds)
+                + 2× DNS_propagation. For default k8s probes (5×3s + 1×3s + 2×3s = 24s), use 30s. (Default: 30)
             **kwargs: Additional arguments passed to ExecutionSupervisor.
         """
         super().__init__(**kwargs)
         self.quorum_workers = quorum_workers
         self.quorum_timeout = quorum_timeout
         self.monitor_members = monitor_members
+        self.dns_grace_period = dns_grace_period
+        self.removal_stability_threshold = removal_stability_threshold
 
         # Remote worker pool for HTTP calls to other pods
         self.remote_worker_pool: Optional[RemoteWorkerPool] = None
@@ -65,6 +75,8 @@ class DistributedSupervisor(ExecutionSupervisor):
         self._change_subscribers: list = []
         self._last_dns_check: float = 0
         self._dns_check_interval: int = 5  # seconds
+        self._dns_monitor_start_time: float = 0  # Track when monitoring started
+        self._pending_removal: Dict[str, float] = {}  # Track potential removals: {ip: first_seen_time}
 
     def setup(self):
         """Set up distributed environment including process pool.
@@ -217,6 +229,7 @@ class DistributedSupervisor(ExecutionSupervisor):
                 logger.debug(f"Starting DNS monitor with {len(self._current_workers)} workers from DNS")
 
             self._dns_monitor_running = True
+            self._dns_monitor_start_time = time.time()  # Track when monitoring started
             self._dns_monitor_thread = threading.Thread(
                 target=self._monitor_worker_membership, daemon=True, name="DNSMonitor"
             )
@@ -230,7 +243,12 @@ class DistributedSupervisor(ExecutionSupervisor):
             self._dns_monitor_thread = None
 
     def _monitor_worker_membership(self):
-        """Monitor DNS for worker membership changes."""
+        """Monitor DNS for worker membership changes with stability checking.
+
+        Uses two-phase detection to avoid false positives from readiness probe flapping:
+        1. Grace period: Silently update baseline to handle DNS settling during startup
+        2. Stability check: Only raise exception if removal persists beyond threshold
+        """
         check_interval = 3  # Start with 3 second checks
 
         while self._dns_monitor_running:
@@ -238,30 +256,82 @@ class DistributedSupervisor(ExecutionSupervisor):
                 time.sleep(check_interval)
 
                 current_ips = set(self._get_pod_ips_fast())
+                current_time = time.time()
 
                 with self._workers_lock:
                     if current_ips != self._current_workers:
-                        added = current_ips - self._current_workers
+                        elapsed = current_time - self._dns_monitor_start_time
+
+                        # Phase 1: Grace period for DNS settling during startup
+                        if elapsed < self.dns_grace_period:
+                            logger.debug(
+                                f"DNS change during grace period ({elapsed:.1f}s/{self.dns_grace_period}s), "
+                                f"updating baseline: {self._current_workers} -> {current_ips}"
+                            )
+                            self._current_workers = current_ips
+                            self._pending_removal.clear()  # Reset stability tracking
+                            continue
+
+                        # Phase 2: Stability check for removals (protects against readiness probe flapping)
                         removed = self._current_workers - current_ips
+                        added = current_ips - self._current_workers
 
-                        change = {
-                            "timestamp": time.time(),
-                            "added": added,
-                            "removed": removed,
-                            "previous": self._current_workers.copy(),
-                            "current": current_ips.copy(),
-                        }
-
+                        # Track new removals or update existing ones
                         if removed:
-                            logger.error(f"Workers REMOVED from cluster: {removed}")
+                            for ip in removed:
+                                if ip not in self._pending_removal:
+                                    # First time seeing this IP removed
+                                    self._pending_removal[ip] = current_time
+                                    logger.warning(
+                                        f"Worker {ip} removed from DNS (may be readiness probe flapping), "
+                                        f"waiting {self.removal_stability_threshold}s for stability check"
+                                    )
+
+                            # Check if any removals have persisted long enough
+                            confirmed_removals = set()
+                            for ip, first_seen in list(self._pending_removal.items()):
+                                if current_time - first_seen >= self.removal_stability_threshold:
+                                    confirmed_removals.add(ip)
+                                    logger.error(
+                                        f"Worker {ip} removal confirmed after {current_time - first_seen:.1f}s "
+                                        f"(exceeded {self.removal_stability_threshold}s threshold)"
+                                    )
+
+                            # Only raise exception if removals are confirmed stable
+                            if confirmed_removals:
+                                previous_ips = self._current_workers.copy()
+                                self._current_workers = current_ips
+                                self._pending_removal.clear()  # Reset tracking
+
+                                change = {
+                                    "timestamp": current_time,
+                                    "added": added,
+                                    "removed": confirmed_removals,
+                                    "previous": previous_ips,
+                                    "current": current_ips.copy(),
+                                }
+
+                                self._membership_changes.put(change)
+                                for event in self._change_subscribers:
+                                    event.set()
+
+                        # Handle additions (less critical, but log them)
                         if added:
-                            logger.warning(f"Workers ADDED to cluster: {added}")
+                            logger.info(f"Workers ADDED to cluster: {added}")
+                            # Clear any pending removals for IPs that came back
+                            for ip in added:
+                                if ip in self._pending_removal:
+                                    logger.info(f"Worker {ip} came back (readiness probe recovered)")
+                                    del self._pending_removal[ip]
 
-                        self._membership_changes.put(change)
-                        for event in self._change_subscribers:
-                            event.set()
+                            # Update current workers to include additions
+                            self._current_workers = current_ips
 
-                        self._current_workers = current_ips
+                        # Clean up pending removals for IPs that came back
+                        returned_ips = set(self._pending_removal.keys()) - removed
+                        for ip in returned_ips:
+                            logger.info(f"Worker {ip} returned to DNS, clearing pending removal")
+                            del self._pending_removal[ip]
 
                 time.sleep(check_interval)
 
