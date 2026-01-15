@@ -658,9 +658,9 @@ class ControllerClient:
 
     # Nodes
     def list_nodes(self, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List Nodes"""
+        """List cluster nodes."""
         params = {"label_selector": label_selector} if label_selector else {}
-        return self.get("/api/v1/nodes", params=params)
+        return self.get("/controller/nodes", params=params)
 
     # StorageClasses
     def list_storage_classes(self) -> Dict[str, Any]:
