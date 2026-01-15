@@ -15,7 +15,11 @@ from urllib.parse import urlparse
 
 import httpx
 
-from kubetorch.resources.compute.utils import ControllerRequestError, handle_controller_delete_error
+from kubetorch.resources.compute.utils import (
+    ControllerRequestError,
+    handle_controller_delete_error,
+    print_byo_deletion_warning,
+)
 
 from kubetorch.serving.utils import is_running_in_kubernetes
 
@@ -1478,7 +1482,11 @@ def kt_teardown(
     """
     from kubetorch import config
     from kubetorch.resources.callables.module import Module
-    from kubetorch.resources.compute.utils import _collect_modules, fetch_resources_for_teardown
+    from kubetorch.resources.compute.utils import (
+        _collect_modules,
+        delete_resources_for_services,
+        fetch_resources_for_teardown,
+    )
 
     name, yes, teardown_all, namespace, prefix, force, exact_match = default_typer_values(
         name, yes, teardown_all, namespace, prefix, force, exact_match
@@ -1508,12 +1516,13 @@ def kt_teardown(
             f"{force_deleting_prefix_msg} resources for service [blue]{name}[/blue] in [blue]{namespace}[/blue] namespace..."
         )
 
-    # Case 1: conformation or force flags are not provided. The flow will be as follows:
+    # Case 1: confirmation or force flags are not provided. The flow will be as follows:
     #   1. List the services that will be deleted
-    #   2. Ask for user's conformation
-    #   3. Delete if user confirms
-    if not yes and not force:  # if --force is provided, we don't need additional confirmation
-        services = fetch_resources_for_teardown(
+    #   2. Ask for confirmation
+    #   3. Delete if confirmed
+    if not yes and not force:
+        # if --force is provided, we don't need additional confirmation
+        teardown_result = fetch_resources_for_teardown(
             namespace=namespace,
             target=name,
             prefix=prefix,
@@ -1521,40 +1530,40 @@ def kt_teardown(
             username=config.username if teardown_all else None,
             exact_match=exact_match,
         )
-        services_names = []
-        for service_type, service_names in services.items():
-            if service_type != "pools" and service_names:
-                services_names = services_names + list(service_names)
 
-        service_count = len(services_names)
+        # Extract resources list from the response dict
+        resource_list = teardown_result.get("resources", [])
+        service_names = list({r["name"] for r in resource_list})
+        service_count = len(service_names)
 
         if teardown_all or prefix:
             service_word = "service" if service_count == 1 else "services"
-            if not services:
+            if not resource_list:
                 console.print("[red]No services found[/red]")
                 raise typer.Exit(0)
             else:
                 console.print(f"[yellow]Found [bold]{service_count}[/bold] {service_word} to delete.[/yellow]")
 
-        if name and not services:
+        if name and not resource_list:
             console.print(f"[red]Service [bold]{name}[/bold] not found[/red]")
             raise typer.Exit(1)
 
-        # Confirmation prompt for multiple services
-        if not yes:
-            if service_count >= 1:
-                console.print("The following resources will be deleted:")
-                for service_name in services_names:
-                    console.print(f" • [reset]{service_name}")
+        # Confirmation prompt
+        if not yes and service_count >= 1:
+            console.print("The following resources will be deleted:")
+            for svc_name in service_names:
+                console.print(f" • [reset]{svc_name}")
 
-        # Confirmation prompt for single service
-        confirm = typer.confirm("\nDo you want to proceed?")
-        if not confirm:
-            console.print("[yellow]Teardown cancelled[/yellow]")
-            raise typer.Exit(0)
+        if not yes and not force:
+            confirm = typer.confirm("\nDo you want to proceed?")
+            if not confirm:
+                console.print("[yellow]Teardown cancelled[/yellow]")
+                raise typer.Exit(0)
 
-        prefix = None  # we already listed the services, not prefix is required
-        teardown_all = None  # we already listed the services, not prefix is required
+        # Pass the dict directly (controller uses resources, fetches pools internally)
+        services = teardown_result
+        prefix = None
+        teardown_all = None
 
     else:
         # Case when service_name is a module or file path (i.e. the `kt deploy` usage path)
@@ -1563,19 +1572,13 @@ def kt_teardown(
             name = [mod.service_name for mod in to_down if isinstance(mod, Module)]
 
         services = name
-        # Case 2: conformation or force flags are provided. We will list the services we need to delete based on one of the follwing:
-        #  * provided name
-        #  * the prefix flag
-        #  * all flag
-        # We already made sure that at least on of those is provided by the user.
-
+        # Case 2: confirmation or force flags are provided.
+        # List the services to delete based provided name, prefix flag, or --all flag
     try:
         username = config.username if teardown_all else None
-
-        controller_client = globals.controller_client()
-        delete_result = controller_client.delete_services(
-            namespace=namespace,
+        delete_result = delete_resources_for_services(
             services=services,
+            namespace=namespace,
             force=force,
             prefix=prefix,
             teardown_all=teardown_all,
@@ -1586,33 +1589,26 @@ def kt_teardown(
         if isinstance(delete_result, str):
             console.print(delete_result)
         else:
-            deleted_services: dict = delete_result.get("services")
+            deleted_resources = delete_result.get("deleted_resources", [])
+            byo_deleted_services = delete_result.get("byo_deleted_services", [])
 
-            # BYO (selector-based) compute mode:
-            # The user applied the Kubernetes manifest themselves (e.g., via kubectl, Helm, or ArgoCD).
-            # Kubetorch did not create or own the K8s resources, so teardown only removes
-            # Kubetorch controller state and associated metadata — not the underlying pods/deployments/services
+            # Case where no services were found
+            if not deleted_resources and not byo_deleted_services:
+                if prefix or teardown_all:
+                    console.print("No services found")
+                elif name:
+                    console.print(f"Service {name} not found")
+                return
 
-            byo_deleted_services = delete_result.pop("byo_deleted_services")
             if byo_deleted_services:
-                byo_resources_teardown_msg = "Resources for the following services were created outside of Kubetorch. You are responsible for deleting the actual Kubernetes resources (pods, deployments, services, etc.)."
-                console.print(f"[bold yellow]{byo_resources_teardown_msg}[/bold yellow]")
-                for resource in byo_deleted_services:
-                    console.print(f"[bold yellow] • {resource}[/bold yellow]")
-
-            deleted_services = {
-                resource_type: deleted_resources
-                for resource_type, deleted_resources in deleted_services.items()
-                if deleted_resources
-            }
+                print_byo_deletion_warning(byo_deleted_services, console)
 
             force_deleted_msg_prefix = "✓ Force deleted" if force else "✓ Deleted"
 
-            for service_type in deleted_services:
-                deleted_resources = deleted_services.get(service_type)
-                for resource in deleted_resources:
-                    console.print(f"{force_deleted_msg_prefix} [blue]{resource}[/blue]")
-                    console.print(f"✓ Deleted cached data for [reset]{resource}")
+            for resource in deleted_resources:
+                kind = resource.get("kind", "resource").lower()
+                resource_name = resource.get("name")
+                console.print(f"{force_deleted_msg_prefix} [reset]{kind} [blue]{resource_name}[/blue]")
 
             console.print("\n[green]Teardown completed successfully[/green]")
 
@@ -1621,7 +1617,7 @@ def kt_teardown(
             handle_controller_delete_error(service_name=name, controller_error=str(e), console=console)
         else:
             console.print(f"[red] Failed to run `kt teardown`: {e}[/red]")
-        raise typer.Exit(1)
+            raise typer.Exit(1)
 
 
 @app.command("volumes")
