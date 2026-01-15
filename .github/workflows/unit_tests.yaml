@@ -66,11 +66,11 @@ jobs:
       - name: Setup Test Cluster
         uses: ./.github/workflows/setup_test_cluster
         with:
-          KUBECONFIG: ${{ secrets.KT_TEST_KUBECONFIG }}
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
 
       - name: Get GKE credentials
         run: |
-          gcloud container clusters get-credentials ${{ secrets.KT_TEST_CLUSTER_NAME }} \
+          gcloud container clusters get-credentials ${{ secrets.CI_CLUSTER_NAME }} \
             --region ${{ secrets.CI_CLUSTER_REGION }} \
             --project ${{ secrets.GCP_PROJECT_ID }}
 
