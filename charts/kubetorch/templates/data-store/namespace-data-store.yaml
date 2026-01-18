@@ -69,6 +69,7 @@ spec:
       {{- if $.Values.dataStore.serviceAccount }}
       serviceAccountName: {{ $.Values.dataStore.serviceAccount }}
       {{- end }}
+      enableServiceLinks: false
       containers:
         - name: data-store
           image: {{ $.Values.dataStore.image }}
