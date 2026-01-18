@@ -55,9 +55,15 @@ spec:
             requests:
               cpu: {{ .Values.kubetorchController.nginx.resources.cpu.request | quote }}
               memory: {{ .Values.kubetorchController.nginx.resources.memory.request | quote }}
+            {{- if or .Values.kubetorchController.nginx.resources.cpu.limit .Values.kubetorchController.nginx.resources.memory.limit }}
             limits:
+              {{- if .Values.kubetorchController.nginx.resources.cpu.limit }}
               cpu: {{ .Values.kubetorchController.nginx.resources.cpu.limit | quote }}
+              {{- end }}
+              {{- if .Values.kubetorchController.nginx.resources.memory.limit }}
               memory: {{ .Values.kubetorchController.nginx.resources.memory.limit | quote }}
+              {{- end }}
+            {{- end }}
 
         # --------------------------------------------------------------------
         # Controller container (the K8s API proxy)
@@ -121,9 +127,15 @@ spec:
             requests:
               cpu: {{ .Values.kubetorchController.resources.cpu.request | quote }}
               memory: {{ .Values.kubetorchController.resources.memory.request | quote }}
+            {{- if or .Values.kubetorchController.resources.cpu.limit .Values.kubetorchController.resources.memory.limit }}
             limits:
+              {{- if .Values.kubetorchController.resources.cpu.limit }}
               cpu: {{ .Values.kubetorchController.resources.cpu.limit | quote }}
+              {{- end }}
+              {{- if .Values.kubetorchController.resources.memory.limit }}
               memory: {{ .Values.kubetorchController.resources.memory.limit | quote }}
+              {{- end }}
+            {{- end }}
 
       volumes:
         - name: nginx-config
