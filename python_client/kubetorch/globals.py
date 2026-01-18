@@ -594,9 +594,7 @@ class ControllerClient:
         return self.delete("/controller/teardown", ignore_not_found=ignore_not_found, json=body)
 
     # Deployments
-    def create_deployment(self, namespace: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a Deployment"""
-        return self.post(f"/apis/apps/v1/namespaces/{namespace}/deployments", json=body)
+    # NOTE: create_deployment removed - use deploy() or apply() instead
 
     def get_deployment(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
         """Get a Deployment"""
