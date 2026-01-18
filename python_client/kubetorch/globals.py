@@ -629,25 +629,25 @@ class ControllerClient:
 
     # Pods
     def list_pods(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List Pods"""
+        """List pods in a namespace."""
         params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/api/v1/namespaces/{namespace}/pods", params=params)
+        return self.get(f"/controller/pods/{namespace}", params=params)
 
     def get_pod(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
-        """Get a Pod"""
-        return self.get(f"/api/v1/namespaces/{namespace}/pods/{name}", ignore_not_found=ignore_not_found)
+        """Get a specific pod."""
+        return self.get(f"/controller/pods/{namespace}/{name}", ignore_not_found=ignore_not_found)
 
     def get_pod_logs(
         self, namespace: str, name: str, container: Optional[str] = None, tail_lines: Optional[int] = None
     ) -> str:
-        """Get Pod logs"""
+        """Get logs from a pod."""
         params = {}
         if container:
             params["container"] = container
         if tail_lines:
             params["tailLines"] = str(tail_lines)
 
-        url = f"{self.base_url}/api/v1/namespaces/{namespace}/pods/{name}/log"
+        url = f"{self.base_url}/controller/pods/{namespace}/{name}/logs"
         try:
             response = self.session.request("GET", url, params=params)
             response.raise_for_status()
