@@ -26,6 +26,7 @@ A Helm chart for kubetorch
 | dataStore.maxVerbosity | int | `0` |  |
 | dataStore.memory.request | string | `"4Gi"` |  |
 | dataStore.metadataPort | int | `8081` |  |
+| dataStore.storage.accessMode | string | `"ReadWriteOnce"` |  |
 | dataStore.storage.size | string | `"100Gi"` |  |
 | dataStore.storage.storageClassName | string | `""` |  |
 | dataStore.timeout | int | `600` |  |
