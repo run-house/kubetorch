@@ -682,6 +682,11 @@ class ServiceManager:
 
                         raise ImagePullError(f"Container image failed to pull: {error_msg}")
 
+                    if error_type == "pod_error" and "Insufficient nvidia.com/gpu" in error_msg:
+                        # we might get pod_error when the cluster is auto-scaling a gpu node pool, and the created node
+                        # is still not ready for a pod to be scheduled on it
+                        if elapsed < 90:
+                            continue
                     if error_type in ("replicaset_error", "pod_error", "resource_error", "revision_error"):
                         from kubetorch import ResourceNotAvailableError
 
