@@ -141,7 +141,7 @@ jobs:
           rules:
             - apiGroups: [""]
               resources: ["persistentvolumeclaims", "pods", "services", "configmaps", "secrets", "events"]
-              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
             - apiGroups: [""]
               resources: ["pods/exec", "pods/log"]
               verbs: ["create", "get"]
@@ -1310,7 +1310,7 @@ jobs:
           rules:
             - apiGroups: [""]
               resources: ["persistentvolumeclaims", "pods", "services", "configmaps", "secrets", "events"]
-              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
             - apiGroups: [""]
               resources: ["pods/exec", "pods/log"]
               verbs: ["create", "get"]
