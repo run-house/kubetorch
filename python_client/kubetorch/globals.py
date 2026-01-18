@@ -540,11 +540,11 @@ class ControllerClient:
     # Services
     def create_service(self, namespace: str, body: Dict[str, Any], params: Dict = None) -> Dict[str, Any]:
         """Create a Service"""
-        return self.post(f"/api/v1/namespaces/{namespace}/services", json=body, params=params)
+        return self.post(f"/controller/services/{namespace}", json=body, params=params)
 
     def get_service(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
         """Get a Service"""
-        return self.get(f"/api/v1/namespaces/{namespace}/services/{name}", ignore_not_found=ignore_not_found)
+        return self.get(f"/controller/services/{namespace}/{name}", ignore_not_found=ignore_not_found)
 
     def fetch_resources_for_teardown(
         self,
@@ -596,7 +596,7 @@ class ControllerClient:
 
     def get_deployment(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
         """Get a Deployment"""
-        return self.get(f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}", ignore_not_found=ignore_not_found)
+        return self.get(f"/controller/deployments/{namespace}/{name}", ignore_not_found=ignore_not_found)
 
     # Secrets
     def create_secret(self, namespace: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -669,7 +669,7 @@ class ControllerClient:
     def list_config_maps(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
         """List ConfigMaps"""
         params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/api/v1/namespaces/{namespace}/configmaps", params=params)
+        return self.get(f"/controller/configmaps/{namespace}", params=params)
 
     # Custom Resource Definitions (CRDs)
     def create_namespaced_custom_object(
@@ -688,7 +688,7 @@ class ControllerClient:
 
     def list_ingresses(self, namespace: str, label_selector: str = None):
         params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/apis/networking.k8s.io/v1/namespaces/{namespace}/ingresses", params=params)
+        return self.get(f"/controller/ingresses/{namespace}", params=params)
 
     def register_pool(
         self,
