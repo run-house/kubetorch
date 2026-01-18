@@ -519,25 +519,23 @@ class ControllerClient:
         response = self._request("PATCH", path, json=json, timeout=timeout, **kwargs)
         return response.json()
 
-    # PersistentVolumeClaims
+    # PersistentVolumeClaims (Volumes)
     def create_pvc(self, namespace: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a PersistentVolumeClaim"""
-        return self.post(f"/api/v1/namespaces/{namespace}/persistentvolumeclaims", json=body)
+        """Create a PersistentVolumeClaim."""
+        return self.post(f"/controller/volumes/{namespace}", json=body)
 
     def get_pvc(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
-        """Get a PersistentVolumeClaim"""
-        return self.get(
-            f"/api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}", ignore_not_found=ignore_not_found
-        )
+        """Get a PersistentVolumeClaim."""
+        return self.get(f"/controller/volumes/{namespace}/{name}", ignore_not_found=ignore_not_found)
 
     def delete_pvc(self, namespace: str, name: str) -> Dict[str, Any]:
-        """Delete a PersistentVolumeClaim"""
-        return self.delete(f"/api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}", ignore_not_found=True)
+        """Delete a PersistentVolumeClaim."""
+        return self.delete(f"/controller/volumes/{namespace}/{name}", ignore_not_found=True)
 
     def list_pvcs(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List PersistentVolumeClaims"""
+        """List PersistentVolumeClaims."""
         params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/api/v1/namespaces/{namespace}/persistentvolumeclaims", params=params)
+        return self.get(f"/controller/volumes/{namespace}", params=params)
 
     # Services
     def create_service(self, namespace: str, body: Dict[str, Any], params: Dict = None) -> Dict[str, Any]:
@@ -602,30 +600,30 @@ class ControllerClient:
 
     # Secrets
     def create_secret(self, namespace: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a Secret"""
-        return self.post(f"/api/v1/namespaces/{namespace}/secrets", json=body)
+        """Create a secret."""
+        return self.post(f"/controller/secrets/{namespace}", json=body)
 
     def get_secret(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
-        """Get a Secret"""
-        return self.get(f"/api/v1/namespaces/{namespace}/secrets/{name}", ignore_not_found=ignore_not_found)
+        """Get a secret."""
+        return self.get(f"/controller/secrets/{namespace}/{name}", ignore_not_found=ignore_not_found)
 
     def patch_secret(self, namespace: str, name: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        """Patch a Secret"""
-        return self.patch(f"/api/v1/namespaces/{namespace}/secrets/{name}", json=body)
+        """Patch a secret."""
+        return self.patch(f"/controller/secrets/{namespace}/{name}", json=body)
 
     def list_secrets(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List Secrets"""
+        """List secrets in a namespace."""
         params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/api/v1/namespaces/{namespace}/secrets", params=params)
+        return self.get(f"/controller/secrets/{namespace}", params=params)
 
     def delete_secret(self, namespace: str, name: str) -> Dict[str, Any]:
-        """Delete a Secret"""
-        return self.delete(f"/api/v1/namespaces/{namespace}/secrets/{name}", ignore_not_found=True)
+        """Delete a secret."""
+        return self.delete(f"/controller/secrets/{namespace}/{name}", ignore_not_found=True)
 
     def list_secrets_all_namespaces(self, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List Secrets across all namespaces"""
+        """List secrets across all namespaces."""
         params = {"label_selector": label_selector} if label_selector else {}
-        return self.get("/api/v1/secrets", params=params)
+        return self.get("/controller/secrets", params=params)
 
     # Pods
     def list_pods(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
@@ -664,8 +662,8 @@ class ControllerClient:
 
     # StorageClasses
     def list_storage_classes(self) -> Dict[str, Any]:
-        """List StorageClasses"""
-        return self.get("/apis/storage.k8s.io/v1/storageclasses")
+        """List available storage classes."""
+        return self.get("/controller/storage-classes")
 
     # ConfigMaps
     def list_config_maps(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
