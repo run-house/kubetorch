@@ -101,7 +101,7 @@ class ServiceManager:
             self._set_trainjob_replicas(manifest, value, distributed_config)
         else:
             # Standard deployment path
-            manifest.setdefault("spec", {})["replicas"] = value
+            manifest.setdefault("spec", {})["replicas"] = value or 1
 
     def _get_knative_replicas(self, manifest: dict) -> int:
         """Get min-scale from Knative annotations."""
@@ -461,7 +461,7 @@ class ServiceManager:
 
     def _preprocess_deployment_manifest(self, manifest: dict) -> dict:
         """Preprocess deployment manifest - add Recreate strategy for multi-replica deployments."""
-        replicas = manifest.get("spec", {}).get("replicas", 1)
+        replicas = manifest.get("spec", {}).get("replicas") or 1
         if replicas > 1:
             # Use Recreate strategy for multi-replica deployments to avoid
             # mixed old/new pods during updates, which causes SIGTERM errors

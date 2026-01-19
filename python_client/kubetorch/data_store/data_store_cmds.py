@@ -264,6 +264,7 @@ def ls(
 def rm(
     key: str,
     recursive: bool = False,
+    prefix: bool = False,
     verbose: bool = False,
     namespace: Optional[str] = None,
     kubeconfig_path: Optional[str] = None,
@@ -274,6 +275,7 @@ def rm(
     Args:
         key: Storage key to delete. Trailing slashes are stripped.
         recursive: If True, delete directories recursively (like rm -r)
+        prefix: If True, delete all keys starting with this string prefix
         verbose: Show detailed progress
         namespace: Kubernetes namespace
         kubeconfig_path: Path to kubeconfig file (for compatibility)
@@ -282,13 +284,14 @@ def rm(
         >>> import kubetorch as kt
         >>> kt.rm("my-service/old-model.pkl")  # Delete a file
         >>> kt.rm("my-service/temp-data", recursive=True)  # Delete a directory
+        >>> kt.rm("gpu-test", prefix=True)  # Delete all keys starting with "gpu-test"
     """
     global _default_client
 
     if _default_client is None or namespace or kubeconfig_path:
         _default_client = DataStoreClient(namespace=namespace, kubeconfig_path=kubeconfig_path)
 
-    _default_client.rm(key=key, recursive=recursive, verbose=verbose)
+    _default_client.rm(key=key, recursive=recursive, prefix_mode=prefix, verbose=verbose)
 
 
 def _sync_workdir_from_store(namespace: str, service_name: str):

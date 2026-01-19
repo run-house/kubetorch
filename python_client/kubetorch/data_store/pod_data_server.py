@@ -340,7 +340,7 @@ class PodDataServer:
         # Pod info from environment
         self._pod_ip = os.getenv("POD_IP")
         self._pod_name = os.getenv("POD_NAME")
-        self._namespace = os.getenv("KT_NAMESPACE")
+        self._namespace = os.getenv("POD_NAMESPACE")
 
         # Internal NCCL execution coordination per broadcast group
         # Ensures NCCL runs exactly once per pod, even with multiple participants
@@ -1396,18 +1396,21 @@ class PodDataServer:
         """Get or initialize the MDS base URL."""
         if self._mds_base_url is None:
             if not self._namespace:
-                raise RuntimeError("KT_NAMESPACE environment variable not set")
+                raise RuntimeError("POD_NAMESPACE environment variable not set")
             from kubetorch.provisioning.constants import DATA_STORE_METADATA_PORT
 
             service_name = "kubetorch-data-store"
             self._mds_base_url = f"http://{service_name}.{self._namespace}.svc.cluster.local:{DATA_STORE_METADATA_PORT}"
         return self._mds_base_url
 
-    def _mds_publish_gpu(self, keys: Union[str, List[str]]) -> bool:
-        """Publish GPU data key(s) to metadata server. Accepts single key or list."""
+    def _mds_publish_gpu(self, keys: Union[str, List[str]]) -> None:
+        """Publish GPU data key(s) to metadata server. Accepts single key or list.
+
+        Raises:
+            RuntimeError: If environment variables are missing or MDS request fails.
+        """
         if not self._pod_ip or not self._pod_name or not self._namespace:
-            logger.error("Missing POD_IP, POD_NAME, or KT_NAMESPACE environment variables")
-            return False
+            raise RuntimeError("Missing POD_IP, POD_NAME, or POD_NAMESPACE environment variables")
 
         # Normalize to list
         key_list = [keys] if isinstance(keys, str) else keys
@@ -1415,26 +1418,32 @@ class PodDataServer:
         # Use existing endpoint with keys in body (path key is ignored when keys provided)
         url = f"{self._get_mds_base_url()}/api/v1/keys/_/gpu/publish"
 
-        try:
-            payload = {
-                "keys": key_list,
-                "ip": self._pod_ip,
-                "pod_name": self._pod_name,
-                "namespace": self._namespace,
-                "nccl_port": self.nccl_port_start,
-                "gpu_server_port": self.tcp_port,
-                "gpu_server_socket": self.socket_path,
-            }
+        payload = {
+            "keys": key_list,
+            "ip": self._pod_ip,
+            "pod_name": self._pod_name,
+            "namespace": self._namespace,
+            "nccl_port": self.nccl_port_start,
+            "gpu_server_port": self.tcp_port,
+            "gpu_server_socket": self.socket_path,
+        }
 
+        try:
             response = get_sync_client().post(url, json=payload, timeout=30)
             response.raise_for_status()
-            return True
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(
+                f"Failed to publish {len(key_list)} GPU key(s) to MDS: HTTP {e.response.status_code} - {e.response.text}"
+            ) from e
         except httpx.RequestError as e:
-            logger.error(f"Failed to publish {len(key_list)} GPU key(s) to MDS: {e}")
-            return False
+            raise RuntimeError(f"Failed to publish {len(key_list)} GPU key(s) to MDS: {e}") from e
 
     def _mds_get_gpu_source(self, keys: Union[str, List[str]]) -> Dict[str, Optional[dict]]:
-        """Get GPU data source info from metadata server. Supports batch lookup."""
+        """Get GPU data source info from metadata server. Supports batch lookup.
+
+        Raises:
+            RuntimeError: If MDS request fails.
+        """
         key_list = [keys] if isinstance(keys, str) else keys
 
         # Use batch endpoint with placeholder path key
@@ -1457,9 +1466,12 @@ class PodDataServer:
                     results[key] = None
             return results
 
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(
+                f"Failed to get GPU sources for {len(key_list)} key(s): HTTP {e.response.status_code} - {e.response.text}"
+            ) from e
         except httpx.RequestError as e:
-            logger.error(f"Failed to get GPU sources for {len(key_list)} key(s): {e}")
-            return {k: None for k in key_list}
+            raise RuntimeError(f"Failed to get GPU sources for {len(key_list)} key(s): {e}") from e
 
     # ==================== Broadcast WebSocket Support ====================
 
@@ -1782,8 +1794,7 @@ class PodDataServer:
             )
         else:
             # Point-to-point: publish all keys to MDS in single batch call
-            if not self._mds_publish_gpu(keys):
-                return {"status": "error", "error": "Failed to publish to MDS"}
+            self._mds_publish_gpu(keys)
 
             logger.info(f"put_tensor: registered and published {len(keys)} key(s)")
             return {"status": "ok", "keys": keys, "count": len(keys)}
@@ -2727,11 +2738,16 @@ def start_server_if_needed(socket_path: str = DEFAULT_SOCKET_PATH) -> int:
     import subprocess
     import threading
 
+    # Set PYTHONUNBUFFERED to ensure logs are flushed immediately for log forwarding
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+
     process = subprocess.Popen(
-        [sys.executable, "-m", "kubetorch.data_store.pod_data_server"],
+        [sys.executable, "-u", "-m", "kubetorch.data_store.pod_data_server"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
+        env=env,
     )
 
     # Start daemon threads to forward subprocess output to LogCapture

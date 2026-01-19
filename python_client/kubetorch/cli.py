@@ -13,12 +13,13 @@ from pathlib import Path
 from typing import List
 from urllib.parse import urlparse
 
-from kubetorch.serving.global_http_clients import get_sync_client
 from kubetorch.resources.compute.utils import (
     ControllerRequestError,
     handle_controller_delete_error,
     print_byo_deletion_warning,
 )
+
+from kubetorch.serving.global_http_clients import get_sync_client
 
 from kubetorch.serving.utils import is_running_in_kubernetes
 
@@ -2341,6 +2342,7 @@ def kt_ls(
 def kt_rm(
     key: str = typer.Argument(..., help="Storage key to delete (e.g., 'my-service/models', 'datasets/train.csv')"),
     recursive: bool = typer.Option(False, "--recursive", "-r", help="Delete directories recursively"),
+    prefix: bool = typer.Option(False, "--prefix", "-p", help="Delete all keys starting with this string prefix"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress"),
     namespace: str = typer.Option(globals.config.namespace, "-n", "--namespace", help="Kubernetes namespace"),
 ):
@@ -2348,10 +2350,13 @@ def kt_rm(
     from kubetorch.data_store import rm
 
     try:
-        rm(key=key, recursive=recursive, verbose=verbose, namespace=namespace)
+        rm(key=key, recursive=recursive, prefix=prefix, verbose=verbose, namespace=namespace)
 
         if not verbose:
-            console.print(f"[green]✓[/green] Deleted key '{key}'")
+            if prefix:
+                console.print(f"[green]✓[/green] Deleted all keys with prefix '{key}'")
+            else:
+                console.print(f"[green]✓[/green] Deleted key '{key}'")
 
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")

@@ -136,19 +136,16 @@ class GPUTestHelper:
             self._published_tensors = {}
         self._published_tensors[key] = tensor
 
-        try:
-            kt.put(key=key, src=tensor, nccl_port=nccl_port, verbose=True)
-            return {
-                "success": True,
-                "key": key,
-                "shape": shape,
-                "dtype": dtype,
-                "fill_value": fill_value,
-                "pod_ip": self.pod_ip,
-                "pod_name": self.pod_name,
-            }
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        kt.put(key=key, src=tensor, nccl_port=nccl_port, verbose=True)
+        return {
+            "success": True,
+            "key": key,
+            "shape": shape,
+            "dtype": dtype,
+            "fill_value": fill_value,
+            "pod_ip": self.pod_ip,
+            "pod_name": self.pod_name,
+        }
 
     def get_tensor(
         self,

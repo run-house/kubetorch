@@ -79,7 +79,7 @@ Module-level convenience functions that users call directly.
 - `put(key, src=...)` - Upload filesystem or GPU data
 - `get(key, dest=...)` - Download filesystem or GPU data
 - `ls(key)` - List keys/contents
-- `rm(key)` - Delete from store
+- `rm(key, recursive=False, prefix=False)` - Delete from store. With `prefix=True`, deletes all keys starting with the given string prefix
 
 **Auto-detection logic:**
 - If `src` is a CUDA tensor or dict of tensors → GPU transfer via NCCL

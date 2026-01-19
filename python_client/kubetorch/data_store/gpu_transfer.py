@@ -652,6 +652,8 @@ class GPUTransferManager:
         try:
             response = get_sync_client().post(url, params={"pod_ip": pod_ip}, timeout=5)
             response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Failed to notify broadcast completion: HTTP {e.response.status_code} - {e.response.text}")
         except httpx.RequestError as e:
             logger.warning(f"Failed to notify broadcast completion: {e}")
 

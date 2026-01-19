@@ -957,6 +957,7 @@ class DataStoreClient:
         self,
         key: str,
         recursive: bool = False,
+        prefix_mode: bool = False,
         verbose: bool = False,
     ) -> None:
         """
@@ -964,15 +965,19 @@ class DataStoreClient:
 
         Args:
             key: Storage key to delete.
-            recursive: If True, delete directories recursively
+            recursive: If True, delete directories recursively (directory semantics)
+            prefix_mode: If True, delete all keys starting with this string prefix
             verbose: Show detailed progress
         """
         parsed = parse_key(key)
 
         if verbose:
-            logger.info(f"Deleting key '{key}'")
+            if prefix_mode:
+                logger.info(f"Deleting all keys with prefix '{key}'")
+            else:
+                logger.info(f"Deleting key '{key}'")
 
-        result = self.metadata_client.delete_key(parsed.full_key, recursive=recursive)
+        result = self.metadata_client.delete_key(parsed.full_key, recursive=recursive, prefix_mode=prefix_mode)
 
         if not result.get("success", False):
             error = result.get("error", "Unknown error")
@@ -981,7 +986,19 @@ class DataStoreClient:
         if verbose:
             deleted_meta = result.get("deleted_from_metadata", False)
             deleted_fs = result.get("deleted_from_filesystem", False)
-            if deleted_meta and deleted_fs:
+            deleted_count = result.get("deleted_metadata_count", 0)
+            deleted_fs_count = result.get("deleted_fs_count", 0)
+            if prefix_mode:
+                parts = []
+                if deleted_count > 0:
+                    parts.append(f"{deleted_count} metadata keys")
+                if deleted_fs_count > 0:
+                    parts.append(f"{deleted_fs_count} filesystem entries")
+                if parts:
+                    logger.info(f"Deleted {', '.join(parts)} with prefix '{key}'")
+                else:
+                    logger.info(f"No keys found with prefix '{key}'")
+            elif deleted_meta and deleted_fs:
                 logger.info(f"Deleted key '{key}' from metadata and filesystem")
             elif deleted_meta:
                 logger.info(f"Deleted virtual key '{key}' from metadata")
