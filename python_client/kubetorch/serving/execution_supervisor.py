@@ -135,6 +135,9 @@ class ExecutionSupervisor:
             debug_mode = debugger.get("mode")
             debug_port = debugger.get("port")
 
+        # Extract profiler config if present
+        profiler = params.get("profiler", None) if params else None
+
         # For local execution, route to the first (and typically only) subprocess
         logger.debug(f"Routing call to subprocess: {cls_or_fn_name}.{method_name}")
         result = self.process_pool.call(
@@ -146,6 +149,7 @@ class ExecutionSupervisor:
             debug_port=debug_port,
             debug_mode=debug_mode,
             serialization=serialization,
+            profiler=profiler,
         )
 
         # Handle exceptions from subprocess

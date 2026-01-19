@@ -1798,30 +1798,7 @@ async def execute_callable_async(
         logger.info(f"Debugging remote callable {callable_name} on port {debug_port}")
         deep_breakpoint(debug_port, debug_mode)
 
-    # Check if profiling is enabled
-    profiler_config = None
-    if profiler:
-        from kubetorch.globals import ProfilerConfig
-
-        profiler_config = ProfilerConfig(**profiler)
-
-    if profiler_config and not profiler_config._disabled:
-        from kubetorch.serving.profiling import run_pytorch_profile_async, run_with_profile
-
-        # Run with profiling
-        if is_async and profiler_config.profiler_type == "pytorch":
-            logger.debug(f"Running async {callable_name} with PyTorch profiler")
-            fn_output, profiler_output = await run_pytorch_profile_async(
-                user_method, *args, profiler=profiler_config, callable_name=callable_name, **kwargs
-            )
-        else:
-            # Sync callable, or async with py-spy (runs in subprocess with asyncio.run())
-            logger.debug(f"Running {callable_name} with {profiler_config.profiler_type} profiler")
-            fn_output, profiler_output = run_with_profile(
-                user_method, *args, profiler=profiler_config, callable_name=callable_name, **kwargs
-            )
-        result = {"fn_output": fn_output, "profiler_output": profiler_output}
-    elif is_async:
+    if is_async:
         # Async callable: await directly on the event loop
         # This enables true async concurrency - many async calls can run concurrently
         logger.debug(f"Calling async callable {callable_name}")

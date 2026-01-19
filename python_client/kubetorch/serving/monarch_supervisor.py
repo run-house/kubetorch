@@ -523,6 +523,9 @@ class MonarchDistributed(DistributedSupervisor):
             debug_mode = debugger.get("mode")
             debug_port = debugger.get("port")
 
+        # Extract profiler config if present
+        profiler = params.get("profiler", None) if params else None
+
         # Start DNS monitoring for worker discovery
         self.start_dns_monitoring()
 
@@ -574,6 +577,7 @@ class MonarchDistributed(DistributedSupervisor):
             debug_port=debug_port,
             debug_mode=debug_mode,
             serialization=serialization,
+            profiler=profiler,
         )
 
         # Handle exceptions from subprocess

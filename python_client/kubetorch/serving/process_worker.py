@@ -1,12 +1,17 @@
 import asyncio
+import base64
+import inspect
 import multiprocessing
 import os
 from bdb import BdbQuit
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
+from kubetorch.globals import ProfilerConfig
+
 from kubetorch.serving.http_server import execute_callable_async, load_callable, logger, package_exception
 from kubetorch.serving.log_capture import create_subprocess_log_capture
+from kubetorch.serving.profiling import run_with_pyspy_profiler, run_with_torch_profiler
 from kubetorch.serving.utils import clear_debugging_sessions, request_id_ctx_var
 
 # Match FastAPI/Starlette default thread pool size for sync operations
@@ -98,11 +103,60 @@ class ProcessWorker(multiprocessing.Process):
         """Auto-detect the number of processes to use."""
         return 1
 
+    async def execute_with_profiling(self, callable_obj, method_name, params, serialization, profiler):
+        """Execute callable with profiling using minimal overhead path.
+        This method is called directly from handle_request_async when profiling is enabled.
+        """
+
+        # Prepare raw data for subprocess (no unpickling/parsing in parent!)
+        if serialization == "pickle":
+            # Extract raw pickled bytes directly - DO NOT unpickle
+            if isinstance(params, dict) and "data" in params:
+                stdin_data = base64.b64decode(params["data"].encode("utf-8"))
+            elif isinstance(params, str):
+                stdin_data = base64.b64decode(params.encode("utf-8"))
+            else:
+                raise ValueError(f"Unexpected params format for pickle serialization: {type(params)}")
+        else:
+            # JSON serialization: pass as JSON bytes (no pickling)
+            import json
+
+            stdin_data = json.dumps(
+                {
+                    "args": params.get("args", []),
+                    "kwargs": params.get("kwargs", {}),
+                }
+            ).encode("utf-8")
+
+        # Get user method (only needed for is_async check)
+        user_method = getattr(callable_obj, method_name) if method_name else callable_obj
+        is_async = inspect.iscoroutinefunction(user_method)
+
+        # Setup profiler config
+        profiler_config = ProfilerConfig(**profiler)
+        profiler_type = profiler_config.profiler_type
+
+        # Execute with minimal profiling overhead
+        if profiler_type == "pytorch":
+            result = await run_with_torch_profiler(
+                stdin_data, serialization, method_name, is_async, profiler_config, self._loop
+            )
+        elif profiler_type == "pyspy":
+            result = await run_with_pyspy_profiler(
+                stdin_data, serialization, method_name, is_async, profiler_config, self._loop
+            )
+        else:
+            raise ValueError(f"Unsupported profiler type: {profiler_type}")
+
+        return result
+
     async def handle_request_async(self, request):
         """Handle a single request asynchronously.
 
         For async callables: awaits directly on the event loop (true async concurrency)
         For sync callables: runs in thread pool via run_in_executor()
+
+        For profiling requests: uses minimal execution path to avoid kubetorch overhead
         """
         try:
             request_unique_id = request["request_unique_id"]
@@ -111,6 +165,14 @@ class ProcessWorker(multiprocessing.Process):
             request_id = request["request_id"]
             distributed_env_vars = request["distributed_env_vars"]
             serialization = request["serialization"]
+
+            # Extract profiler from request or from params
+            profiler = request.get("profiler")
+            if not profiler and isinstance(params, dict):
+                profiler = params.pop(
+                    "profiler", None
+                )  # Remove profiler from params to avoid double profiling in execute_with_profiling
+                params = params.copy()
 
             # Set the request ID in the context
             token = request_id_ctx_var.set(request_id)
@@ -133,16 +195,26 @@ class ProcessWorker(multiprocessing.Process):
                 if self._log_capture:
                     self._log_capture.ensure_handler()
 
-                # Execute the callable - async callables are awaited directly,
-                # sync callables run in the thread pool
-                result = await execute_callable_async(
-                    callable_obj=callable_obj,
-                    cls_or_fn_name=os.environ["KT_CLS_OR_FN_NAME"],
-                    method_name=method_name,
-                    params=params,
-                    serialization=serialization,
-                    executor=self._executor,
-                )
+                # run execute_with_profiling to avoid overhead in profiling. Run the user method in a separate process,
+                # to avoid profiling the whole calling stack.
+                if profiler:
+                    result = await self.execute_with_profiling(
+                        callable_obj=callable_obj,
+                        method_name=method_name,
+                        params=params,
+                        serialization=serialization,
+                        profiler=profiler,
+                    )
+                else:
+                    # Normal path - execute the callable
+                    result = await execute_callable_async(
+                        callable_obj=callable_obj,
+                        cls_or_fn_name=os.environ["KT_CLS_OR_FN_NAME"],
+                        method_name=method_name,
+                        params=params,
+                        serialization=serialization,
+                        executor=self._executor,
+                    )
 
                 # Reset the request ID after the call is complete
                 request_id_ctx_var.reset(token)

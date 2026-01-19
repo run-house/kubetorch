@@ -257,6 +257,6 @@ def build_call_body(*args, debug: Union[bool, DebugConfig] = None, profiler: Pro
 
     if debug or pdb:
         body = add_debugger_config_to_body(body=body, debug=debug, pdb=pdb)
-    if profiler:
+    if profiler and not profiler._disabled:  # we pass the profiler only if it's type is supported
         body["profiler"] = profiler.to_dict()
     return body

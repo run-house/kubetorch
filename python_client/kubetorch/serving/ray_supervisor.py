@@ -168,6 +168,9 @@ class RayDistributed(DistributedSupervisor):
             debug_mode = debugger.get("mode")
             debug_port = debugger.get("port")
 
+        # Extract profiler config if present
+        profiler = params.get("profiler", None) if params else None
+
         if not os.environ["POD_NAME"].endswith("-head"):
             # This should never happen, because the service only points to the head node, Raise an error if it does.
             raise RuntimeError(
@@ -210,6 +213,7 @@ class RayDistributed(DistributedSupervisor):
             debug_port=debug_port,
             debug_mode=debug_mode,
             serialization=serialization,
+            profiler=profiler,
         )
 
         # Handle exceptions from subprocess
