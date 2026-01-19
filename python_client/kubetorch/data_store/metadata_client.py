@@ -120,6 +120,9 @@ class MetadataClient:
                 if src_path:
                     return {"ip": ip, "src_path": src_path}
                 return ip
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Failed to get source IP for key '{key}': HTTP {e.response.status_code}")
+            return None
         except httpx.RequestError as e:
             logger.warning(f"Failed to get source IP for key '{key}': {e}")
             return None
@@ -169,6 +172,9 @@ class MetadataClient:
             )
             response.raise_for_status()
             return True
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Failed to publish key '{key}' from IP '{pod_ip}': HTTP {e.response.status_code}")
+            return False
         except httpx.RequestError as e:
             logger.warning(f"Failed to publish key '{key}' from IP '{pod_ip}': {e}")
             return False
@@ -195,6 +201,9 @@ class MetadataClient:
             )
             response.raise_for_status()
             return True
+        except httpx.HTTPStatusError as e:
+            logger.debug(f"Failed to notify completion for key '{key}' IP '{ip}': HTTP {e.response.status_code}")
+            return False
         except httpx.RequestError as e:
             logger.debug(f"Failed to notify completion for key '{key}' IP '{ip}': {e}")
             return False
@@ -254,18 +263,22 @@ class MetadataClient:
             )
             response.raise_for_status()
             return True
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Failed to remove source IP '{pod_ip}' for key '{key}': HTTP {e.response.status_code}")
+            return False
         except httpx.RequestError as e:
             logger.warning(f"Failed to remove source IP '{pod_ip}' for key '{key}': {e}")
             return False
 
-    def delete_key(self, key: str, recursive: bool = False) -> dict:
+    def delete_key(self, key: str, recursive: bool = False, prefix_mode: bool = False) -> dict:
         """
         Delete a key from both the metadata server and filesystem.
         This removes virtual keys (locally-published) from the metadata server AND deletes files from the filesystem.
 
         Args:
             key: Storage key to delete
-            recursive: If True, delete directories recursively
+            recursive: If True, delete directories recursively (directory semantics - adds /)
+            prefix_mode: If True, delete all keys starting with this string (no / added)
 
         Returns:
             dict with success status and details about what was deleted
@@ -274,11 +287,19 @@ class MetadataClient:
             # URL-encode the key to handle special characters
             encoded_key = quote(key, safe="")
             url = f"{self.base_url}/api/v1/keys/{encoded_key}"
+            params = []
             if recursive:
-                url += "?recursive=true"
+                params.append("recursive=true")
+            if prefix_mode:
+                params.append("prefix_mode=true")
+            if params:
+                url += "?" + "&".join(params)
             response = get_sync_client().delete(url, timeout=30)  # Longer timeout for filesystem operations
             response.raise_for_status()
             return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Failed to delete key '{key}': HTTP {e.response.status_code}")
+            return {"success": False, "error": f"HTTP {e.response.status_code}"}
         except httpx.RequestError as e:
             logger.warning(f"Failed to delete key '{key}': {e}")
             return {"success": False, "error": str(e)}
@@ -299,6 +320,9 @@ class MetadataClient:
             response = get_sync_client().post(url, timeout=30)
             response.raise_for_status()
             return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Failed to create directory for key '{key}': HTTP {e.response.status_code}")
+            return {"success": False, "error": f"HTTP {e.response.status_code}"}
         except httpx.RequestError as e:
             logger.warning(f"Failed to create directory for key '{key}': {e}")
             return {"success": False, "error": str(e)}
@@ -324,6 +348,9 @@ class MetadataClient:
             )
             response.raise_for_status()
             return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Failed to list keys with prefix '{prefix}': HTTP {e.response.status_code}")
+            return {"prefix": prefix, "items": []}
         except httpx.RequestError as e:
             logger.warning(f"Failed to list keys with prefix '{prefix}': {e}")
             return {"prefix": prefix, "items": []}
@@ -362,6 +389,11 @@ class MetadataClient:
             )
             response.raise_for_status()
             return True
+        except httpx.HTTPStatusError as e:
+            logger.warning(
+                f"Failed to register store pod IP '{store_pod_ip}' for key '{key}': HTTP {e.response.status_code}"
+            )
+            return False
         except httpx.RequestError as e:
             logger.warning(f"Failed to register store pod IP '{store_pod_ip}' for key '{key}': {e}")
             return False
@@ -410,6 +442,9 @@ class MetadataClient:
             )
             response.raise_for_status()
             return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Failed to join broadcast quorum: HTTP {e.response.status_code}")
+            return {}
         except httpx.RequestError as e:
             logger.warning(f"Failed to join broadcast quorum: {e}")
             return {}
@@ -433,6 +468,9 @@ class MetadataClient:
             )
             response.raise_for_status()
             return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Failed to get broadcast status for {broadcast_id}: HTTP {e.response.status_code}")
+            return {"status": "error", "error": f"HTTP {e.response.status_code}"}
         except httpx.RequestError as e:
             logger.warning(f"Failed to get broadcast status for {broadcast_id}: {e}")
             return {"status": "error", "error": str(e)}
@@ -456,6 +494,9 @@ class MetadataClient:
             )
             response.raise_for_status()
             return True
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Failed to complete broadcast {broadcast_id}: HTTP {e.response.status_code}")
+            return False
         except httpx.RequestError as e:
             logger.warning(f"Failed to complete broadcast {broadcast_id}: {e}")
             return False
@@ -479,6 +520,9 @@ class MetadataClient:
             )
             response.raise_for_status()
             return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Failed to cleanup keys for service '{service_name}': HTTP {e.response.status_code}")
+            return {"success": False, "error": f"HTTP {e.response.status_code}", "deleted_count": 0}
         except httpx.RequestError as e:
             logger.warning(f"Failed to cleanup keys for service '{service_name}': {e}")
             return {"success": False, "error": str(e), "deleted_count": 0}
