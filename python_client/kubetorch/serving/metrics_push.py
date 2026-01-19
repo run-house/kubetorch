@@ -79,7 +79,7 @@ class MetricsPusher:
         self.last_activity_gauge = Gauge(
             "kubetorch_last_activity_timestamp",
             "Last activity timestamp",
-            ["service_name", "kubetorch_version", "service_namespace", "service_type"],
+            ["service", "kubetorch_version", "namespace", "service_type"],
             registry=self.registry,
         )
 
@@ -87,7 +87,7 @@ class MetricsPusher:
         self.active_requests_gauge = Gauge(
             "http_server_active_requests",
             "Number of currently active requests",
-            ["service_name", "kubetorch_version", "service_namespace", "service_type"],
+            ["service", "kubetorch_version", "namespace", "service_type"],
             registry=self.registry,
         )
 
@@ -95,7 +95,7 @@ class MetricsPusher:
         self.heartbeat_counter = Counter(
             "kt_heartbeat_sent",
             "Total heartbeats sent",
-            ["service_name", "kubetorch_version", "service_namespace", "service_type"],
+            ["service", "kubetorch_version", "namespace", "service_type"],
             registry=self.registry,
         )
 
@@ -104,9 +104,9 @@ class MetricsPusher:
 
         # Store label values for metrics
         self._labels = {
-            "service_name": os.environ.get("KT_SERVICE", "unknown-service"),
+            "service": os.environ.get("KT_SERVICE", "unknown-service"),
             "kubetorch_version": self._get_package_version(),
-            "service_namespace": os.environ.get("POD_NAMESPACE", "default"),
+            "namespace": os.environ.get("POD_NAMESPACE", "default"),
             "service_type": os.environ.get("KT_DEPLOYMENT_MODE", "deployment"),
         }
 
