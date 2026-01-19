@@ -13,8 +13,7 @@ from pathlib import Path
 from typing import List
 from urllib.parse import urlparse
 
-import httpx
-
+from kubetorch.serving.global_http_clients import get_sync_client
 from kubetorch.resources.compute.utils import (
     ControllerRequestError,
     handle_controller_delete_error,
@@ -217,7 +216,7 @@ def kt_check(
             remote_port=32300,
         ) as lp:
             url = f"http://localhost:{lp}/health"
-            r = httpx.get(url, timeout=10)
+            r = get_sync_client().get(url, timeout=10)
             if not r.is_success:
                 fail(f"Service returned {r.status_code}: {r.text}", [pod_name])
     except Exception as e:
