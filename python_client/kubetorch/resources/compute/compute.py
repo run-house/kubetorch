@@ -35,7 +35,9 @@ class Compute:
         self,
         cpus: Union[str, int] = None,
         memory: str = None,
+        memory_limit: str = None,
         disk_size: str = None,
+        disk_limit: str = None,
         gpus: Union[str, int] = None,
         gpu_type: str = None,
         priority_class_name: str = None,
@@ -72,7 +74,11 @@ class Compute:
         Args:
             cpus (str, int, optional): CPU resource request. Can be specified in cores ("1.0") or millicores ("1000m").
             memory (str, optional): Memory resource request. Can use binary (Ki, Mi, Gi) or decimal (K, M, G) units.
+            memory_limit (str, optional): Memory resource limit. If exceeded, the container will be OOM killed.
+                Uses same format as memory.
             disk_size (str, optional): Ephemeral storage request. Uses same format as memory.
+            disk_limit (str, optional): Ephemeral storage limit. If exceeded, the pod will be evicted.
+                Uses same format as disk_size.
             gpus (str or int, optional): Number of GPUs to request. Fractional GPUs not currently supported.
             gpu_type (str, optional): GPU type to request. Corresponds to the "nvidia.com/gpu.product" label on the
                 node (if GPU feature discovery is enabled), or a full string like "nvidia.com/gpu.product: L4" can be
@@ -197,7 +203,9 @@ class Compute:
         template_vars = {
             "cpus": cpus,
             "memory": memory,
+            "memory_limit": memory_limit,
             "disk_size": disk_size,
+            "disk_limit": disk_limit,
             "gpus": gpus,
             "priority_class_name": priority_class_name,
             "gpu_type": gpu_type,
@@ -406,7 +414,9 @@ class Compute:
         requested_resources = self._get_requested_resources(
             config.get("cpus"),
             config.get("memory"),
+            config.get("memory_limit"),
             config.get("disk_size"),
+            config.get("disk_limit"),
             gpus,
         )
         secret_env_vars, secret_volumes = self._extract_secrets(config.get("secrets") or self._secrets, namespace)
@@ -1788,7 +1798,7 @@ class Compute:
 
         return image
 
-    def _get_requested_resources(self, cpus, memory, disk_size, gpus):
+    def _get_requested_resources(self, cpus, memory, memory_limit, disk_size, disk_limit, gpus):
         """Return requested resources."""
         requests = {}
         limits = {}
@@ -1800,10 +1810,14 @@ class Compute:
         # Add Memory if specified
         if memory:
             requests["memory"] = memory
+        if memory_limit:
+            limits["memory"] = memory_limit
 
         # Add Storage if specified
         if disk_size:
             requests["ephemeral-storage"] = disk_size
+        if disk_limit:
+            limits["ephemeral-storage"] = disk_limit
 
         # Add GPU if specified
         if gpus:
