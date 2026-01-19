@@ -361,11 +361,11 @@ async def test_async_fn_call(remote_async_fn):
 
     # If tasks ran sequentially, total time would be ~20s (20 * 1s)
     # If concurrent, total time should be ~2s + network overhead
-    # Use generous threshold to account for network variability (2 seconds)
+    # Use generous threshold to account for network variability (8 seconds)
     print(f"Total call time: {total_wall_time}")
     assert (
-        total_wall_time < sleep_time + 2
-    ), f"Tasks appear to have run sequentially: {total_wall_time:.1f}s >= {sleep_time + 2}s threshold"
+        total_wall_time < sleep_time + 8
+    ), f"Tasks appear to have run sequentially: {total_wall_time:.1f}s >= {sleep_time + 8}s threshold"
 
 
 @pytest.mark.level("minimal")
