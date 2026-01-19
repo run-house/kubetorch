@@ -218,13 +218,18 @@ class ResourceHungryService:
     def consume_memory(self):
         a = []
         while True:
-            a.append(" " * 10**7)  # ~10MB per iteration
+            a.append(bytearray(50 * 1024 * 1024))  # 50MB per iteration
 
     def consume_disk(self):
+        import os
+
         i = 0
         while True:
-            with open(f"/tmp/fill_{i}.txt", "w") as f:
-                f.write("X" * 1024 * 1024 * 5)  # 5MB
+            path = f"/var/tmp/fill_{i}.txt"
+            with open(path, "w") as f:
+                f.write("X" * 1024 * 1024 * 50)
+                f.flush()
+                os.fsync(f.fileno())  # Force sync to disk
             i += 1
 
     def sleep_forever(self):
