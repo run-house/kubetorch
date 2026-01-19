@@ -883,17 +883,6 @@ class Module:
             # Event query for K8s events pushed by controller's event watcher
             # Include service name pattern AND actual pod names for selector-only mode
             name_patterns = [f"{self.service_name}.*"]
-            try:
-                # For selector-only mode, add wildcard patterns based on selector values
-                # This catches events for pods created after the websocket connects
-                if self.compute.selector_only and hasattr(self.compute, "_pod_selector") and self.compute._pod_selector:
-                    for value in self.compute._pod_selector.values():
-                        name_patterns.append(f"{value}.*")
-                pod_names = self.compute.pod_names()
-                if pod_names:
-                    name_patterns.extend(pod_names)
-            except Exception:
-                pass
             name_regex = "|".join(name_patterns)
             event_query = f'{{job="kubetorch-events", namespace="{self.namespace}", name=~"{name_regex}"}}'
 
@@ -968,17 +957,6 @@ class Module:
             # Event query for K8s events pushed by controller's event watcher
             # Include service name pattern AND actual pod names for selector-only mode
             name_patterns = [f"{self.service_name}.*"]
-            try:
-                # For selector-only mode, add wildcard patterns based on selector values
-                # This catches events for pods created after the websocket connects
-                if self.compute.selector_only and hasattr(self.compute, "_pod_selector") and self.compute._pod_selector:
-                    for value in self.compute._pod_selector.values():
-                        name_patterns.append(f"{value}.*")
-                pod_names = self.compute.pod_names()
-                if pod_names:
-                    name_patterns.extend(pod_names)
-            except Exception:
-                pass
             name_regex = "|".join(name_patterns)
             event_query = f'{{job="kubetorch-events", namespace="{self.namespace}", name=~"{name_regex}"}}'
 

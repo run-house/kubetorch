@@ -346,11 +346,11 @@ async def test_async_fn_call(remote_async_fn):
     # by measuring total wall-clock time (should be ~sleep_time, not num_tasks * sleep_time)
     import time
 
-    num_tasks = 3
-    sleep_time = 2  # Each task sleeps for 2 seconds (in async_simple_summer)
+    num_tasks = 20
+    sleep_time = 1  # Each task sleeps for 2 seconds (in async_simple_summer)
 
     start_wall = time.time()
-    tasks = [remote_async_fn(1, 2, return_times=True) for _ in range(num_tasks)]
+    tasks = [remote_async_fn(1, 2, sleep=sleep_time, return_times=True) for _ in range(num_tasks)]
     results = await asyncio.gather(*tasks)
     total_wall_time = time.time() - start_wall
 
@@ -359,13 +359,13 @@ async def test_async_fn_call(remote_async_fn):
     for r in results:
         assert len(r) == 2  # (start_time, end_time)
 
-    # If tasks ran sequentially, total time would be ~6s (3 * 2s)
+    # If tasks ran sequentially, total time would be ~20s (20 * 1s)
     # If concurrent, total time should be ~2s + network overhead
-    # Use generous threshold to account for network variability
-    sequential_time = num_tasks * sleep_time
+    # Use generous threshold to account for network variability (2 seconds)
+    print(f"Total call time: {total_wall_time}")
     assert (
-        total_wall_time < sequential_time * 0.75
-    ), f"Tasks appear to have run sequentially: {total_wall_time:.1f}s >= {sequential_time * 0.75:.1f}s threshold"
+        total_wall_time < sleep_time + 2
+    ), f"Tasks appear to have run sequentially: {total_wall_time:.1f}s >= {sleep_time + 2}s threshold"
 
 
 @pytest.mark.level("minimal")

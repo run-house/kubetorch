@@ -11,7 +11,7 @@ from typing import Literal, Union
 import httpx
 import websockets
 
-from kubetorch.globals import config, LoggingConfig, MetricsConfig, service_url
+from kubetorch.globals import config, LoggingConfig, MetricsConfig, service_url, service_url_async
 from kubetorch.logger import get_logger
 
 from kubetorch.provisioning.constants import DEFAULT_NGINX_PORT
@@ -398,6 +398,13 @@ class HTTPClient:
         response.raise_for_status()
         return response
 
+    async def _cleanup_tasks(self, tasks):
+        """Background cleanup for cancelled tasks. Never raises."""
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception:
+            pass
+
     # ----------------- Stream Helpers ----------------- #
     def _should_display_log(self, log_name: str, log_level: str, log_config: LoggingConfig) -> bool:
         """Determine if a log should be displayed based on config filters.
@@ -546,8 +553,8 @@ class HTTPClient:
             finally:
                 if websocket:
                     try:
-                        # Use wait_for to prevent hanging on close
-                        await asyncio.wait_for(websocket.close(), timeout=1.0)
+                        # Use short timeout to avoid blocking event loop during cleanup
+                        await asyncio.wait_for(websocket.close(), timeout=0.1)
                     except (asyncio.TimeoutError, Exception):
                         pass
         except Exception as e:
@@ -556,8 +563,8 @@ class HTTPClient:
             # Ensure websocket is closed even if we didn't enter the context
             if websocket:
                 try:
-                    # Use wait_for to prevent hanging on close
-                    await asyncio.wait_for(websocket.close(), timeout=1.0)
+                    # Use short timeout to avoid blocking event loop during cleanup
+                    await asyncio.wait_for(websocket.close(), timeout=0.1)
                 except (asyncio.TimeoutError, Exception):
                     pass
 
@@ -590,17 +597,6 @@ class HTTPClient:
             # Query events for resources matching this service name OR pod names
             # This is needed for selector-only mode where pod names don't start with service name
             name_patterns = [f"{self.service_name}.*"]
-            try:
-                # For selector-only mode, add wildcard patterns based on selector values
-                # This catches events for pods created after the websocket connects
-                if self.compute.selector_only and hasattr(self.compute, "_pod_selector") and self.compute._pod_selector:
-                    for value in self.compute._pod_selector.values():
-                        name_patterns.append(f"{value}.*")
-                pod_names = self.compute.pod_names()
-                if pod_names:
-                    name_patterns.extend(pod_names)
-            except Exception:
-                pass  # Fall back to just service name pattern
             name_regex = "|".join(name_patterns)
             event_query = f'{{job="kubetorch-events", namespace="{namespace}", name=~"{name_regex}"}}'
             encoded_query = urllib.parse.quote_plus(event_query)
@@ -717,7 +713,8 @@ class HTTPClient:
             finally:
                 if websocket:
                     try:
-                        await asyncio.wait_for(websocket.close(), timeout=1.0)
+                        # Use short timeout to avoid blocking event loop during cleanup
+                        await asyncio.wait_for(websocket.close(), timeout=0.1)
                     except (asyncio.TimeoutError, Exception):
                         pass
         except Exception as e:
@@ -798,6 +795,7 @@ class HTTPClient:
         http_getter,
         sleeper,
         metrics_config: MetricsConfig,
+        base_url: str,
         is_async: bool = False,
     ):
         """
@@ -806,7 +804,7 @@ class HTTPClient:
 
         This function drives both the synchronous (`_collect_metrics`) and asynchronous
         (`_collect_metrics_async`) metric collectors. It repeatedly queries Prometheus for
-        metrics related to the service’s pods until the given `stop_event` is set.
+        metrics related to the service's pods until the given `stop_event` is set.
 
         Args:
             stop_event (threading.event or asyncio.Event): A threading.Event or asyncio.Event used to stop collection.
@@ -814,6 +812,7 @@ class HTTPClient:
                          or async (`httpx.AsyncClient.get`).
             sleeper (Callable): Callable that sleeps between metric polls — either time.sleep or asyncio.sleep.
             metrics_config (MetricsConfig): User provided configuration controlling metrics collection behavior.
+            base_url (str): Base URL for the Prometheus service (from service_url or service_url_async).
             is_async (bool): If ``True``, runs in async mode (awaits HTTP + sleep calls).
                              If ``False``, runs in blocking sync mode.
 
@@ -837,7 +836,7 @@ class HTTPClient:
             interval = int(metrics_config.interval)
             metric_queries = self._get_stream_metrics_queries(scope=metrics_config.scope, interval=interval)
             show_gpu = True
-            prom_url = f"{service_url()}/prometheus/api/v1/query"
+            prom_url = f"{base_url}/prometheus/api/v1/query"
 
             start_time = time.time()
 
@@ -902,7 +901,7 @@ class HTTPClient:
         else:
             asyncio.run(run())
 
-    def _collect_metrics(self, stop_event, http_getter, sleeper, metrics_config):
+    def _collect_metrics(self, stop_event, http_getter, sleeper, metrics_config, base_url: str):
         """
         Synchronous metrics collector.
 
@@ -914,15 +913,18 @@ class HTTPClient:
             http_getter: Synchronous callable that fetches Prometheus query results.
             sleeper: Blocking sleep callable.
             metrics_config: User provided configuration controlling metrics collection behavior.
+            base_url: Base URL for the Prometheus service.
 
         Notes:
             - Runs until `stop_event` is set.
             - Safe to use in multi-threaded environments.
             - Should not be invoked from within an asyncio event loop.
         """
-        self._collect_metrics_common(stop_event, http_getter, sleeper, metrics_config=metrics_config, is_async=False)
+        self._collect_metrics_common(
+            stop_event, http_getter, sleeper, metrics_config=metrics_config, base_url=base_url, is_async=False
+        )
 
-    async def _collect_metrics_async(self, stop_event, http_getter, sleeper, metrics_config):
+    async def _collect_metrics_async(self, stop_event, http_getter, sleeper, metrics_config, base_url: str):
         """
         Asynchronous metrics collector.
 
@@ -934,6 +936,7 @@ class HTTPClient:
             http_getter: Asynchronous callable that fetches Prometheus query results.
             sleeper: Async sleep callable.
             metrics_config: User provided configuration controlling metrics collection behavior.
+            base_url: Base URL for the Prometheus service.
 
         Note:
             - Should only be called from within an asyncio context.
@@ -941,7 +944,7 @@ class HTTPClient:
             - Prints formatted metrics continuously until stopped.
         """
         await self._collect_metrics_common(
-            stop_event, http_getter, sleeper, metrics_config=metrics_config, is_async=True
+            stop_event, http_getter, sleeper, metrics_config=metrics_config, base_url=base_url, is_async=True
         )
 
     # ----------------- Core APIs ----------------- #
@@ -969,7 +972,7 @@ class HTTPClient:
         """
         logger.debug(f"Streaming logs for service {self.service_name} (request_id: {request_id})")
 
-        base_url = service_url()
+        base_url = await service_url_async()
         base_host, base_port = extract_host_port(base_url)
         # Run log and event streams in parallel (same as sync version in _run_log_stream)
         await asyncio.gather(
@@ -981,6 +984,9 @@ class HTTPClient:
     async def stream_metrics_async(self, request_id, stop_event, metrics_config):
         """Async GPU/CPU metrics streaming (uses httpx.AsyncClient)."""
         logger.debug(f"Starting async metrics for {self.service_name} (request_id={request_id})")
+
+        # Get base URL asynchronously to avoid blocking the event loop
+        base_url = await service_url_async()
 
         async def async_http_get(url, params):
             try:
@@ -998,13 +1004,16 @@ class HTTPClient:
         async def async_sleep(seconds):
             await asyncio.sleep(seconds)
 
-        await self._collect_metrics_async(stop_event, async_http_get, async_sleep, metrics_config)
+        await self._collect_metrics_async(stop_event, async_http_get, async_sleep, metrics_config, base_url)
         logger.debug(f"Stopped async metrics for {request_id}")
 
     def stream_metrics(self, stop_event, metrics_config: MetricsConfig = None):
         """Synchronous GPU/CPU metrics streaming."""
         logger.debug(f"Streaming metrics for {self.service_name}")
         logger.debug(f"Using metrics config: {metrics_config}")
+
+        # Get base URL (sync version, OK for thread-based streaming)
+        base_url = service_url()
 
         def sync_http_get(url, params):
             try:
@@ -1022,7 +1031,7 @@ class HTTPClient:
         def sync_sleep(seconds):
             time.sleep(seconds)
 
-        self._collect_metrics(stop_event, sync_http_get, sync_sleep, metrics_config)
+        self._collect_metrics(stop_event, sync_http_get, sync_sleep, metrics_config, base_url)
 
     def call_method(
         self,
@@ -1076,36 +1085,22 @@ class HTTPClient:
             json_data = _serialize_body(body, serialization)
             response = await self.post_async(endpoint=endpoint, json=json_data, headers=headers)
             response.raise_for_status()
-            result = _deserialize_response(response, serialization)
-
-            if stream_logs and log_task:
-                await asyncio.sleep(0.5)
-
-            return result
+            return _deserialize_response(response, serialization)
         finally:
             stop_event.set()
+            # Cancel tasks and clean up in background - never block the caller
+            cleanup_tasks = []
             if log_task:
-                # Use shutdown_grace_period if set, otherwise use a short default timeout
-                timeout = logging_config.shutdown_grace_period if logging_config.shutdown_grace_period > 0 else 0.5
-                try:
-                    await asyncio.wait_for(log_task, timeout=timeout)
-                except asyncio.TimeoutError:
-                    # Always cancel on timeout to prevent "Task was destroyed but it is pending!" warnings
-                    log_task.cancel()
-                    try:
-                        await log_task
-                    except asyncio.CancelledError:
-                        pass
-            # Clean up metrics task
+                cleanup_tasks.append(log_task)
             if monitoring_task:
-                try:
-                    await asyncio.wait_for(monitoring_task, timeout=0.5)
-                except asyncio.TimeoutError:
-                    monitoring_task.cancel()
-                    try:
-                        await monitoring_task
-                    except asyncio.CancelledError:
-                        pass
+                cleanup_tasks.append(monitoring_task)
+
+            if cleanup_tasks:
+                for task in cleanup_tasks:
+                    task.cancel()
+                # Fire-and-forget cleanup task to await cancelled tasks
+                # This prevents "Task was destroyed but it is pending!" warnings
+                asyncio.create_task(self._cleanup_tasks(cleanup_tasks))
 
     def post(self, endpoint, json=None, headers=None):
         return self._make_request("post", endpoint, json=json, headers=headers)
