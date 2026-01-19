@@ -618,8 +618,8 @@ class ServiceManager:
         except Exception as e:
             if http_conflict(e):
                 logger.info(f"{manifest.get('kind', self.resource_type)} {service_name} already exists, updating")
-                existing = self.get_resource(service_name)
-                return existing
+                # Return the manifest we tried to apply - resource already exists with similar config
+                return manifest
             raise
 
     def check_service_ready(self, service_name: str, launch_timeout: int = 300, **kwargs) -> bool:
@@ -698,24 +698,6 @@ class ServiceManager:
     # =========================================================================
     # Resource Operations
     # =========================================================================
-
-    def get_resource(self, service_name: str) -> dict:
-        """Get a resource by name."""
-        return self.controller_client.get_namespaced_custom_object(
-            group=self.api_group,
-            version=self.api_version,
-            namespace=self.namespace,
-            plural=self.api_plural,
-            name=service_name,
-        )
-
-    def get_deployment_timestamp_annotation(self, service_name: str) -> Optional[str]:
-        """Get deployment timestamp annotation from a resource."""
-        try:
-            resource = self.get_resource(service_name)
-            return resource.get("metadata", {}).get("annotations", {}).get("kubetorch.com/deployment_timestamp")
-        except Exception:
-            return None
 
     def get_endpoint(self, service_name: str) -> str:
         """Get the endpoint URL for a service."""

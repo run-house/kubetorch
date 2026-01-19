@@ -162,15 +162,9 @@ def kt_check(
 
     if not pods:
         if deployment_mode == "knative":
-            try:
-                svc = controller.get_namespaced_custom_object("serving.knative.dev", "v1", namespace, "services", name)
-                conds = svc.get("status", {}).get("conditions", [])
-                ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conds)
-                if ready:
-                    console.print(f"[yellow]Knative service {name} READY but scaled to zero.[/yellow]")
-                    return
-            except Exception as e:
-                fail(f"Failed knative service lookup: {e}")
+            # Knative service exists (from get_deployment_mode) but has no pods = scaled to zero
+            console.print(f"[yellow]Knative service {name} is scaled to zero (no pods running).[/yellow]")
+            return
         fail("No deployment pods found.")
 
     # --------------------------------------------------
@@ -853,7 +847,7 @@ def kt_list(
 
             volumes_display = load_kubetorch_volumes_from_pods(pods)
 
-            # Get resources from revision
+            # Get resources from pods
             cpu = memory = gpu = None
             if kind == "ksvc":
                 cond = status_data.get("conditions", [{}])[0]
@@ -862,23 +856,16 @@ def kt_list(
                     "True": "[green]Ready[/green]",
                     "Unknown": "[yellow]Creating[/yellow]",
                 }.get(status, "[red]Failed[/red]")
-                rev_name = status_data.get("latestCreatedRevisionName")
-                if rev_name:
+                # Get resources from pod spec instead of revision
+                if pods:
                     try:
-                        rev = globals.controller_client().get_namespaced_custom_object(
-                            group="serving.knative.dev",
-                            version="v1",
-                            namespace=namespace,
-                            plural="revisions",
-                            name=rev_name,
-                        )
-                        container = rev["spec"]["containers"][0]
+                        container = pods[0].get("spec", {}).get("containers", [{}])[0]
                         reqs = container.get("resources", {}).get("requests", {})
                         cpu = reqs.get("cpu")
                         memory = reqs.get("memory")
                         gpu = reqs.get("nvidia.com/gpu") or reqs.get("gpu")
                     except Exception as e:
-                        logger.warning(f"Could not get revision for {name}: {e}")
+                        logger.warning(f"Could not get resources from pod for {name}: {e}")
             elif kind == "selector":
                 # Selector-based pools: status based on actual pods found via selector
                 num_pods = len(pods)
