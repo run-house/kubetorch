@@ -26,7 +26,7 @@ except:
 from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
 
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -1221,9 +1221,18 @@ async def lifespan(app: FastAPI):
             logger.info("Log streaming enabled")
             app.state.log_capture = log_capture
 
+    # Startup - TTL tracking via metrics
+    ttl = get_inactivity_ttl_annotation()
+    if ttl and KT_METRICS_ENABLED:
+        logger.info(f"TTL={ttl}s enabled with metrics tracking")
+    elif ttl:
+        logger.warning("TTL annotation found but metrics collection is disabled - TTL will not work")
+    else:
+        logger.debug("No TTL annotation found")
+
     # Initialize metrics collection
     if KT_METRICS_ENABLED:
-        metrics_pusher = init_metrics_pusher()
+        metrics_pusher = init_metrics_pusher(ttl_seconds=ttl)
         if metrics_pusher:
             logger.info("Metrics collection enabled")
             app.state.metrics_pusher = metrics_pusher
@@ -1263,16 +1272,6 @@ async def lifespan(app: FastAPI):
         # Register SIGTERM handler
         signal.signal(signal.SIGTERM, handle_sigterm)
     app.state.terminating = False
-
-    # Startup - TTL tracking via metrics
-    ttl = get_inactivity_ttl_annotation()
-    if ttl and KT_METRICS_ENABLED:
-        # MetricsPusher handles activity tracking via record_activity()
-        logger.info(f"TTL={ttl}s enabled with metrics tracking")
-    elif ttl:
-        logger.warning("TTL annotation found but metrics collection is disabled - TTL will not work")
-    else:
-        logger.debug("No TTL annotation found")
 
     # Start controller WebSocket to receive metadata (if not already set via env vars)
     global _CONTROLLER_WS
@@ -1591,6 +1590,25 @@ async def test_reload(request: Request, metadata: Dict = Body(...)):
 @app.get("/", include_in_schema=False)
 async def health():
     return {"status": "healthy"}
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics(request: Request):
+    """Expose Prometheus-formatted metrics for scraping."""
+    try:
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+    except ImportError:
+        return Response(content="# prometheus_client not installed\n", media_type="text/plain")
+
+    metrics_pusher = getattr(request.app.state, "metrics_pusher", None)
+    if metrics_pusher and hasattr(metrics_pusher, "registry"):
+        # Use MetricsPusher's registry
+        content = generate_latest(metrics_pusher.registry).decode("utf-8")
+    else:
+        # Fall back to default registry
+        content = generate_latest().decode("utf-8")
+
+    return Response(content=content, media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/ready", include_in_schema=False)

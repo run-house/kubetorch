@@ -1,5 +1,6 @@
-# PodMonitor to scrape metrics for TTL controller
-{{- if and (eq .Values.ttlController.podMonitor.enabled true) (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+# PodMonitor to scrape metrics from deployed service pods
+# Used by kube-prometheus-stack users (kubetorch-metrics scrapes these by default)
+{{- if and (eq .Values.kubetorchController.ttl.podMonitor.enabled true) (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:
@@ -8,10 +9,10 @@ metadata:
   labels:
     release: {{ .Release.Namespace }}
     monitoring: enabled
-    {{- if .Values.ttlController.podMonitor.prometheusLabel }}
-    prometheus: {{ .Values.ttlController.podMonitor.prometheusLabel }}
+    {{- if .Values.kubetorchController.ttl.podMonitor.prometheusLabel }}
+    prometheus: {{ .Values.kubetorchController.ttl.podMonitor.prometheusLabel }}
     {{- end }}
-    {{- with .Values.ttlController.podMonitor.additionalLabels }}
+    {{- with .Values.kubetorchController.ttl.podMonitor.additionalLabels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:

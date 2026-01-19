@@ -35,6 +35,20 @@ kubetorchController:
   tolerations: []
   affinity: {}
 
+  # TTL configuration
+  ttl:
+    enabled: true
+    # Interval in seconds between TTL checks (runs as background task in controller)
+    intervalSeconds: 300
+    # Prometheus URL for the TTL Controller to query metrics
+    prometheusUrl: "http://kubetorch-metrics.kubetorch.svc.cluster.local:9090"
+    # PodMonitor for scraping deployed service pod metrics (for kube-prometheus-stack users)
+    # kubetorch-metrics already scrapes these pods, so disabled by default
+    podMonitor:
+      enabled: false
+      additionalLabels: {}
+      prometheusLabel: "kube-prometheus" # Label to match your Prometheus Operator instance
+
   # Nginx sidecar configuration (runs alongside controller in same pod)
   nginx:
     resolver: "kube-dns.kube-system.svc.cluster.local"  # DNS resolver for upstream resolution
@@ -179,23 +193,3 @@ dcgm-exporter:
           - matchExpressions:
               - key: nvidia.com/gpu.present
                 operator: Exists
-
-ttlController:
-  enabled: true
-  # Namespaces to watch (creates Role + RoleBinding for each)
-  namespaces: [] # Empty defaults to watching all namespaces in kubetorchConfig.deployment_namespaces
-  # Prometheus URL and namespace for the TTL Controller to query metrics
-  prometheusUrl: "http://kubetorch-metrics.kubetorch.svc.cluster.local:9090"
-  prometheusNamespace: "kubetorch"
-  # PodMonitor for Prometheus Operator (only needed if using kube-prometheus-stack)
-  # kubetorch-metrics already scrapes these pods, so disabled by default
-  podMonitor:
-    enabled: false
-    additionalLabels: {}
-    prometheusLabel: "kube-prometheus" # Label to match your Prometheus Operator instance
-  # Network Policy to allow egress to Prometheus (needed if cluster has default-deny policies)
-  networkPolicy:
-    enabled: false
-    ports:
-      - protocol: TCP
-        port: 9090

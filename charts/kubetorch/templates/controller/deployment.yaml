@@ -90,6 +90,19 @@ spec:
             # Data store configuration
             - name: DATA_STORE_METADATA_PORT
               value: {{ .Values.dataStore.metadataPort | default 8081 | quote }}
+            # TTL Controller Configuration
+            {{- $allNamespaces := .Values.kubetorchConfig.deployment_namespaces | default list }}
+            {{- if not (has .Release.Namespace $allNamespaces) }}
+              {{- $allNamespaces = append $allNamespaces .Release.Namespace }}
+            {{- end }}
+            - name: TTL_CONTROLLER_ENABLED
+              value: {{ .Values.kubetorchController.ttl.enabled | quote }}
+            - name: TTL_INTERVAL_SECONDS
+              value: {{ .Values.kubetorchController.ttl.intervalSeconds | default 300 | quote }}
+            - name: PROMETHEUS_URL
+              value: {{ .Values.kubetorchController.ttl.prometheusUrl | quote }}
+            - name: WATCH_NAMESPACES
+              value: {{ $allNamespaces | join "," | quote }}
           ports:
             - containerPort: {{ .Values.kubetorchController.port }}
               name: controller
