@@ -671,21 +671,6 @@ class ControllerClient:
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get(f"/controller/configmaps/{namespace}", params=params)
 
-    # Custom Resource Definitions (CRDs)
-    def create_namespaced_custom_object(
-        self, group: str, version: str, namespace: str, plural: str, body: Dict[str, Any], params: Dict[str, Any] = None
-    ) -> Dict[str, Any]:
-        """Create a custom resource"""
-        return self.post(f"/apis/{group}/{version}/namespaces/{namespace}/{plural}", json=body, params=params)
-
-    def get_namespaced_custom_object(
-        self, group: str, version: str, namespace: str, plural: str, name: str, ignore_not_found=False
-    ) -> Dict[str, Any]:
-        """Get a custom resource"""
-        return self.get(
-            f"/apis/{group}/{version}/namespaces/{namespace}/{plural}/{name}", ignore_not_found=ignore_not_found
-        )
-
     def list_ingresses(self, namespace: str, label_selector: str = None):
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get(f"/controller/ingresses/{namespace}", params=params)
