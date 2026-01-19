@@ -62,13 +62,13 @@ def simple_summer_with_logs(a, b):
     return a + b
 
 
-async def async_simple_summer(a, b, return_times=False):
+async def async_simple_summer(a, b, sleep=2, return_times=False):
     import asyncio
     import time
 
     if return_times:
         start_time = time.time()
-        await asyncio.sleep(2)
+        await asyncio.sleep(sleep)
         return start_time, time.time()
 
     await asyncio.sleep(0.1)
