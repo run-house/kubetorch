@@ -33,7 +33,7 @@ metadata:
   namespace: {{ . }}
 spec:
   accessModes:
-    - ReadWriteOnce
+    - {{ $.Values.dataStore.storage.accessMode | default "ReadWriteOnce" }}
   resources:
     requests:
       storage: {{ $.Values.dataStore.storage.size | default "100Gi" }}

@@ -104,6 +104,7 @@ dataStore:
   storage:
     size: 100Gi  # Size of persistent volume
     storageClassName: ""  # Leave empty to use default storage class
+    accessMode: ReadWriteOnce  # Use ReadWriteMany with RWX storage class for better availability
   cleanupCron:
     enabled: false # set to true to enable pod cleanup
   tolerations: []
