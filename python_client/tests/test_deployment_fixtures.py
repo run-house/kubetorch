@@ -211,6 +211,22 @@ async def test_cls_sync_basic(remote_cls):
 
 @pytest.mark.level("minimal")
 @pytest.mark.asyncio
+async def test_cls_annotations_and_labels(remote_cls):
+    """Verify that annotations and labels set in Compute are propagated to the pod."""
+    pods = remote_cls.compute.pods()
+    assert pods
+
+    pod = pods[0]
+    pod_metadata = pod.get("metadata", {})
+    pod_annotations = pod_metadata.get("annotations", {})
+    pod_labels = pod_metadata.get("labels", {})
+
+    assert pod_annotations.get("test-annotation") == "test_value"
+    assert pod_labels.get("test-label") == "test_value"
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
 async def test_cls_sync_reload_by_name_only(remote_cls):
     import kubetorch as kt
 

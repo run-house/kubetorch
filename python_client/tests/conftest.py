@@ -188,42 +188,43 @@ async def remote_cls():
 
     compute_type = os.getenv("TEST_COMPUTE_TYPE", "deployment")
 
-    compute = kt.Compute(
-        cpus=".1",
-        image=kt.images.Debian()
-        .pip_install(["pytest", "pytest-asyncio", "typer", "rich"])
-        .run_bash("uv pip install --system --break-system-packages numpy && uv cache clean"),
-        env_vars={"OMP_NUM_THREADS": 1},
-        annotations={"test-annotation": "test_value"},
-        tolerations=[
-            {
-                "key": "test.toleration.key",
-                "operator": "Equal",
-                "value": "test-value",
-                "effect": "NoSchedule",
-            }
-        ],
-        gpu_anti_affinity=True,
-        allowed_serialization=["json", "pickle"],
-        launch_timeout=300,
-        inactivity_ttl="5m",
-    )
-
-    if compute_type == "knative":
-        compute = compute.autoscale(min_replicas=1)
+    common_kwargs = {
+        "labels": {"test-label": "test_value"},
+        "annotations": {"test-annotation": "test_value"},
+        "gpu_anti_affinity": True,
+        "allowed_serialization": ["json", "pickle"],
+        "env_vars": {"OMP_NUM_THREADS": 1},
+        "inactivity_ttl": "5m",
+    }
+    pip_packages = ["pytest", "pytest-asyncio", "typer", "rich"]
+    numpy_install = "uv pip install --system --break-system-packages numpy && uv cache clean"
 
     if compute_type == "ray":
         compute = kt.Compute(
+            **common_kwargs,
             cpus="0.5",
             memory="1Gi",
-            labels={"test-label": "test_value"},
-            gpu_anti_affinity=True,
             launch_timeout=600,
-            image=kt.images.Ray()
-            .pip_install(["pytest", "pytest-asyncio", "typer", "rich"])
-            .run_bash("uv pip install --system --break-system-packages numpy"),
-            allowed_serialization=["json", "pickle"],
+            image=kt.images.Ray().pip_install(pip_packages).run_bash(numpy_install),
         ).distribute("ray", workers=2)
+    else:
+        compute = kt.Compute(
+            **common_kwargs,
+            cpus=".1",
+            launch_timeout=300,
+            tolerations=[
+                {
+                    "key": "test.toleration.key",
+                    "operator": "Equal",
+                    "value": "test-value",
+                    "effect": "NoSchedule",
+                }
+            ],
+            image=kt.images.Debian().pip_install(pip_packages).run_bash(numpy_install),
+        )
+
+        if compute_type == "knative":
+            compute = compute.autoscale(min_replicas=1)
 
     service_name_prefix = os.getenv("SERVICE_NAME_PREFIX", compute_type)
     name = f"{service_name_prefix}-slow-cls"

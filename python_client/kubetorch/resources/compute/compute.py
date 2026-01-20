@@ -250,8 +250,9 @@ class Compute:
             namespace=template_vars["namespace"],
             replicas=replicas if replicas else 1,
             inactivity_ttl=template_vars["inactivity_ttl"],
+            manifest_annotations=manifest_annotations,
             custom_labels=manifest_labels,
-            custom_annotations=manifest_annotations,
+            custom_annotations=annotations.copy() if annotations else {},  # user annotations
             custom_template=service_template or {},
         )
 
@@ -1614,6 +1615,19 @@ class Compute:
         return metadata.get("annotations", {})
 
     @property
+    def user_annotations(self):
+        """Get user-provided annotations (excludes kubetorch internal annotations)."""
+        import kubetorch.provisioning.constants as provisioning_constants
+
+        INTERNAL_ANNOTATION_KEYS = {
+            provisioning_constants.INACTIVITY_TTL_ANNOTATION,
+            provisioning_constants.ALLOWED_SERIALIZATION_ANNOTATION,
+            provisioning_constants.KUBECONFIG_PATH_ANNOTATION,
+            "gpu-memory",
+        }
+        return {k: v for k, v in self.annotations.items() if k not in INTERNAL_ANNOTATION_KEYS}
+
+    @property
     def labels(self):
         metadata = self._get_manifest_metadata()
         return metadata.get("labels", {})
@@ -2582,6 +2596,9 @@ class Compute:
                     namespace=self.namespace,
                     replicas=self.replicas,
                     inactivity_ttl=self.inactivity_ttl,
+                    custom_labels=self.labels,
+                    manifest_annotations=self.annotations,
+                    custom_annotations=self.user_annotations,
                 )
 
             # Invalidate cached service manager so it gets recreated with the right type
@@ -2683,6 +2700,9 @@ class Compute:
                 autoscaling_config=autoscaling_config,
                 gpu_annotations=self.gpu_annotations,
                 inactivity_ttl=self.inactivity_ttl,
+                custom_labels=self.labels,
+                manifest_annotations=self.annotations,
+                custom_annotations=self.user_annotations,
             )
 
             # Invalidate cached service manager so it gets recreated with correct type
