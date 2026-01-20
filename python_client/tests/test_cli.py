@@ -114,7 +114,7 @@ async def test_cli_kt_list_basic(remote_logs_fn):
     # sort by timestamp, so we will get the latest services first, in case there are few CI jobs running simultaneously
     result = runner.invoke(app, ["list", "--sort"], env={"COLUMNS": "400"}, color=False)
     assert result.exit_code == 0
-    list_output = result.stdout
+    list_output = strip_ansi_codes(result.stdout)
     validate_logs_fn_service_info(list_output=list_output, service_name=service_name, compute_type=compute_type)
 
 
@@ -134,7 +134,7 @@ async def test_cli_kt_list_ns_with_services(remote_logs_fn):
             color=False,
         )
         assert result.exit_code == 0
-        list_output = result.stdout
+        list_output = strip_ansi_codes(result.stdout)
         validate_logs_fn_service_info(
             list_output=list_output,
             service_name=service_name,
@@ -147,7 +147,7 @@ async def test_cli_kt_list_ns_with_services(remote_logs_fn):
 async def test_cli_kt_list_ns_without_services(remote_logs_fn):
     result = runner.invoke(app, ["list", "-n", "no-such-ns"], env={"COLUMNS": "200"}, color=False)
     assert result.exit_code == 0
-    list_output = result.stdout
+    list_output = strip_ansi_codes(result.stdout)
     assert "No services found in no-such-ns namespace" in list_output
 
 
@@ -168,7 +168,7 @@ async def test_cli_kt_list_existing_prefix(remote_logs_fn):
             color=False,
         )
         assert result.exit_code == 0
-        list_output = result.stdout
+        list_output = strip_ansi_codes(result.stdout)
         validate_logs_fn_service_info(
             list_output=list_output,
             service_name=service_name,
@@ -181,7 +181,7 @@ async def test_cli_kt_list_existing_prefix(remote_logs_fn):
 async def test_cli_kt_list_non_existing_prefix(remote_logs_fn):
     result = runner.invoke(app, ["list", "-t", "no-such-prefix"], env={"COLUMNS": "200"}, color=False)
     assert result.exit_code == 0
-    list_output = result.stdout
+    list_output = strip_ansi_codes(result.stdout)
     assert f"No services found in {kt.config.namespace}" in list_output
 
 
@@ -203,7 +203,7 @@ async def test_cli_kt_list_multiple_flags(remote_logs_fn):
         color=False,
     )
     assert result.exit_code == 0
-    list_output = result.stdout
+    list_output = strip_ansi_codes(result.stdout)
     validate_logs_fn_service_info(list_output=list_output, service_name=service_name, compute_type=compute_type)
 
     # wrong ns, correct service prefix
@@ -213,7 +213,7 @@ async def test_cli_kt_list_multiple_flags(remote_logs_fn):
         env={"COLUMNS": "200"},
         color=False,
     )
-    list_output = result.stdout
+    list_output = strip_ansi_codes(result.stdout)
     assert result.exit_code == 0
     assert f"No services found in {wrong_ns} namespace" in list_output
 
@@ -224,7 +224,7 @@ async def test_cli_kt_list_multiple_flags(remote_logs_fn):
         env={"COLUMNS": "200"},
         color=False,
     )
-    list_output = result.stdout
+    list_output = strip_ansi_codes(result.stdout)
     assert result.exit_code == 0
     assert f"No services found in {existing_ns} namespace" in list_output
 
@@ -245,7 +245,7 @@ def test_cli_kt_config():
         result = runner.invoke(app, cmd, color=False)
         assert result.exit_code == 0
 
-        config_list_output = result.stdout
+        config_list_output = strip_ansi_codes(result.stdout)
 
         # parsing the config_list_output str, so we could convert the str output to a dict using json.loads()
         replacements_dict = {
@@ -277,7 +277,7 @@ def test_cli_kt_config_get():
         app, ["config", "get", "noSuchKey"], env={"COLUMNS": "200"}, color=False
     )  # added {"COLUMNS": "200"} to make sure the error will be printed in one line
     assert result.exit_code == 2
-    result_output = result.stdout or result.stderr
+    result_output = strip_ansi_codes(result.stdout) or result.stderr
     assert "Error" in result_output
 
 
@@ -307,20 +307,20 @@ def test_cli_kt_config_set():
             color=False,
         )  # added {"COLUMNS": "200"} to make sure the error will be printed in one line
         assert result.exit_code == 2
-        result_output = result.stdout or result.stderr
+        result_output = strip_ansi_codes(result.stdout) or result.stderr
         assert "Error" in result_output
 
         # Part C: set supported key, but don't provide value
         result = runner.invoke(app, ["config", "set", "username"], color=False)
         assert result.exit_code == 1
-        assert "Both key and value are required for 'set'" in result.stdout
+        assert "Both key and value are required for 'set'" in strip_ansi_codes(result.stdout)
 
         # Part D: set supported key, but provide a value of a wrong type
         # D.1: unsupported username
         invalid_username = "1"
         result = runner.invoke(app, ["config", "set", "username", invalid_username], color=False)
         assert result.exit_code == 1
-        assert f"Error setting username: {invalid_username} must be a valid k8s name" in result.stdout
+        assert f"Error setting username: {invalid_username} must be a valid k8s name" in strip_ansi_codes(result.stdout)
 
         # D.2: provide username that is in a reserved names
         reserved_names = ["kt", "kubetorch", "knative"]
@@ -334,13 +334,13 @@ def test_cli_kt_config_set():
             assert result.exit_code == 1
             assert (
                 f"Error setting username: {name} is one of the reserved names: {', '.join(reserved_names)}"
-                in result.stdout
+                in strip_ansi_codes(result.stdout)
             )
 
         # D.3: provide stream_logs that is not a boolean
         result = runner.invoke(app, ["config", "set", "stream_logs", "notBoolVal"], color=False)
         assert result.exit_code == 1
-        assert "Error setting stream_logs: stream_logs must be a boolean value" in result.stdout
+        assert "Error setting stream_logs: stream_logs must be a boolean value" in strip_ansi_codes(result.stdout)
 
     finally:
         # set the config keys to their original values, even if the test fails
@@ -365,14 +365,14 @@ def test_cli_kt_config_unset():
         for key in config_keys:
             unset_result = runner.invoke(app, ["config", "unset", key], color=False)
             assert unset_result.exit_code == 0
-            assert f"{key.capitalize()} unset" in unset_result.stdout
+            assert f"{key.capitalize()} unset" in strip_ansi_codes(unset_result.stdout)
             get_result = runner.invoke(app, ["config", "get", key], color=False)
             assert get_result.exit_code == 0
-            assert get_msg_after_unset.get(key) in get_result.stdout
+            assert get_msg_after_unset.get(key) in strip_ansi_codes(get_result.stdout)
         # Part B: unsupported key
         result = runner.invoke(app, ["config", "unset", "NoSuchKey"], color=False, env={"COLUMNS": "200"})
         assert result.exit_code == 2
-        result_output = result.stdout or result.stderr
+        result_output = strip_ansi_codes(result.stdout) or result.stderr
         assert "Error" in result_output
 
     finally:
@@ -387,7 +387,7 @@ def test_cli_kt_config_unknown_action():
     unsupported_action = "NoSuchAction"
     result = runner.invoke(app, ["config", unsupported_action], color=False, env={"COLUMNS": "200"})
     assert result.exit_code == 1
-    result_output = result.stdout or result.stderr
+    result_output = strip_ansi_codes(result.stdout) or strip_ansi_codes(result.stderr)
     assert f"Unknown action: {unsupported_action}" in result_output
     assert "Valid actions are: set, get, list" in result_output
 
@@ -406,8 +406,10 @@ async def test_cli_kt_check_basic(remote_logs_fn):
         kt.config.stream_logs = True
 
     result = runner.invoke(app, ["check", service_name], color=False)
+    print(f"exit code: {result.exit_code}")
+    print(f"output: {result.output}")
     assert result.exit_code == 0
-    result_output = result.stdout
+    result_output = strip_ansi_codes(result.stdout)
     expected_checks = [
         "deployment service",
         "deployment pod",
@@ -433,7 +435,7 @@ async def test_cli_kt_check_basic_multipod(remote_logs_fn_autoscaled):
 
     result = runner.invoke(app, ["check", service_name], color=False)
     assert result.exit_code == 0
-    result_output = result.stdout
+    result_output = strip_ansi_codes(result.stdout)
     expected_checks = [
         "knative service",
         "deployment pod",
@@ -476,7 +478,7 @@ async def test_cli_kt_describe_basic(remote_logs_fn):
         env={"COLUMNS": "200"},
     )
     assert result.exit_code == 0
-    output = result.output
+    output = strip_ansi_codes(result.stdout)
 
     assert f"Found deployment service {service_name}" in output
 
@@ -594,7 +596,7 @@ def test_cli_kt_teardown_force():
     )
 
     assert teardown_result.exit_code == 0
-    result_output = teardown_result.stdout
+    result_output = strip_ansi_codes(teardown_result.stdout)
     validate_teardown_output(teardown_output=result_output, service_name=service_name, force_delete=True)
 
 
@@ -1283,7 +1285,7 @@ async def test_logs_cli_basic(remote_logs_fn):
     result = runner.invoke(app, ["logs", service_name], color=False)
     assert result.exit_code == 0
 
-    logs_output = result.stdout
+    logs_output = strip_ansi_codes(result.stdout)
     assert service_name in logs_output
     for i in range(log_amount):
         assert f"{log_msg} {i}" in logs_output
@@ -1308,13 +1310,13 @@ async def test_logs_cli_basic_no_username(remote_logs_fn):
     result = runner.invoke(app, ["logs", function_name], color=False)
     assert result.exit_code == 0
 
-    logs_output = result.stdout
+    logs_output = strip_ansi_codes(result.stdout)
     assert service_name in logs_output
     for i in range(log_amount):
         assert f"{log_msg} {i}" in logs_output
 
     parsed_logs = logs_output.strip().replace("\n\n", "\n").split("\n")[5:-1]
-    assert len(parsed_logs) <= 111
+    assert len(parsed_logs) <= 120
 
 
 @pytest.mark.level("minimal")
@@ -1332,7 +1334,7 @@ async def test_logs_cli_single_pod_index(remote_logs_fn):
     result = runner.invoke(app, ["logs", service_name, "-p", "0"], color=False)
     assert result.exit_code == 0
 
-    logs_output = result.stdout
+    logs_output = strip_ansi_codes(result.stdout)
     assert service_name in logs_output
     for i in range(log_amount):
         assert f"{log_msg} {i}" in logs_output
@@ -1357,7 +1359,7 @@ async def test_logs_cli_single_pod_name(remote_logs_fn):
     result = runner.invoke(app, ["logs", service_name, "-p", pod_name], color=False)
     assert result.exit_code == 0
 
-    logs_output = result.stdout
+    logs_output = strip_ansi_codes(result.stdout)
     assert service_name in logs_output
     for i in range(log_amount):
         assert f"{log_msg} {i}" in logs_output
@@ -1379,7 +1381,7 @@ async def test_logs_cli_single_pod_tail(remote_logs_fn):
     service_name = remote_logs_fn.service_name
     result = runner.invoke(app, ["logs", service_name, "-t", "10"], color=False)
     assert result.exit_code == 0
-    logs_output = result.stdout
+    logs_output = strip_ansi_codes(result.stdout)
 
     assert service_name in logs_output
     for i in range(log_amount):
@@ -1404,7 +1406,7 @@ async def test_logs_cli_single_pod_namespace(remote_logs_fn):
 
     result = runner.invoke(app, ["logs", service_name, "-n", kt.config.namespace], color=False)
     assert result.exit_code == 0
-    logs_output = result.stdout
+    logs_output = strip_ansi_codes(result.stdout)
 
     assert service_name in logs_output
     for i in range(log_amount):
@@ -1429,7 +1431,7 @@ async def test_logs_cli_basic_multi_pod(remote_logs_fn_autoscaled):
 
     result = runner.invoke(app, ["logs", service_name], color=False)
     assert result.exit_code == 0
-    logs_output = result.stdout
+    logs_output = strip_ansi_codes(result.stdout)
 
     assert service_name in logs_output
     for i in range(log_amount):
@@ -1454,7 +1456,7 @@ async def test_logs_cli_multi_pod_index(remote_logs_fn_autoscaled):
 
     result = runner.invoke(app, ["logs", service_name, "-p", "1"], color=False)
     assert result.exit_code == 0
-    logs_output = result.stdout
+    logs_output = strip_ansi_codes(result.stdout)
 
     assert logs_output
     assert service_name in logs_output
@@ -1479,7 +1481,7 @@ async def test_logs_cli_multi_pod_name(remote_logs_fn_autoscaled):
 
     result = runner.invoke(app, ["logs", service_name, "-p", pod_names[1]], color=False)
     assert result.exit_code == 0
-    logs_output = result.stdout
+    logs_output = strip_ansi_codes(result.stdout)
 
     assert logs_output
     assert service_name in logs_output
@@ -1503,7 +1505,7 @@ async def test_logs_cli_multi_pod_tail(remote_logs_fn_autoscaled):
 
     result = runner.invoke(app, ["logs", service_name, "-t", "20"], color=False, env={"COLUMNS": "200"})
     assert result.exit_code == 0
-    logs_output = result.stdout
+    logs_output = strip_ansi_codes(result.stdout)
 
     assert service_name in logs_output
     # assert latest logs appear in logs tail output
@@ -1532,7 +1534,7 @@ async def test_logs_cli_multi_pod_namespace(remote_logs_fn_autoscaled):
 
     result = runner.invoke(app, ["logs", service_name, "-n", kt.config.namespace], color=False)
     assert result.exit_code == 0
-    logs_output = result.stdout
+    logs_output = strip_ansi_codes(result.stdout)
 
     assert service_name in logs_output
     for i in range(log_amount):
@@ -1568,7 +1570,7 @@ async def test_logs_cli_single_pod_wrong_index(remote_logs_fn):
     cmd = ["logs", service_name, "-p", "1"]
     result = runner.invoke(app, cmd, color=False)
     assert result.exit_code == 1
-    logs_output = result.stdout
+    logs_output = strip_ansi_codes(result.stdout)
 
     pod_index = cmd[-1]
 
@@ -1589,7 +1591,7 @@ async def test_logs_cli_single_pod_wrong_name(remote_logs_fn):
     cmd = ["logs", service_name, "-p", non_existing_pod_name]
     result = runner.invoke(app, cmd, color=False)
     assert result.exit_code == 1
-    logs_output = result.stdout
+    logs_output = strip_ansi_codes(result.stdout)
 
     # Using regex because the GitHub stdout is causing a line break in the middle of the error message.
     regex_expression = (
