@@ -54,6 +54,7 @@ A Helm chart for kubetorch
 | kubetorchConfig.metricsEnabled | bool | `true` |  |
 | kubetorchConfig.serviceAccountAnnotations | object | `{}` |  |
 | kubetorchController.affinity | object | `{}` |  |
+| kubetorchController.authEndpoint | string | `""` |  |
 | kubetorchController.connectionPoolSize | int | `20` |  |
 | kubetorchController.eventWatcher.batchSize | int | `10` |  |
 | kubetorchController.eventWatcher.enabled | bool | `true` |  |

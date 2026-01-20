@@ -21,6 +21,7 @@ ENV_MAPPINGS = {
     "volumes": "KT_VOLUMES",
     "api_url": "KT_API_URL",
     "cluster_config": "KT_CLUSTER_CONFIG",
+    "token": "KT_TOKEN",
 }
 
 DEFAULT_INSTALL_NAMESPACE = "kubetorch"
@@ -38,6 +39,7 @@ class KubetorchConfig:
         self._namespace = None
         self._stream_logs = None
         self._stream_metrics = None
+        self._token = None
         self._username = None
         self._volumes = None
 
@@ -148,6 +150,25 @@ class KubetorchConfig:
     @api_url.setter
     def api_url(self, value: str):
         self._api_url = value
+
+    @property
+    def token(self):
+        """Authentication token for Kubetorch API requests.
+
+        When set, this token is included as a Bearer token in the Authorization header
+        for all requests to the Kubetorch controller.
+        """
+        if not self._token:
+            if self._get_env_var("token"):
+                self._token = self._get_env_var("token")
+            else:
+                self._token = self.file_cache.get("token")
+        return self._token
+
+    @token.setter
+    def token(self, value: str):
+        """Set authentication token for current process."""
+        self._token = value
 
     @property
     def namespace(self):
