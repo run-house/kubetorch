@@ -560,6 +560,7 @@ class HTTPClient:
             logger.debug(f"Streaming logs with tail query {uri}")
             websocket = await websockets.connect(
                 uri,
+                open_timeout=30,  # Allow more time for handshake through port-forward
                 close_timeout=10,  # Max time to wait for close handshake
                 ping_interval=20,  # Send ping every 20 seconds
                 ping_timeout=10,  # Wait 10 seconds for pong
