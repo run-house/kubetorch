@@ -16,19 +16,54 @@ spec:
     metadata:
       labels:
         app: kubetorch-controller
+        {{- with .Values.kubetorchConfig.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       annotations:
         chart-version: "{{ .Chart.Version }}"
+        {{- with .Values.kubetorchConfig.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       serviceAccountName: kubetorch-controller
 
-      {{- if .Values.kubetorchController.affinity }}
-      affinity:
-        {{- toYaml .Values.kubetorchController.affinity | nindent 8 }}
+      {{- with .Values.kubetorchConfig.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
 
-      {{- if .Values.kubetorchController.tolerations }}
+      {{- with .Values.kubetorchConfig.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+
+      {{- if or .Values.kubetorchConfig.affinity .Values.kubetorchController.affinity }}
+      affinity:
+        {{- with .Values.kubetorchConfig.affinity }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.kubetorchController.affinity }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+
+      {{- if or .Values.kubetorchConfig.nodeSelector .Values.kubetorchController.nodeSelector }}
+      nodeSelector:
+        {{- with .Values.kubetorchConfig.nodeSelector }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.kubetorchController.nodeSelector }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+
+      {{- if or .Values.kubetorchConfig.tolerations .Values.kubetorchController.tolerations }}
       tolerations:
-        {{- toYaml .Values.kubetorchController.tolerations | nindent 8 }}
+        {{- with .Values.kubetorchConfig.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.kubetorchController.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
 
       containers:

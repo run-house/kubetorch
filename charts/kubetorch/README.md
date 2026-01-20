@@ -26,6 +26,7 @@ A Helm chart for kubetorch
 | dataStore.maxVerbosity | int | `0` |  |
 | dataStore.memory.request | string | `"4Gi"` |  |
 | dataStore.metadataPort | int | `8081` |  |
+| dataStore.nodeSelector | object | `{}` |  |
 | dataStore.storage.size | string | `"100Gi"` |  |
 | dataStore.storage.storageClassName | string | `""` |  |
 | dataStore.timeout | int | `600` |  |
@@ -49,10 +50,17 @@ A Helm chart for kubetorch
 | dcgm-exporter.tolerations[0].effect | string | `"NoSchedule"` |  |
 | dcgm-exporter.tolerations[0].key | string | `"nvidia.com/gpu"` |  |
 | dcgm-exporter.tolerations[0].operator | string | `"Exists"` |  |
+| kubetorchConfig.affinity | object | `{}` |  |
 | kubetorchConfig.deployment_namespaces[0] | string | `"default"` |  |
+| kubetorchConfig.imagePullSecrets | list | `[]` |  |
 | kubetorchConfig.logStreamingEnabled | bool | `true` |  |
 | kubetorchConfig.metricsEnabled | bool | `true` |  |
+| kubetorchConfig.nodeSelector | object | `{}` |  |
+| kubetorchConfig.podAnnotations | object | `{}` |  |
+| kubetorchConfig.podLabels | object | `{}` |  |
+| kubetorchConfig.priorityClassName | string | `""` |  |
 | kubetorchConfig.serviceAccountAnnotations | object | `{}` |  |
+| kubetorchConfig.tolerations | list | `[]` |  |
 | kubetorchController.affinity | object | `{}` |  |
 | kubetorchController.connectionPoolSize | int | `20` |  |
 | kubetorchController.eventWatcher.batchSize | int | `10` |  |
@@ -69,6 +77,7 @@ A Helm chart for kubetorch
 | kubetorchController.nginx.resolver | string | `"kube-dns.kube-system.svc.cluster.local"` |  |
 | kubetorchController.nginx.resources.cpu.request | string | `"200m"` |  |
 | kubetorchController.nginx.resources.memory.request | string | `"256Mi"` |  |
+| kubetorchController.nodeSelector | object | `{}` |  |
 | kubetorchController.port | int | `8081` |  |
 | kubetorchController.resources.cpu.request | string | `"1"` |  |
 | kubetorchController.resources.memory.request | string | `"2Gi"` |  |
