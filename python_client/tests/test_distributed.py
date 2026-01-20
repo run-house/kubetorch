@@ -232,9 +232,9 @@ def test_pytorch_distributed_fn():
         kt.Compute(
             cpus="0.5",
             memory="1Gi",
-            image=kt.images.Debian().run_bash(
-                "uv pip install --system numpy torch --index-url https://download.pytorch.org/whl/cpu"
-            ),
+            image=kt.images.Debian()
+            .run_bash("uv pip install --system numpy")
+            .run_bash('uv pip install --system torch --extra-index-url "https://download.pytorch.org/whl/cpu"'),
         ).distribute("pytorch", workers=2, num_proc=2)
     )
 
@@ -252,11 +252,12 @@ def test_pytorch_distributed_fn():
         assert result["world_size"] == "4"
 
         # Check if PyTorch distributed was initialized successfully
-        if "pytorch_initialized" in result:
-            if result["pytorch_initialized"]:
-                assert result["backend"] == "gloo"  # CPU backend
-                # all_reduce should sum all ranks: 0+1+2+3 = 6
-                assert result["all_reduce_result"] == 6.0
+        assert (
+            result.get("pytorch_initialized") is True
+        ), f"PyTorch not initialized on rank {i}: {result.get('pytorch_error', 'unknown error')}"
+        assert result["backend"] == "gloo"  # CPU backend
+        # all_reduce should sum all ranks: 0+1+2+3 = 6
+        assert result["all_reduce_result"] == 6.0
 
 
 @pytest.mark.level("minimal")
@@ -266,9 +267,9 @@ def test_pytorch_distributed_cls():
         kt.Compute(
             cpus="0.5",
             memory="1Gi",
-            image=kt.images.Debian().run_bash(
-                "uv pip install --system numpy torch --index-url https://download.pytorch.org/whl/cpu"
-            ),
+            image=kt.images.Debian()
+            .run_bash("uv pip install --system numpy")
+            .run_bash("uv pip install --system torch --extra-index-url https://download.pytorch.org/whl/cpu"),
         ).distribute("pytorch", workers=2, num_proc=2)
     )
 
