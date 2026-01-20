@@ -2126,14 +2126,13 @@ def kt_logs(
                 if not query:
                     return
 
-                logs = load_logs_for_pod(query=query, print_pod_name=print_pod_name, timeout=5.0, namespace=namespace)
+                tail_length = tail if tail else DEFAULT_TAIL_LENGTH
+                logs = load_logs_for_pod(
+                    query=query, print_pod_name=print_pod_name, timeout=5.0, namespace=namespace, limit=tail_length
+                )
                 if logs is None:
                     console.print("[red]No logs found for service[/red]")
                     return
-
-                tail_length = tail if tail else DEFAULT_TAIL_LENGTH
-                if len(logs) > tail_length:
-                    logs = logs[-tail_length:]
 
                 for log_line in logs:
                     print(log_line.rstrip("\n"))

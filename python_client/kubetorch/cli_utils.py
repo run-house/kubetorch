@@ -25,7 +25,6 @@ from rich import box
 from rich.console import Console
 from rich.style import Style
 from rich.table import Table
-from websocket import create_connection
 
 import kubetorch.provisioning.constants as provisioning_constants
 
@@ -603,43 +602,62 @@ def print_pod_info(pod_name, pod_idx, is_gpu, metrics=None):
         console.print(f"{DOUBLE_SPACE_UNICODE}[yellow]Metrics unavailable[/yellow]")
 
 
-def _get_logs_from_loki_worker(uri: str, print_pod_name: bool, timeout: float = 2.0):
+def _get_logs_from_loki_worker(uri: str, print_pod_name: bool, timeout: float = 2.0, limit: int = 100):
     """Worker function for getting logs from Loki - runs in a separate thread."""
-    ws = None
     try:
-        # Set timeout on websocket connection to fail fast if no logs available
-        ws = create_connection(uri, timeout=timeout)
-        message = ws.recv()
-        if not message:
-            return None
-        data = json.loads(message)
-        logs = []
-        if data.get("streams"):
-            for stream in data["streams"]:
+        import httpx
+
+        # Use HTTP client for query_range endpoint (not websocket)
+        with httpx.Client(timeout=timeout) as client:
+            response = client.get(uri)
+            response.raise_for_status()
+
+            data = response.json()
+            logs = []
+
+            # query_range returns data in result array
+            result = data.get("data", {}).get("result", [])
+            if not result:
+                return None
+
+            # Collect all log entries with timestamps for proper ordering
+            all_entries = []
+            for stream in result:
                 stream_labels = stream.get("stream", {})
                 pod_name_value = stream_labels.get("pod") or stream_labels.get("k8s_pod_name")
                 pod_name = f"({pod_name_value}) " if print_pod_name and pod_name_value else ""
-                for value in stream.get("values"):
+
+                for value in stream.get("values", []):
+                    timestamp_ns = int(value[0])
+                    log_content = value[1]
+
                     try:
-                        log_line = json.loads(value[1])
+                        log_line = json.loads(log_content)
                         log_name = log_line.get("name")
                         if log_name == "print_redirect":
-                            logs.append(f'{pod_name}{log_line.get("message")}')
+                            formatted = f'{pod_name}{log_line.get("message")}'
                         elif log_name != "uvicorn.access":
-                            formatted_log = (
+                            formatted = (
                                 f"{pod_name}{log_line.get('asctime')} | {log_line.get('levelname')} | "
                                 f"{log_line.get('message')}\n"
                             )
-                            logs.append(formatted_log)
+                        else:
+                            continue  # Skip uvicorn.access logs
+                        all_entries.append((timestamp_ns, formatted))
                     except Exception:
-                        logs.append(f"{pod_name}{value[1]}")
-        return logs
-    finally:
-        if ws:
-            try:
-                ws.close()
-            except Exception:
-                pass
+                        all_entries.append((timestamp_ns, f"{pod_name}{log_content}"))
+
+            # Sort by timestamp and take last N entries (most recent)
+            all_entries.sort(key=lambda x: x[0])
+            if len(all_entries) > limit:
+                all_entries = all_entries[-limit:]
+
+            logs = [entry[1] for entry in all_entries]
+            return logs if logs else None
+
+    except Exception as e:
+        logger.debug(f"Error fetching logs from Loki: {e}")
+        return None
 
 
 def load_logs_for_pod(
@@ -648,6 +666,7 @@ def load_logs_for_pod(
     print_pod_name: bool = False,
     timeout: float = 2.0,
     namespace: str = None,
+    limit: int = 100,
 ):
     """Get logs from Loki with fail-fast approach to avoid hanging.
 
@@ -657,16 +676,16 @@ def load_logs_for_pod(
         print_pod_name (bool): Whether to print pod name with each log. (Default: False)
         timeout (float): Connection timeout. (Default: 2.0)
         namespace (str): Namespace to query logs from (required if uri not provided). (Default: None)
+        limit (int): Number of log lines per query. (Default: 100)
     """
     try:
         # If URI is provided, use it directly (skip cluster checks)
         if uri:
-            return _get_logs_from_loki_worker(uri, print_pod_name, timeout)
+            return _get_logs_from_loki_worker(uri, print_pod_name, timeout, limit)
 
         import urllib.parse
 
         # Now safe to proceed with service URL setup
-        from kubetorch.utils import http_to_ws
 
         # Wrap service_url call in daemon thread with timeout
         url_result = [None]
@@ -695,15 +714,26 @@ def load_logs_for_pod(
             return None
 
         start_ns = hours_to_ns()
+        end_ns = int(datetime.now().timestamp() * 1e9)
         # Namespace-aware Loki URL - routes to data store in the target namespace
-        target_uri = f"{http_to_ws(base_url)}/loki/{namespace}/api/v1/tail?query={urllib.parse.quote_plus(query)}&start={start_ns}"
+        # Use query_range for historical logs with direction=backward to get most recent first
+        params = {
+            "query": query,
+            "limit": limit,
+            "direction": "backward",
+            "start": start_ns,
+            "end": end_ns,
+        }
+        target_uri = f"{base_url}/loki/{namespace}/api/v1/query_range?" + urllib.parse.urlencode(
+            params, quote_via=urllib.parse.quote_plus
+        )
 
         # Use daemon thread so Python exits even if websocket hangs
         result = [None]
 
         def worker():
             try:
-                result[0] = _get_logs_from_loki_worker(target_uri, print_pod_name, timeout)
+                result[0] = _get_logs_from_loki_worker(target_uri, print_pod_name, timeout, limit)
             except Exception:
                 # Silence exceptions in daemon thread
                 pass
