@@ -1,8 +1,8 @@
 import os
 
+import httpx
 import kubetorch.provisioning.constants as provisioning_constants
 import pytest
-from kubernetes import client as k8s_client
 
 from .utils import create_random_name_prefix, simple_summer
 
@@ -16,7 +16,7 @@ def setup_test_env():
 
 
 @pytest.mark.level("minimal")
-def test_autodown_annotation():
+def test_autodown_annotation_and_metrics():
     import kubetorch as kt
 
     name = f"{create_random_name_prefix()}-autodown-annotation"
@@ -29,23 +29,23 @@ def test_autodown_annotation():
 
     assert remote_fn(1, 2) == 3
 
-    # For Knative, check the Knative Service resource (CRD) for annotations
-    # Knative manages its own K8s Service which doesn't have our annotations
-    custom_api = k8s_client.CustomObjectsApi()
-    knative_service = custom_api.get_namespaced_custom_object(
-        group="serving.knative.dev",
-        version="v1",
-        namespace=namespace,
-        plural="services",
-        name=remote_fn.service_name,
-    )
-    assert knative_service
+    # Use controller client to get Knative service (works from local/CI without kubectl proxy)
+    controller = kt.globals.controller_client()
+    resources = controller.discover_resources(namespace=namespace, name_filter=remote_fn.service_name)
+    knative_services = resources.get("knative_services", [])
+    assert knative_services, f"No Knative service found for {remote_fn.service_name}"
+    knative_service = knative_services[0]
 
     # Check that the Knative service has the autodown annotation
     assert knative_service["metadata"]["labels"][provisioning_constants.KT_MODULE_LABEL] is not None
     assert (
         knative_service["metadata"]["annotations"][provisioning_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
     )
+
+    # Ping the /metrics endpoint and check that the metrics are being pushed
+    response = httpx.get(f"{remote_fn.base_endpoint}/metrics")
+    assert response.status_code == 200
+    assert "kt_heartbeat_sent" in response.text
 
 
 @pytest.mark.level("minimal")
