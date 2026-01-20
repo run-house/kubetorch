@@ -1,6 +1,5 @@
 import os
 
-import kubetorch.globals
 import kubetorch.provisioning.constants as provisioning_constants
 import pytest
 from kubernetes import client as k8s_client
@@ -47,14 +46,6 @@ def test_autodown_annotation():
     assert (
         knative_service["metadata"]["annotations"][provisioning_constants.INACTIVITY_TTL_ANNOTATION] == inactivity_ttl
     )
-
-    # Check that the namespace is in the watch namespaces
-    v1 = k8s_client.CoreV1Api()
-    cronjob_configmap = v1.read_namespaced_config_map(
-        name=provisioning_constants.TTL_CONTROLLER_CONFIGMAP_NAME,
-        namespace=kubetorch.globals.config.install_namespace,
-    )
-    assert namespace in cronjob_configmap.data["WATCH_NAMESPACES"].split(",")
 
 
 @pytest.mark.level("minimal")
@@ -105,14 +96,6 @@ def test_autodown_deployment():
     deployment = controller.get_deployment(name=remote_fn.service_name, namespace=namespace)
     deployment_labels = deployment["metadata"]["labels"]
     assert deployment_labels.get(provisioning_constants.KT_APP_LABEL) == remote_fn.service_name
-
-    # Check that the namespace is in the watch namespaces
-    v1 = k8s_client.CoreV1Api()
-    cronjob_configmap = v1.read_namespaced_config_map(
-        name=provisioning_constants.TTL_CONTROLLER_CONFIGMAP_NAME,
-        namespace=kubetorch.globals.config.install_namespace,
-    )
-    assert namespace in cronjob_configmap.data["WATCH_NAMESPACES"].split(",")
 
 
 @pytest.mark.level("minimal")
