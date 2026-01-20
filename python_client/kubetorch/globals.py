@@ -532,11 +532,6 @@ class ControllerClient:
         """Delete a PersistentVolumeClaim."""
         return self.delete(f"/controller/volumes/{namespace}/{name}", ignore_not_found=True)
 
-    def list_pvcs(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List PersistentVolumeClaims."""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/controller/volumes/{namespace}", params=params)
-
     # Services
     def create_service(self, namespace: str, body: Dict[str, Any], params: Dict = None) -> Dict[str, Any]:
         """Create a Service"""
@@ -611,25 +606,23 @@ class ControllerClient:
         """Patch a secret."""
         return self.patch(f"/controller/secrets/{namespace}/{name}", json=body)
 
-    def list_secrets(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List secrets in a namespace."""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/controller/secrets/{namespace}", params=params)
+    def list_secrets(self, namespace: Optional[str] = None, label_selector: Optional[str] = None) -> Dict[str, Any]:
+        """List Secrets. If namespace is None, lists across all namespaces."""
+        return self.list_resources(
+            "secrets",
+            namespace=namespace,
+            label_selector=label_selector,
+            all_namespaces=namespace is None,
+        )
 
     def delete_secret(self, namespace: str, name: str) -> Dict[str, Any]:
         """Delete a secret."""
         return self.delete(f"/controller/secrets/{namespace}/{name}", ignore_not_found=True)
 
-    def list_secrets_all_namespaces(self, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List secrets across all namespaces."""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get("/controller/secrets", params=params)
-
     # Pods
     def list_pods(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List pods in a namespace."""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/controller/pods/{namespace}", params=params)
+        """List Pods"""
+        return self.list_resources("pods", namespace=namespace, label_selector=label_selector)
 
     def get_pod(self, namespace: str, name: str, ignore_not_found=False) -> Dict[str, Any]:
         """Get a specific pod."""
@@ -654,26 +647,28 @@ class ControllerClient:
             logger.error(f"GET {url} - {e}")
             raise
 
+    # Namespaces
+    def get_namespace(self, name: str) -> Dict[str, Any]:
+        """Get a Namespace"""
+        return self.get(f"/api/v1/namespaces/{name}")
+
+    def list_namespaces(self) -> Dict[str, Any]:
+        """List Namespaces"""
+        return self.list_resources("namespaces")
+
     # Nodes
     def list_nodes(self, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List cluster nodes."""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get("/controller/nodes", params=params)
+        """List Nodes"""
+        return self.list_resources("nodes", label_selector=label_selector)
 
     # StorageClasses
     def list_storage_classes(self) -> Dict[str, Any]:
-        """List available storage classes."""
-        return self.get("/controller/storage-classes")
+        """List StorageClasses"""
+        return self.list_resources("storageclasses")
 
-    # ConfigMaps
-    def list_config_maps(self, namespace: str, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List ConfigMaps"""
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/controller/configmaps/{namespace}", params=params)
-
-    def list_ingresses(self, namespace: str, label_selector: str = None):
-        params = {"label_selector": label_selector} if label_selector else {}
-        return self.get(f"/controller/ingresses/{namespace}", params=params)
+    def list_ingresses(self, namespace: str, label_selector: str = None) -> Dict[str, Any]:
+        """List Ingresses"""
+        return self.list_resources("ingresses", namespace=namespace, label_selector=label_selector)
 
     def register_pool(
         self,
@@ -846,7 +841,14 @@ class ControllerClient:
         """Get WebSocket connection debug info (connected pods for each pool)."""
         return self.get("/controller/debug/connections")
 
-    def service_status(self, namespace: str, name: str, resource_type: str = None) -> Dict[str, Any]:
+    def service_status(
+        self,
+        namespace: str,
+        name: str,
+        resource_type: str = None,
+        timeout: int = 0,
+        poll_interval: int = 2,
+    ) -> Dict[str, Any]:
         """Get consolidated status for a service.
 
         Returns all relevant info about a service in a single call:
@@ -857,10 +859,12 @@ class ControllerClient:
         - Recent K8s events
 
         Args:
-            namespace (str): Kubernetes namespace
-            name (str): Service name
+            namespace (str): Kubernetes namespace.
+            name (str): Service name.
             resource_type (str, optional): Type of resource (deployment, knative, raycluster, etc.)
                 If not provided, auto-detected by the controller.
+            timeout (int, optional): If > 0, poll until ready or timeout seconds elapsed.
+            poll_interval (int, optional): Seconds between polls when timeout > 0.
 
         Returns:
             ServiceStatusResponse with comprehensive service status including:
@@ -875,8 +879,73 @@ class ControllerClient:
         params = {}
         if resource_type is not None:
             params["resource_type"] = resource_type
+        if timeout > 0:
+            params["timeout"] = timeout
+            params["poll_interval"] = poll_interval
         return self.get(
             f"/controller/discover/{namespace}/{name}/status",
+            params=params if params else None,
+            timeout=timeout + 10 if timeout > 0 else None,  # HTTP timeout slightly longer
+        )
+
+    def list_resources(
+        self,
+        resource_type: str,
+        namespace: str = None,
+        namespaces: List[str] = None,
+        label_selector: str = None,
+        field_selector: str = None,
+        include_events: bool = False,
+        all_namespaces: bool = False,
+    ) -> Dict[str, Any]:
+        """List Kubernetes resources with Kubetorch-specific filtering.
+
+        This endpoint consolidates multiple K8s API calls into a single request,
+        applying Kubetorch-specific filters and returning only relevant data.
+
+        Supported resource types (namespace-scoped):
+        - pvcs: All PersistentVolumeClaims
+        - volumes: PVCs with kubetorch.com/mount-path annotation (Kubetorch volumes only)
+        - secrets: Secrets
+        - pods: Pods
+        - replicasets: ReplicaSets with optional events (for error checking)
+        - configmaps: ConfigMaps
+        - events: Kubernetes events (supports field_selector)
+        - ingresses: Ingresses
+
+        Supported resource types (cluster-scoped, namespace param ignored):
+        - namespaces: Namespaces
+        - nodes: Nodes
+        - storageclasses: StorageClasses
+
+        Args:
+            resource_type (str): Type of resource to list.
+            namespace (str, optional): Single namespace to search.
+            namespaces (List[str], optional): List of namespaces to search.
+            label_selector (str, optional): Kubernetes label selector to filter resources.
+            field_selector (str, optional): Kubernetes field selector (for events).
+            include_events (bool, optional): Include events for resources that support it.
+            all_namespaces (bool, optional): List across all namespaces (for secrets only).
+
+        Returns:
+            Dict with 'items' list containing resource data.
+        """
+        params = {}
+        if namespace:
+            params["namespace"] = namespace
+        if namespaces:
+            params["namespaces"] = ",".join(namespaces)
+        if label_selector:
+            params["label_selector"] = label_selector
+        if field_selector:
+            params["field_selector"] = field_selector
+        if include_events:
+            params["include_events"] = "true"
+        if all_namespaces:
+            params["all_namespaces"] = "true"
+
+        return self.get(
+            f"/controller/list/{resource_type}",
             params=params if params else None,
         )
 

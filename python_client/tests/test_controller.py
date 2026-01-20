@@ -229,8 +229,8 @@ def test_pvc_list_with_label_selector():
     """Test GET /api/v1/namespaces/{ns}/persistentvolumeclaims with label_selector"""
     controller_client = kt.globals.controller_client()
 
-    result = controller_client.list_pvcs(
-        namespace=kt.config.namespace, label_selector=f"kubetorch.com/username={kt.config.username}"
+    result = controller_client.list_resources(
+        "pvcs", namespace=kt.config.namespace, label_selector=f"kubetorch.com/username={kt.config.username}"
     )
 
     assert "items" in result
@@ -311,7 +311,7 @@ def test_secret_list_all_namespaces():
     controller_client = kt.globals.controller_client()
 
     try:
-        result = controller_client.list_secrets_all_namespaces()
+        result = controller_client.list_secrets()
         assert "items" in result
     except kt.ControllerRequestError as e:
         # May not have permission across all namespaces - that's okay
@@ -470,11 +470,10 @@ def test_all_list_operations_structure():
     namespace = kt.config.namespace
 
     # Only test namespace-scoped resources (controller has namespace-level permissions)
+    # Uses list_resources() which calls the consolidated /controller/list/{resource_type} endpoint
     list_ops = [
-        ("list_pvcs", {"namespace": namespace}),
         ("list_secrets", {"namespace": namespace}),
         ("list_pods", {"namespace": namespace}),
-        ("list_config_maps", {"namespace": namespace}),
         ("list_storage_classes", {}),  # Cluster-scoped but read-only, usually allowed
     ]
 
@@ -625,7 +624,7 @@ def test_configmap_operations():
     controller_client = kt.globals.controller_client()
     namespace = remote_fn.compute.namespace
 
-    configmaps = controller_client.list_config_maps(namespace=namespace)
+    configmaps = controller_client.list_resources("configmaps", namespace=namespace)
     assert "items" in configmaps
 
 

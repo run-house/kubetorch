@@ -635,65 +635,43 @@ class ServiceManager:
         Returns:
             True if ready. Raises exception on timeout or error.
         """
-        import time
+        # Use /status endpoint with server-side polling
+        response = self.controller_client.service_status(
+            namespace=self.namespace,
+            name=service_name,
+            resource_type=self.resource_type,
+            timeout=launch_timeout,
+            poll_interval=2,
+        )
 
-        start_time = time.time()
-        poll_interval = 5  # Client-side wait between checks
-        server_timeout = 30  # Each server call waits max 30 seconds
+        if response.get("ready"):
+            return True
 
-        while True:
-            elapsed = time.time() - start_time
-            remaining = launch_timeout - elapsed
+        # Check for errors in pods
+        error_msg = response.get("message", "Service not ready")
+        for pod in response.get("pods", []):
+            if pod.get("error"):
+                error_msg = pod["error"]
+                break
 
-            if remaining <= 0:
-                raise ServiceTimeoutError(f"Service {service_name} not ready after {launch_timeout}s")
+        error_msg_lower = error_msg.lower()
+        if (
+            "image pull" in error_msg_lower
+            or "imagepullbackoff" in error_msg_lower
+            or "errimagepull" in error_msg_lower
+        ):
+            from kubetorch import ImagePullError
 
-            # Use shorter of remaining time or server_timeout
-            this_timeout = min(server_timeout, max(5, remaining))
+            raise ImagePullError(f"Container image failed to pull: {error_msg}")
 
-            try:
-                response = self.controller_client.get(
-                    f"/controller/check-ready/{self.namespace}/{service_name}",
-                    params={
-                        "resource_type": self.resource_type,
-                        "timeout": int(this_timeout),
-                        "poll_interval": 2,
-                    },
-                    timeout=this_timeout + 10,  # HTTP timeout slightly longer
-                )
+        # ReplicaSet errors (missing PriorityClass, forbidden resources, etc.)
+        if "forbidden" in error_msg_lower or "replicaset" in error_msg_lower:
+            from kubetorch import ResourceNotAvailableError
 
-                if response.get("ready"):
-                    return True
+            raise ResourceNotAvailableError(error_msg)
 
-                # Check for non-timeout errors (pod failures, cluster failures, etc.)
-                details = response.get("details", {})
-                error_type = details.get("error_type")
-                if error_type:
-                    error_msg = response.get("message", "Service not ready")
-
-                    # Check for image pull errors based on message content
-                    error_msg_lower = error_msg.lower()
-                    if (
-                        "image pull" in error_msg_lower
-                        or "imagepullbackoff" in error_msg_lower
-                        or "errimagepull" in error_msg_lower
-                    ):
-                        from kubetorch import ImagePullError
-
-                        raise ImagePullError(f"Container image failed to pull: {error_msg}")
-
-                    if error_type in ("replicaset_error", "pod_error", "resource_error", "revision_error"):
-                        from kubetorch import ResourceNotAvailableError
-
-                        raise ResourceNotAvailableError(error_msg)
-                    raise RuntimeError(error_msg)
-
-            except TimeoutError:
-                # HTTP timeout - continue polling
-                pass
-
-            # Not ready yet - wait before next poll
-            time.sleep(poll_interval)
+        # Timeout or other error
+        raise ServiceTimeoutError(f"Service {service_name} not ready: {error_msg}")
 
     # =========================================================================
     # Resource Operations

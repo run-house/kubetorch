@@ -230,15 +230,12 @@ def load_configmaps(
     """List configmaps that start with a given service name."""
     controller_client = kubetorch.globals.controller_client()
     try:
-        configmaps = controller_client.list_config_maps(
+        result = controller_client.list_resources(
+            resource_type="configmaps",
             namespace=namespace,
             label_selector=f"kubetorch.com/service={service_name}",
         )
-        # Handle dict response from ControllerClient
-        if isinstance(configmaps, dict):
-            return [cm["metadata"]["name"] for cm in configmaps.get("items", [])]
-        # Handle object response from CoreV1Api (legacy)
-        return [cm.metadata.name for cm in configmaps.items]
+        return [cm["name"] for cm in result.get("items", [])]
     except Exception as e:
         if console:
             console.print(f"[yellow]Warning:[/yellow] Failed to list configmaps: {e}")
@@ -477,7 +474,7 @@ def list_secrets(
     try:
         if all_namespaces:
             try:
-                secrets_result = controller_client.list_secrets_all_namespaces()
+                secrets_result = controller_client.list_secrets()
             except ControllerRequestError as e:
                 if e.status_code == 403:
                     msg = (
