@@ -44,7 +44,6 @@ KT_APP_LABEL = "app"  # Stable app identifier for easy querying
 KUEUE_QUEUE_NAME_LABEL = "kueue.x-k8s.io/queue-name"  # Kueue queue label for GPU scheduling
 
 # Templates
-TTL_CONTROLLER_CONFIGMAP_NAME = "kubetorch-ttl-controller-config"
 KNATIVE_SERVICE_TEMPLATE_FILE = "knative_service_template.yaml"
 POD_TEMPLATE_FILE = "pod_template.yaml"
 KT_SETUP_TEMPLATE_FILE = "kt_setup_template.sh.j2"
