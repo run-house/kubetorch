@@ -44,6 +44,14 @@ on:
           - "yes"
           - "no"
         default: "yes"
+      tag_internal_repo:
+        description: 'Create a new tag for kubetorch-internal?'
+        required: false
+        type: choice
+        options:
+          - "yes"
+          - "no"
+        default: "yes"
 
 
 jobs:
@@ -86,6 +94,16 @@ jobs:
         with:
           kt_version: ${{ github.event.inputs.kt_version }}
           dest_repo_token: ${{ secrets.KUBETORCH_DOCS_TOKEN }}
+
+      - name: Tag internal repo
+        if: ${{ github.event.inputs.tag_internal_repo == 'yes' }}
+        run: |
+          git clone https://x-access-token:${{ secrets.GH_HELM_TOKEN }}@github.com/run-house/kubetorch-internal.git internal-repo
+          cd internal-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ github.event.inputs.kt_version }}" -m "Release v${{ github.event.inputs.kt_version }}"
+          git push origin "v${{ github.event.inputs.kt_version }}"
 
   helm_upgrade_ci:
     runs-on: ubuntu-latest
