@@ -14,7 +14,7 @@ from kubetorch.logger import get_logger
 from kubetorch.serving.global_http_clients import get_sync_client
 from kubetorch.serving.utils import is_running_in_kubernetes
 
-from .types import BroadcastWindow, Lifespan
+from .types import BroadcastWindow
 
 logger = get_logger(__name__)
 
@@ -134,8 +134,6 @@ class MetadataClient:
         pod_name: Optional[str] = None,
         namespace: Optional[str] = None,
         src_path: Optional[str] = None,
-        lifespan: Lifespan = "cluster",
-        service_name: Optional[str] = None,
     ) -> bool:
         """
         Publish that this pod has data for the given key.
@@ -146,8 +144,6 @@ class MetadataClient:
             pod_name: Optional pod name (for external client support)
             namespace: Optional namespace (for external client support)
             src_path: Optional relative path from working directory to the data on the pod (for peer-to-peer rsync)
-            lifespan: "cluster" for persistent, "resource" for service-scoped cleanup
-            service_name: Service name for resource-scoped cleanup
 
         Returns:
             True if successful, False otherwise
@@ -155,15 +151,13 @@ class MetadataClient:
         try:
             # URL-encode the key to handle special characters
             encoded_key = quote(key, safe="")
-            payload = {"ip": pod_ip, "lifespan": lifespan}
+            payload = {"ip": pod_ip}
             if pod_name:
                 payload["pod_name"] = pod_name
             if namespace:
                 payload["namespace"] = namespace
             if src_path:
                 payload["src_path"] = src_path
-            if service_name:
-                payload["service_name"] = service_name
 
             response = get_sync_client().post(
                 f"{self.base_url}/api/v1/keys/{encoded_key}/publish",
@@ -359,8 +353,6 @@ class MetadataClient:
         self,
         key: str,
         store_pod_ip: str,
-        lifespan: Lifespan = "cluster",
-        service_name: Optional[str] = None,
     ) -> bool:
         """
         Register that the store pod itself has data for a key.
@@ -369,8 +361,6 @@ class MetadataClient:
         Args:
             key: Storage key
             store_pod_ip: IP address of the store pod
-            lifespan: "cluster" for persistent, "resource" for service-scoped cleanup
-            service_name: Service name for resource-scoped cleanup
 
         Returns:
             True if successful, False otherwise
@@ -378,9 +368,7 @@ class MetadataClient:
         try:
             # URL-encode the key to handle special characters
             encoded_key = quote(key, safe="")
-            payload = {"ip": store_pod_ip, "lifespan": lifespan}
-            if service_name:
-                payload["service_name"] = service_name
+            payload = {"ip": store_pod_ip}
 
             response = get_sync_client().post(
                 f"{self.base_url}/api/v1/keys/{encoded_key}/store",
@@ -500,32 +488,6 @@ class MetadataClient:
         except httpx.RequestError as e:
             logger.warning(f"Failed to complete broadcast {broadcast_id}: {e}")
             return False
-
-    def cleanup_service_keys(self, service_name: str) -> dict:
-        """
-        Delete all keys with lifespan='resource' for a service.
-        Called when a service is torn down.
-
-        Args:
-            service_name: Name of the service to clean up
-
-        Returns:
-            dict with deleted_count and success status
-        """
-        try:
-            response = get_sync_client().delete(
-                f"{self.base_url}/api/v1/services/{quote(service_name, safe='')}/cleanup",
-                params={"namespace": self.namespace},
-                timeout=30,
-            )
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as e:
-            logger.warning(f"Failed to cleanup keys for service '{service_name}': HTTP {e.response.status_code}")
-            return {"success": False, "error": f"HTTP {e.response.status_code}", "deleted_count": 0}
-        except httpx.RequestError as e:
-            logger.warning(f"Failed to cleanup keys for service '{service_name}': {e}")
-            return {"success": False, "error": str(e), "deleted_count": 0}
 
     # ==================== Filesystem Broadcast Methods ====================
 

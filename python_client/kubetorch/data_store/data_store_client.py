@@ -19,10 +19,10 @@ from kubetorch.logger import get_logger
 from kubetorch.resources.compute.utils import find_available_port, RsyncError
 from kubetorch.serving.utils import is_running_in_kubernetes
 
-from .key_utils import parse_key, ParsedKey
+from .key_utils import normalize_key
 from .metadata_client import MetadataClient
 from .rsync_client import RsyncClient
-from .types import BroadcastWindow, Lifespan, Locale
+from .types import BroadcastWindow, Locale
 
 logger = get_logger(__name__)
 
@@ -68,7 +68,6 @@ class DataStoreClient:
         key: Union[str, List[str]],
         src: Union[str, Path, List[Union[str, Path]]],
         locale: Locale = "store",
-        lifespan: Lifespan = "cluster",
         broadcast: Optional[BroadcastWindow] = None,
         contents: bool = False,
         filter_options: Optional[str] = None,
@@ -84,7 +83,6 @@ class DataStoreClient:
             key (str or List[str]): Storage key(s). Can be a single key or list of keys.
             src (str or Path or List[str or Path]): Local file(s) or directory(s) to upload.
             locale (Locale, optional): Where data is stored ("store" or "local"). (Default: "store")
-            lifespan (Lifespan, optional): How long data persists ("cluster" or "resource"). (Default: "cluster")
             broadcast (BroadcastWindow, optional): Optional BroadcastWindow for coordinated transfers. (Default: None)
             contents (bool, optional): If True, copy directory contents. (Default: False)
             filter_options (str, optional): Additional rsync filter options. (Default: None)
@@ -100,7 +98,6 @@ class DataStoreClient:
             self._put_to_store(
                 keys=keys,
                 src=src,
-                lifespan=lifespan,
                 contents=contents,
                 filter_options=filter_options,
                 force=force,
@@ -110,7 +107,6 @@ class DataStoreClient:
             self._put_local(
                 keys=keys,
                 src=src,
-                lifespan=lifespan,
                 start_rsyncd=start_rsyncd,
                 base_path=base_path,
                 verbose=verbose,
@@ -126,7 +122,6 @@ class DataStoreClient:
         self,
         keys: List[str],
         src: Union[str, Path, List[Union[str, Path]]],
-        lifespan: Lifespan,
         contents: bool,
         filter_options: Optional[str],
         force: bool,
@@ -140,16 +135,14 @@ class DataStoreClient:
             src = [str(s) if isinstance(s, Path) else s for s in src]
 
         for key in keys:
-            parsed = parse_key(key)
-
-            # Create rsync client with appropriate service name
-            rsync_client = RsyncClient(namespace=self.namespace, service_name=parsed.service_name or "store")
+            normalized = normalize_key(key)
+            rsync_client = RsyncClient(namespace=self.namespace)
 
             if verbose:
                 logger.info(f"Uploading to key '{key}' from {src}")
 
-            # Build destination path
-            dest_path = parsed.storage_path
+            # The normalized key is the destination path
+            dest_path = normalized
 
             # If contents=True, add trailing slash for rsync "copy contents" behavior
             if contents and dest_path:
@@ -158,7 +151,7 @@ class DataStoreClient:
             try:
                 logger.debug(
                     f"DataStoreClient.put: in_cluster={is_running_in_kubernetes()}, "
-                    f"service_name={parsed.service_name}, dest_path={dest_path}, contents={contents}"
+                    f"key={normalized}, dest_path={dest_path}, contents={contents}"
                 )
 
                 rsync_client.upload(
@@ -166,7 +159,7 @@ class DataStoreClient:
                 )
 
                 # After successful upload, register with metadata server
-                self._register_store_key(key, lifespan, verbose)
+                self._register_store_key(key, verbose)
 
                 if verbose:
                     logger.info(f"Successfully stored at key '{key}'")
@@ -179,7 +172,6 @@ class DataStoreClient:
         self,
         keys: List[str],
         src: Union[str, Path, List[Union[str, Path]]],
-        lifespan: Lifespan,
         start_rsyncd: bool,
         base_path: str,
         verbose: bool,
@@ -210,9 +202,6 @@ class DataStoreClient:
         pod_name = os.getenv("POD_NAME")
         pod_namespace = os.getenv("POD_NAMESPACE", self.namespace)
 
-        # Determine service_name for lifespan="resource"
-        service_name = os.getenv("KT_SERVICE_NAME") if lifespan == "resource" else None
-
         # Convert to path relative to base_path
         src_path_absolute = src_path.absolute()
         base_path_obj = Path(base_path).absolute()
@@ -226,8 +215,7 @@ class DataStoreClient:
             )
 
         for key in keys:
-            parsed = parse_key(key)
-            normalized_key = parsed.full_key
+            normalized_key = normalize_key(key)
 
             if verbose:
                 logger.info(f"Publishing key '{key}' from pod IP '{pod_ip}' (path: {src_path_relative})")
@@ -238,8 +226,6 @@ class DataStoreClient:
                 pod_name=pod_name,
                 namespace=pod_namespace,
                 src_path=src_path_relative,
-                lifespan=lifespan,
-                service_name=service_name,
             )
 
             if success:
@@ -248,7 +234,7 @@ class DataStoreClient:
             else:
                 raise RuntimeError(f"Failed to publish key '{key}' with metadata server")
 
-    def _register_store_key(self, key: str, lifespan: Lifespan, verbose: bool = False) -> None:
+    def _register_store_key(self, key: str, verbose: bool = False) -> None:
         """Register that a key exists in the store with metadata server."""
         if not is_running_in_kubernetes():
             return
@@ -258,12 +244,7 @@ class DataStoreClient:
             # The actual rsync routing uses the service URL, not pod IP
             store_service_url = f"{provisioning_constants.DATA_STORE_SERVICE_NAME}.{self.namespace}.svc.cluster.local"
 
-            # Determine service_name for lifespan="resource"
-            service_name = os.getenv("KT_SERVICE_NAME") if lifespan == "resource" else None
-
-            self.metadata_client.register_store_pod(
-                key, store_service_url, lifespan=lifespan, service_name=service_name
-            )
+            self.metadata_client.register_store_pod(key, store_service_url)
             if verbose:
                 logger.debug(f"Registered key '{key}' with metadata server")
         except Exception as e:
@@ -427,13 +408,13 @@ class DataStoreClient:
             if verbose:
                 logger.info(f"Joining filesystem broadcast for key '{k}' (group: {group_id})")
 
-            parsed = parse_key(k)
+            normalized_key = normalize_key(k)
             dest_str = self._normalize_dest(dest, contents, k)
 
             # Join MDS broadcast to get parent info
             result = self.metadata_client.join_fs_broadcast(
                 group_id=group_id,
-                key=parsed.full_key,
+                key=normalized_key,
                 pod_ip=pod_ip,
                 pod_name=pod_name,
                 fanout=fanout,
@@ -457,7 +438,7 @@ class DataStoreClient:
                 )
 
             try:
-                rsync_client = RsyncClient(namespace=self.namespace, service_name=parsed.service_name or "store")
+                rsync_client = RsyncClient(namespace=self.namespace)
 
                 if parent_rank == 0:
                     # Parent is the source (store) - use source_path directly
@@ -473,7 +454,7 @@ class DataStoreClient:
                             parent_ip=parent_ip,
                             parent_port=DEFAULT_TCP_PORT,
                             group_id=group_id,
-                            key=parsed.full_key,
+                            key=normalized_key,
                             timeout=timeout,
                         )
                     except Exception as conn_err:
@@ -513,12 +494,12 @@ class DataStoreClient:
                 local_path_for_broadcast = str(Path(dest_str.rstrip("/")).resolve())
                 pds_client.fs_broadcast_complete(
                     group_id=group_id,
-                    key=parsed.full_key,
+                    key=normalized_key,
                     local_path=local_path_for_broadcast,
                 )
                 if verbose:
                     logger.info(
-                        f"Registered broadcast completion: {group_id}/{parsed.full_key} -> {local_path_for_broadcast}"
+                        f"Registered broadcast completion: {group_id}/{normalized_key} -> {local_path_for_broadcast}"
                     )
 
                 # Start rsync daemon so we can serve as parent for later joiners
@@ -549,14 +530,15 @@ class DataStoreClient:
         verbose: bool,
     ) -> None:
         """Get data directly from a putter pod."""
-        parsed = parse_key(key)
-        rsync_client = RsyncClient(namespace=self.namespace, service_name=parsed.service_name or "store")
+        normalized_key = normalize_key(key)
+        rsync_client = RsyncClient(namespace=self.namespace)
 
         dest_str = self._normalize_dest(dest, contents, key)
 
         # Build peer rsync URL - putter is serving via rsync daemon
-        # The src_path is the key's path segment
-        src_path = parsed.path if parsed.path else key.split("/")[-1]
+        # Use the last segment of the key as the source path for backward compatibility
+        # with putters that register their local path
+        src_path = key.split("/")[-1] if "/" in key else normalized_key
         peer_url = f"rsync://{putter_ip}:{provisioning_constants.REMOTE_RSYNC_PORT}/data/"
         remote_source = peer_url + src_path
         if contents:
@@ -583,20 +565,20 @@ class DataStoreClient:
     ) -> None:
         """Get a single key without broadcast coordination."""
         dest_str = self._normalize_dest(dest, contents, key)
-        parsed = parse_key(key)
+        normalized_key = normalize_key(key)
         in_cluster = is_running_in_kubernetes()
 
         if verbose:
             logger.info(f"Downloading from key '{key}' to {dest_str}")
 
         # Get source information from metadata server
-        source_info, has_store_backup = self._resolve_source(parsed.full_key, in_cluster, verbose)
+        source_info, has_store_backup = self._resolve_source(normalized_key, in_cluster, verbose)
 
         # Try to retrieve the data
         if in_cluster and source_info and source_info.ip:
             # In-cluster peer-to-peer transfer
             success = self._get_from_peer_in_cluster(
-                key, parsed, source_info, dest_str, contents, filter_options, force, has_store_backup, verbose
+                key, normalized_key, source_info, dest_str, contents, filter_options, force, has_store_backup, verbose
             )
             if success:
                 return
@@ -604,17 +586,17 @@ class DataStoreClient:
         if not in_cluster and source_info and source_info.pod_name and not has_store_backup:
             # External peer-to-peer transfer (only when store doesn't have it)
             success = self._get_from_peer_external(
-                key, parsed, source_info, dest_str, contents, filter_options, force, verbose
+                key, normalized_key, source_info, dest_str, contents, filter_options, force, verbose
             )
             if success:
                 return
 
         # Fall back to store pod
         if has_store_backup:
-            self._get_from_store_pod(key, parsed, dest_str, contents, filter_options, force, verbose)
+            self._get_from_store_pod(key, normalized_key, dest_str, contents, filter_options, force, verbose)
         else:
             raise DataStoreError(
-                f"Key '{parsed.full_key}' not found - no peer sources and no store pod backup available"
+                f"Key '{normalized_key}' not found - no peer sources and no store pod backup available"
             )
 
     def _normalize_dest(self, dest: Union[str, Path, List], contents: bool, key: str) -> str:
@@ -674,7 +656,7 @@ class DataStoreClient:
     def _get_from_peer_in_cluster(
         self,
         key: str,
-        parsed: ParsedKey,
+        normalized_key: str,
         source_info: SourceInfo,
         dest: str,
         contents: bool,
@@ -688,7 +670,7 @@ class DataStoreClient:
 
         Returns True if successful, False to fall back to store pod.
         """
-        rsync_client = RsyncClient(namespace=self.namespace, service_name=parsed.service_name or "store")
+        rsync_client = RsyncClient(namespace=self.namespace)
 
         # Get the relative path for rsync
         src_path_relative = source_info.src_path
@@ -732,7 +714,7 @@ class DataStoreClient:
     def _get_from_peer_external(
         self,
         key: str,
-        parsed: ParsedKey,
+        normalized_key: str,
         source_info: SourceInfo,
         dest: str,
         contents: bool,
@@ -752,7 +734,7 @@ class DataStoreClient:
                 logger.info("Cannot use peer transfer - no pod name available")
             return False
 
-        rsync_client = RsyncClient(namespace=self.namespace, service_name=parsed.service_name or "store")
+        rsync_client = RsyncClient(namespace=self.namespace)
         pod_name = source_info.pod_name
         pod_namespace = source_info.namespace or self.namespace
 
@@ -864,7 +846,7 @@ class DataStoreClient:
     def _get_from_store_pod(
         self,
         key: str,
-        parsed: ParsedKey,
+        normalized_key: str,
         dest: str,
         contents: bool,
         filter_options: Optional[str],
@@ -872,13 +854,14 @@ class DataStoreClient:
         verbose: bool,
     ) -> None:
         """Download from the store pod."""
-        rsync_client = RsyncClient(namespace=self.namespace, service_name=parsed.service_name or "store")
+        rsync_client = RsyncClient(namespace=self.namespace)
 
         rsync_url = rsync_client.get_rsync_pod_url()
         if not rsync_url.endswith("/"):
             rsync_url += "/"
 
-        remote_source = rsync_url + parsed.storage_path.lstrip("/")
+        # The normalized key is the path under /data/{namespace}/
+        remote_source = rsync_url + normalized_key
         if contents:
             remote_source = remote_source.rstrip("/") + "/"
 
@@ -908,13 +891,13 @@ class DataStoreClient:
         Returns:
             List of dicts with item information.
         """
-        parsed = parse_key(key)
+        normalized_key = normalize_key(key)
 
         if verbose:
-            logger.info(f"Listing contents of key '{key}' (query: '{parsed.full_key}')")
+            logger.info(f"Listing contents of key '{key}' (query: '{normalized_key}')")
 
         try:
-            result = self.metadata_client.list_keys(prefix=parsed.full_key)
+            result = self.metadata_client.list_keys(prefix=normalized_key)
             items = result.get("items", [])
 
             if verbose:
@@ -936,13 +919,13 @@ class DataStoreClient:
         Returns:
             True if successful, False otherwise.
         """
-        parsed = parse_key(key)
+        normalized_key = normalize_key(key)
 
         if verbose:
             logger.info(f"Creating directory for key '{key}'")
 
         try:
-            result = self.metadata_client.mkdir(parsed.full_key)
+            result = self.metadata_client.mkdir(normalized_key)
             success = result.get("success", False)
 
             if verbose and success:
@@ -969,7 +952,7 @@ class DataStoreClient:
             prefix_mode: If True, delete all keys starting with this string prefix
             verbose: Show detailed progress
         """
-        parsed = parse_key(key)
+        normalized_key = normalize_key(key)
 
         if verbose:
             if prefix_mode:
@@ -977,7 +960,7 @@ class DataStoreClient:
             else:
                 logger.info(f"Deleting key '{key}'")
 
-        result = self.metadata_client.delete_key(parsed.full_key, recursive=recursive, prefix_mode=prefix_mode)
+        result = self.metadata_client.delete_key(normalized_key, recursive=recursive, prefix_mode=prefix_mode)
 
         if not result.get("success", False):
             error = result.get("error", "Unknown error")

@@ -4,7 +4,6 @@ Type definitions for data store operations.
 This module defines the core types used by the data store API:
 - BroadcastWindow: Configuration for coordinated multi-party data transfers
 - Locale: Where data is stored (store pod vs local pod)
-- Lifespan: How long data persists (cluster-wide vs resource-scoped)
 """
 
 from dataclasses import dataclass
@@ -18,15 +17,6 @@ Locale = Literal["store", "local"]
   accessible from any pod via the store.
 - "local": Zero-copy mode. Data stays on the local pod and is only registered
   with the metadata server. Other pods can rsync directly from this pod.
-"""
-
-Lifespan = Literal["cluster", "resource"]
-"""How long data persists.
-
-- "cluster": Data persists until explicitly deleted. Can use global keys
-  without service prefix.
-- "resource": Data is stored under the service's key directory and automatically
-  cleaned up when the service is torn down.
 """
 
 

@@ -61,7 +61,7 @@ The unified `put()`/`get()` API handles two data types:
 ┌──────────────────────────────┐   ┌─────────────────────────────┐
 │  metadata_client.py          │   │  types.py / key_utils.py    │
 │  MetadataClient              │   │  BroadcastWindow, Locale,   │
-│  Communicates with server    │   │  Lifespan, ParsedKey        │
+│  Communicates with server    │   │  Lifespan, normalize_key    │
 └──────────────────────────────┘   └─────────────────────────────┘
 ```
 
@@ -135,7 +135,6 @@ Client for the metadata server API.
 - `has_store_pod()` - Check if store has key
 - `list_keys()` / `delete_key()` - Key management
 - `join_broadcast()` / `get_broadcast_status()` - Coordinated transfers
-- `cleanup_service_keys()` - Service teardown cleanup
 
 ### `gpu_transfer.py`
 GPU tensor transfer via NCCL.
@@ -221,13 +220,11 @@ Core type definitions.
   - `pack` - For GPU state_dicts: pack all tensors into single buffer (default: False)
 
 ### `key_utils.py`
-Key parsing utilities.
+Key normalization utilities.
 
-**ParsedKey dataclass:**
-- `service_name` - First path segment (if looks like service name)
-- `path` - Remaining path
-- `storage_path` - Path for rsync operations
-- `full_key` - Normalized key
+**`normalize_key(key: str) -> str`:**
+- Strips leading/trailing slashes from keys
+- Keys map directly to filesystem paths: `/data/{namespace}/{key}`
 
 ## Data Flow Diagrams
 
@@ -239,9 +236,9 @@ User: kt.put("my-svc/model", src="./weights/")
           ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ DataStoreClient.put()                                            │
-│   1. Parse key → service_name="my-svc", path="model"            │
-│   2. Create RsyncClient(service_name="my-svc")                  │
-│   3. rsync_client.upload(source="./weights/", dest="model")     │
+│   1. Normalize key → "my-svc/model"                             │
+│   2. Create RsyncClient(namespace)                              │
+│   3. rsync_client.upload(source="./weights/", dest="my-svc/model")
 └─────────────────────────┬───────────────────────────────────────┘
                           │
           ┌───────────────┴───────────────┐
@@ -545,10 +542,7 @@ GPU tensors are not copied to the GPU server. Instead:
 - Memory ownership stays with application
 - Automatic cleanup via PID monitoring
 
-### 5. Lifespan Management
-Keys can have `lifespan="resource"` for automatic cleanup when a service is torn down. The metadata server tracks service associations and cleans up on service deletion.
-
-### 6. BroadcastWindow Coordination
+### 5. BroadcastWindow Coordination
 For coordinated transfers, BroadcastWindow supports two modes:
 
 **GPU Broadcast (NCCL):**
