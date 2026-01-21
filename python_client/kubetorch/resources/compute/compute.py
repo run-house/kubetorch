@@ -2291,9 +2291,10 @@ class Compute:
         return True
 
     def _rsync_svc_url(self):
-        """Get the rsync pod URL for startup commands."""
-        client = data_store.RsyncClient(self.namespace, self.service_name)
-        return client.get_rsync_pod_url()
+        """Get the rsync pod URL for startup commands (includes service name path)."""
+        client = data_store.RsyncClient(namespace=self.namespace)
+        # Append service name to URL so startup sync only gets this service's files
+        return f"{client.get_rsync_pod_url()}{self.service_name}/"
 
     def ssh(self, pod_name: str = None):
         if pod_name is None:
@@ -2369,8 +2370,9 @@ class Compute:
         full_path, dest_dir = _get_sync_package_paths(package)
         logger.info(f"Syncing over package at {full_path} to {dest_dir}")
         # Use RsyncClient directly - files go to rsync pod, then sync to service pods at startup
-        client = data_store.RsyncClient(self.namespace, self.service_name)
-        client.upload(source=full_path, dest=dest_dir)
+        # Prepend service name to destination so files are organized by service
+        client = data_store.RsyncClient(namespace=self.namespace)
+        client.upload(source=full_path, dest=f"{self.service_name}/{dest_dir}")
 
     def run_bash(
         self,
@@ -2436,8 +2438,9 @@ class Compute:
                 full_path, dest_dir = _get_sync_package_paths(step.kwargs.get("package"))
                 if rsync:
                     # Use RsyncClient directly - files go to rsync pod, then sync to service pods at startup
-                    client = data_store.RsyncClient(self.namespace, self.service_name)
-                    client.upload(source=full_path, dest=dest_dir)
+                    # Prepend service name to destination so files are organized by service
+                    client = data_store.RsyncClient(namespace=self.namespace)
+                    client.upload(source=full_path, dest=f"{self.service_name}/{dest_dir}")
                 instructions += f"COPY {full_path} {dest_dir}"
             elif step.step_type == ImageSetupStepType.RSYNC:
                 source_path = step.kwargs.get("source")
@@ -2448,10 +2451,12 @@ class Compute:
 
                 if rsync:
                     # Use RsyncClient directly - files go to rsync pod, then sync to service pods at startup
-                    client = data_store.RsyncClient(self.namespace, self.service_name)
+                    # Prepend service name to destination so files are organized by service
+                    client = data_store.RsyncClient(namespace=self.namespace)
+                    service_dest = f"{self.service_name}/{dest_dir}" if dest_dir else self.service_name
                     client.upload(
                         source=source_path,
-                        dest=dest_dir,
+                        dest=service_dest,
                         contents=contents,
                         filter_options=filter_options,
                         force=force,

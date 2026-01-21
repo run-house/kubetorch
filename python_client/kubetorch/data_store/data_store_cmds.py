@@ -14,7 +14,7 @@ from kubetorch.logger import get_logger
 from kubetorch.resources.compute.utils import RsyncError
 
 from .data_store_client import DataStoreClient, DataStoreError
-from .types import BroadcastWindow, Lifespan, Locale
+from .types import BroadcastWindow, Locale
 
 logger = get_logger(__name__)
 
@@ -26,7 +26,6 @@ def put(
     key: Union[str, List[str]],
     src: Optional[Union[str, Path, List[Union[str, Path]], "torch.Tensor", dict]] = None,
     locale: Locale = "store",
-    lifespan: Lifespan = "cluster",
     broadcast: Optional[BroadcastWindow] = None,
     contents: bool = False,
     filter_options: Optional[str] = None,
@@ -59,9 +58,6 @@ def put(
             - "local": Zero-copy mode. Data stays on the local pod and is only
               registered with the metadata server. Other pods fetch directly from
               this pod.
-        lifespan: How long data persists:
-            - "cluster" (default): Data persists until explicitly deleted.
-            - "resource": Data is automatically cleaned up when the service is torn down.
         broadcast: Optional BroadcastWindow for coordinated multi-party transfers.
             When specified, this put() joins as a "putter" and waits for other
             participants before transferring data.
@@ -82,9 +78,6 @@ def put(
 
         # Zero-copy mode (data stays local, other pods fetch directly)
         >>> kt.put(key="my-service/data", src="/app/data", locale="local")
-
-        # Resource-scoped (auto-cleaned on service teardown)
-        >>> kt.put(key="my-service/temp", src="./temp/", lifespan="resource")
 
         # Coordinated filesystem broadcast with timeout
         >>> kt.put(
@@ -130,7 +123,6 @@ def put(
         key=key,
         src=src,
         locale=locale,
-        lifespan=lifespan,
         broadcast=broadcast,
         contents=contents,
         filter_options=filter_options,

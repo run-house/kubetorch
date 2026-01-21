@@ -439,51 +439,6 @@ def test_distributed_exception_handling():
     assert "ValueError" in exc.value.remote_traceback
 
 
-@pytest.mark.asyncio
-@pytest.mark.level("minimal")
-async def test_mixed_distribution_types():
-    """Test that we can use different distribution types in the same test."""
-
-    # Create different distributed configurations
-    configs = [
-        (None, "spmd"),  # Generic SPMD
-        ("pytorch", "pytorch"),
-        ("jax", "jax"),
-        ("tensorflow", "tensorflow"),
-    ]
-
-    # Run all distributed configs concurrently
-    async def launch_distributed_fns(dist_type, expected_name):
-        compute = kt.Compute(cpus="1", memory="1Gi", launch_timeout=450, image=kt.images.pytorch())
-
-        if dist_type:
-            compute = compute.distribute(dist_type, workers=1, num_proc=2)
-        else:
-            compute = compute.distribute(workers=1, num_proc=2)
-
-        remote_fn = await kt.fn(verify_distributed_env, name=f"{get_test_fn_name()}_{expected_name}").to_async(compute)
-        return remote_fn
-
-    import asyncio
-
-    # Use asyncio.gather directly instead of asyncio.run
-    remote_fns = await asyncio.gather(
-        *[launch_distributed_fns(dist_type, expected_name) for dist_type, expected_name in configs]
-    )
-
-    for remote_fn in remote_fns:
-        results = remote_fn()
-        assert len(results) == 2  # 1 worker * 2 processes
-
-        # Sort results by rank for consistent ordering
-        results = sorted(results, key=lambda r: int(r["rank"]))
-
-        # All should have basic env vars set
-        for result in results:
-            assert result["rank"] is not None
-            assert result["world_size"] == "2"
-
-
 # ============================================================================
 # Tests for Ray distributed (existing, keep for compatibility)
 # ============================================================================

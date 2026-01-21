@@ -36,22 +36,20 @@ Example usage::
 
 from .data_store_client import DataStoreClient, DataStoreError
 from .data_store_cmds import _sync_workdir_from_store, get, ls, put, rm  # Internal use only
-from .key_utils import parse_key, ParsedKey
+from .key_utils import normalize_key
 from .rsync_client import RsyncClient
-from .types import BroadcastWindow, Lifespan, Locale
+from .types import BroadcastWindow, Locale
 
 __all__ = [
     "BroadcastWindow",
     "DataStoreClient",
     "DataStoreError",
-    "Lifespan",
     "Locale",
-    "ParsedKey",
     "RsyncClient",
     "_sync_workdir_from_store",  # Internal use only
     "get",
     "ls",
-    "parse_key",
+    "normalize_key",
     "put",
     "rm",
 ]

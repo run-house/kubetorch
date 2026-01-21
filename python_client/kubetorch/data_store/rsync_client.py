@@ -41,29 +41,22 @@ RSYNC_RETRY_DELAY = 2  # seconds
 class RsyncClient:
     """Core rsync functionality for data transfer."""
 
-    def __init__(
-        self,
-        namespace: str,
-        service_name: Optional[str] = None,
-    ):
+    def __init__(self, namespace: str):
         """
         Initialize the rsync client.
 
         Args:
-            namespace (str): Kubernetes namespace (user namespace for data paths).
-            service_name (str, optional): Optional service name for service-specific transfers. (Default: None)
+            namespace (str): Kubernetes namespace for data paths.
         """
-        self.namespace = namespace  # Namespace for both service and data paths
-        self.service_name = service_name or "store"
+        self.namespace = namespace
 
     def get_rsync_pod_url(self) -> str:
-        """Get the data store pod service URL."""
-        # Service is in the same namespace as the data
-        return f"rsync://{provisioning_constants.DATA_STORE_SERVICE_NAME}.{self.namespace}.svc.cluster.local:{provisioning_constants.REMOTE_RSYNC_PORT}/data/{self.namespace}/{self.service_name}/"
+        """Get the data store pod service URL (points to /data/{namespace}/)."""
+        return f"rsync://{provisioning_constants.DATA_STORE_SERVICE_NAME}.{self.namespace}.svc.cluster.local:{provisioning_constants.REMOTE_RSYNC_PORT}/data/{self.namespace}/"
 
     def get_base_rsync_url(self, local_port: int) -> str:
         """Get the base rsync URL for local connections."""
-        return f"rsync://localhost:{local_port}/data/{self.namespace}/{self.service_name}"
+        return f"rsync://localhost:{local_port}/data/{self.namespace}"
 
     def get_websocket_info(self, local_port: Optional[int] = None) -> tuple:
         """Get websocket connection info for rsync tunnel."""
@@ -78,18 +71,6 @@ class RsyncClient:
         # has robust port finding logic, so we just provide a starting point
         start_from = (parsed_url.port or rsync_local_port) + 1
         return start_from, ws_url
-
-    def create_rsync_target_dir(self):
-        """Create the subdirectory for this particular service in the data store."""
-        # Use the service_name as the key - the data store will create the directory
-        # at the appropriate filesystem path
-        key = self.service_name
-
-        logger.info(f"Creating directory for key '{key}' via data store API")
-        from kubetorch.data_store import DataStoreClient
-
-        client = DataStoreClient(namespace=self.namespace)
-        client.mkdir(key)
 
     def build_rsync_command(
         self,
@@ -555,7 +536,7 @@ class RsyncClient:
             local_port: Local port for websocket tunnel
         """
         in_cluster = is_running_in_kubernetes()
-        logger.debug(f"RsyncClient.upload: in_cluster={in_cluster}, service={self.service_name}, dest={dest}")
+        logger.debug(f"RsyncClient.upload: in_cluster={in_cluster}, namespace={self.namespace}, dest={dest}")
 
         if in_cluster:
             # In-cluster upload
