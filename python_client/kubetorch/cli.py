@@ -1661,16 +1661,7 @@ def kt_volumes(
             if all_namespaces:
                 # Controller doesn't have all-namespaces endpoint, so we need to list from each namespace
                 # Get list of allowed namespaces from config (or use common defaults)
-                allowed_namespaces = globals.config.deployment_namespaces or ["default", "kubetorch"]
-                all_pvcs = []
-                for ns in allowed_namespaces:
-                    try:
-                        result = controller_client.list_pvcs(ns)
-                        all_pvcs.extend(result.get("items", []))
-                    except Exception:
-                        # Skip namespaces that don't exist or we don't have access to
-                        pass
-                pvcs_items = all_pvcs
+                pvcs_items = controller_client.list_pvcs_all_namespaces().get("items", [])
                 title = "Kubetorch Volumes (All Namespaces)"
             else:
                 result = controller_client.list_pvcs(target_namespace)
