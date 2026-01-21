@@ -1347,6 +1347,10 @@ jobs:
           kt config set username ${TEST_HASH}-secret
           kt secrets delete -A -y
 
+      - name: Delete BYO pods
+        run: |
+          NS=$(kt config get namespace | tail -1 | tr -d '[:space:]')
+          kubectl get pods -n "$NS" --no-headers -o custom-columns=":metadata.name" | grep "^${TEST_HASH}" | xargs -r kubectl delete pod --force --grace-period=0 -n "$NS"
 
       - name: Delete test ns
         run: |
