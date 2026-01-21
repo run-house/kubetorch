@@ -537,6 +537,11 @@ class ControllerClient:
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get(f"/controller/volumes/{namespace}", params=params)
 
+    def list_pvcs_all_namespaces(self, label_selector: Optional[str] = None) -> Dict[str, Any]:
+        """List PersistentVolumeClaims."""
+        params = {"label_selector": label_selector} if label_selector else {}
+        return self.get("/controller/volumes", params=params)
+
     # Services
     def create_service(self, namespace: str, body: Dict[str, Any], params: Dict = None) -> Dict[str, Any]:
         """Create a Service"""
