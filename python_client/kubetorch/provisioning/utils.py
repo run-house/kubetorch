@@ -397,6 +397,7 @@ def build_deployment_manifest(
     namespace: str,
     replicas: int = 1,
     inactivity_ttl: str = None,
+    manifest_annotations: dict = None,
     custom_labels: dict = None,
     custom_annotations: dict = None,
     custom_template: dict = None,
@@ -423,10 +424,11 @@ def build_deployment_manifest(
 
     # Build annotations
     annotations = {}
-    if custom_annotations:
-        annotations.update(custom_annotations)
+    if manifest_annotations:
+        annotations.update(manifest_annotations)
     if inactivity_ttl:
         annotations[provisioning_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
+    template_annotations = custom_annotations.copy() if custom_annotations else {}
 
     # Create Deployment manifest
     deployment = load_template(
@@ -435,7 +437,7 @@ def build_deployment_manifest(
         name="",  # Will be set during launch
         namespace=namespace,
         annotations=annotations,
-        template_annotations={},  # Will be filled in during launch
+        template_annotations=template_annotations,
         labels=labels,
         template_labels=template_labels,
         pod_spec=pod_spec,
@@ -455,6 +457,7 @@ def build_knative_manifest(
     gpu_annotations: dict = None,
     inactivity_ttl: str = None,
     custom_labels: dict = None,
+    manifest_annotations: dict = None,
     custom_annotations: dict = None,
 ) -> dict:
     """Build a Knative Service manifest from pod spec and configuration."""
@@ -479,13 +482,13 @@ def build_knative_manifest(
 
     # Build annotations
     annotations = {}
-    if custom_annotations:
-        annotations.update(custom_annotations)
+    if manifest_annotations:
+        annotations.update(manifest_annotations)
     if inactivity_ttl:
         annotations[provisioning_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
 
-    # Build template annotations for autoscaling
-    template_annotations = {}
+    # Build pod template level annotations
+    template_annotations = custom_annotations.copy() if custom_annotations else {}
     if gpu_annotations:
         template_annotations.update(gpu_annotations)
 
@@ -519,6 +522,7 @@ def build_raycluster_manifest(
     replicas: int = 1,
     inactivity_ttl: str = None,
     custom_labels: dict = None,
+    manifest_annotations: dict = None,
     custom_annotations: dict = None,
 ) -> dict:
     """Build a RayCluster manifest from pod spec and configuration."""
@@ -544,13 +548,13 @@ def build_raycluster_manifest(
 
     # Build annotations
     annotations = {}
-    if custom_annotations:
-        annotations.update(custom_annotations)
+    if manifest_annotations:
+        annotations.update(manifest_annotations)
     if inactivity_ttl:
         annotations[provisioning_constants.INACTIVITY_TTL_ANNOTATION] = inactivity_ttl
 
-    # Template annotations for pod specs
-    template_annotations = annotations.copy()
+    # Template annotations (user annotations only)
+    template_annotations = custom_annotations.copy() if custom_annotations else {}
 
     # Calculate worker replicas (total - 1 for head)
     worker_replicas = max(0, replicas - 1)
