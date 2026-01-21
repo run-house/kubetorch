@@ -7,7 +7,7 @@ import subprocess
 import threading
 import time
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache
 from typing import Any, Dict, List, Literal, Optional, Union
 
@@ -50,6 +50,14 @@ class MetricsConfig:
     scope: Literal["pod", "resource"] = "resource"  # aggregation level (default to "resource")
 
 
+def _get_log_level() -> str:
+    env_level = os.getenv("KT_LOG_LEVEL", "INFO").lower()
+    valid_levels = ("debug", "info", "warning", "error", "critical")
+    if env_level not in valid_levels:
+        raise ValueError(f"Invalid KT_LOG_LEVEL environment variable: '{env_level}'. Must be one of: {valid_levels}")
+    return env_level
+
+
 @dataclass
 class LoggingConfig:
     """Configuration for logging behavior on a Kubetorch service.
@@ -65,7 +73,7 @@ class LoggingConfig:
             If None, falls back to global config.stream_logs setting. (Default: True)
         level (str): Log level for the remote service. Controls which logs are emitted by the service and available
             for streaming. Also controls client-side filtering. Options: "debug", "info", "warning", "error".
-            (Default: "info")
+            (Default: level corresponding to KT_LOG_LEVEL env var, or "info" if not set)
         include_system_logs (bool): Whether to include framework logs (e.g., uvicorn.access). (Default: False)
         include_events (bool): Whether to include Kubernetes events during service startup.
             Events include pod scheduling, image pulling, container starting, etc. (Default: True)
@@ -84,7 +92,7 @@ class LoggingConfig:
     """
 
     stream_logs: bool = None
-    level: Literal["debug", "info", "warning", "error"] = "info"
+    level: Literal["debug", "info", "warning", "error", "critical"] = field(default_factory=_get_log_level)
     include_system_logs: bool = False
     include_events: bool = True
     grace_period: float = 2.0
