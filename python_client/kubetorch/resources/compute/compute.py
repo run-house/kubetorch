@@ -1633,6 +1633,24 @@ class Compute:
         return metadata.get("labels", {})
 
     @property
+    def user_labels(self):
+        """Get user-provided labels (excludes kubetorch internal labels)."""
+        import kubetorch.provisioning.constants as provisioning_constants
+
+        INTERNAL_LABEL_KEYS = {
+            provisioning_constants.KT_SERVICE_LABEL,
+            provisioning_constants.KT_VERSION_LABEL,
+            provisioning_constants.KT_MODULE_LABEL,
+            provisioning_constants.KT_USER_IDENTIFIER_LABEL,
+            provisioning_constants.KT_USERNAME_LABEL,
+            provisioning_constants.KT_POD_TYPE_LABEL,
+            provisioning_constants.KT_TEMPLATE_LABEL,
+            provisioning_constants.KT_SECRET_NAME_LABEL,
+            provisioning_constants.KT_APP_LABEL,
+        }
+        return {k: v for k, v in self.labels.items() if k not in INTERNAL_LABEL_KEYS}
+
+    @property
     def queue_name(self) -> Optional[str]:
         pod_template = self.pod_template
         if pod_template:
@@ -2601,7 +2619,7 @@ class Compute:
                     namespace=self.namespace,
                     replicas=self.replicas,
                     inactivity_ttl=self.inactivity_ttl,
-                    custom_labels=self.labels,
+                    custom_labels=self.user_labels,
                     manifest_annotations=self.annotations,
                     custom_annotations=self.user_annotations,
                 )
@@ -2705,7 +2723,7 @@ class Compute:
                 autoscaling_config=autoscaling_config,
                 gpu_annotations=self.gpu_annotations,
                 inactivity_ttl=self.inactivity_ttl,
-                custom_labels=self.labels,
+                custom_labels=self.user_labels,
                 manifest_annotations=self.annotations,
                 custom_annotations=self.user_annotations,
             )
