@@ -234,10 +234,10 @@ class Module:
         # Prefer non-selector services over selector pools (which don't have env vars)
         service_dict = {}
         for svc in all_services:
-            name = svc["name"]
-            if name not in service_dict or service_dict[name].get("template_type") == "selector":
+            svc_name = svc["name"]
+            if svc_name not in service_dict or service_dict[svc_name].get("template_type") == "selector":
                 # Add if new, or replace selector pool with actual K8s resource
-                service_dict[name] = svc
+                service_dict[svc_name] = svc
 
         # Try to find the first matching service across all service types
         for candidate in potential_names:
@@ -253,7 +253,7 @@ class Module:
 
             pods_result = controller_client.list_pods(
                 namespace=namespace,
-                label_selector=f"kubetorch.com/service={name}",
+                label_selector=f"kubetorch.com/service={candidate}",
             )
             volumes = []
 
