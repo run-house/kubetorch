@@ -476,19 +476,7 @@ def list_secrets(
     controller_client = kubetorch.globals.controller_client()
     try:
         if all_namespaces:
-            try:
-                secrets_result = controller_client.list_secrets_all_namespaces()
-            except ControllerRequestError as e:
-                if e.status_code == 403:
-                    msg = (
-                        "Cross-namespace secret listing requires additional RBAC permissions. "
-                        f"Falling back to namespace-scoped listing for namespace: '{namespace}'"
-                    )
-                    if console:
-                        console.print(f"[yellow]{msg}[/yellow]\n")
-                    secrets_result = controller_client.list_secrets(namespace=namespace)
-                else:
-                    raise
+            secrets_result = controller_client.list_secrets_all_namespaces()
         else:
             secrets_result = controller_client.list_secrets(namespace=namespace)
 
@@ -499,7 +487,7 @@ def list_secrets(
                 return None
         else:
             # Handle object response from CoreV1Api (legacy)
-            if not secrets_result or not secrets_result.items:
+            if not secrets_result or not getattr(secrets_result, "items"):
                 return None
             secret_items = secrets_result.items
 

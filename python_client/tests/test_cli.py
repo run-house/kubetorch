@@ -687,7 +687,7 @@ def test_cli_secrets_create_aws():
     cmd = ["secrets", "create", "--provider", "aws"]
     result = runner.invoke(app, cmd, color=False)
     assert result.exit_code == 0
-    assert "Successfully created secret aws in namespace default" in result.output
+    assert "Successfully created secret aws in namespace default" in strip_ansi_codes(result.output)
 
 
 @pytest.mark.skip("Skipping since CI is running on a GKE cluster")
@@ -697,7 +697,7 @@ def test_cli_secrets_create_aws_with_name():
     cmd = ["secrets", "create", secret_name, "--provider", "aws"]
     result = runner.invoke(app, cmd, color=False)
     assert result.exit_code == 0
-    assert f"Successfully created secret {secret_name} in namespace default" in result.output
+    assert f"Successfully created secret {secret_name} in namespace default" in strip_ansi_codes(result.output)
 
 
 @pytest.mark.skip("Skipping since CI is running on a GKE cluster")
@@ -709,7 +709,7 @@ def test_cli_secrets_create_aws_test_ns():
     cmd = ["secrets", "create", "--provider", "aws", "--namespace", tests_ns]
     result = runner.invoke(app, cmd, color=False)
     assert result.exit_code == 0
-    assert f"Successfully created secret aws in namespace {tests_ns}" in result.output
+    assert f"Successfully created secret aws in namespace {tests_ns}" in strip_ansi_codes(result.output)
 
 
 @pytest.mark.level("unit")
@@ -717,7 +717,7 @@ def test_cli_secrets_create_gcp():
     cmd = ["secrets", "create", "--provider", "gcp"]
     result = runner.invoke(app, cmd, color=False)
     assert result.exit_code == 0
-    output = result.output
+    output = strip_ansi_codes(result.output)
     assert "✔ Secret created successfully\n" in output
     assert f"Name: {kt.config.username}-gcp\n" in output
     assert f"Namespace: {kt.config.namespace}\n" in output
@@ -729,7 +729,7 @@ def test_cli_secrets_create_gcp_with_name():
     cmd = ["secrets", "create", secret_name, "--provider", "gcp"]
     result = runner.invoke(app, cmd, color=False)
     assert result.exit_code == 0
-    output = result.output
+    output = strip_ansi_codes(result.output)
     assert "✔ Secret created successfully\n" in output
     assert f"Name: {secret_name}\n" in output
     assert f"Namespace: {kt.config.namespace}\n" in output
@@ -756,7 +756,7 @@ def test_cli_secrets_create_huggingface():
     cmd = ["secrets", "create", "--provider", "huggingface"]
     result = runner.invoke(app, cmd, color=False)
     assert result.exit_code == 0
-    output = result.output
+    output = strip_ansi_codes(result.output)
     assert "✔ Secret created successfully\n" in output
     assert f"Name: {kt.config.username}-huggingface\n" in output
     assert f"Namespace: {kt.config.namespace}\n" in output
@@ -768,7 +768,7 @@ def test_cli_secrets_create_huggingface_with_name():
     cmd = ["secrets", "create", secret_name, "--provider", "huggingface"]
     result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
     assert result.exit_code == 0
-    output = result.output
+    output = strip_ansi_codes(result.output)
     assert "✔ Secret created successfully\n" in output
     assert f"Name: {secret_name}\n" in output
     assert f"Namespace: {kt.config.namespace}\n" in output
@@ -779,9 +779,10 @@ def test_cli_secrets_create_not_supported_provider():
     cmd = ["secrets", "create", "--provider", "NoSuchProvider"]
     result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
     assert result.exit_code == 0
-    assert (
-        f"Failed to create the secret: NoSuchProvider is not a supported provider: {kt.Secret.builtin_providers(as_str=True)}"
-        in result.output.replace("\n", "")
+    assert f"Failed to create the secret: NoSuchProvider is not a supported provider: {kt.Secret.builtin_providers(as_str=True)}" in strip_ansi_codes(
+        result.output
+    ).replace(
+        "\n", ""
     )
 
 
@@ -794,14 +795,16 @@ def test_cli_secrets_create_same_secret_twice():
     # create the secret for the first time
     result_first_creation = runner.invoke(app, cmd, color=False)
     assert result_first_creation.exit_code == 0
-    assert f"Successfully created secret {secret_name} in namespace default" in result_first_creation.output
+    assert f"Successfully created secret {secret_name} in namespace default" in strip_ansi_codes(
+        result_first_creation.output
+    )
 
     # create the secret for the second time
     result_second_creation = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
     assert result_second_creation.exit_code == 0
     assert (
         f"Secret '{secret_name}' already exists in namespace default for username {kt.globals.config.username}, skipping creation"
-        in result_second_creation.output
+        in strip_ansi_codes(result_second_creation.output)
     )
 
 
@@ -813,7 +816,7 @@ def test_cli_secrets_create_same_secret_twice_gcp():
     # create the secret for the first time
     result_first_creation = runner.invoke(app, cmd, color=False)
     assert result_first_creation.exit_code == 0
-    first_output = result_first_creation.output
+    first_output = strip_ansi_codes(result_first_creation.output)
     assert "✔ Secret created successfully\n" in first_output
     assert f"Name: {secret_name}\n" in first_output
     assert f"Namespace: {kt.config.namespace}\n" in first_output
@@ -823,7 +826,7 @@ def test_cli_secrets_create_same_secret_twice_gcp():
     assert result_second_creation.exit_code == 0
     assert (
         f"Secret '{secret_name}' already exists in namespace {kt.config.namespace}, skipping creation"
-        in result_second_creation.output
+        in strip_ansi_codes(result_second_creation.output)
     )
 
 
@@ -839,7 +842,7 @@ def test_cli_secrets_create_using_path():
         cmd = ["secrets", "create", secret_name, "--path", str(temp_file.resolve())]
         result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
         assert result.exit_code == 0
-        output = result.output
+        output = strip_ansi_codes(result.output)
         assert "✔ Secret created successfully\n" in output
         assert f"Name: {secret_name}\n" in output
         assert f"Namespace: {kt.config.namespace}\n" in output
@@ -853,7 +856,7 @@ def test_cli_secrets_create_using_env_vars():
     cmd = ["secrets", "create", secret_name, "-v", "TEST_KEY_1", "-v", "TEST_KEY_2"]
     result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
     assert result.exit_code == 0
-    output = result.output
+    output = strip_ansi_codes(result.output)
     assert "✔ Secret created successfully\n" in output
     assert f"Name: {secret_name}\n" in output
     assert f"Namespace: {kt.config.namespace}\n" in output
@@ -871,7 +874,7 @@ def test_cli_secrets_list():
     for cmd in list_cmds:
         result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
         assert result.exit_code == 0
-        output = result.output
+        output = strip_ansi_codes(result.output)
         assert re.search(expected_pattern, output, re.DOTALL)
 
 
@@ -903,18 +906,15 @@ def test_cli_secrets_list_in_test_ns():
     for cmd in list_cmds:
         result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
         assert result.exit_code == 0
-        output = result.output
+        output = strip_ansi_codes(result.output)
         assert re.search(expected_pattern, output, re.DOTALL)
 
 
 @pytest.mark.level("unit")
 def test_cli_secrets_list_all():
     """Test that -A flag gracefully falls back when cluster-wide RBAC is not available."""
-    tests_ns = get_tests_namespace()
-    current_ns = kt.globals.config.namespace
-    create_test_ns_cmd = f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
-    subprocess.run(create_test_ns_cmd, shell=True, check=True)
-    secret_names = [f"{get_test_hash()}-gcp-{tests_ns}-{i}" for i in range(2)]
+    ns = kt.config.namespace
+    secret_names = [f"{get_test_hash()}-gcp-{ns}-{i}" for i in range(2)]
     for secret_name in secret_names:
         cmd = [
             "secrets",
@@ -923,7 +923,7 @@ def test_cli_secrets_list_all():
             "--provider",
             "gcp",
             "--namespace",
-            tests_ns,
+            ns,
         ]
         result = runner.invoke(app, cmd, color=False)
         assert result.exit_code == 0
@@ -939,21 +939,13 @@ def test_cli_secrets_list_all():
         ["secrets", "list", "-A"],
         ["secrets", "list", "--all-namespaces"],
     ]
-    # Without cluster-wide RBAC, should fall back to current namespace
-    expected_fallback_msg = "Cross-namespace secret listing requires additional RBAC permissions"
-    expected_current_secret_pattern = rf".*{secret_name_current}.*{kt.globals.config.username}.*{current_ns}.*"
-
     for cmd in list_cmds:
         result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
         assert result.exit_code == 0
-        output = result.output
-        # Should show fallback warning
-        assert expected_fallback_msg in output
-        # Should show secrets from current namespace
-        assert re.search(expected_current_secret_pattern, output, re.DOTALL)
-        # Should NOT show secrets from test namespace (no cluster-wide access)
+        output = strip_ansi_codes(result.output)
+        # Should show secrets from test namespace (no cluster-wide access)
         for secret_name in secret_names:
-            assert secret_name not in output
+            assert secret_name in output
 
 
 @pytest.mark.level("unit")
@@ -982,7 +974,7 @@ def test_cli_secrets_list_prefix():
     for cmd in list_cmds:
         result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
         assert result.exit_code == 0
-        output = result.output
+        output = strip_ansi_codes(result.output)
         assert re.search(expected_pattern, output, re.DOTALL)
 
 
@@ -1014,7 +1006,7 @@ def test_cli_secrets_list_prefix_and_namespace():
     for cmd in list_cmds:
         result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
         assert result.exit_code == 0
-        output = result.output
+        output = strip_ansi_codes(result.output)
         for expected_pattern in expected_patterns:
             assert re.search(expected_pattern, output, re.DOTALL)
 
@@ -1022,12 +1014,9 @@ def test_cli_secrets_list_prefix_and_namespace():
 @pytest.mark.level("unit")
 def test_cli_secrets_list_prefix_and_all():
     """Test that -A flag with prefix gracefully falls back when cluster-wide RBAC is not available."""
-    tests_ns = get_tests_namespace()
+    ns = kt.config.namespace
     test_hash = get_test_hash()
-    current_ns = kt.globals.config.namespace
-    create_test_ns_cmd = f"kubectl get namespace {tests_ns} || kubectl create namespace {tests_ns}"
-    subprocess.run(create_test_ns_cmd, shell=True, check=True)
-    secret_names = [f"{test_hash}-gcp-{tests_ns}-{i + 4}" for i in range(2)]
+    secret_names = [f"{test_hash}-gcp-{ns}-{i + 4}" for i in range(2)]
     for secret_name in secret_names:
         cmd = [
             "secrets",
@@ -1036,7 +1025,7 @@ def test_cli_secrets_list_prefix_and_all():
             "--provider",
             "gcp",
             "--namespace",
-            tests_ns,
+            ns,
         ]
         result = runner.invoke(app, cmd, color=False)
         assert result.exit_code == 0
@@ -1052,21 +1041,14 @@ def test_cli_secrets_list_prefix_and_all():
         ["secrets", "list", "-x", test_hash, "-A"],
         ["secrets", "list", "--prefix", test_hash, "--all-namespaces"],
     ]
-    # Without cluster-wide RBAC, should fall back to current namespace
-    expected_fallback_msg = "Cross-namespace secret listing requires additional RBAC permissions"
-    expected_current_secret_pattern = rf".*{secret_name_current}.*{kt.globals.config.username}.*{current_ns}.*"
 
     for cmd in list_cmds:
         result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "200"})
         assert result.exit_code == 0
-        output = result.output
-        # Should show fallback warning
-        assert expected_fallback_msg in output
-        # Should show secrets from current namespace with matching prefix
-        assert re.search(expected_current_secret_pattern, output, re.DOTALL)
-        # Should NOT show secrets from test namespace (no cluster-wide access)
+        output = strip_ansi_codes(result.output)
+        # Should show secrets from test namespace (no cluster-wide access)
         for secret_name in secret_names:
-            assert secret_name not in output
+            assert secret_name in output
 
 
 @pytest.mark.level("unit")
@@ -1200,7 +1182,7 @@ def test_cli_secrets_delete_few():
     assert list_result.exit_code == 0
 
     for secret_name in secret_names:
-        assert secret_name not in list_result.output
+        assert secret_name not in strip_ansi_codes(list_result.output)
 
 
 @pytest.mark.level("unit")
@@ -1210,7 +1192,7 @@ def test_cli_secrets_describe_no_show():
     cmd = ["secrets", "create", secret_name, "--provider", "gcp"]
     result = runner.invoke(app, cmd, color=False)
     assert result.exit_code == 0
-    assert "✔ Secret created successfully" in result.output
+    assert "✔ Secret created successfully" in strip_ansi_codes(result.output)
     expected_ns = kt.config.namespace
 
     cmds = [
@@ -1248,7 +1230,7 @@ def test_cli_secrets_describe_show():
     for cmd in cmds:
         result = runner.invoke(app, cmd, color=False, env={"COLUMNS": "300"})
         assert result.exit_code == 0
-        output = result.output
+        output = strip_ansi_codes(result.output)
         assert f"K8 Name: {secret_name}" in output
         assert f"Namespace: {kt.config.namespace}" in output
         mount_type = "env" if os.getenv("CI", None) else "mount"

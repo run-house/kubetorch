@@ -621,7 +621,7 @@ class ControllerClient:
         return self.delete(f"/controller/secrets/{namespace}/{name}", ignore_not_found=True)
 
     def list_secrets_all_namespaces(self, label_selector: Optional[str] = None) -> Dict[str, Any]:
-        """List secrets across all namespaces."""
+        """List secrets across all deployment namespaces."""
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get("/controller/secrets", params=params)
 
