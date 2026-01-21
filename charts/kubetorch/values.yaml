@@ -8,6 +8,16 @@ kubetorchConfig:
   # Enable live metrics streaming (required for TTL/auto-scaling)
   metricsEnabled: true
 
+  # Pod settings applied to all KubeTorch pods (controller, metrics, data-store)
+  # Per-component settings (e.g., kubetorchController.tolerations) merge with and override these
+  podAnnotations: {}    # e.g., sidecar.istio.io/inject: "false"
+  podLabels: {}         # e.g., cost-center: "platform"
+  tolerations: []       # Applied to all pods, merged with per-component tolerations
+  nodeSelector: {}      # e.g., node-type: "compute"
+  affinity: {}          # Pod/node affinity rules
+  priorityClassName: "" # e.g., system-cluster-critical
+  imagePullSecrets: []  # e.g., [{ name: "my-registry-secret" }]
+
 kubetorchController:
   image: ghcr.io/run-house/kubetorch-controller
   tag: 0.4.1
@@ -33,6 +43,7 @@ kubetorchController:
       request: "2Gi"    # Minimum guaranteed memory
 
   tolerations: []
+  nodeSelector: {}
   affinity: {}
 
   # TTL configuration
@@ -107,6 +118,7 @@ dataStore:
   cleanupCron:
     enabled: false # set to true to enable pod cleanup
   tolerations: []
+  nodeSelector: {}
   affinity: {}
 
 logStreaming:
