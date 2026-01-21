@@ -2485,7 +2485,16 @@ class Compute:
                     # Use RsyncClient directly - files go to rsync pod, then sync to service pods at startup
                     # Prepend service name to destination so files are organized by service
                     client = data_store.RsyncClient(namespace=self.namespace)
-                    service_dest = f"{self.service_name}/{dest_dir}" if dest_dir else self.service_name
+                    if dest_dir:
+                        # Strip tilde prefix - treat as relative to working directory
+                        upload_dest = dest_dir[2:] if dest_dir.startswith("~/") else dest_dir
+                        if upload_dest.startswith("/"):
+                            # Absolute path - store under __absolute__ in service's area
+                            service_dest = f"{self.service_name}/__absolute__{upload_dest}"
+                        else:
+                            service_dest = f"{self.service_name}/{upload_dest}"
+                    else:
+                        service_dest = self.service_name
                     client.upload(
                         source=source_path,
                         dest=service_dest,
