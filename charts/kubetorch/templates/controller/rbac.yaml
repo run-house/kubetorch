@@ -152,6 +152,11 @@ rules:
     resources: ["services"]
     verbs: ["get", "list", "watch"]
 
+  # Secrets (cluster-wide list to discover secrets across namespaces)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+
   # RayCluster CRDs
   - apiGroups: ["ray.io"]
     resources: ["rayclusters"]
