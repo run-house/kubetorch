@@ -37,6 +37,8 @@ def put(
     start_rsyncd: bool = True,
     base_path: str = "/",
     nccl_port: int = 29500,
+    # NCCL process group mode (GPU only)
+    nccl_pg_mode: Optional[str] = None,
 ) -> None:
     """
     Upload data to the cluster using a key-value store interface.
@@ -70,6 +72,9 @@ def put(
         start_rsyncd: For locale="local": Start rsync daemon to serve data (default: True). (Filesystem only)
         base_path: For locale="local": Root path for rsync daemon (default: "/"). (Filesystem only)
         nccl_port: Port for NCCL communication (default: 29500). (GPU only)
+        nccl_pg_mode: NCCL process group mode (GPU only):
+            - "concurrent" (default): Create ProcessGroupNCCL directly, allows parallel transfers
+            - "global": Use global process group with semaphore serialization
 
     Examples:
         # Upload filesystem data to central store
@@ -111,7 +116,9 @@ def put(
             raise ValueError("GPU data transfer only supports a single key, not a list of keys.")
 
         manager = _get_gpu_manager()
-        return manager.publish(key=key, data=src, nccl_port=nccl_port, broadcast=broadcast, verbose=verbose)
+        return manager.publish(
+            key=key, data=src, nccl_port=nccl_port, broadcast=broadcast, verbose=verbose, nccl_pg_mode=nccl_pg_mode
+        )
 
     # Filesystem data transfer
     global _default_client
@@ -143,6 +150,8 @@ def get(
     verbose: bool = False,
     namespace: Optional[str] = None,
     kubeconfig_path: Optional[str] = None,
+    # NCCL process group mode (GPU only)
+    nccl_pg_mode: Optional[str] = None,
 ) -> None:
     """
     Download data from the cluster using a key-value store interface.
@@ -170,6 +179,9 @@ def get(
         verbose: Show detailed progress.
         namespace: Kubernetes namespace.
         kubeconfig_path: Path to kubeconfig file (for compatibility).
+        nccl_pg_mode: NCCL process group mode (GPU only):
+            - "concurrent" (default): Create ProcessGroupNCCL directly, allows parallel transfers
+            - "global": Use global process group with semaphore serialization
 
     Examples:
         # Download from store
@@ -207,7 +219,7 @@ def get(
         from .gpu_transfer import _get_gpu_manager
 
         manager = _get_gpu_manager()
-        return manager.retrieve(key=key, dest=dest, broadcast=broadcast, verbose=verbose)
+        return manager.retrieve(key=key, dest=dest, broadcast=broadcast, verbose=verbose, nccl_pg_mode=nccl_pg_mode)
 
     # Filesystem data retrieval
     global _default_client

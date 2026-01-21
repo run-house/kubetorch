@@ -1,9 +1,20 @@
+import asyncio
 import enum
+import inspect
 import os
 
 import pytest
 
 TEST_SESSION_HASH = None
+
+# ==================== Eager Fixture Initialization ====================
+# When --eager is passed, all session-scoped async fixtures are initialized
+# in parallel at session start, rather than serially on first use.
+#
+# Usage:
+#   pytest --eager          # Parallel fixture init (faster)
+#   pytest                  # Serial fixture init (default, for debugging)
+# ====================
 KUBETORCH_IMAGE = "ghcr.io/run-house/kubetorch:main"
 
 
@@ -45,6 +56,67 @@ def pytest_addoption(parser):
         default=False,
         help="Keep test artifacts (disable automatic cleanup)",
     )
+    parser.addoption(
+        "--eager",
+        action="store_true",
+        default=False,
+        help="Initialize session-scoped async fixtures in parallel at session start",
+    )
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_finish(session):
+    """After test collection, initialize session-scoped async fixtures in parallel."""
+    if not session.config.getoption("--eager"):
+        return
+
+    fm = session._fixturemanager
+
+    # Collect all needed fixture names from all tests
+    needed_fixtures = set()
+    for item in session.items:
+        needed_fixtures.update(item.fixturenames)
+
+    # Find session-scoped async fixtures that are needed and have no parameters
+    eager_fixtures = []
+    for name in needed_fixtures:
+        if name not in fm._arg2fixturedefs:
+            continue
+        for fixturedef in fm._arg2fixturedefs[name]:
+            func = fixturedef.func
+            # Unwrap to check if original is async
+            unwrapped = func
+            while hasattr(unwrapped, "__wrapped__"):
+                unwrapped = unwrapped.__wrapped__
+
+            # Skip fixtures that have parameters (dependencies we can't resolve)
+            sig = inspect.signature(unwrapped)
+            if sig.parameters:
+                continue
+
+            if fixturedef.scope == "session" and inspect.iscoroutinefunction(unwrapped):
+                eager_fixtures.append((name, fixturedef, unwrapped))
+
+    if not eager_fixtures:
+        return
+
+    print(f"\n🚀 Eager init: {[name for name, _, _ in eager_fixtures]}")
+
+    # Run all eager fixtures in parallel
+    async def run_eager():
+        async def run_one(name, fixturedef, func):
+            return name, fixturedef, await func()
+
+        tasks = [run_one(n, fd, f) for n, fd, f in eager_fixtures]
+        return await asyncio.gather(*tasks)
+
+    results = asyncio.run(run_eager())
+
+    # Inject results directly into pytest's fixture cache
+    for name, fixturedef, result in results:
+        fixturedef.cached_result = (result, 0, None)
+
+    print(f"✅ Eager init complete: {len(results)} fixtures ready")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -122,7 +194,7 @@ def get_compute(compute_type: str):
 
 
 @pytest.fixture(scope="session")
-async def remote_fn(request):
+async def remote_fn():
     import kubetorch as kt
 
     from .utils import summer
@@ -138,7 +210,7 @@ async def remote_fn(request):
 
 
 @pytest.fixture(scope="session")
-async def remote_async_fn(request):
+async def remote_async_fn():
     import kubetorch as kt
 
     from .utils import async_simple_summer

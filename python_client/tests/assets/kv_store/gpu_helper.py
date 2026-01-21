@@ -300,6 +300,143 @@ class GPUTestHelper:
             "results": results,
         }
 
+    def publish_tensors_by_rank(
+        self,
+        rank_specs: Dict[int, Dict],  # {rank: {"keys": [...], "shapes": [...], "fill_values": [...]}}
+        dtype: str = "float32",
+    ) -> Dict:
+        """
+        Publish tensors where each rank publishes different keys based on LOCAL_RANK.
+
+        Args:
+            rank_specs: Dict mapping rank -> spec dict with keys, shapes, fill_values
+            dtype: Tensor dtype
+        """
+        import time
+
+        import torch
+
+        local_rank = int(os.getenv("LOCAL_RANK", "0"))
+        start_time = time.time()
+
+        if local_rank not in rank_specs:
+            return {
+                "success": True,
+                "local_rank": local_rank,
+                "skipped": True,
+                "results": [],
+                "start_time": start_time,
+                "end_time": time.time(),
+            }
+
+        spec = rank_specs[local_rank]
+        keys = spec["keys"]
+        shapes = spec["shapes"]
+        fill_values = spec["fill_values"]
+
+        dtype_map = {
+            "float32": torch.float32,
+            "float64": torch.float64,
+            "float16": torch.float16,
+        }
+
+        if not hasattr(self, "_published_tensors"):
+            self._published_tensors = {}
+
+        results = []
+        for key, shape, fill_value in zip(keys, shapes, fill_values):
+            try:
+                tensor = torch.full(shape, fill_value, dtype=dtype_map.get(dtype, torch.float32), device="cuda:0")
+                self._published_tensors[key] = tensor
+                kt.put(key=key, src=tensor, verbose=True)
+                results.append({"success": True, "key": key, "shape": shape, "fill_value": fill_value})
+            except Exception as e:
+                results.append({"success": False, "key": key, "error": str(e)})
+
+        end_time = time.time()
+        return {
+            "success": all(r["success"] for r in results),
+            "local_rank": local_rank,
+            "results": results,
+            "start_time": start_time,
+            "end_time": end_time,
+            "duration": end_time - start_time,
+        }
+
+    def get_tensors_by_rank(
+        self,
+        rank_specs: Dict[int, Dict],  # {rank: {"keys": [...], "shapes": [...], "expected_fill_values": [...]}}
+        dtype: str = "float32",
+    ) -> Dict:
+        """
+        Get tensors where each rank retrieves different keys based on LOCAL_RANK.
+
+        Args:
+            rank_specs: Dict mapping rank -> spec dict with keys, shapes, expected_fill_values
+            dtype: Tensor dtype
+        """
+        import time
+
+        import torch
+
+        local_rank = int(os.getenv("LOCAL_RANK", "0"))
+        start_time = time.time()
+
+        if local_rank not in rank_specs:
+            return {
+                "success": True,
+                "local_rank": local_rank,
+                "skipped": True,
+                "results": [],
+                "start_time": start_time,
+                "end_time": time.time(),
+            }
+
+        spec = rank_specs[local_rank]
+        keys = spec["keys"]
+        shapes = spec["shapes"]
+        expected_fill_values = spec.get("expected_fill_values", [None] * len(keys))
+
+        dtype_map = {
+            "float32": torch.float32,
+            "float64": torch.float64,
+            "float16": torch.float16,
+        }
+
+        results = []
+        for key, shape, expected_fill in zip(keys, shapes, expected_fill_values):
+            try:
+                dest_tensor = torch.empty(shape, dtype=dtype_map.get(dtype, torch.float32), device="cuda:0")
+                kt.get(key=key, dest=dest_tensor, verbose=True)
+
+                actual_sum = float(dest_tensor.sum().item())
+                result = {
+                    "success": True,
+                    "key": key,
+                    "shape": list(dest_tensor.shape),
+                    "sum": actual_sum,
+                }
+
+                # Verify if expected_fill_value provided
+                if expected_fill is not None:
+                    expected_sum = expected_fill * shape[0] * shape[1]
+                    result["expected_sum"] = expected_sum
+                    result["correct"] = abs(actual_sum - expected_sum) < 1e-3
+
+                results.append(result)
+            except Exception as e:
+                results.append({"success": False, "key": key, "error": str(e)})
+
+        end_time = time.time()
+        return {
+            "success": all(r["success"] for r in results),
+            "local_rank": local_rank,
+            "results": results,
+            "start_time": start_time,
+            "end_time": end_time,
+            "duration": end_time - start_time,
+        }
+
     def publish_tensor_with_broadcast(
         self,
         keys: List[str],

@@ -424,3 +424,165 @@ async def test_gpu_transfer_many_to_many(gpu_source, gpu_consumer):
         assert (
             abs(get_result["sum"] - expected_sum) < 1e-3
         ), f"Getter rank {i} sum mismatch: {get_result['sum']} vs {expected_sum}"
+
+    print("=== Part 1 (BroadcastWindow) passed ===")
+
+    # ==================== Part 2: Complex point-to-point without BroadcastWindow ====================
+    # Test a complex pattern of transfers between all 4 processes:
+    #   gpu_source: S0 (rank 0), S1 (rank 1)
+    #   gpu_consumer: C0 (rank 0), C1 (rank 1)
+    #
+    # Round 1: Sources publish (S0: 2 tensors, S1: 1 tensor)
+    # Round 2: Consumers get from sources, then publish their own
+    #          C0 gets 2 from S0, publishes 3
+
+    def check_parallel_execution(results: list, operation_name: str) -> bool:
+        """Check if SPMD ranks executed in parallel by verifying time overlap."""
+        # Filter out skipped results and extract timing
+        timed_results = [r for r in results if not r.get("skipped") and "start_time" in r]
+        if len(timed_results) < 2:
+            return True  # Can't verify parallelism with < 2 results
+
+        # Check for time overlap between any pair of ranks
+        for i, r1 in enumerate(timed_results):
+            for r2 in timed_results[i + 1 :]:
+                # Overlap exists if one starts before the other ends
+                overlap = not (r1["end_time"] < r2["start_time"] or r2["end_time"] < r1["start_time"])
+                if overlap:
+                    overlap_start = max(r1["start_time"], r2["start_time"])
+                    overlap_end = min(r1["end_time"], r2["end_time"])
+                    overlap_duration = overlap_end - overlap_start
+                    print(
+                        f"  ✓ {operation_name}: rank {r1['local_rank']} and {r2['local_rank']} "
+                        f"overlapped for {overlap_duration:.3f}s"
+                    )
+                    return True
+
+        # No overlap found - sequential execution
+        print(f"  ⚠ {operation_name}: ranks executed sequentially (no time overlap)")
+        return False
+
+    #          C1 gets 1 from S1, publishes 4
+    # Round 3: Sources get from consumers (cross-pattern)
+    #          S0 gets 4 from C1
+    #          S1 gets 3 from C0
+    #
+    # This creates bidirectional flow with different tensor counts per rank.
+
+    prefix = f"{group_id}/p2p"
+
+    # === Round 1: Sources publish different tensors per rank ===
+    print("Round 1: Sources publishing...")
+    source_pub_results = gpu_source.publish_tensors_by_rank(
+        rank_specs={
+            0: {  # S0 publishes 2 tensors
+                "keys": [f"{prefix}/s0-a", f"{prefix}/s0-b"],
+                "shapes": [[64, 64], [128, 64]],
+                "fill_values": [1.0, 2.0],
+            },
+            1: {  # S1 publishes 1 tensor
+                "keys": [f"{prefix}/s1-a"],
+                "shapes": [[96, 96]],
+                "fill_values": [3.0],
+            },
+        }
+    )
+
+    # Verify source publish results
+    source_pub_list = source_pub_results if isinstance(source_pub_results, list) else [source_pub_results]
+    for result in source_pub_list:
+        if not result.get("skipped"):
+            assert result.get("success"), f"Source publish failed: {result}"
+            print(
+                f"  S{result['local_rank']} published {len(result['results'])} tensor(s) in {result.get('duration', 0):.3f}s"
+            )
+    check_parallel_execution(source_pub_list, "Source publish")
+
+    # === Round 2: Consumers get from sources, then publish their own ===
+    print("Round 2: Consumers getting and publishing...")
+
+    # First, consumers get from sources
+    consumer_get_results = gpu_consumer.get_tensors_by_rank(
+        rank_specs={
+            0: {  # C0 gets 2 tensors from S0
+                "keys": [f"{prefix}/s0-a", f"{prefix}/s0-b"],
+                "shapes": [[64, 64], [128, 64]],
+                "expected_fill_values": [1.0, 2.0],
+            },
+            1: {  # C1 gets 1 tensor from S1
+                "keys": [f"{prefix}/s1-a"],
+                "shapes": [[96, 96]],
+                "expected_fill_values": [3.0],
+            },
+        }
+    )
+
+    # Verify consumer get results
+    consumer_get_list = consumer_get_results if isinstance(consumer_get_results, list) else [consumer_get_results]
+    for result in consumer_get_list:
+        if not result.get("skipped"):
+            assert result.get("success"), f"Consumer get failed: {result}"
+            for r in result.get("results", []):
+                assert r.get("correct", True), f"Value mismatch: {r}"
+            print(
+                f"  C{result['local_rank']} retrieved {len(result['results'])} tensor(s) in {result.get('duration', 0):.3f}s"
+            )
+    check_parallel_execution(consumer_get_list, "Consumer get")
+
+    # Then, consumers publish their own tensors
+    consumer_pub_results = gpu_consumer.publish_tensors_by_rank(
+        rank_specs={
+            0: {  # C0 publishes 3 tensors
+                "keys": [f"{prefix}/c0-a", f"{prefix}/c0-b", f"{prefix}/c0-c"],
+                "shapes": [[32, 32], [48, 48], [64, 32]],
+                "fill_values": [4.0, 5.0, 6.0],
+            },
+            1: {  # C1 publishes 4 tensors
+                "keys": [f"{prefix}/c1-a", f"{prefix}/c1-b", f"{prefix}/c1-c", f"{prefix}/c1-d"],
+                "shapes": [[40, 40], [50, 50], [60, 60], [70, 70]],
+                "fill_values": [7.0, 8.0, 9.0, 10.0],
+            },
+        }
+    )
+
+    # Verify consumer publish results
+    consumer_pub_list = consumer_pub_results if isinstance(consumer_pub_results, list) else [consumer_pub_results]
+    for result in consumer_pub_list:
+        if not result.get("skipped"):
+            assert result.get("success"), f"Consumer publish failed: {result}"
+            print(
+                f"  C{result['local_rank']} published {len(result['results'])} tensor(s) in {result.get('duration', 0):.3f}s"
+            )
+    check_parallel_execution(consumer_pub_list, "Consumer publish")
+
+    # === Round 3: Sources get from consumers (cross-pattern) ===
+    print("Round 3: Sources getting from consumers (cross-pattern)...")
+
+    source_get_results = gpu_source.get_tensors_by_rank(
+        rank_specs={
+            0: {  # S0 gets 4 tensors from C1
+                "keys": [f"{prefix}/c1-a", f"{prefix}/c1-b", f"{prefix}/c1-c", f"{prefix}/c1-d"],
+                "shapes": [[40, 40], [50, 50], [60, 60], [70, 70]],
+                "expected_fill_values": [7.0, 8.0, 9.0, 10.0],
+            },
+            1: {  # S1 gets 3 tensors from C0
+                "keys": [f"{prefix}/c0-a", f"{prefix}/c0-b", f"{prefix}/c0-c"],
+                "shapes": [[32, 32], [48, 48], [64, 32]],
+                "expected_fill_values": [4.0, 5.0, 6.0],
+            },
+        }
+    )
+
+    # Verify source get results
+    source_get_list = source_get_results if isinstance(source_get_results, list) else [source_get_results]
+    for result in source_get_list:
+        if not result.get("skipped"):
+            assert result.get("success"), f"Source get failed: {result}"
+            for r in result.get("results", []):
+                assert r.get("correct", True), f"Value mismatch: {r}"
+            print(
+                f"  S{result['local_rank']} retrieved {len(result['results'])} tensor(s) in {result.get('duration', 0):.3f}s"
+            )
+    check_parallel_execution(source_get_list, "Source get")
+
+    print("=== Part 2 (Complex point-to-point transfers) passed ===")

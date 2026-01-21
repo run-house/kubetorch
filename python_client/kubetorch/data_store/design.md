@@ -180,7 +180,7 @@ Broadcast mode:
 Per-node server process for GPU transfers and filesystem broadcast coordination.
 
 **PodDataServer class:**
-- Runs as separate process per node
+- Runs as separate process per node (singleton via file lock)
 - Holds CUDA IPC handles (not tensors - memory owned by application)
 - Performs NCCL broadcasts isolated from application processes
 - Tracks registered tensors by PID, cleans up on process exit
@@ -188,6 +188,12 @@ Per-node server process for GPU transfers and filesystem broadcast coordination.
 - MDS WebSocket client for broadcast group coordination
 - Tracks completed filesystem broadcasts for inter-pod coordination
 - Serves local paths to child getters in filesystem broadcast tree
+
+**Server startup (`start_server_if_needed`):**
+- Uses file lock (`/tmp/kt-gpu-data-server.lock`) to prevent race conditions
+- With SPMD (multiple ranks), multiple processes may try to start server simultaneously
+- File lock ensures only one process checks/starts the server at a time
+- Other processes wait for lock, then find server already running
 
 **PodDataServerClient class:**
 - Unix socket communication with server (local)
