@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "kubetorch"
-version = "0.4.0"
+version = "0.4.1"
 description = "A Fast, Pythonic, 'Serverless' Interface for Running ML Workloads on Kubernetes"
 authors = ["Runhouse Team"]
 license = "Apache 2.0"
