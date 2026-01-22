@@ -72,6 +72,42 @@ class RsyncClient:
         start_from = (parsed_url.port or rsync_local_port) + 1
         return start_from, ws_url
 
+    def create_rsync_target_dir(self, rsync_cmd: str):
+        """Create the target directory in the data store for rsync < 3.2.0 compatibility."""
+        import shlex
+
+        # Extract the rsync:// URL from the command (it's the destination for uploads)
+        parts = shlex.split(rsync_cmd)
+        rsync_url = None
+        for part in parts:
+            if part.startswith("rsync://"):
+                rsync_url = part
+                break
+
+        if not rsync_url:
+            logger.warning("Could not find rsync:// URL in command, skipping mkdir")
+            return
+
+        # Parse the path from the URL: rsync://host:port/data/{namespace}/{path}
+        parsed = urlparse(rsync_url)
+        path = parsed.path.rstrip("/")
+
+        # Extract the key (everything after /data/{namespace}/)
+        prefix = f"/data/{self.namespace}"
+        if path.startswith(prefix):
+            key = path[len(prefix) :].lstrip("/")
+        else:
+            key = path.lstrip("/")
+
+        if not key:
+            return
+
+        logger.info(f"Creating directory for key '{key}' via data store API")
+        from kubetorch.data_store import DataStoreClient
+
+        client = DataStoreClient(namespace=self.namespace)
+        client.mkdir(key)
+
     def build_rsync_command(
         self,
         source: Union[str, List[str]],
@@ -440,7 +476,7 @@ class RsyncClient:
                                     "Please upgrade rsync to 3.2.0+ to improve performance."
                                 )
                                 proc.terminate()
-                                self.create_rsync_target_dir()
+                                self.create_rsync_target_dir(backup_rsync_cmd)
                                 return self.run_rsync_command(backup_rsync_cmd, create_target_dir=False)
 
                             for error_regex in error_regexes:
