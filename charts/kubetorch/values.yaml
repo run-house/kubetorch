@@ -36,6 +36,10 @@ kubetorchController:
     batchSize: 10  # Number of events to batch before pushing to Loki
     flushInterval: 1.0  # Max seconds between flushes (lower = faster delivery)
 
+  # Resource requests for the controller pod.
+  # For high-load deployments (1000+ connected pods), consider increasing:
+  #   cpu.request: "4" and memory.request: "8Gi" or higher
+  # Each websocket connection uses ~100KB-500KB of memory with buffers.
   resources:
     cpu:
       request: "1"   # Minimum guaranteed CPU

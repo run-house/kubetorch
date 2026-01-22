@@ -5,9 +5,13 @@ metadata:
   namespace: {{ .Release.Namespace }}
 data:
   nginx.conf: |-
-    worker_processes 1;
+    worker_processes auto;
 
-    events { worker_connections 1024; }
+    events {
+        worker_connections 65535;
+        use epoll;
+        multi_accept on;
+    }
 
     http {
         resolver {{ .Values.kubetorchController.nginx.resolver }} valid=5s;

@@ -51,12 +51,20 @@ class ProcessWorker(multiprocessing.Process):
 
     def proc_cleanup(self):
         """Full process cleanup called on shutdown. Cleans up framework state, debugging sessions, and executor."""
+        from kubetorch.serving.utils import get_child_pids, kill_process_tree
+
         # Call framework cleanup first
         self.framework_cleanup()
 
         logger.info("Cleaning up debugging sessions...")
         clear_debugging_sessions()
         logger.info("Debugging sessions cleaned up.")
+
+        # Kill any child processes (e.g., vLLM engine processes, Ray workers)
+        logger.info("Killing child processes...")
+        for child_pid in get_child_pids(os.getpid()):
+            kill_process_tree(child_pid, sig=9)  # SIGKILL
+        logger.info("Child processes killed.")
 
         # Cleanup thread pool (only on full shutdown, not during reload)
         if self._executor:

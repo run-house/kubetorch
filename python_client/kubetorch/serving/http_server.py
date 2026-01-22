@@ -223,16 +223,21 @@ class ControllerWebSocket:
         self._reconnect_delay = 1.0  # Start with 1 second, exponential backoff
 
     def _get_controller_url(self) -> Optional[str]:
-        """Get the WebSocket URL for the controller."""
-        controller_url = os.environ.get("KT_CONTROLLER_URL")
-        if not controller_url:
-            # Fall back to constructing from install namespace
-            install_namespace = os.environ.get("KT_INSTALL_NAMESPACE", "kubetorch")
-            controller_url = f"http://kubetorch-controller.{install_namespace}.svc.cluster.local:8080"
+        """Get the WebSocket URL for the controller.
 
-        # Convert HTTP to WS
-        ws_url = controller_url.replace("http://", "ws://").replace("https://", "wss://")
-        return f"{ws_url}/controller/ws/pods"
+        Uses the internal controller port (8081) directly, bypassing nginx.
+        This is more efficient for in-cluster communication since it avoids
+        an extra hop and doesn't consume nginx connections.
+        """
+        # Check for explicit override first
+        controller_ws_url = os.environ.get("KT_CONTROLLER_WS_URL")
+        if controller_ws_url:
+            return controller_ws_url
+
+        # Connect directly to controller on internal port 8081 (bypasses nginx)
+        install_namespace = os.environ.get("KT_INSTALL_NAMESPACE", "kubetorch")
+        controller_port = os.environ.get("KT_CONTROLLER_INTERNAL_PORT", "8081")
+        return f"ws://kubetorch-controller.{install_namespace}.svc.cluster.local:{controller_port}/controller/ws/pods"
 
     def _get_registration_message(self) -> dict:
         """Build the registration message to send to controller."""
@@ -861,6 +866,9 @@ def load_callable(
 
     With push-based reloads, this is always called fresh on reload - no need to
     check timestamps since the reload is triggered externally.
+
+    Note: run_image_setup() is NOT called here. For reload, _handle_reload() calls
+    it before load_callable(). For subprocesses, the main process already did it.
     """
     callable_name = os.environ["KT_CLS_OR_FN_NAME"]
 
@@ -887,7 +895,12 @@ def _load_callable_internal(
     reload_cleanup_fn: [Callable, None] = None,
     callable_obj=None,
 ):
-    """Internal callable loading logic - should be called within lock for thread safety."""
+    """Internal callable loading logic - should be called within lock for thread safety.
+
+    Note: run_image_setup() is NOT called here. Callers are responsible for running it:
+    - _handle_reload() calls run_image_setup() before load_callable()
+    - Subprocesses skip it since the main process already did it
+    """
     callable_name = os.environ["KT_CLS_OR_FN_NAME"]
 
     if not callable_obj:
@@ -898,12 +911,6 @@ def _load_callable_internal(
     # If a reload cleanup function is provided, call it before reloading
     if reload_cleanup_fn:
         reload_cleanup_fn()
-
-    if not distributed_subprocess:
-        # We don't reload the image in distributed subprocess/es, as we already did it in the
-        # main process and we don't want to do it multiple times (in each subprocess).
-        logger.info("Running image setup and loading callable.")
-        run_image_setup()
 
     distributed_config = os.environ.get("KT_DISTRIBUTED_CONFIG", "null")
     deployment_mode = os.environ.get("KT_DEPLOYMENT_MODE", "deployment")
@@ -1262,12 +1269,18 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     logger.error(f"Error cleaning up distributed supervisor: {e}")
 
-            # Call the original handler if it exists and isn't the default
-            if original_sigterm_handler and original_sigterm_handler not in (
-                signal.SIG_DFL,
-                signal.SIG_IGN,
-            ):
-                original_sigterm_handler(signum, frame)
+            # Call the original handler if it exists and isn't ignored
+            if original_sigterm_handler and original_sigterm_handler != signal.SIG_IGN:
+                if original_sigterm_handler == signal.SIG_DFL:
+                    # Default behavior is to terminate - force exit
+                    logger.info("Exiting process after cleanup...")
+                    os._exit(0)
+                else:
+                    original_sigterm_handler(signum, frame)
+            else:
+                # No original handler, force exit
+                logger.info("Exiting process after cleanup...")
+                os._exit(0)
 
         # Register SIGTERM handler
         signal.signal(signal.SIGTERM, handle_sigterm)
