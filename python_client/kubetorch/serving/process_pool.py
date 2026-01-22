@@ -93,8 +93,7 @@ class ProcessPool:
         for process in self.processes:
             process.join(timeout=0.5)
 
-        # Send SIGTERM to any remaining processes - ProcessWorker has a signal handler
-        # that will kill its child processes (vLLM, Ray, etc.) before exiting
+        # Send SIGTERM to any remaining processes
         for process in self.processes:
             if process.is_alive():
                 logger.debug(f"Sending SIGTERM to process {process.pid}")
