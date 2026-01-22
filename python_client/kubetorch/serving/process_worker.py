@@ -1,6 +1,7 @@
 import asyncio
 import multiprocessing
 import os
+import signal
 from bdb import BdbQuit
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
@@ -63,7 +64,7 @@ class ProcessWorker(multiprocessing.Process):
         # Kill any child processes (e.g., vLLM engine processes, Ray workers)
         logger.info("Killing child processes...")
         for child_pid in get_child_pids(os.getpid()):
-            kill_process_tree(child_pid, sig=9)  # SIGKILL
+            kill_process_tree(child_pid, sig=signal.SIGKILL)
         logger.info("Child processes killed.")
 
         # Cleanup thread pool (only on full shutdown, not during reload)
@@ -222,6 +223,22 @@ class ProcessWorker(multiprocessing.Process):
         - Async callables run directly on the event loop (true async concurrency)
         - Sync callables run in a thread pool via run_in_executor()
         """
+        # Track if we've received a termination signal
+        self._terminating = False
+
+        def handle_sigterm(signum, frame):
+            """Handle SIGTERM by triggering graceful shutdown."""
+            logger.info("ProcessWorker received SIGTERM, initiating shutdown...")
+            self._terminating = True
+            # Put SHUTDOWN in queue to exit the poll loop gracefully
+            try:
+                self._request_queue.put("SHUTDOWN")
+            except Exception:
+                pass  # Queue might be closed
+
+        # Register SIGTERM handler
+        signal.signal(signal.SIGTERM, handle_sigterm)
+
         # Set up subprocess log capture to push logs to main process via queue
         # Uses LogCapture in queue mode - same capture logic, different emit target
         self._log_capture = create_subprocess_log_capture(self._log_queue)
@@ -257,3 +274,7 @@ class ProcessWorker(multiprocessing.Process):
             if self._log_capture:
                 self._log_capture.stop()
             logger.info("Exiting gracefully.")
+
+            # Force exit to ensure process terminates even if child threads/processes
+            # try to keep it alive (e.g., vLLM engine threads)
+            os._exit(0)
