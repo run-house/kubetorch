@@ -875,8 +875,10 @@ def follow_logs_in_cli(
 def is_ingress_vpc_only(annotations: dict):
     # Check for internal LoadBalancer annotations
     internal_checks = [
+        annotations.get("alb.ingress.kubernetes.io/scheme") == "internal",
         annotations.get("service.beta.kubernetes.io/aws-load-balancer-internal") == "true",
         annotations.get("networking.gke.io/load-balancer-type") == "Internal",
+        annotations.get("kubernetes.io/ingress.class") == "gce-internal",
         annotations.get("service.beta.kubernetes.io/oci-load-balancer-internal") == "true",
     ]
 
@@ -885,14 +887,25 @@ def is_ingress_vpc_only(annotations: dict):
 
 
 def load_ingress(namespace: str = globals.config.install_namespace):
+    """Load an ingress that routes to the kubetorch-controller service."""
     controller = globals.controller_client()
 
     try:
         data = controller.list_ingresses(namespace=namespace)
         items = data.get("items", [])
+
+        # Find the ingress that routes to kubetorch-controller
         for ing in items:
-            if ing["metadata"]["name"] == "kubetorch-controller-ingress":
-                return ing
+            try:
+                rules = ing.get("spec", {}).get("rules", [])
+                for rule in rules:
+                    paths = rule.get("http", {}).get("paths", [])
+                    for path in paths:
+                        service_name = path.get("backend", {}).get("service", {}).get("name", "")
+                        if service_name == provisioning_constants.KUBETORCH_CONTROLLER:
+                            return ing
+            except (KeyError, TypeError):
+                continue
 
         return None
 
@@ -905,7 +918,13 @@ def load_ingress(namespace: str = globals.config.install_namespace):
 def get_ingress_host(ingress):
     """Get the configured host from the kubetorch ingress."""
     try:
-        return ingress.spec.rules[0].host
+        rules = ingress.get("spec", {}).get("rules", [])
+        if rules:
+            host = rules[0].get("host")
+            # Return None for wildcard hosts
+            if host and host != "*":
+                return host
+        return None
     except Exception:
         return None
 
