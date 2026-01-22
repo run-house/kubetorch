@@ -223,16 +223,21 @@ class ControllerWebSocket:
         self._reconnect_delay = 1.0  # Start with 1 second, exponential backoff
 
     def _get_controller_url(self) -> Optional[str]:
-        """Get the WebSocket URL for the controller."""
-        controller_url = os.environ.get("KT_CONTROLLER_URL")
-        if not controller_url:
-            # Fall back to constructing from install namespace
-            install_namespace = os.environ.get("KT_INSTALL_NAMESPACE", "kubetorch")
-            controller_url = f"http://kubetorch-controller.{install_namespace}.svc.cluster.local:8080"
+        """Get the WebSocket URL for the controller.
 
-        # Convert HTTP to WS
-        ws_url = controller_url.replace("http://", "ws://").replace("https://", "wss://")
-        return f"{ws_url}/controller/ws/pods"
+        Uses the internal controller port (8081) directly, bypassing nginx.
+        This is more efficient for in-cluster communication since it avoids
+        an extra hop and doesn't consume nginx connections.
+        """
+        # Check for explicit override first
+        controller_ws_url = os.environ.get("KT_CONTROLLER_WS_URL")
+        if controller_ws_url:
+            return controller_ws_url
+
+        # Connect directly to controller on internal port 8081 (bypasses nginx)
+        install_namespace = os.environ.get("KT_INSTALL_NAMESPACE", "kubetorch")
+        controller_port = os.environ.get("KT_CONTROLLER_INTERNAL_PORT", "8081")
+        return f"ws://kubetorch-controller.{install_namespace}.svc.cluster.local:{controller_port}/controller/ws/pods"
 
     def _get_registration_message(self) -> dict:
         """Build the registration message to send to controller."""
