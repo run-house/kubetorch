@@ -121,6 +121,7 @@ class ProcessPool:
         debug_port,
         debug_mode,
         serialization,
+        profiler=None,
     ):
         """Call a specific process by index."""
         if idx >= len(self.processes):
@@ -146,6 +147,7 @@ class ProcessPool:
                     "debug_mode": debug_mode,
                     "serialization": serialization,
                     "process_idx": idx,  # Include process index for debugging
+                    "profiler": profiler,
                 }
             )
 
@@ -173,6 +175,7 @@ class ProcessPool:
         debug_ports,
         debug_mode,
         serialization,
+        profiler=None,
     ):
         """Call all processes in parallel and return results."""
         if len(params_list) != self.num_processes:
@@ -191,6 +194,7 @@ class ProcessPool:
                     debug_port=debug_ports[idx] if debug_ports else None,
                     debug_mode=debug_mode if debug_mode else None,
                     serialization=serialization,
+                    profiler=profiler,
                 )
                 futures.append(future)
 

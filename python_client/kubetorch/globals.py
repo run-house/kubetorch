@@ -147,8 +147,8 @@ class ProfilerConfig:
     output_format: Literal[
         "flamegraph", "raw", "speedscope", "chrometrace", "table", "memory_timeline", "stacks"
     ] = None
-    output_path: str | None = None
-    output_filename: str | None = None
+    output_path: Optional[str] = None
+    output_filename: Optional[str] = None
     analyze_stack_traces: bool = True
     memory_timeline_output_type: Literal["html", "json", "json_zip", "raw"] = "html"
     table_sort_by: Literal[

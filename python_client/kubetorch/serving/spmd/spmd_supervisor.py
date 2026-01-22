@@ -120,6 +120,9 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
             debug_mode = debugger.get("mode")
             debug_port = debugger.get("port")
 
+        # Extract profiler config if present
+        profiler = params.get("profiler", None) if params else None
+
         # Get all the pods in the service, and use the first one as the master.
         # Set the env vars based on whether this is a master or worker
         logger.debug(f"Configuring distributed environment, distributed_subcall={distributed_subcall}")
@@ -467,6 +470,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                 debug_ports=debug_ports,
                 debug_mode=debug_mode,
                 serialization=serialization,
+                profiler=profiler,
             )
 
         # We may not be calling the locally processes if the user specified workers and didn't include this node

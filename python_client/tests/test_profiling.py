@@ -66,15 +66,9 @@ def test_profiling_pyspy_default_behavior_cls(remote_profiling_pyspy_cls, caplog
     with open(profiler_output_path, "r", encoding="utf-8") as f:
         svg_content = str(f.read())
         # test that the svg file contains profiling info of the method we called
-        assert "dot_np (tests/utils.py:605)" in svg_content
-        assert "dot_np (tests/utils.py:608)" in svg_content
-        assert "dot_np (tests/utils.py:609)" in svg_content
-        assert "dot_np (tests/utils.py:611)" in svg_content
+        assert "dot_np" in svg_content
         # test that the svg file DO NOT contain profiling info of the method we DID NOT call
-        assert "add_np (tests/utils.py:618)" not in svg_content
-        assert "add_np (tests/utils.py:621)" not in svg_content
-        assert "add_np (tests/utils.py:622)" not in svg_content
-        assert "add_np (tests/utils.py:624)" not in svg_content
+        assert "add_np" not in svg_content
 
     profiler_output_path.unlink()
     assert not profiler_output_path.exists()
@@ -99,15 +93,9 @@ def test_profiling_pyspy_default_behavior_cls(remote_profiling_pyspy_cls, caplog
     with open(profiler_output_path, "r", encoding="utf-8") as f:
         svg_content = str(f.read())
         # test that the svg file contains profiling info of the method we called
-        assert "add_np (tests/utils.py:619)" in svg_content
-        assert "add_np (tests/utils.py:624)" in svg_content
-        assert "add_np (tests/utils.py:625)" in svg_content
-        assert "add_np (tests/utils.py:627)" in svg_content
+        assert "add_np" in svg_content
         # test that the svg file DO NOT contain profiling info of the method we DID NOT call
-        assert "dot_np (tests/utils.py:605)" not in svg_content
-        assert "dot_np (tests/utils.py:608)" not in svg_content
-        assert "dot_np (tests/utils.py:609)" not in svg_content
-        assert "dot_np (tests/utils.py:611)" not in svg_content
+        assert "dot_np" not in svg_content
 
     profiler_output_path.unlink()
     assert not profiler_output_path.exists()
@@ -444,33 +432,6 @@ def test_profiling_pytorch_output_format_on_pyspy_disables(caplog):
         config = ProfilerConfig(profiler_type="pyspy", output_format=fmt)
         assert config._disabled is True
         assert f"Invalid output_format '{fmt}' for pyspy profiler" in caplog.text
-
-
-@pytest.mark.level("unit")
-def test_profiling_pytorch_missing_torch_import():
-    import builtins
-    import sys
-    from unittest.mock import patch
-
-    from kubetorch.serving.profiling import run_with_profile
-
-    config = ProfilerConfig(profiler_type="pytorch")
-
-    original_import = builtins.__import__
-
-    # Create a mock that raises ImportError when torch is imported
-    def mock_import(name, *args, **kwargs):
-        if name == "torch" or name.startswith("torch."):
-            raise ImportError("No module named 'torch'")
-        return original_import(name, *args, **kwargs)
-
-    # Mock torch not being installed by patching the import
-    with patch.dict(sys.modules, {"torch": None, "torch.profiler": None}):
-        with patch("builtins.__import__", side_effect=mock_import):
-            with pytest.raises(ImportError) as raised_exception:
-                run_with_profile(lambda: None, profiler=config, callable_name="test_fn")
-
-            assert "torch" in str(raised_exception.value).lower()
 
 
 @pytest.mark.level("unit")

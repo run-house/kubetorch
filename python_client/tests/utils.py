@@ -604,7 +604,7 @@ def matrix_dot_np(num_iterations: int = 10):
 class Matrix:
     def __init__(self):
         self.size = random.randint(100, 600)
-        self.dot_iterations = random.randint(10, 15)
+        self.dot_iterations = random.randint(15, 20)
 
     def dot_np(self):
         import numpy as np
