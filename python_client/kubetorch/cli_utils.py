@@ -116,6 +116,16 @@ def validate_config_key(key: str = None):
     return key
 
 
+def unset_kt_config_key(key, config):
+    try:
+        config.set(key, None)
+        config.write({key: None})
+        console.print(f"[green]{key} unset[/green]")
+    except ValueError as e:
+        console.print(f"[red]Error unsetting {key}:[/red] {str(e)}")
+        raise typer.Exit(1)
+
+
 def get_pods_for_service_cli(name: str, namespace: str):
     """Get pods for a service using unified label selector."""
     # Use unified service label - works for all deployment modes

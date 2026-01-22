@@ -41,6 +41,7 @@ from .cli_utils import (
     port_forward_to_pod,
     SecretAction,
     service_name_argument,
+    unset_kt_config_key,
     validate_config_key,
     validate_pods_exist,
     VolumeAction,
@@ -294,30 +295,28 @@ def kt_config(
     from kubetorch import config
 
     if action == "set":
-        if not key or not value:
+        if not key or value is None:
             console.print("[red]Both key and value are required for 'set'[/red]")
             raise typer.Exit(1)
 
-        try:
-            value = config.set(key, value)  # validate value
-            config.write({key: value})
-            console.print(f"[green]{key} set to:[/green] [blue]{value}[/blue]")
-        except ValueError as e:
-            console.print(f"[red]Error setting {key}:[/red] {str(e)}")
-            raise typer.Exit(1)
+        elif value.lower() in ("none", "null"):
+            unset_kt_config_key(key=key, config=config)
+
+        else:
+            try:
+                value = config.set(key, value)  # validate value
+                config.write({key: value})
+                console.print(f"[green]{key} set to:[/green] [blue]{value}[/blue]")
+            except ValueError as e:
+                console.print(f"[red]Error setting {key}:[/red] {str(e)}")
+                raise typer.Exit(1)
 
     elif action == "unset":
         if not key:
             console.print("[red]Key is required for 'unset'[/red]")
             raise typer.Exit(1)
 
-        try:
-            config.set(key, None)
-            config.write({key: None})
-            console.print(f"[green]{key.capitalize()} unset[/green]")
-        except ValueError as e:
-            console.print(f"[red]Error unsetting {key}:[/red] {str(e)}")
-            raise typer.Exit(1)
+        unset_kt_config_key(key=key, config=config)
 
     elif action == "get":
         if not key:
