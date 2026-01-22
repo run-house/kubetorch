@@ -20,7 +20,7 @@ kubetorchConfig:
 
 kubetorchController:
   image: ghcr.io/run-house/kubetorch-controller
-  tag: 0.4.1
+  tag: 0.4.2
   imagePullPolicy: Always
 
   servicePort: 8080  # Port the controller service is exposed on (via nginx)
@@ -102,7 +102,7 @@ nvidia-device-plugin:
       effect: "NoSchedule"
 
 dataStore:
-  image: ghcr.io/run-house/kubetorch-data-store:0.4.1
+  image: ghcr.io/run-house/kubetorch-data-store:0.4.2
   imagePullPolicy: Always
   # serviceAccount: kubetorch-service-account  # Optional: use specific service account for Workload Identity
   metadataPort: 8081  # Port for metadata server API
