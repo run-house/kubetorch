@@ -1271,7 +1271,7 @@ def kt_apply(
         name=service_name,
         port=port,
         health_check=health_check,
-        _skip_path_substitution=True,
+        _from_manifest=True,
         run_async=True,
     )
     app_instance._service_name = service_name
