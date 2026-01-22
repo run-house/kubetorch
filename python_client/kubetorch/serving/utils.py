@@ -545,40 +545,35 @@ async def stream_logs_websocket_helper(
 
 def clear_debugging_sessions():
     """Clear any existing debugging sessions when a module is redeployed or pod is terminated."""
-    # Clear web_pdb session
-    try:
-        import web_pdb
+    # Clear web_pdb session - only if it was already imported (avoid lazy import overhead)
+    if "web_pdb" in sys.modules:
+        try:
+            import web_pdb
 
-        pdb = web_pdb.WebPdb.active_instance
-        if pdb is not None:
-            logger.info("Clearing existing web_pdb debugging session")
-            try:
-                # remove_trace() detaches the debugger from the stack
-                pdb.remove_trace()
-            except Exception as e:
-                logger.warning(f"Error removing trace: {e}")
-            try:
-                # Close the web console server to stop the background thread
-                # This is what do_quit() does internally
-                if hasattr(pdb, "console") and pdb.console is not None:
-                    pdb.console.close()
-            except Exception as e:
-                logger.warning(f"Error closing web_pdb console: {e}")
-            web_pdb.WebPdb.active_instance = None
+            pdb = web_pdb.WebPdb.active_instance
+            if pdb is not None:
+                logger.info("Clearing existing web_pdb debugging session")
+                try:
+                    pdb.remove_trace()
+                except Exception as e:
+                    logger.warning(f"Error removing trace: {e}")
+                try:
+                    if hasattr(pdb, "console") and pdb.console is not None:
+                        pdb.console.close()
+                except Exception as e:
+                    logger.warning(f"Error closing web_pdb console: {e}")
+                web_pdb.WebPdb.active_instance = None
+        except Exception as e:
+            logger.warning(f"Error clearing web_pdb debugging session: {e}")
 
-    except ImportError:
-        # web_pdb not installed, nothing to clean up
-        pass
-    except Exception as e:
-        logger.warning(f"Error clearing web_pdb debugging session: {e}")
+    # Clear PDB WebSocket server - only if it was already imported
+    if "kubetorch.serving.pdb_websocket" in sys.modules:
+        try:
+            from kubetorch.serving import pdb_websocket
 
-    # Clear PDB WebSocket server
-    try:
-        from kubetorch.serving import pdb_websocket
-
-        pdb_websocket.cleanup()
-    except Exception as e:
-        logger.warning(f"Error clearing PDB WebSocket server: {e}")
+            pdb_websocket.cleanup()
+        except Exception as e:
+            logger.warning(f"Error clearing PDB WebSocket server: {e}")
 
 
 # Register cleanup function to run at exit

@@ -581,13 +581,13 @@ def remote_cls_for_teardown():
     return fn
 
 
-def matrix_dot_np(num_iterations: int = 5):
+def matrix_dot_np(num_iterations: int = 10):
     import time
 
     import numpy as np
 
     time.sleep(3)
-    for i in range(num_iterations * 2):
+    for i in range(num_iterations * 4):
         # Create two large matrices on CPU
         size = random.randint(100, 600)
         a = np.random.rand(size, size)
@@ -604,12 +604,12 @@ def matrix_dot_np(num_iterations: int = 5):
 class Matrix:
     def __init__(self):
         self.size = random.randint(100, 600)
-        self.dot_iterations = random.randint(5, 15)
+        self.dot_iterations = random.randint(10, 15)
 
     def dot_np(self):
         import numpy as np
 
-        for i in range(self.dot_iterations):
+        for i in range(self.dot_iterations * 4):  # make sure we use enough CPU capacity
             a = np.random.rand(self.size, self.size)
             b = np.random.rand(self.size, self.size)
 
@@ -619,8 +619,26 @@ class Matrix:
 
         return "dot_np in Matrix class instance ran successfully!"
 
+    def add_np(self, inputs: List[dict]):
+        # inputs should be a lit of dicts, where each dict contains `iterations` and `size` keys.
+        import numpy as np
 
-def matrix_dot_torch(num_iterations: int = 5):
+        for current_input in inputs:
+            size, iterations = current_input.values()
+            for j in range(iterations):
+                a = np.random.rand(size, size)
+                b = np.random.rand(size, size)
+
+                c = np.add(a, b)
+
+                logger.info(
+                    f"[SIZE: {size}] Round: {j}/{iterations}: Matrix addition completed on CPU. Result shape: {c.shape}"
+                )
+
+        return "add_np in Matrix class instance ran successfully!"
+
+
+def matrix_dot_torch(num_iterations: int = 10):
     import time
 
     import torch
@@ -629,11 +647,13 @@ def matrix_dot_torch(num_iterations: int = 5):
 
     logger.info(f"Using GPU: {torch.cuda.get_device_name(0)}")
 
-    for i in range(num_iterations):
+    for i in range(num_iterations * 4):
         # Create two large matrices on GPU
         size = random.randint(5000, 6000)
-        a = torch.randn(size, size, device="cuda")
-        b = torch.randn(size, size, device="cuda")
+        a, b = None, None
+        for j in range(num_iterations * 2):
+            a = torch.randn(size, size, device="cuda")
+            b = torch.randn(size, size, device="cuda")
 
         # Perform a GPU computation
         c = torch.matmul(a, b)
@@ -659,8 +679,10 @@ class Matrix_GPU:
 
         for i in range(self.dot_iterations):
             # Create two large matrices on GPU
-            a = torch.randn(self.size, self.size, device="cuda")
-            b = torch.randn(self.size, self.size, device="cuda")
+            a, b = None, None
+            for i in range(self.dot_iterations * 2):
+                a = torch.randn(self.size, self.size, device="cuda")
+                b = torch.randn(self.size, self.size, device="cuda")
 
             # Perform a GPU computation
             c = torch.matmul(a, b)

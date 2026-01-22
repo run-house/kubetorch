@@ -167,36 +167,49 @@ class ProfilerConfig:
     group_by_stack_n: int = 0
 
     def __post_init__(self):
+        self._disabled = False
 
         if self.profiler_type not in SUPPORTED_PROFILERS:
-            raise ValueError(f"profiler_type must be 'pyspy' or 'pytorch', got {self.profiler_type!r}")
+            logger.warning(
+                f"Invalid profiler_type '{self.profiler_type}', must be one of {SUPPORTED_PROFILERS}. "
+                "Profiling will be skipped."
+            )
+            self._disabled = True
+            return
+
         if self.profiler_type == "pytorch":
             if not self.output_format:
                 self.output_format = "chrometrace"  # set default to "chrometrace"
             elif self.output_format not in SUPPORTED_PYTORCH_OUTPUTS:
-                raise ValueError(
-                    f"Invalid profiler_output for Pytorch profiler: {self.output_format!r}. "
-                    f"Must be one of {SUPPORTED_PYTORCH_OUTPUTS}"
+                logger.warning(
+                    f"Invalid output_format '{self.output_format}' for pytorch profiler, "
+                    f"must be one of {SUPPORTED_PYTORCH_OUTPUTS}. Profiling will be skipped."
                 )
+                self._disabled = True
+                return
 
             if (
                 self.output_format == "table"
                 and self.table_sort_by
                 and self.table_sort_by not in SUPPORTED_PYTORCH_TABLE_SORT_KEYS
             ):
-                raise ValueError(
-                    f"Invalid table_sort_by for Pytorch profiler: {self.table_sort_by!r}. "
-                    f"Must be one of {SUPPORTED_PYTORCH_TABLE_SORT_KEYS}"
+                logger.warning(
+                    f"Invalid table_sort_by '{self.table_sort_by}' for pytorch profiler, "
+                    f"must be one of {SUPPORTED_PYTORCH_TABLE_SORT_KEYS}. Profiling will be skipped."
                 )
+                self._disabled = True
+                return
 
         if self.profiler_type == "pyspy":
             if not self.output_format:
                 self.output_format = "flamegraph"  # set default to "flamegraph"
             elif self.output_format not in SUPPORTED_PYSPY_OUTPUTS:
-                raise ValueError(
-                    f"Invalid profiler_output for Pyspy profiler: {self.output_format!r}. "
-                    f"Must be one of {SUPPORTED_PYSPY_OUTPUTS}"
+                logger.warning(
+                    f"Invalid output_format '{self.output_format}' for pyspy profiler, "
+                    f"must be one of {SUPPORTED_PYSPY_OUTPUTS}. Profiling will be skipped."
                 )
+                self._disabled = True
+                return
 
     def output_file_suffix(self):
         if self.output_format == "flamegraph":
