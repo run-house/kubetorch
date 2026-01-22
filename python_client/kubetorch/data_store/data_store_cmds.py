@@ -4,9 +4,7 @@ Module-level convenience functions for data store operations.
 This module provides the top-level API functions (put, get, ls, rm) that users
 call directly, as well as the sync_workdir_from_store function used internally.
 """
-import concurrent.futures
 import os
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -298,6 +296,32 @@ def rm(
     _default_client.rm(key=key, recursive=recursive, prefix_mode=prefix, verbose=verbose)
 
 
+def _dockerfile_has_absolute_copies() -> bool:
+    """
+    Check if the dockerfile has any COPY instructions with absolute destinations.
+
+    Returns True if there are COPY instructions with destinations starting with '/'.
+    """
+    dockerfile_path = Path.cwd() / ".kt" / "image.dockerfile"
+    if not dockerfile_path.exists():
+        return False
+
+    try:
+        content = dockerfile_path.read_text()
+        for line in content.splitlines():
+            line = line.strip()
+            if line.startswith("COPY"):
+                parts = line.split()
+                if len(parts) >= 3:
+                    dest = parts[-1]  # Last part is destination
+                    if dest.startswith("/"):
+                        return True
+        return False
+    except Exception as e:
+        logger.warning(f"Failed to read dockerfile for absolute path check: {e}")
+        return False
+
+
 def _sync_workdir_from_store(namespace: str, service_name: str):
     """
     Sync files from the rsync pod into the current working directory inside the server pod.
@@ -305,15 +329,17 @@ def _sync_workdir_from_store(namespace: str, service_name: str):
     This function is called by http_server.py during pod startup to sync files that were
     uploaded via the KV interface (kt.put or DataStoreClient.put) into the server pod's working directory.
 
-    Performs two download operations (potentially in parallel):
+    Performs two download operations sequentially using the same broadcast window:
     - Regular files (excluding __absolute__*) into the working directory
-    - Absolute path files (under __absolute__/...) into their absolute destinations
+    - Absolute path files (under __absolute__/...) into their absolute destinations (only if dockerfile has absolute COPY destinations)
 
-    Uses the DataStoreClient KV interface, which allows future scalability with peer-to-peer
-    transfer via a central metadata store.
+    Uses tree-based broadcast to avoid overloading the data store when many pods sync
+    simultaneously (e.g., during .to() deployments to thousands of pods). The broadcast
+    group is persistent per pool, so pods cache their parent assignment and reuse it
+    across deployments.
     """
     logger.info(
-        f"Syncing workdir from data store: namespace={namespace}, service_name={service_name}, cwd={os.getcwd()}"
+        f"Syncing workdir from data store: namespace={namespace}, service_name={service_name}, " f"cwd={os.getcwd()}"
     )
 
     # Use DataStoreClient KV interface for future scalability
@@ -323,53 +349,61 @@ def _sync_workdir_from_store(namespace: str, service_name: str):
     # This avoids any auto-prepending of the current pod's service name
     service_key = f"/{service_name}"
 
-    def sync_regular_files():
-        """Sync regular files (excluding __absolute__*) to current directory."""
-        try:
-            logger.info(f"Downloading files from {service_key} to current directory")
-            dt_client.get(
-                key=service_key,
-                dest=".",
-                contents=True,
-                filter_options="--exclude='__absolute__*'",
-            )
-            logger.info(f"Successfully synced files from {service_key}")
-        except (RsyncError, DataStoreError) as e:
-            # If the service storage area doesn't exist yet, that's okay
-            error_msg = str(e).lower()
-            if "no such file or directory" in error_msg or "not found" in error_msg:
-                logger.warning(f"Service storage area {service_key} does not exist, skipping regular files sync")
-            else:
-                raise
-        except Exception as e:
-            # Catch any other exceptions and check error message
-            error_msg = str(e).lower()
-            if "no such file or directory" in error_msg or "not found" in error_msg:
-                logger.warning(f"Service storage area {service_key} does not exist, skipping regular files sync")
-            else:
-                raise
+    # Create broadcast window with persistent group_id per pool - this enables tree-based
+    # propagation so pods rsync from each other rather than all hitting the data store.
+    # The group persists across deployments, so pods cache and reuse their parent assignment.
+    broadcast = BroadcastWindow(
+        group_id=f"workdir-sync-{namespace}-{service_name}",
+        timeout=120.0,  # 2 minute timeout for broadcast coordination
+        fanout=50,  # Standard fanout for filesystem broadcasts
+    )
+    logger.info(f"Using tree broadcast for workdir sync (group_id={broadcast.group_id})")
 
-    def sync_absolute_files():
-        """Sync absolute path files (under __absolute__/) to root filesystem."""
-        # Check if __absolute__ directory exists by trying to list it
-        try:
-            items = dt_client.ls(key=f"{service_key}/__absolute__")
-            if items:
-                # Download __absolute__ contents to / with contents=True
-                dt_client.get(key=f"{service_key}/__absolute__", dest="/", contents=True)
-            else:
-                logger.debug("No absolute path files to sync")
-        except Exception as e:
-            # If __absolute__ doesn't exist, that's okay
-            error_msg = str(e).lower()
-            if "no such file or directory" in error_msg or "not found" in error_msg:
-                logger.debug("No absolute path files to sync")
-            else:
-                raise
+    # Sync 1: Regular files (excluding __absolute__*) to current directory
+    try:
+        logger.info(f"Downloading files from {service_key} to current directory")
+        dt_client.get(
+            key=service_key,
+            dest=".",
+            broadcast=broadcast,
+            contents=True,
+            filter_options="--exclude='__absolute__*'",
+        )
+        logger.info(f"Successfully synced files from {service_key}")
+    except (RsyncError, DataStoreError) as e:
+        # If the service storage area doesn't exist yet, that's okay
+        error_msg = str(e).lower()
+        if "no such file or directory" in error_msg or "not found" in error_msg:
+            logger.warning(f"Service storage area {service_key} does not exist, skipping regular files sync")
+        else:
+            raise
+    except Exception as e:
+        # Catch any other exceptions and check error message
+        error_msg = str(e).lower()
+        if "no such file or directory" in error_msg or "not found" in error_msg:
+            logger.warning(f"Service storage area {service_key} does not exist, skipping regular files sync")
+        else:
+            raise
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        regular_future = executor.submit(sync_regular_files)
-        absolute_future = executor.submit(sync_absolute_files)
-        futures = [regular_future, absolute_future]
-        for future in concurrent.futures.as_completed(futures):
-            future.result()
+    # Sync 2: Absolute path files (under __absolute__/) to root filesystem
+    # Only perform this sync if the dockerfile has COPY instructions with absolute destinations.
+    # This avoids unnecessary rsync calls for the common case where no absolute paths are used.
+    if not _dockerfile_has_absolute_copies():
+        logger.debug("No absolute COPY destinations in dockerfile, skipping absolute files sync")
+        return
+
+    try:
+        dt_client.get(
+            key=f"{service_key}/__absolute__",
+            dest="/",
+            broadcast=broadcast,
+            contents=True,
+        )
+        logger.info(f"Successfully synced absolute path files from {service_key}/__absolute__")
+    except Exception as e:
+        # If __absolute__ doesn't exist, that's okay
+        error_msg = str(e).lower()
+        if "no such file or directory" in error_msg or "not found" in error_msg:
+            logger.debug("No absolute path files to sync")
+        else:
+            raise
