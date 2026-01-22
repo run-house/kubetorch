@@ -749,6 +749,41 @@ def _serialize_body(body: dict, serialization: str):
     return body or {}
 
 
+def get_child_pids(pid):
+    """Get all child PIDs of a process using pgrep (works on Linux and macOS)."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-P", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return [int(p) for p in result.stdout.strip().split("\n") if p.isdigit()]
+    except Exception:
+        pass
+    return []
+
+
+def kill_process_tree(pid, sig=9):
+    """Recursively kill a process and all its descendants.
+
+    Args:
+        pid: Process ID to kill
+        sig: Signal to send (default 9 = SIGKILL)
+    """
+    # First, recursively kill all children
+    children = get_child_pids(pid)
+    for child_pid in children:
+        kill_process_tree(child_pid, sig)
+
+    # Then kill the process itself
+    try:
+        os.kill(pid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass  # Process already dead or not accessible
+
+
 def _deserialize_response(response, serialization: str):
     if serialization == "pickle":
         response_data = response.json()

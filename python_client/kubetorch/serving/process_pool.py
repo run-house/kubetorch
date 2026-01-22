@@ -1,9 +1,12 @@
 import multiprocessing
+import os
+import signal
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from kubetorch.serving.http_server import logger
+from kubetorch.serving.utils import kill_process_tree
 
 
 class ProcessPool:
@@ -86,21 +89,29 @@ class ProcessPool:
         if self._router_thread:
             self._router_thread.join(timeout=0.5)
 
-        # Terminate all processes immediately without waiting
-        for process in self.processes:
-            if process.is_alive():
-                process.terminate()
-
-        # Give processes a brief chance to terminate gracefully (reduced timeout)
+        # Give processes a chance to exit gracefully via the SHUTDOWN message
         for process in self.processes:
             process.join(timeout=0.5)
 
-        # Force kill any remaining processes
+        # Send SIGTERM to any remaining processes
         for process in self.processes:
             if process.is_alive():
-                logger.warning(f"Force killing process {process.pid}")
-                process.kill()
-                process.join(timeout=0.1)  # Brief wait to confirm kill
+                logger.debug(f"Sending SIGTERM to process {process.pid}")
+                try:
+                    os.kill(process.pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    pass
+
+        # Wait for SIGTERM handling
+        for process in self.processes:
+            process.join(timeout=1.0)
+
+        # Force kill any remaining processes and their descendants as last resort
+        for process in self.processes:
+            if process.is_alive():
+                logger.warning(f"Force killing process tree rooted at {process.pid}")
+                kill_process_tree(process.pid, signal.SIGKILL)
+                process.join(timeout=0.1)
 
         # Clear all queues
         self._clear_queues()

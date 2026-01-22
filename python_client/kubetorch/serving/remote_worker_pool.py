@@ -1,10 +1,12 @@
 import multiprocessing
 import os
 import queue
+import signal
 import threading
 import uuid
 
 from kubetorch.serving.http_server import logger
+from kubetorch.serving.utils import kill_process_tree
 
 
 class RemoteWorkerPool:
@@ -60,10 +62,11 @@ class RemoteWorkerPool:
             self.request_queue.put(("SHUTDOWN", None))
             self.process.join(timeout=5)
             if self.process and self.process.is_alive():
-                self.process.terminate()
+                # Kill the process tree to terminate any child processes
+                kill_process_tree(self.process.pid, signal.SIGTERM)
                 self.process.join(timeout=1)
                 if self.process and self.process.is_alive():
-                    self.process.kill()
+                    kill_process_tree(self.process.pid, signal.SIGKILL)
             self.process = None
 
         # Clear response events

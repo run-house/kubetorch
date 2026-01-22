@@ -1262,12 +1262,18 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     logger.error(f"Error cleaning up distributed supervisor: {e}")
 
-            # Call the original handler if it exists and isn't the default
-            if original_sigterm_handler and original_sigterm_handler not in (
-                signal.SIG_DFL,
-                signal.SIG_IGN,
-            ):
-                original_sigterm_handler(signum, frame)
+            # Call the original handler if it exists and isn't ignored
+            if original_sigterm_handler and original_sigterm_handler != signal.SIG_IGN:
+                if original_sigterm_handler == signal.SIG_DFL:
+                    # Default behavior is to terminate - force exit
+                    logger.info("Exiting process after cleanup...")
+                    os._exit(0)
+                else:
+                    original_sigterm_handler(signum, frame)
+            else:
+                # No original handler, force exit
+                logger.info("Exiting process after cleanup...")
+                os._exit(0)
 
         # Register SIGTERM handler
         signal.signal(signal.SIGTERM, handle_sigterm)
