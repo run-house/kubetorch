@@ -401,9 +401,6 @@ def test_global_kt_cache():
     import kubetorch as kt
     from kubetorch.constants import KT_MOUNT_FOLDER
 
-    # Longer timeout to account for initial JuiceFS mount to finish (CSI provisioner needs to allocate the volume)
-    launch_timeout = 300
-
     compute = kt.Compute(
         cpus=".01",
         env_vars={
@@ -411,7 +408,6 @@ def test_global_kt_cache():
             "UV_CACHE_DIR": f"/{KT_MOUNT_FOLDER}/kt-global-cache/uv_cache",
             "HF_HOME": f"/{KT_MOUNT_FOLDER}/kt-global-cache/hf_cache",
         },
-        launch_timeout=launch_timeout,
         gpu_anti_affinity=True,
         volumes=[
             kt.Volume(
