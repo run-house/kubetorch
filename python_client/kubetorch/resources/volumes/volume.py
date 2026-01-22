@@ -53,14 +53,7 @@ class Volume:
             # Standard volume (ReadWriteOnce)
             kt.Volume(name="my-data", size="5Gi", mount_path="/data")
 
-            # Shared volume (ReadWriteMany, requires JuiceFS or similar)
-            kt.Volume(
-                name="shared-data",
-                size="10Gi",
-                mount_path="/shared",
-                storage_class="juicefs-sc-shared",
-                access_mode="ReadWriteMany"
-            )
+            # Shared volume (ReadWriteMany for example)
 
             # Bind to an existing PV
             kt.Volume(
@@ -129,7 +122,6 @@ class Volume:
                 for sc in storage_classes:
                     provisioner = sc.get("provisioner", "")
                     if provisioner in {
-                        "csi.juicefs.com",
                         "nfs.csi.k8s.io",
                         "cephfs.csi.ceph.com",
                     }:
