@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Union
 
@@ -371,7 +372,7 @@ class Image:
         self._dockerfile_contents.append(line)
         return self
 
-    def rsync(
+    def copy(
         self,
         source: str,
         dest: str = None,
@@ -379,37 +380,29 @@ class Image:
         filter_options: str = None,
         force: bool = False,
     ):
-        """Sync files or directories from local machine to the remote container.
+        """Copy files or directories from local machine to the remote container.
 
         This method efficiently transfers files to remote containers using rsync,
         which only copies changed files and supports compression. Files are first
         uploaded to a jump pod and then distributed to worker pods on startup.
 
         Args:
-            source (str): Path to the local file or directory to sync. Supports:
-                - Absolute paths: ``/path/to/file``
-                - Relative paths: ``./data/file.txt``
-                - Home directory paths: ``~/documents/data.csv``
-            dest (str, optional): Target path on the remote container. Supports:
-                - Absolute paths: ``/data/config.yaml`` (places file at exact location)
-                - Relative paths: ``configs/settings.json`` (relative to working directory)
-                - Tilde paths: ``~/results/output.txt`` (relative to working directory, ~ is stripped)
-                - None: Uses the basename of source in working directory
+            source (str): Path to the local file or directory to copy.
+                Supports absolute (`/path/to/file`), relative (`./data/file.txt`),
+                and home directory (`~/documents/data.csv`) paths.
+            dest (str, optional): Target path on the remote container.
+                Supports absolute (`/data/config.yaml`), relative (`configs/settings.json`),
+                and home directory (`~/results/output.txt`) paths. If not provided, uses the basename of the source path.
+                (Default: ``None``)
             contents (bool, optional): For directories only - whether to copy the contents
-                or the directory itself.
-                If ``True`` the contents of the source directory are copied to the destination,
-                and the source directory itself is not created at the destination.
-                If ``False`` the source directory along with its contents are copied to the
-                destination, creating an additional directory layer at the destination.
+                of the directory itself. If ``True``, the **contents** of the source directory are copied
+                into the destination. If ``False`` the source directory itself (along with its contents)
+                are copied to the destination, creating an additional directory layer at the destination.
                 (Default: ``False``)
-            filter_options (str, optional): Additional rsync filter options. These are added
-                to (not replacing) the default filters. By default, rsync excludes:
-
-                - Files from ``.gitignore`` (if present)
-                - Files from ``.ktignore`` (if present)
-                - Common Python artifacts: ``*.pyc``, ``__pycache__``
-                - Virtual environments: ``.venv``
-                - Git metadata: ``.git``
+            filter_options (str, optional): Additional filter options for the underlying rsync.
+                These are added to (not replacing) the default filters, which filter out:
+                 `.gitignore`, `.ktignore`, common Python artifacts (`*.pyc`, `__pycache__`),
+                 virtual environments (`.venv`), and git metadata (`.git`).
 
                 Your filter_options are appended after these defaults. Examples:
 
@@ -418,12 +411,12 @@ class Image:
                 - Override all defaults: Set ``KT_RSYNC_FILTERS`` environment variable
 
                 (Default: ``None``)
-            force (bool, optional): When ``True``, forces rsync to transfer all files
-                regardless of modification times by using ``--ignore-times`` flag. This ensures
-                all files are copied even if timestamps suggest they haven't changed.
-                Useful when timestamp-based change detection is unreliable.
+            force (bool, optional): When ``True``, forces transfer of all files regardless
+                of modification times. This ensures all files are copied even if timestamps
+                suggest they haven't changed. Useful when timestamp-based change detection
+                is unreliable.
                 Note: Files are always synced when deploying with ``.to()``, this flag just
-                affects how rsync determines which files need updating.
+                affects how the underlying rsync determines which files need updating.
                 (Default: ``False``)
 
         Returns:
@@ -434,49 +427,28 @@ class Image:
 
                 import kubetorch as kt
 
-                # Basic file sync
-                image = (
-                    kt.images.Debian()
-                    .rsync("./config.yaml", "app/config.yaml")
-                )
+                # File copy
+                image = kt.images.Debian().copy("./config.yaml", "app/config.yaml")
+                image = kt.images.Python312().copy("./model_weights.pth", "/models/weights.pth")  # absolute path
+                image = kt.images.Ubuntu().copy("/local/data/dataset.csv")  # Goes to ./dataset.csv
 
-                # Sync to absolute path
+                # Directory copy
+                image = kt.images.Debian().copy("./src", "app")  # Creates app/src/
+                image = kt.images.Debian().copy("./src", "app", contents=True)  # Contents into app/
+
+                # Multiple copy operations with filtering
                 image = (
                     kt.images.Python312()
-                    .rsync("./model_weights.pth", "/models/weights.pth")
-                )
-
-                # No destination specified - uses basename
-                image = (
-                    kt.images.Ubuntu()
-                    .rsync("/local/data/dataset.csv")  # Goes to ./dataset.csv
-                )
-
-                # Directory sync - copy directory itself
-                image = (
-                    kt.images.Debian()
-                    .rsync("./src", "app")  # Creates app/src/
-                )
-
-                # Directory sync - copy contents only
-                image = (
-                    kt.images.Debian()
-                    .rsync("./src", "app", contents=True)  # Contents go directly into app/
-                )
-
-                # Multiple rsync operations with filtering
-                image = (
-                    kt.images.Python312()
-                    .rsync("./data", "/data", filter_options="--exclude='*.tmp'")
-                    .rsync("./configs", "~/configs")
-                    .rsync("./scripts")
+                    .copy("./data", "/data", filter_options="--exclude='*.tmp'")
+                    .copy("./configs", "~/configs")
+                    .copy("./scripts")
                     .pip_install(["numpy", "pandas"])
                 )
 
-                # Force re-sync for development
+                # Force re-copy for development
                 image = (
                     kt.images.Debian()
-                    .rsync("./rapidly_changing_code", "app", force=True)
+                    .copy("./rapidly_changing_code", "app", force=True)
                 )
 
         Note:
@@ -508,3 +480,28 @@ class Image:
             }
         )
         return self
+
+    def rsync(
+        self,
+        source: str,
+        dest: str = None,
+        contents: bool = False,
+        filter_options: str = None,
+        force: bool = False,
+    ):
+        """Deprecated: Use :meth:`copy` instead.
+
+        This method is deprecated and will be removed in a future release.
+        """
+        warnings.warn(
+            "Image.rsync() is deprecated and will be removed in a future release. " "Use Image.copy() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.copy(
+            source=source,
+            dest=dest,
+            contents=contents,
+            filter_options=filter_options,
+            force=force,
+        )

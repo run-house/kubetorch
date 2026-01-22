@@ -122,8 +122,8 @@ def test_working_dir_for_custom_image():
 
 
 @pytest.mark.level("minimal")
-def test_image_rsync():
-    """Test various rsync scenarios with different path types and options."""
+def test_image_copy():
+    """Test various copy scenarios with different path types and options."""
     import shutil
     import tempfile
     from pathlib import Path
@@ -147,30 +147,30 @@ def test_image_rsync():
 
         # No longer creating files in home directory - use assets instead
 
-        # Build image with all rsync operations chained
+        # Build image with all copy operations chained
         image = (
             kt.images.Debian()
             # Test 1: Single file with relative destination
-            .rsync(source=str(test_single), dest="relative_dest/single_file.txt")
+            .copy(source=str(test_single), dest="relative_dest/single_file.txt")
             # Test 2: Single file with absolute destination
-            .rsync(source=str(test_single), dest="/data/absolute_dest/single_file.txt")
+            .copy(source=str(test_single), dest="/data/absolute_dest/single_file.txt")
             # Test 3: Directory with contents=False (default)
-            .rsync(source=str(test_dir), dest="copied_dir")
+            .copy(source=str(test_dir), dest="copied_dir")
             # Test 4: Directory with contents=True
-            .rsync(source=str(test_dir), dest="contents_only", contents=True)
+            .copy(source=str(test_dir), dest="contents_only", contents=True)
             # Test 5: Absolute source and destination
-            .rsync(source=str(tmpdir.absolute()), dest="/data/rsync_test", contents=True)
+            .copy(source=str(tmpdir.absolute()), dest="/data/copy_test", contents=True)
             # Test 6: Tilde in destination (should be treated as relative)
-            .rsync(
+            .copy(
                 source=str(test_assets_dir / "home_test.txt"),
                 dest="~/from_home/home_test.txt",
             )
             # Test 7: No dest specified for a file (should use basename)
-            .rsync(source=str(test_assets_dir / "single_file.txt"))
+            .copy(source=str(test_assets_dir / "single_file.txt"))
             # Test 8: No dest specified for a directory (should use directory name)
-            .rsync(source=str(test_dir))
+            .copy(source=str(test_dir))
             # Test 9: No dest specified with absolute path source
-            .rsync(source=str(tmpdir / "single_file.txt"))
+            .copy(source=str(tmpdir / "single_file.txt"))
         )
 
         # Deploy verifier class to test all scenarios
@@ -216,7 +216,7 @@ def test_image_rsync():
             "test_dir/nested/deep.txt",
         ]
         for expected in expected_files:
-            assert abs_result["files"][expected]["exists"], f"Missing {expected} in absolute rsync"
+            assert abs_result["files"][expected]["exists"], f"Missing {expected} in absolute path copy"
 
         # Verify test 6: Tilde expansion
         assert results["tilde_home"]["exists"], "File from home directory not found"

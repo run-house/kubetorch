@@ -80,7 +80,7 @@ class RsyncVerifier:
 
         # Test 5: Absolute source and destination
         results["absolute_both"] = self.verify_directory_structure(
-            "/data/rsync_test",
+            "/data/copy_test",
             ["single_file.txt", "test_dir/file1.txt", "test_dir/nested/deep.txt"],
         )
 
