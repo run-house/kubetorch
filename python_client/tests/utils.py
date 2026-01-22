@@ -345,11 +345,15 @@ def log_n_messages(msg: str = "Hello from cluster logs!", n: int = 10, sleep_tim
     return f"{msg} was logged {n} times"
 
 
-def get_cuda_version():
+def get_cuda_version(log_output: bool = False):
     try:
         output = subprocess.check_output(["nvidia-smi"])
         # Convert bytes to string
         output = output.decode("utf-8")
+        # log output if requested by the test call
+        if log_output:
+            logger.info(output)
+
         # Find CUDA Version in the output
         cuda_version = output.split("CUDA Version: ")[1].split(" ")[0]
         return cuda_version

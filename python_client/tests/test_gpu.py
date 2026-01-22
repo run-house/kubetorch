@@ -72,7 +72,7 @@ def test_fn_sync_on_gpu_with_autoscaling():
 
     num_requests = 20
     for _ in range(num_requests):
-        assert re.fullmatch(r"12\..+", remote_fn())
+        assert re.fullmatch(r"12\..+", remote_fn(log_output=True))
         time.sleep(0.5)
 
     pod_names = remote_fn.compute.pod_names()
@@ -81,7 +81,7 @@ def test_fn_sync_on_gpu_with_autoscaling():
     # Check logs of each pod to confirm requests were routed to them at least once
     for pod_name in pod_names:
         resp = subprocess.run(["kubectl", "logs", pod_name], capture_output=True, text=True)
-        num_requests = resp.stdout.count("POST /get_cuda_version")
+        num_requests = resp.stdout.count("CUDA Version")
         assert num_requests > 0, f"Pod {pod_name} received no requests"
 
     remote_fn.teardown()
@@ -134,29 +134,32 @@ def test_fn_sync_with_unsupported_gpu_type():
 def test_fn_sync_with_invalid_gpu_count():
     import kubetorch as kt
 
-    with pytest.raises(ValueError):
+    with pytest.raises(Exception) as apply_exception:
         kt.fn(get_cuda_version).to(
             kt.Compute(
                 cpus=".1",
                 gpus="A10G:1",
             )
         )
+    assert "Apply failed" in str(apply_exception.value)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(Exception) as apply_exception:
         kt.fn(get_cuda_version).to(
             kt.Compute(
                 cpus=".1",
                 gpus="0.5",
             )
         )
+    assert "Apply failed" in str(apply_exception.value)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(Exception) as apply_exception:
         kt.fn(get_cuda_version).to(
             kt.Compute(
                 cpus=".1",
                 gpus="T4",
             )
         )
+    assert "Apply failed" in str(apply_exception.value)
 
 
 @pytest.mark.gpu_test
@@ -164,7 +167,7 @@ def test_fn_sync_with_invalid_gpu_count():
 def test_invalid_gpu_type():
     import kubetorch as kt
 
-    with pytest.raises(ValueError):
+    with pytest.raises(Exception) as apply_exception:
         remote_cls = kt.cls(SlowNumpyArray, name=get_test_fn_name()).to(
             kt.Compute(
                 cpus=".1",
@@ -175,3 +178,5 @@ def test_invalid_gpu_type():
             init_args={"size": 10},
         )
         remote_cls.print_and_log(1)
+
+    assert "Apply failed" in str(apply_exception.value)
