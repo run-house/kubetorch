@@ -558,7 +558,12 @@ class HTTPClient:
                     except (asyncio.TimeoutError, Exception):
                         pass
         except Exception as e:
-            logger.error(f"Error in websocket stream: {e}")
+            # If stop_event is set, we're shutting down - connection errors are expected
+            is_shutting_down = stop_event.is_set()
+            if is_shutting_down:
+                logger.debug(f"Error in websocket stream during shutdown: {e}")
+            else:
+                logger.error(f"Error in websocket stream: {e}")
         finally:
             # Ensure websocket is closed even if we didn't enter the context
             if websocket:
