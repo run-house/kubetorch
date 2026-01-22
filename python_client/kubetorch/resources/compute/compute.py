@@ -19,8 +19,8 @@ from kubetorch.logger import get_logger
 from kubetorch.provisioning.autoscaling import AutoscalingConfig
 from kubetorch.provisioning.utils import pod_is_running, SUPPORTED_TRAINING_JOBS
 from kubetorch.resources.callables.utils import find_locally_installed_version
-from kubetorch.resources.compute.utils import _get_sync_package_paths, _run_bash
-from kubetorch.resources.images.image import Image, ImageSetupStepType
+from kubetorch.resources.compute.utils import _run_bash
+from kubetorch.resources.images.image import Image
 from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecretsClient
 from kubetorch.resources.volumes.volume import Volume
 from kubetorch.serving.utils import is_running_in_kubernetes, load_template
@@ -1135,7 +1135,7 @@ class Compute:
             return self.image.python_path
 
         container = self._container()
-        if "env" in container:
+        if container and "env" in container:
             for env_var in container["env"]:
                 if env_var["name"] == "KT_PYTHON_PATH" and "value" in env_var:
                     return env_var["value"]
@@ -2359,7 +2359,7 @@ class Compute:
     ):
         """Pip install reqs onto compute pod(s)."""
         reqs = [reqs] if isinstance(reqs, str) else reqs
-        python_path = self.image.python_path if self.image else "python3"
+        python_path = self.python_path if self.python_path else "python3"
         pip_install_cmd = f"{python_path} -m pip install"
         try:
             result = self.run_bash("cat .kt/kt_pip_install_cmd 2>/dev/null || echo ''", node=node)
@@ -2426,98 +2426,43 @@ class Compute:
         """
         Return image instructions in Dockerfile format, and optionally rsync over content to the rsync pod.
         """
-        instructions = ""
-
+        lines = []
+        if self.server_image:
+            lines.append(f"FROM {self.server_image}")
+        if self.python_path:
+            lines.append(f"ENV KT_PYTHON_PATH {self.python_path}")
         if not self.image:
-            return instructions
+            return "\n".join(lines) + "\n" if lines else ""
+        else:
+            lines.extend(self.image._dockerfile_contents)
 
-        logger.debug("Writing out image instructions.")
+        logger.debug("Processing image setup.")
 
-        if self.image.image_id:
-            instructions += f"FROM {self.server_image}\n"
-        if self.image.python_path:
-            instructions += f"ENV KT_PYTHON_PATH {self.image.python_path}\n"
-
-        # image_id is ignored, used directly in server_image
-        for step in self.image.setup_steps:
-            if step.step_type == ImageSetupStepType.CMD_RUN:
-                commands = step.kwargs.get("command")
-                commands = [commands] if isinstance(commands, str) else commands
-                for i in range(len(commands)):
-                    if i != 0:
-                        instructions += "\n"
-                    instructions += f"RUN {commands[i]}"
-            elif step.step_type == ImageSetupStepType.PIP_INSTALL:
-                reqs = step.kwargs.get("reqs")
-                reqs = [reqs] if isinstance(reqs, str) else reqs
-                for i in range(len(reqs)):
-                    if i != 0:
-                        instructions += "\n"
-                    if self.image_install_cmd:
-                        install_cmd = self.image_install_cmd
-                    else:
-                        install_cmd = "$KT_PIP_INSTALL_CMD"
-
-                    # Pass through the requirement string directly without quoting
-                    # This allows users to pass any pip arguments they want
-                    # e.g., "--pre torchmonarch==0.1.0rc7" or "numpy>=1.20"
-                    instructions += f"RUN {install_cmd} {reqs[i]}"
-
-                    if step.kwargs.get("force"):
-                        instructions += " # force"
-            elif step.step_type == ImageSetupStepType.SYNC_PACKAGE:
-                # using package name instead of paths, since the folder path in the rsync pod will just be the package name
-                full_path, dest_dir = _get_sync_package_paths(step.kwargs.get("package"))
-                if rsync:
-                    # Use RsyncClient directly - files go to rsync pod, then sync to service pods at startup
-                    # Prepend service name to destination so files are organized by service
-                    client = data_store.RsyncClient(namespace=self.namespace)
-                    client.upload(source=full_path, dest=f"{self.service_name}/{dest_dir}")
-                instructions += f"COPY {full_path} {dest_dir}"
-            elif step.step_type == ImageSetupStepType.RSYNC:
-                source_path = step.kwargs.get("source")
-                dest_dir = step.kwargs.get("dest")
-                contents = step.kwargs.get("contents")
-                filter_options = step.kwargs.get("filter_options")
-                force = step.kwargs.get("force")
-
-                if rsync:
-                    # Use RsyncClient directly - files go to rsync pod, then sync to service pods at startup
-                    # Prepend service name to destination so files are organized by service
-                    client = data_store.RsyncClient(namespace=self.namespace)
-                    if dest_dir:
-                        # Strip tilde prefix - treat as relative to working directory
-                        upload_dest = dest_dir[2:] if dest_dir.startswith("~/") else dest_dir
-                        if upload_dest.startswith("/"):
-                            # Absolute path - store under __absolute__ in service's area
-                            service_dest = f"{self.service_name}/__absolute__{upload_dest}"
-                        else:
-                            service_dest = f"{self.service_name}/{upload_dest}"
-                    else:
-                        service_dest = self.service_name
-                    client.upload(
-                        source=source_path,
-                        dest=service_dest,
-                        contents=contents,
-                        filter_options=filter_options,
-                        force=force,
-                    )
-                # Generate COPY instruction with explicit destination
+        # Perform rsync operations for all image copy_operations
+        if rsync:
+            for op in self.image.copy_operations:
+                client = data_store.RsyncClient(self.namespace)
+                dest_dir = op.get("dest")
+                # Transform paths (tilde, absolute) and prepend service name
                 if dest_dir:
-                    instructions += f"COPY {source_path} {dest_dir}"
+                    # Strip tilde prefix - treat as relative to working directory
+                    upload_dest = dest_dir[2:] if dest_dir.startswith("~/") else dest_dir
+                    if upload_dest.startswith("/"):
+                        # Absolute path - store under __absolute__ in service's area
+                        service_dest = f"{self.service_name}/__absolute__{upload_dest}"
+                    else:
+                        service_dest = f"{self.service_name}/{upload_dest}"
                 else:
-                    # No dest specified - use basename of source as destination
-                    dest_name = Path(source_path).name
-                    instructions += f"COPY {source_path} {dest_name}"
-            elif step.step_type == ImageSetupStepType.SET_ENV_VARS:
-                for key, val in step.kwargs.get("env_vars").items():
-                    # single env var per line in the dockerfile
-                    instructions += f"ENV {key} {val}\n"
-            if step.kwargs.get("force") and step.step_type != ImageSetupStepType.PIP_INSTALL:
-                instructions += " # force"
-            instructions += "\n"
+                    service_dest = self.service_name
+                client.upload(
+                    source=op["source"],
+                    dest=service_dest,
+                    contents=op.get("contents", False),
+                    filter_options=op.get("filter_options"),
+                    force=op.get("force", False),
+                )
 
-        return instructions
+        return "\n".join(lines) + "\n" if lines else ""
 
     # ----------------- Copying over for now... TBD ----------------- #
     def __getstate__(self):

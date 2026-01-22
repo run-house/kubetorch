@@ -1,37 +1,12 @@
-from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Union
-
-# Internal class to represent the image construction process
-class ImageSetupStepType(Enum):
-    """Enum for valid Image setup step types"""
-
-    CMD_RUN = "cmd_run"
-    RSYNC = "rsync"
-    PIP_INSTALL = "pip_install"
-    SYNC_PACKAGE = "sync_package"
-    SET_ENV_VARS = "set_env_vars"
-
-
-class ImageSetupStep:
-    def __init__(
-        self,
-        step_type: ImageSetupStepType,
-        **kwargs: Dict[str, Any],
-    ):
-        """
-        A component of the Kubetorch Image, consisting of the step type (e.g. packages, set_env_vars),
-        along with arguments to provide to the function corresponding to the step type.
-
-        Args:
-            step_type (ImageSetupStepType): Type of setup step used to provide the Image.
-            kwargs (Dict[str, Any]): Please refer to the corresponding functions in ``Image`` to determine
-                the correct keyword arguments to provide.
-        """
-        self.step_type = step_type
-        self.kwargs = kwargs
 
 
 class Image:
+    """Kubetorch Image object, specifying cluster setup properties and steps."""
+
+    SUPPORTED_DOCKERFILE_INSTRUCTIONS = {"FROM", "RUN", "ENV", "COPY"}
+
     def __init__(
         self,
         name: str = None,
@@ -86,6 +61,9 @@ class Image:
                     .pip_install(["numpy", "pandas"])
                     .set_env_vars({"OMP_NUM_THREADS": 1})
                 )
+
+                # Load from existing Dockerfile
+                dockerfile_image = kt.Image.from_dockerfile("./Dockerfile")
         """
 
         self.name = name
@@ -93,27 +71,24 @@ class Image:
         self.python_path = python_path
         self.install_cmd = install_cmd
 
-        self.setup_steps = []
+        # List of dockerfile contents, excluding FROM and KT_PYTHON_PATH
+        self._dockerfile_contents: List[str] = []
+
+        # List of copy operations to rsync to datastore at deploy time
+        self.copy_operations: List[Dict[str, Any]] = []
+
         self.docker_secret = None
 
-    @staticmethod
-    def _setup_step_config(step: ImageSetupStep):
-        """Get ImageSetupStep config"""
-        config = {
-            "step_type": step.step_type.value,
-            "kwargs": step.kwargs,
-        }
-        return config
-
-    @staticmethod
-    def _setup_step_from_config(step: Dict):
-        """Convert setup step config (dict) to ImageSetupStep object"""
-        step_type = step["step_type"]
-        kwargs = step["kwargs"]
-        return ImageSetupStep(
-            step_type=ImageSetupStepType(step_type),
-            **kwargs,
-        )
+    @property
+    def contents(self) -> str:
+        """Build and return complete dockerfile content as a string."""
+        lines = []
+        if self.image_id:
+            lines.append(f"FROM {self.image_id}")
+        if self.python_path:
+            lines.append(f"ENV KT_PYTHON_PATH {self.python_path}")
+        lines.extend(self._dockerfile_contents)
+        return "\n".join(lines) + "\n" if lines else ""
 
     def from_docker(self, image_id: str):
         """Set up and use an existing Docker image.
@@ -126,13 +101,124 @@ class Image:
         self.image_id = image_id
         return self
 
+    @classmethod
+    def from_dockerfile(cls, dockerfile_path: str, name: str = None) -> "Image":
+        """
+        Construct an Image from an existing Dockerfile.
+
+        Only supports: FROM, RUN, ENV, COPY instructions. Comments (#) are preserved.
+
+        Args:
+            dockerfile_path (str): Path to the Dockerfile
+            name (str, optional): Optional name for the image
+
+        Example:
+            .. code-block:: python
+
+                import kubetorch as kt
+
+                # Load from existing Dockerfile
+                image = kt.Image.from_dockerfile("./Dockerfile")
+
+                # Extend with additional steps
+                image = (
+                    kt.Image.from_dockerfile("./base.dockerfile", name="my-image")
+                    .pip_install(["extra-package"])
+                    .set_env_vars({"MY_VAR": "value"})
+                )
+        """
+        path = Path(dockerfile_path).expanduser().resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"Dockerfile not found: {path}")
+
+        with open(path, "r") as f:
+            lines = f.readlines()
+
+        image = cls(name=name)
+        image._parse_dockerfile(lines)
+        return image
+
+    def _parse_dockerfile(self, lines: List[str]):
+        """Parse dockerfile lines and populate _dockerfile_contents and copy_operations."""
+        current_line = ""
+        line_num = 0
+
+        for raw_line in lines:
+            line_num += 1
+            stripped = raw_line.strip()
+
+            if not stripped:
+                if current_line:
+                    self._process_dockerfile_instruction(current_line, line_num)
+                    current_line = ""
+            elif stripped.endswith("\\"):
+                current_line += stripped[:-1].strip() + " "
+            else:
+                current_line += stripped
+                self._process_dockerfile_instruction(current_line, line_num)
+                current_line = ""
+
+        # Handle final line if no newline at end
+        if current_line:
+            self._process_dockerfile_instruction(current_line, line_num)
+
+    def _process_dockerfile_instruction(self, line: str, line_num: int):
+        """Process a single dockerfile instruction."""
+        if line.startswith("#"):
+            self._dockerfile_contents.append(line)
+            return
+
+        parts = line.split(maxsplit=1)
+        instruction = parts[0].upper()
+
+        if instruction not in self.SUPPORTED_DOCKERFILE_INSTRUCTIONS:
+            raise ValueError(
+                f"Unsupported Dockerfile instruction '{instruction}' at line {line_num}. "
+                f"Kubetorch Image supports: {', '.join(sorted(self.SUPPORTED_DOCKERFILE_INSTRUCTIONS))}. "
+                f"Remove unsupported instructions or use a pre-built Docker image with from_docker()."
+            )
+        if len(parts) < 2:
+            raise ValueError(f"Invalid {instruction} instruction at line {line_num}: {line}")
+
+        if instruction == "FROM":
+            self.image_id = parts[1].strip()
+        elif instruction == "ENV":
+            env_content = parts[1]
+            if env_content.startswith("KT_PYTHON_PATH"):
+                next_char = env_content[len("KT_PYTHON_PATH")]
+                if next_char == "=":
+                    self.python_path = env_content.split("=", 1)[1].strip()
+                elif next_char == " ":
+                    self.python_path = env_content.split(maxsplit=1)[1].strip()
+            else:
+                self._dockerfile_contents.append(line)
+        elif instruction == "RUN":
+            self._dockerfile_contents.append(line)
+        elif instruction == "COPY":
+            copy_parts = line.split()
+            if len(copy_parts) < 3:
+                raise ValueError(f"Invalid COPY instruction at line {line_num}: {line}")
+            source = copy_parts[1]
+            dest = copy_parts[2]
+
+            self._dockerfile_contents.append(line)
+            self.copy_operations.append(
+                {
+                    "source": source,
+                    "dest": dest,
+                    "contents": False,
+                    "filter_options": None,
+                    "force": False,
+                }
+            )
+
     ########################################################
     # Steps to build the image
     ########################################################
 
     def pip_install(
         self,
-        reqs: List[Union["Package", str]],
+        reqs: List[Union[str, Any]],
         force: bool = False,
     ):
         """Pip install the given packages.
@@ -162,14 +248,14 @@ class Image:
                     ])
                 )
         """
+        install_cmd = self.install_cmd or "$KT_PIP_INSTALL_CMD"
+        reqs = [reqs] if isinstance(reqs, str) else reqs
 
-        self.setup_steps.append(
-            ImageSetupStep(
-                step_type=ImageSetupStepType.PIP_INSTALL,
-                reqs=reqs,
-                force=force,
-            )
-        )
+        for req in reqs:
+            line = f"RUN {install_cmd} {req}"
+            if force:
+                line += " # force"
+            self._dockerfile_contents.append(line)
         return self
 
     def set_env_vars(self, env_vars: Dict):
@@ -205,13 +291,8 @@ class Image:
             - Undefined variables remain as literal strings (e.g., ``$UNDEFINED`` stays as ``$UNDEFINED``)
             - To include a literal ``$``, escape it with backslash: ``\\$``
         """
-        # TODO - support .env files
-        self.setup_steps.append(
-            ImageSetupStep(
-                step_type=ImageSetupStepType.SET_ENV_VARS,
-                env_vars=env_vars,
-            )
-        )
+        for key, val in env_vars.items():
+            self._dockerfile_contents.append(f"ENV {key} {val}")
         return self
 
     def sync_package(
@@ -226,12 +307,24 @@ class Image:
                 the path to the folder to sync over.
             force (bool, optional): Whether to re-sync the package over, if already previously synced over. (Default: ``False``)
         """
-        self.setup_steps.append(
-            ImageSetupStep(
-                step_type=ImageSetupStepType.SYNC_PACKAGE,
-                package=package,
-                force=force,
-            )
+        from kubetorch.resources.compute.utils import _get_sync_package_paths
+
+        full_path, dest_dir = _get_sync_package_paths(package)
+
+        line = f"COPY {full_path} {dest_dir}"
+        if force:
+            line += " # force"
+        self._dockerfile_contents.append(line)
+
+        # Add to copy operations list for rsync at deploy time
+        self.copy_operations.append(
+            {
+                "source": str(full_path),
+                "dest": dest_dir,
+                "contents": False,
+                "filter_options": None,
+                "force": force,
+            }
         )
         return self
 
@@ -272,13 +365,10 @@ class Image:
             - Use ``&&`` to chain commands that depend on each other
             - Use ``;`` to run commands sequentially regardless of success/failure
         """
-        self.setup_steps.append(
-            ImageSetupStep(
-                step_type=ImageSetupStepType.CMD_RUN,
-                command=command,
-                force=force,
-            )
-        )
+        line = f"RUN {command}"
+        if force:
+            line += " # force"
+        self._dockerfile_contents.append(line)
         return self
 
     def rsync(
@@ -398,15 +488,23 @@ class Image:
             - To completely override filters, set the ``KT_RSYNC_FILTERS`` environment variable
             - Use ``force=True`` to bypass timestamp checks and transfer all files
         """
+        # Resolve source path and determine destination
+        source_path = Path(source).expanduser().resolve()
 
-        self.setup_steps.append(
-            ImageSetupStep(
-                step_type=ImageSetupStepType.RSYNC,
-                source=source,
-                dest=dest,
-                contents=contents,
-                filter_options=filter_options,
-                force=force,
-            )
+        dest_for_dockerfile = dest if dest is not None else source_path.name
+        line = f"COPY {source_path} {dest_for_dockerfile}"
+        if force:
+            line += " # force"
+        self._dockerfile_contents.append(line)
+
+        # Add to copy operations list for rsync at deploy time
+        self.copy_operations.append(
+            {
+                "source": str(source_path),
+                "dest": dest,
+                "contents": contents,
+                "filter_options": filter_options,
+                "force": force,
+            }
         )
         return self

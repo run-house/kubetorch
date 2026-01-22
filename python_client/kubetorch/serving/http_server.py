@@ -500,7 +500,7 @@ def cached_image_setup():
         if new_line.startswith("CMD"):
             cmd_mismatch = True
 
-        if new_line != cached_line or "# override" in new_line or cmd_mismatch:
+        if new_line != cached_line or "# force" in new_line or cmd_mismatch:
             cache_mismatch_index = i
             break
     if cache_mismatch_index == -1:
@@ -546,6 +546,7 @@ def cached_image_setup():
                 kt_pip_cmd = kt_pip_cmd or _get_kt_pip_install_cmd() or "pip install"
                 command = command.replace("$KT_PIP_INSTALL_CMD", kt_pip_cmd)
         elif line.startswith("COPY"):
+            line = line.split("#")[0].strip() if "#" in line else line  # strip inline comments
             _, source, dest = line.split()
             # COPY instructions are essentially no-ops since rsync_file_updates()
             # already placed files in their correct locations.
