@@ -1,6 +1,6 @@
 # kubetorch
 
-![Version: 0.4.1](https://img.shields.io/badge/Version-0.4.1-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.4.1](https://img.shields.io/badge/AppVersion-0.4.1-informational?style=flat-square)
+![Version: 0.4.2](https://img.shields.io/badge/Version-0.4.2-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.4.2](https://img.shields.io/badge/AppVersion-0.4.2-informational?style=flat-square)
 
 A Helm chart for kubetorch
 
@@ -19,7 +19,7 @@ A Helm chart for kubetorch
 | dataStore.cleanupCron.enabled | bool | `false` |  |
 | dataStore.cpu.request | int | `1` |  |
 | dataStore.ephemeralStorage.request | string | `"5Gi"` |  |
-| dataStore.image | string | `"ghcr.io/run-house/kubetorch-data-store:0.4.1"` |  |
+| dataStore.image | string | `"ghcr.io/run-house/kubetorch-data-store:0.4.2"` |  |
 | dataStore.imagePullPolicy | string | `"Always"` |  |
 | dataStore.maxConnections | int | `500` |  |
 | dataStore.maxConnectionsPerModule | int | `0` |  |
@@ -83,7 +83,7 @@ A Helm chart for kubetorch
 | kubetorchController.resources.memory.request | string | `"2Gi"` |  |
 | kubetorchController.servicePort | int | `8080` |  |
 | kubetorchController.storage.size | string | `"1Gi"` |  |
-| kubetorchController.tag | string | `"0.4.1"` |  |
+| kubetorchController.tag | string | `"0.4.2"` |  |
 | kubetorchController.tolerations | list | `[]` |  |
 | kubetorchController.ttl.enabled | bool | `true` |  |
 | kubetorchController.ttl.intervalSeconds | int | `300` |  |
