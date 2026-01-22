@@ -671,3 +671,44 @@ class MetadataClient:
         except Exception as e:
             logger.error(f"Filesystem broadcast WebSocket error: {e}")
             return {"status": "error", "error": str(e)}
+
+    def report_unreachable(
+        self,
+        group_id: str,
+        key: str,
+        pod_ip: str,
+        unreachable_ip: str,
+    ) -> dict:
+        """
+        Report an unreachable parent in a filesystem broadcast group.
+
+        The MDS will remove the unreachable pod from the group and assign
+        a new parent to the reporter.
+
+        Args:
+            group_id: Broadcast group identifier
+            key: Storage key
+            pod_ip: IP address of this pod (the reporter)
+            unreachable_ip: IP address of the unreachable parent
+
+        Returns:
+            dict with status and new parent info (parent_ip, parent_rank, source_path)
+        """
+        import requests
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/v1/fs/broadcast/report-unreachable",
+                json={
+                    "group_id": group_id,
+                    "key": key,
+                    "reporter_ip": pod_ip,
+                    "unreachable_ip": unreachable_ip,
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to report unreachable parent: {e}")
+            return {"status": "error", "error": str(e)}

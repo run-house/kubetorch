@@ -26,6 +26,10 @@ from .types import BroadcastWindow, Locale
 
 logger = get_logger(__name__)
 
+# Cache for broadcast parent assignments - persists across deployments
+# Structure: {(group_id, key): {"parent_rank": int, "parent_ip": str, "source_path": str, "rank": int}}
+_broadcast_parent_cache: dict = {}
+
 
 class DataStoreError(Exception):
     """Exception raised for data store operations (key-value store) errors."""
@@ -379,14 +383,19 @@ class DataStoreClient:
         force: bool,
         verbose: bool,
     ) -> None:
-        """Get with broadcast window - coordinate with other getters via tree topology."""
+        """Get with broadcast window - coordinate with other getters via tree topology.
+
+        Uses caching to avoid hitting MDS on every deployment. The parent assignment
+        is cached per (group_id, key) and reused across deployments. If the cached
+        parent becomes unreachable, we report it to MDS and get a new parent.
+        """
         if not is_running_in_kubernetes():
             logger.warning("Broadcast window ignored - not running in Kubernetes. Falling back to regular get.")
             for k in keys:
                 self._get_single(k, dest, contents, filter_options, force, verbose)
             return
 
-        from kubetorch.data_store.pod_data_server import DEFAULT_TCP_PORT, PodDataServerClient, start_server_if_needed
+        from kubetorch.data_store.pod_data_server import start_server_if_needed
 
         pod_ip = os.getenv("POD_IP")
         pod_name = os.getenv("POD_NAME")
@@ -401,42 +410,155 @@ class DataStoreClient:
             # Auto-generate group_id from keys
             group_id = "_".join(sorted(keys))
 
-        fanout = broadcast.fanout
+        fanout = broadcast.fanout or 50
         timeout = broadcast.timeout or 60.0
 
         for k in keys:
-            if verbose:
-                logger.info(f"Joining filesystem broadcast for key '{k}' (group: {group_id})")
-
             normalized_key = normalize_key(k)
             dest_str = self._normalize_dest(dest, contents, k)
+            cache_key = (group_id, normalized_key)
 
-            # Join MDS broadcast to get parent info
-            result = self.metadata_client.join_fs_broadcast(
+            # Check cache first - skip MDS if we have a cached parent
+            cached = _broadcast_parent_cache.get(cache_key)
+            if cached:
+                if verbose:
+                    logger.info(
+                        f"Using cached parent for key '{k}' (group: {group_id}): "
+                        f"parent_rank={cached['parent_rank']}, parent_ip={cached['parent_ip']}"
+                    )
+                parent_info = cached
+            else:
+                # Join MDS to get parent assignment
+                if verbose:
+                    logger.info(f"Joining filesystem broadcast for key '{k}' (group: {group_id})")
+
+                result = self.metadata_client.join_fs_broadcast(
+                    group_id=group_id,
+                    key=normalized_key,
+                    pod_ip=pod_ip,
+                    pod_name=pod_name,
+                    fanout=fanout,
+                )
+
+                if result.get("status") == "error":
+                    logger.warning(
+                        f"Filesystem broadcast join failed for key '{k}': {result.get('error')} on pod {pod_name}. "
+                        f"Falling back to regular get."
+                    )
+                    self._get_single(k, dest, contents, filter_options, force, verbose)
+                    continue
+
+                parent_info = {
+                    "parent_rank": result.get("parent_rank"),
+                    "parent_ip": result.get("parent_ip"),
+                    "source_path": result.get("source_path"),
+                    "rank": result.get("rank"),
+                }
+
+                # Cache the parent assignment
+                _broadcast_parent_cache[cache_key] = parent_info
+
+                if verbose:
+                    logger.info(
+                        f"Joined broadcast: rank={parent_info['rank']}, "
+                        f"parent_rank={parent_info['parent_rank']}, parent_ip={parent_info['parent_ip']}"
+                    )
+
+            # Try to rsync from parent (with retries for transient failures)
+            success = self._rsync_from_parent(
                 group_id=group_id,
-                key=normalized_key,
-                pod_ip=pod_ip,
-                pod_name=pod_name,
+                key=k,
+                normalized_key=normalized_key,
+                dest_str=dest_str,
+                contents=contents,
+                filter_options=filter_options,
+                force=force,
+                parent_info=parent_info,
                 fanout=fanout,
+                timeout=timeout,
+                verbose=verbose,
             )
 
-            if result.get("status") == "error":
-                logger.warning(
-                    f"Filesystem broadcast join failed for key '{k}': {result.get('error')}. "
-                    f"Falling back to regular get."
-                )
-                self._get_single(k, dest, contents, filter_options, force, verbose)
-                continue
+            if not success:
+                # Parent was unreachable - report to MDS and get new parent
+                if verbose:
+                    logger.info(f"Reporting unreachable parent {parent_info['parent_ip']} for key '{k}'")
 
-            parent_rank = result.get("parent_rank")
-            parent_ip = result.get("parent_ip")
-            source_path = result.get("source_path")
-
-            if verbose:
-                logger.info(
-                    f"Joined broadcast: rank={result.get('rank')}, parent_rank={parent_rank}, " f"parent_ip={parent_ip}"
+                new_parent = self.metadata_client.report_unreachable(
+                    group_id=group_id,
+                    key=normalized_key,
+                    pod_ip=pod_ip,
+                    unreachable_ip=parent_info["parent_ip"],
                 )
 
+                if new_parent.get("status") == "error":
+                    logger.warning(
+                        f"Failed to get new parent after reporting unreachable: {new_parent.get('error')}. "
+                        f"Falling back to regular get."
+                    )
+                    # Clear cache so next attempt will rejoin
+                    _broadcast_parent_cache.pop(cache_key, None)
+                    self._get_single(k, dest, contents, filter_options, force, verbose)
+                    continue
+
+                # Update cache with new parent
+                parent_info = {
+                    "parent_rank": new_parent.get("parent_rank"),
+                    "parent_ip": new_parent.get("parent_ip"),
+                    "source_path": new_parent.get("source_path"),
+                    "rank": parent_info["rank"],  # Keep our original rank
+                }
+                _broadcast_parent_cache[cache_key] = parent_info
+
+                if verbose:
+                    logger.info(
+                        f"Got new parent: parent_rank={parent_info['parent_rank']}, "
+                        f"parent_ip={parent_info['parent_ip']}"
+                    )
+
+                # Retry with new parent
+                success = self._rsync_from_parent(
+                    group_id=group_id,
+                    key=k,
+                    normalized_key=normalized_key,
+                    dest_str=dest_str,
+                    contents=contents,
+                    filter_options=filter_options,
+                    force=force,
+                    parent_info=parent_info,
+                    fanout=fanout,
+                    timeout=timeout,
+                    verbose=verbose,
+                )
+
+                if not success:
+                    logger.warning(f"Failed to rsync from new parent. Falling back to regular get for key '{k}'")
+                    _broadcast_parent_cache.pop(cache_key, None)
+                    self._get_single(k, dest, contents, filter_options, force, verbose)
+
+    def _rsync_from_parent(
+        self,
+        group_id: str,
+        key: str,
+        normalized_key: str,
+        dest_str: str,
+        contents: bool,
+        filter_options: Optional[str],
+        force: bool,
+        parent_info: dict,
+        fanout: int,
+        timeout: float,
+        verbose: bool,
+    ) -> bool:
+        """Rsync from parent with retries. Returns True on success, False if parent unreachable."""
+        from kubetorch.data_store.pod_data_server import DEFAULT_TCP_PORT, PodDataServerClient
+
+        parent_rank = parent_info["parent_rank"]
+        parent_ip = parent_info["parent_ip"]
+        source_path = parent_info["source_path"]
+
+        max_rsync_retries = 3
+        for rsync_attempt in range(max_rsync_retries):
             try:
                 rsync_client = RsyncClient(namespace=self.namespace)
 
@@ -449,22 +571,48 @@ class DataStoreClient:
                         logger.info(f"Requesting path from parent getter at {parent_ip}:{DEFAULT_TCP_PORT}")
 
                     pds_client = PodDataServerClient()
-                    try:
-                        path_result = pds_client.fs_broadcast_get_path_remote(
-                            parent_ip=parent_ip,
-                            parent_port=DEFAULT_TCP_PORT,
-                            group_id=group_id,
-                            key=normalized_key,
-                            timeout=timeout,
-                        )
-                    except Exception as conn_err:
-                        logger.error(
-                            f"Failed to connect to parent pod data server at {parent_ip}:{DEFAULT_TCP_PORT}: {conn_err}"
-                        )
-                        raise
+                    max_pds_retries = 10
+                    path_result = None
 
-                    if path_result.get("status") != "ok":
-                        raise RuntimeError(f"Failed to get path from parent: {path_result.get('error')}")
+                    for attempt in range(max_pds_retries):
+                        try:
+                            path_result = pds_client.fs_broadcast_get_path_remote(
+                                parent_ip=parent_ip,
+                                parent_port=DEFAULT_TCP_PORT,
+                                group_id=group_id,
+                                key=normalized_key,
+                                timeout=timeout,
+                            )
+                            break  # Success
+                        except (ConnectionRefusedError, ConnectionResetError, OSError) as conn_err:
+                            if attempt < max_pds_retries - 1:
+                                # Aggressive linear backoff up to 1s, then exponential doubling up to 8s
+                                if attempt < 10:
+                                    retry_delay = 0.1 * (attempt + 1)  # 100ms, 200ms, ..., 1000ms
+                                else:
+                                    retry_delay = min(8.0, 1.0 * (2 ** (attempt - 10)))  # 1s, 2s, 4s, 8s
+                                if verbose:
+                                    logger.info(
+                                        f"Parent server not ready (attempt {attempt + 1}/{max_pds_retries}), "
+                                        f"retrying in {retry_delay}s: {conn_err}"
+                                    )
+                                time.sleep(retry_delay)
+                            else:
+                                logger.error(
+                                    f"Failed to connect to parent pod data server at {parent_ip}:{DEFAULT_TCP_PORT} "
+                                    f"after {max_pds_retries} attempts: {conn_err}"
+                                )
+                                return False  # Parent unreachable
+                        except Exception as conn_err:
+                            logger.error(
+                                f"Failed to connect to parent pod data server at {parent_ip}:{DEFAULT_TCP_PORT}: {conn_err}"
+                            )
+                            return False  # Parent unreachable
+
+                    if path_result is None or path_result.get("status") != "ok":
+                        error_msg = path_result.get("error") if path_result else "No response"
+                        logger.error(f"Failed to get path from parent: {error_msg}")
+                        return False  # Parent unreachable
 
                     rsync_path = path_result["local_path"]
                     if verbose:
@@ -487,9 +635,7 @@ class DataStoreClient:
                     force=force,
                 )
 
-                # Notify local pod data server that download is complete
-                # This allows child getters to request our local path
-                # Use absolute path so rsync daemon (serving from /) can find it
+                # Success - notify local pod data server and start rsync daemon
                 pds_client = PodDataServerClient()
                 local_path_for_broadcast = str(Path(dest_str.rstrip("/")).resolve())
                 pds_client.fs_broadcast_complete(
@@ -503,21 +649,43 @@ class DataStoreClient:
                     )
 
                 # Start rsync daemon so we can serve as parent for later joiners
-                self._ensure_rsync_daemon(Path(local_path_for_broadcast), base_path="/", verbose=verbose)
+                max_connections = max(100, fanout * 2)
+                self._ensure_rsync_daemon(
+                    Path(local_path_for_broadcast),
+                    base_path="/",
+                    verbose=verbose,
+                    max_connections=max_connections,
+                )
 
                 if verbose:
                     logger.info(
-                        f"Successfully retrieved key '{k}' via filesystem broadcast "
-                        f"(rank={result.get('rank')}, parent_rank={parent_rank})"
+                        f"Successfully retrieved key '{key}' via filesystem broadcast "
+                        f"(rank={parent_info.get('rank')}, parent_rank={parent_rank})"
                     )
+
+                return True  # Success
+
+            except RsyncError as e:
+                # Rsync failed - could be transient or parent unreachable
+                if rsync_attempt < max_rsync_retries - 1:
+                    retry_delay = 0.5 * (rsync_attempt + 1)
+                    logger.warning(
+                        f"Rsync failed (attempt {rsync_attempt + 1}/{max_rsync_retries}), "
+                        f"retrying in {retry_delay}s: {e}"
+                    )
+                    time.sleep(retry_delay)
+                else:
+                    logger.error(f"Rsync failed after {max_rsync_retries} attempts: {e}")
+                    return False  # Parent unreachable
 
             except Exception as e:
                 import traceback
 
-                logger.error(f"Filesystem broadcast failed for key '{k}': {e}")
+                logger.error(f"Unexpected error during rsync: {e}")
                 logger.error(f"Traceback:\n{traceback.format_exc()}")
-                logger.warning(f"Falling back to regular get for key '{k}'")
-                self._get_single(k, dest, contents, filter_options, force, verbose)
+                return False  # Treat as parent unreachable
+
+        return False  # Should not reach here
 
     def _get_from_putter(
         self,
@@ -990,8 +1158,17 @@ class DataStoreClient:
             else:
                 logger.info(f"Key '{key}' does not exist")
 
-    def _ensure_rsync_daemon(self, src_path: Path, base_path: str = "/", verbose: bool = False) -> None:
-        """Ensure rsync daemon is running for peer-to-peer transfers."""
+    def _ensure_rsync_daemon(
+        self, src_path: Path, base_path: str = "/", verbose: bool = False, max_connections: int = 100
+    ) -> None:
+        """Ensure rsync daemon is running for peer-to-peer transfers.
+
+        Args:
+            src_path: Source path to serve (unused, kept for API compatibility)
+            base_path: Base path to serve from (defaults to "/" for flexibility)
+            verbose: Enable verbose logging
+            max_connections: Maximum concurrent rsync connections (should be >= fanout)
+        """
         # Check if rsync is installed
         try:
             result = subprocess.run(["which", "rsync"], capture_output=True, text=True, check=True)
@@ -1018,7 +1195,7 @@ class DataStoreClient:
             pass
 
         # Start new daemon
-        self._start_rsync_daemon(serve_path, verbose)
+        self._start_rsync_daemon(serve_path, verbose, max_connections)
 
     def _kill_rsync_daemon(self) -> None:
         """Kill existing rsync daemon."""
@@ -1031,15 +1208,21 @@ class DataStoreClient:
             except (ValueError, ProcessLookupError, OSError):
                 pass
 
-    def _start_rsync_daemon(self, serve_path: str, verbose: bool) -> None:
-        """Start rsync daemon to serve data."""
+    def _start_rsync_daemon(self, serve_path: str, verbose: bool, max_connections: int = 100) -> None:
+        """Start rsync daemon to serve data.
+
+        Args:
+            serve_path: Path to serve via rsync
+            verbose: Enable verbose logging
+            max_connections: Maximum concurrent connections (should be >= fanout for tree broadcast)
+        """
         config_file = Path("/tmp/rsyncd.conf")
         config_content = f"""pid file = /tmp/rsyncd.pid
 log file = /tmp/rsyncd.log
 uid = root
 gid = root
 use chroot = false
-max connections = 10
+max connections = {max_connections}
 timeout = 600
 [data]
 path = {serve_path}

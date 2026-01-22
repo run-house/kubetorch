@@ -826,7 +826,7 @@ class Module:
             dt_client.put(key=f"/{self.compute.service_name}", src=all_dirs, contents=False)
 
     def _startup_rsync_command(self, use_editable, install_url, dryrun):
-        if dryrun:
+        if dryrun or config.install_url == "NO_SYNC":
             return None
 
         if use_editable or (install_url and install_url.endswith(".whl")):

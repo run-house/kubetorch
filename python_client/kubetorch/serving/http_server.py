@@ -866,6 +866,9 @@ def load_callable(
 
     With push-based reloads, this is always called fresh on reload - no need to
     check timestamps since the reload is triggered externally.
+
+    Note: run_image_setup() is NOT called here. For reload, _handle_reload() calls
+    it before load_callable(). For subprocesses, the main process already did it.
     """
     callable_name = os.environ["KT_CLS_OR_FN_NAME"]
 
@@ -892,7 +895,12 @@ def _load_callable_internal(
     reload_cleanup_fn: [Callable, None] = None,
     callable_obj=None,
 ):
-    """Internal callable loading logic - should be called within lock for thread safety."""
+    """Internal callable loading logic - should be called within lock for thread safety.
+
+    Note: run_image_setup() is NOT called here. Callers are responsible for running it:
+    - _handle_reload() calls run_image_setup() before load_callable()
+    - Subprocesses skip it since the main process already did it
+    """
     callable_name = os.environ["KT_CLS_OR_FN_NAME"]
 
     if not callable_obj:
@@ -903,12 +911,6 @@ def _load_callable_internal(
     # If a reload cleanup function is provided, call it before reloading
     if reload_cleanup_fn:
         reload_cleanup_fn()
-
-    if not distributed_subprocess:
-        # We don't reload the image in distributed subprocess/es, as we already did it in the
-        # main process and we don't want to do it multiple times (in each subprocess).
-        logger.info("Running image setup and loading callable.")
-        run_image_setup()
 
     distributed_config = os.environ.get("KT_DISTRIBUTED_CONFIG", "null")
     deployment_mode = os.environ.get("KT_DEPLOYMENT_MODE", "deployment")
