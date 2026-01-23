@@ -1125,3 +1125,253 @@ class HTTPClient:
 
     async def get_async(self, endpoint, headers=None):
         return await self._make_request_async("get", endpoint, headers=headers)
+
+
+class WebSocketClient:
+    """Client for making WebSocket-based calls to a remote service.
+
+    Provides a persistent connection alternative to HTTP for calling methods.
+    Benefits:
+    - Lower latency for frequent calls (no connection overhead per call)
+    - Better suited for interactive/notebook workflows
+    - Required for Monarch integration
+    """
+
+    def __init__(self, base_url: str, compute, service_name: str):
+        """Initialize WebSocket client.
+
+        Args:
+            base_url: Base URL of the service (e.g., http://my-service.ns.svc:32300)
+            compute: Compute object for the service
+            service_name: Name of the service
+        """
+        self.compute = compute
+        self.service_name = service_name
+        self.base_url = base_url.rstrip("/")
+        self._ws = None
+        self._ws_lock = threading.Lock()
+        self._async_ws = None
+        self._async_ws_lock = asyncio.Lock()
+        self._request_counter = 0
+
+    def _get_ws_url(self) -> str:
+        """Convert HTTP URL to WebSocket URL for callable endpoint."""
+        url = self.base_url
+        if url.startswith("https://"):
+            return url.replace("https://", "wss://") + "/ws/callable"
+        elif url.startswith("http://"):
+            return url.replace("http://", "ws://") + "/ws/callable"
+        else:
+            return "ws://" + url + "/ws/callable"
+
+    def _ensure_connected(self):
+        """Ensure synchronous WebSocket connection is established."""
+        if self._ws is not None:
+            return
+
+        try:
+            import websocket
+        except ImportError:
+            raise ImportError(
+                "websocket-client package required for WebSocket connection. "
+                "Install with: pip install websocket-client"
+            )
+
+        ws_url = self._get_ws_url()
+        logger.debug(f"Connecting to WebSocket: {ws_url}")
+        self._ws = websocket.create_connection(ws_url, timeout=30)
+        logger.debug("WebSocket connection established")
+
+    async def _ensure_connected_async(self):
+        """Ensure async WebSocket connection is established."""
+        if self._async_ws is not None:
+            return
+
+        ws_url = self._get_ws_url()
+        logger.debug(f"Connecting to async WebSocket: {ws_url}")
+        self._async_ws = await websockets.connect(ws_url, close_timeout=10)
+        logger.debug("Async WebSocket connection established")
+
+    def close(self):
+        """Close WebSocket connections."""
+        if self._ws:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+
+        if self._async_ws:
+            try:
+                asyncio.get_event_loop().run_until_complete(self._async_ws.close())
+            except Exception:
+                pass
+            self._async_ws = None
+
+    def __del__(self):
+        self.close()
+
+    def _parse_endpoint(self, endpoint: str) -> tuple:
+        """Parse endpoint URL to extract cls_or_fn_name and method_name.
+
+        Endpoint format: /{namespace}/{service}/{cls_or_fn_name}/{method_name}
+        or just /{cls_or_fn_name}/{method_name} or /{cls_or_fn_name}
+        """
+        # Remove leading/trailing slashes and split
+        parts = endpoint.strip("/").split("/")
+
+        # Take the last 1-2 parts as cls_or_fn_name and method_name
+        if len(parts) >= 2:
+            # Could be ns/svc/cls/method or just cls/method
+            # We want the last two parts
+            cls_or_fn_name = parts[-2] if len(parts) >= 2 else parts[-1]
+            method_name = parts[-1] if parts[-1] != cls_or_fn_name else None
+        else:
+            cls_or_fn_name = parts[-1] if parts else ""
+            method_name = None
+
+        return cls_or_fn_name, method_name
+
+    def call_method(
+        self,
+        endpoint: str,
+        stream_logs: bool,
+        logging_config: LoggingConfig,
+        stream_metrics: Union[bool, MetricsConfig, None] = None,
+        body: dict = None,
+        headers: dict = None,
+        serialization: str = "json",
+    ):
+        """Call a method over WebSocket.
+
+        Args:
+            endpoint: The endpoint URL (parsed to extract cls_or_fn_name and method_name)
+            stream_logs: Whether to stream logs (not used for WebSocket, kept for interface compatibility)
+            logging_config: Logging configuration
+            stream_metrics: Whether to stream metrics (not used for WebSocket)
+            body: Request body with args/kwargs
+            headers: Additional headers (used for request_id)
+            serialization: Serialization format ("json" or "pickle")
+
+        Returns:
+            Deserialized response
+        """
+        import base64
+
+        cls_or_fn_name, method_name = self._parse_endpoint(endpoint)
+
+        with self._ws_lock:
+            self._ensure_connected()
+
+            self._request_counter += 1
+            request_id = headers.get("X-Request-ID") if headers else None
+            if not request_id:
+                request_id = f"ws_req_{self._request_counter}"
+
+            # Prepare request message
+            request = {
+                "request_id": request_id,
+                "cls_or_fn_name": cls_or_fn_name,
+                "method_name": method_name,
+                "params": body or {"args": [], "kwargs": {}},
+                "serialization": serialization,
+            }
+
+            # Handle bytes in params for pickle serialization
+            if serialization == "pickle":
+                params = request["params"]
+                for key in ["args", "kwargs"]:
+                    if key in params and isinstance(params[key], bytes):
+                        params[key] = {"__bytes__": base64.b64encode(params[key]).decode("utf-8")}
+
+            # Send request
+            self._ws.send(json.dumps(request))
+
+            # Receive response
+            response_str = self._ws.recv()
+            response = json.loads(response_str)
+
+            # Handle errors
+            if response.get("error"):
+                error = response["error"]
+                error_type = error.get("type", "Exception")
+                error_message = error.get("message", "Unknown error")
+                error_traceback = error.get("traceback", "")
+
+                # Create exception with remote traceback
+                exc = Exception(f"{error_type}: {error_message}\n\n{error_traceback}")
+                exc.remote_traceback = error_traceback
+                raise exc
+
+            result = response.get("result")
+
+            # Handle bytes results
+            if isinstance(result, dict) and "__bytes__" in result:
+                result = base64.b64decode(result["__bytes__"])
+
+            return result
+
+    async def call_method_async(
+        self,
+        endpoint: str,
+        stream_logs: bool,
+        logging_config: LoggingConfig,
+        stream_metrics: Union[bool, MetricsConfig, None] = None,
+        body: dict = None,
+        headers: dict = None,
+        serialization: str = "json",
+    ):
+        """Async version of call_method."""
+        import base64
+
+        cls_or_fn_name, method_name = self._parse_endpoint(endpoint)
+
+        async with self._async_ws_lock:
+            await self._ensure_connected_async()
+
+            self._request_counter += 1
+            request_id = headers.get("X-Request-ID") if headers else None
+            if not request_id:
+                request_id = f"ws_req_{self._request_counter}"
+
+            # Prepare request message
+            request = {
+                "request_id": request_id,
+                "cls_or_fn_name": cls_or_fn_name,
+                "method_name": method_name,
+                "params": body or {"args": [], "kwargs": {}},
+                "serialization": serialization,
+            }
+
+            # Handle bytes in params for pickle serialization
+            if serialization == "pickle":
+                params = request["params"]
+                for key in ["args", "kwargs"]:
+                    if key in params and isinstance(params[key], bytes):
+                        params[key] = {"__bytes__": base64.b64encode(params[key]).decode("utf-8")}
+
+            # Send request
+            await self._async_ws.send(json.dumps(request))
+
+            # Receive response
+            response_str = await self._async_ws.recv()
+            response = json.loads(response_str)
+
+            # Handle errors
+            if response.get("error"):
+                error = response["error"]
+                error_type = error.get("type", "Exception")
+                error_message = error.get("message", "Unknown error")
+                error_traceback = error.get("traceback", "")
+
+                exc = Exception(f"{error_type}: {error_message}\n\n{error_traceback}")
+                exc.remote_traceback = error_traceback
+                raise exc
+
+            result = response.get("result")
+
+            # Handle bytes results
+            if isinstance(result, dict) and "__bytes__" in result:
+                result = base64.b64decode(result["__bytes__"])
+
+            return result

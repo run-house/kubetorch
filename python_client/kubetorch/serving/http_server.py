@@ -23,7 +23,7 @@ try:
 except:
     pass
 
-from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Body, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
@@ -471,6 +471,149 @@ class ControllerWebSocket:
                 await self._task
             except asyncio.CancelledError:
                 pass
+
+
+##########################################
+########### WebSocket Callable ###########
+##########################################
+
+# Active WebSocket sessions for callable invocation
+_WS_SESSIONS: Dict[str, WebSocket] = {}
+
+
+async def _handle_ws_callable_message(websocket: WebSocket, message: dict) -> dict:
+    """Handle a single WebSocket callable invocation message.
+
+    Message format:
+    {
+        "request_id": "unique-id",
+        "cls_or_fn_name": "MyClass",
+        "method_name": "my_method",  # optional
+        "params": {"args": [], "kwargs": {}},
+        "serialization": "json"  # or "pickle"
+    }
+
+    Response format:
+    {
+        "request_id": "unique-id",
+        "result": <result>,
+        "error": null
+    }
+    or on error:
+    {
+        "request_id": "unique-id",
+        "result": null,
+        "error": {"type": "...", "message": "...", "traceback": "..."}
+    }
+    """
+    request_id = message.get("request_id", "-")
+    cls_or_fn_name = message.get("cls_or_fn_name")
+    method_name = message.get("method_name")
+    params = message.get("params")
+    serialization = message.get("serialization", "json")
+
+    # Set request ID for logging context
+    token = request_id_ctx_var.set(request_id)
+
+    try:
+        # Validate callable is configured
+        configured_callable = os.getenv("KT_CLS_OR_FN_NAME")
+        if not configured_callable:
+            return {
+                "request_id": request_id,
+                "result": None,
+                "error": {
+                    "type": "ServiceUnavailable",
+                    "message": "Server is starting up or no callable has been deployed yet.",
+                    "traceback": "",
+                },
+            }
+
+        if cls_or_fn_name != configured_callable:
+            return {
+                "request_id": request_id,
+                "result": None,
+                "error": {
+                    "type": "NotFound",
+                    "message": f"Callable '{cls_or_fn_name}' not found. Found '{configured_callable}' instead.",
+                    "traceback": "",
+                },
+            }
+
+        if SUPERVISOR is None:
+            return {
+                "request_id": request_id,
+                "result": None,
+                "error": {
+                    "type": "ServiceUnavailable",
+                    "message": "Server is loading the callable. Please retry in a moment.",
+                    "traceback": "",
+                },
+            }
+
+        # Create a mock request object with the headers that SUPERVISOR.call needs
+        class MockRequest:
+            def __init__(self, request_id: str, serialization: str):
+                self.headers = {
+                    "X-Request-ID": request_id,
+                    "X-Serialization": serialization,
+                }
+
+        mock_request = MockRequest(request_id, serialization)
+
+        # Convert {"__bytes__": "base64..."} back to bytes in params
+        def decode_bytes_in_params(obj):
+            if isinstance(obj, dict):
+                if "__bytes__" in obj and len(obj) == 1:
+                    return base64.b64decode(obj["__bytes__"])
+                return {k: decode_bytes_in_params(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [decode_bytes_in_params(item) for item in obj]
+            return obj
+
+        params = decode_bytes_in_params(params)
+
+        # Route call through supervisor - run in thread pool since SUPERVISOR.call is sync
+        result = await asyncio.to_thread(
+            SUPERVISOR.call,
+            mock_request,
+            cls_or_fn_name,
+            method_name,
+            params,
+            False,  # distributed_subcall
+        )
+
+        # Handle JSONResponse from supervisor (e.g., errors)
+        if isinstance(result, JSONResponse):
+            # Extract error info from JSONResponse
+            content = json.loads(result.body.decode())
+            if "error_type" in content:
+                return {
+                    "request_id": request_id,
+                    "result": None,
+                    "error": {
+                        "type": content.get("error_type"),
+                        "message": content.get("message"),
+                        "traceback": content.get("traceback", ""),
+                    },
+                }
+            return {"request_id": request_id, "result": content, "error": None}
+
+        return {"request_id": request_id, "result": result, "error": None}
+
+    except Exception as e:
+        logger.error(f"WebSocket callable error: {e}")
+        return {
+            "request_id": request_id,
+            "result": None,
+            "error": {
+                "type": type(e).__name__,
+                "message": str(e),
+                "traceback": "".join(traceback.format_exception(type(e), e, e.__traceback__)),
+            },
+        }
+    finally:
+        request_id_ctx_var.reset(token)
 
 
 #####################################
@@ -1305,10 +1448,14 @@ async def lifespan(app: FastAPI):
 
     try:
         if os.getenv("KT_CALLABLE_TYPE") == "app":
-            run_image_setup()
+            # Run in thread to avoid blocking event loop (allows WebSocket keepalive, SIGTERM handling)
+            await asyncio.to_thread(run_image_setup)
         elif os.getenv("KT_CLS_OR_FN_NAME"):
             # Only load callable if one is configured (not in selector-only mode)
-            load_callable()
+            # Run image setup first, then load callable (same as reload path)
+            # Use asyncio.to_thread to avoid blocking event loop
+            await asyncio.to_thread(run_image_setup)
+            await asyncio.to_thread(load_callable)
         else:
             # Selector-only mode: server starts without a callable, waiting for deployment
             logger.info("Starting in selector-only mode (no callable configured)")
@@ -1654,6 +1801,66 @@ async def app_status():
         return {"running": True, "pid": APP_PROCESS.pid}
     else:
         return {"running": False, "exit_code": exit_code}
+
+
+@app.websocket("/ws/callable")
+async def websocket_callable(websocket: WebSocket):
+    """WebSocket endpoint for callable invocation.
+
+    Provides a persistent connection alternative to HTTP POST for calling methods.
+    Benefits:
+    - Lower latency for frequent calls (no connection overhead per call)
+    - Bidirectional communication for streaming results and push notifications
+    - Better suited for interactive/notebook workflows
+
+    Message format (client → server):
+    {
+        "request_id": "unique-id",
+        "cls_or_fn_name": "MyClass",
+        "method_name": "my_method",  // optional
+        "params": {"args": [], "kwargs": {}},
+        "serialization": "json"  // or "pickle"
+    }
+
+    Response format (server → client):
+    {
+        "request_id": "unique-id",
+        "result": <result>,
+        "error": null  // or {"type": "...", "message": "...", "traceback": "..."}
+    }
+    """
+    await websocket.accept()
+    session_id = str(id(websocket))
+    _WS_SESSIONS[session_id] = websocket
+    logger.info(f"WebSocket callable session started: {session_id}")
+
+    try:
+        while True:
+            try:
+                # Receive JSON message
+                message = await websocket.receive_json()
+
+                # Handle the callable invocation
+                response = await _handle_ws_callable_message(websocket, message)
+
+                # Send response
+                await websocket.send_json(response)
+
+            except json.JSONDecodeError as e:
+                await websocket.send_json(
+                    {
+                        "request_id": "-",
+                        "result": None,
+                        "error": {"type": "JSONDecodeError", "message": f"Invalid JSON: {str(e)}", "traceback": ""},
+                    }
+                )
+
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket callable session disconnected: {session_id}")
+    except Exception as e:
+        logger.error(f"WebSocket callable session error: {e}")
+    finally:
+        _WS_SESSIONS.pop(session_id, None)
 
 
 # Catch-all routes for callable invocation - must be defined AFTER specific routes

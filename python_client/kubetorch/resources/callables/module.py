@@ -22,7 +22,7 @@ from kubetorch.resources.compute.utils import (
     ServiceTimeoutError,
     VersionMismatchError,
 )
-from kubetorch.serving.http_client import HTTPClient
+from kubetorch.serving.http_client import HTTPClient, WebSocketClient
 from kubetorch.serving.utils import clean_and_validate_k8s_name, generate_unique_request_id, is_running_in_kubernetes
 from kubetorch.utils import (
     ColoredFormatter,
@@ -49,6 +49,7 @@ class Module:
         self._get_if_exists = True
         self._reload_prefixes = None
         self._serialization = "json"  # Default serialization format
+        self._connection_mode = "http"  # Connection mode: "http" or "websocket"
         self._async = False
         self._remote_pointers = None
         self._container_project_root = None
@@ -326,11 +327,19 @@ class Module:
             self.name = reloaded_module.name
             self.service_name = reloaded_module.service_name
 
-        self._http_client = HTTPClient(
-            base_url=self.endpoint(*args, **kwargs),
-            compute=self.compute,
-            service_name=self.service_name,
-        )
+        # Create appropriate client based on connection_mode
+        if self._connection_mode == "websocket":
+            self._http_client = WebSocketClient(
+                base_url=self.endpoint(*args, **kwargs),
+                compute=self.compute,
+                service_name=self.service_name,
+            )
+        else:
+            self._http_client = HTTPClient(
+                base_url=self.endpoint(*args, **kwargs),
+                compute=self.compute,
+                service_name=self.service_name,
+            )
 
         return self._http_client
 
@@ -366,6 +375,7 @@ class Module:
         get_if_exists: bool = False,
         reload_prefixes: Union[str, List[str]] = [],
         dryrun: bool = False,
+        connection_mode: str = "http",
     ):
         """
         Send the function or class to the specified compute.
@@ -386,6 +396,9 @@ class Module:
                 git branch, and prod.
             dryrun (bool, optional): Whether to setup and return the object as a dryrun (``True``),
                 or to actually launch the compute and service (``False``).
+            connection_mode (str, optional): Communication mode for method calls. Options:
+                - "http" (default): Use HTTP POST requests for each call
+                - "websocket": Use persistent WebSocket connection for lower latency
         Returns:
             Module: The module instance.
 
@@ -400,7 +413,16 @@ class Module:
                 init_args={"size": 10},
                 stream_logs=True
             )
+
+            # Use WebSocket for lower latency calls
+            remote_cls = kt.cls(MyClass).to(
+                kt.Compute(cpus="1"),
+                connection_mode="websocket"
+            )
         """
+        if connection_mode not in ("http", "websocket"):
+            raise ValueError(f"connection_mode must be 'http' or 'websocket', got '{connection_mode}'")
+        self._connection_mode = connection_mode
         if not has_k8s_credentials():
             raise KubernetesCredentialsError(
                 "Kubernetes credentials not found. Please ensure you are running in a Kubernetes cluster or have a valid kubeconfig file."
@@ -457,6 +479,7 @@ class Module:
         get_if_exists: bool = False,
         reload_prefixes: Union[str, List[str]] = [],
         dryrun: bool = False,
+        connection_mode: str = "http",
     ):
         """
         Async version of the `.to` method. Send the function or class to the specified compute asynchronously.
@@ -477,6 +500,9 @@ class Module:
                 git branch, and prod.
             dryrun (bool, optional): Whether to setup and return the object as a dryrun (``True``),
                 or to actually launch the compute and service (``False``).
+            connection_mode (str, optional): Communication mode for method calls. Options:
+                - "http" (default): Use HTTP POST requests for each call
+                - "websocket": Use persistent WebSocket connection for lower latency
         Returns:
             Module: The module instance.
 
@@ -492,6 +518,9 @@ class Module:
                 stream_logs=True
             )
         """
+        if connection_mode not in ("http", "websocket"):
+            raise ValueError(f"connection_mode must be 'http' or 'websocket', got '{connection_mode}'")
+        self._connection_mode = connection_mode
         if compute.service_name and compute.service_name != self.service_name:
             logger.info(f"Renaming service to match compute service name {compute.service_name}")
             self.service_name = compute.service_name
