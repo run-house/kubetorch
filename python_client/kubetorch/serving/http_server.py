@@ -868,8 +868,10 @@ def load_callable(
     With push-based reloads, this is always called fresh on reload - no need to
     check timestamps since the reload is triggered externally.
 
-    Note: run_image_setup() is NOT called here. For reload, _handle_reload() calls
-    it before load_callable(). For subprocesses, the main process already did it.
+    Note: run_image_setup() is NOT called here. Callers are responsible for running it:
+    - Initial startup: lifespan() calls run_image_setup() before load_callable()
+    - For reload, _handle_reload() calls it before load_callable()
+    - For subprocesses, the main process already did it
     """
     callable_name = os.environ["KT_CLS_OR_FN_NAME"]
 
@@ -899,6 +901,7 @@ def _load_callable_internal(
     """Internal callable loading logic - should be called within lock for thread safety.
 
     Note: run_image_setup() is NOT called here. Callers are responsible for running it:
+    - Initial startup: lifespan() calls run_image_setup() before load_callable()
     - _handle_reload() calls run_image_setup() before load_callable()
     - Subprocesses skip it since the main process already did it
     """
@@ -1308,6 +1311,7 @@ async def lifespan(app: FastAPI):
             run_image_setup()
         elif os.getenv("KT_CLS_OR_FN_NAME"):
             # Only load callable if one is configured (not in selector-only mode)
+            run_image_setup()
             load_callable()
         else:
             # Selector-only mode: server starts without a callable, waiting for deployment
