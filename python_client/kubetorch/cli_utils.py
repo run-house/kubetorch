@@ -155,15 +155,20 @@ def get_deployment_mode(name: str, namespace: str) -> str:
     try:
         original_name = name
         deployment_mode = detect_deployment_mode(name, namespace)
+        username = globals.config.username
         # If service not found and not already prefixed with username, try with username prefix
-        if not deployment_mode and globals.config.username and not name.startswith(globals.config.username + "-"):
-            name = f"{globals.config.username}-{name}"
+        if not deployment_mode and username and not name.startswith(username + "-"):
+            name = f"{username}-{name}"
             deployment_mode = detect_deployment_mode(name, namespace)
 
         if not deployment_mode:
             console.print(f"[red]Failed to load service [bold]{original_name}[/bold] in namespace {namespace}[/red]")
             raise typer.Exit(1)
         console.print(f"Found [green]{deployment_mode}[/green] service [blue]{name}[/blue]")
+        if (
+            username and username not in name
+        ):  # the user provided remote_fn.name / remote_cls.name instead of service name that included the username as prefix
+            name = f"{username}-{name}"
         return name, deployment_mode
 
     except Exception as e:
