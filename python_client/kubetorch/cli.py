@@ -625,24 +625,24 @@ def kt_describe(
         base_url = globals.config.api_url
 
         ingress = load_ingress()
-        host = get_ingress_host(ingress) if ingress else f"{name}.{namespace}.svc.cluster.local"
+        host = get_ingress_host(ingress) if ingress else None
 
         if not base_url:
             if not ingress:
                 console.print("[yellow]No ingress found. Service is only accessible from inside the cluster.[/yellow]")
                 base_url = f"http://{name}.{namespace}.svc.cluster.local"
             else:
-                lb_ing = (
-                    ingress.status.load_balancer.ingress[0]
-                    if (ingress.status and ingress.status.load_balancer and ingress.status.load_balancer.ingress)
-                    else None
-                )
+                # Get load balancer address from ingress status
+                lb_ingress = ingress.get("status", {}).get("loadBalancer", {}).get("ingress", [])
+                lb_ing = lb_ingress[0] if lb_ingress else None
 
-                address = lb_ing.hostname or lb_ing.ip if lb_ing else None
+                address = (lb_ing.get("hostname") or lb_ing.get("ip")) if lb_ing else None
                 if address:
                     base_url = f"http://{address}"
                 else:
-                    console.print("[yellow]Ingress found but no address, falling back to cluster-local.[/yellow]")
+                    console.print(
+                        "[yellow]Ingress found but no address yet. Waiting for load balancer to provision.[/yellow]"
+                    )
                     base_url = f"http://{name}.{namespace}.svc.cluster.local"
         else:
             parsed = urlparse(base_url)
@@ -650,9 +650,10 @@ def kt_describe(
                 base_url = f"http://{base_url}"
 
         if ingress:
-            console.print(f"[bold]Host:[/bold] [green]{name}[/green]")
+            console.print(f"[bold]Service:[/bold] [green]{name}[/green]")
 
-            vpc_only = is_ingress_vpc_only(ingress.metadata.annotations)
+            annotations = ingress.get("metadata", {}).get("annotations", {})
+            vpc_only = is_ingress_vpc_only(annotations)
             if vpc_only:
                 console.print()
                 console.print("[yellow]Note: This is a VPC-only ingress (internal access only)[/yellow]")
@@ -675,8 +676,8 @@ def kt_describe(
               {base_url}{service_path}
         """
         )
-        # Only add Host header if we have ingress
-        if ingress:
+        # Only add Host header if ingress has a specific host configured
+        if ingress and host:
             curl_code = curl_code.replace(
                 '-H "Content-Type: application/json"',
                 f'-H "Host: {host}" \\\n  -H "Content-Type: application/json"',
@@ -702,7 +703,7 @@ def kt_describe(
             print(response.json())
         """
         )
-        if ingress:
+        if ingress and host:
             python_code = python_code.replace(
                 '"Content-Type": "application/json"',
                 f'"Host": "{host}",\n    "Content-Type": "application/json"',
