@@ -170,7 +170,7 @@ jobs:
       - name: Run cli tests
         run: |
           cd python_client
-          pytest tests/test_cli.py -v --level minimal -m "not gpu_test"
+          pytest tests/test_cli.py -v --level minimal -m "not gpu_test" --eager
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
@@ -267,7 +267,7 @@ jobs:
       - name: Run monitoring tests
         run: |
           cd python_client
-          pytest -v --durations=25 --level minimal -k "monitoring"
+          pytest -v --durations=25 --level minimal -k "monitoring" --eager
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: true
@@ -360,7 +360,7 @@ jobs:
       - name: Run pod-from-pod tests
         run: |
           cd python_client
-          pytest -v tests/test_pod_from_pod.py --durations=25 --level minimal -m "not gpu_test"
+          pytest -v tests/test_pod_from_pod.py --durations=25 --level minimal -m "not gpu_test" --eager
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
@@ -460,7 +460,7 @@ jobs:
       - name: Run distributed tests
         run: |
           cd python_client
-          pytest -v tests/test_distributed.py --durations=25 --level minimal -m "not gpu_test"
+          pytest -v tests/test_distributed.py --durations=25 --level minimal -m "not gpu_test" --eager
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: true
@@ -553,7 +553,7 @@ jobs:
       - name: Run python-path tests
         run: |
           cd python_client
-          pytest -v tests/test_python_path.py --durations=25 --level minimal -m "not gpu_test"
+          pytest -v tests/test_python_path.py --durations=25 --level minimal -m "not gpu_test" --eager
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
@@ -645,7 +645,7 @@ jobs:
       - name: Run secret tests
         run: |
           cd python_client
-          pytest -v tests/test_secret.py --durations=25 --level minimal -m "not gpu_test"
+          pytest -v tests/test_secret.py --durations=25 --level minimal -m "not gpu_test" --eager
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
@@ -740,7 +740,7 @@ jobs:
       - name: Run declarative tests
         run: |
           cd python_client
-          pytest -v tests/test_declarative.py --durations=100 --level minimal -m "not gpu_test"
+          pytest -v tests/test_declarative.py --durations=100 --level minimal -m "not gpu_test" --eager
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
@@ -833,7 +833,7 @@ jobs:
       - name: Run app tests
         run: |
           cd python_client
-          pytest -v tests/test_app.py --durations=100 --level minimal -m "not gpu_test"
+          pytest -v tests/test_app.py --durations=100 --level minimal -m "not gpu_test" --eager
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
@@ -955,7 +955,7 @@ jobs:
       - name: Run manifest tests
         run: |
           cd python_client
-          pytest -v tests/test_byo_manifest.py --durations=25 --level minimal -m "not gpu_test"
+          pytest -v tests/test_byo_manifest.py --durations=25 --level minimal -m "not gpu_test" --eager
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
@@ -1033,7 +1033,7 @@ jobs:
       - name: Run imperative tests
         run: |
           cd python_client
-          pytest -v --durations=25 --level minimal -m "not gpu_test" tests/test_imperative.py
+          pytest -v --durations=25 --level minimal -m "not gpu_test" --eager tests/test_imperative.py
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
@@ -1110,7 +1110,7 @@ jobs:
       - name: Run controller tests
         run: |
           cd python_client
-          pytest -v --durations=25 --level minimal -m "not gpu_test" tests/test_controller.py tests/test_rbac.py tests/test_store.py
+          pytest -v --durations=25 --level minimal -m "not gpu_test" --eager tests/test_controller.py tests/test_rbac.py tests/test_store.py
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
@@ -1203,7 +1203,7 @@ jobs:
       - name: Run compute tests
         run: |
           cd python_client
-          pytest -v --durations=25 --level minimal -m "not gpu_test" tests/test_compute.py tests/test_byo_compute.py tests/test_autoscale.py tests/test_autodown.py tests/test_kueue.py
+          pytest -v --durations=25 --level minimal -m "not gpu_test" --eager tests/test_compute.py tests/test_byo_compute.py tests/test_autoscale.py tests/test_autodown.py tests/test_kueue.py
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
