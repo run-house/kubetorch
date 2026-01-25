@@ -344,7 +344,6 @@ class RsyncClient:
     def _run_rsync_command_once(self, rsync_cmd: str, create_target_dir: bool = True):
         """Execute rsync command with proper error handling (single attempt)."""
         logger.debug(f"Executing rsync command: {rsync_cmd}")
-        backup_rsync_cmd = rsync_cmd
 
         # Extract source paths from rsync command for user-friendly logging
         # Rsync command format: rsync [options] source1 source2 ... dest
@@ -435,13 +434,11 @@ class RsyncClient:
                                 and ("rsync: --mkpath" in decoded_line or "rsync: unrecognized option" in decoded_line)
                                 and not is_running_in_kubernetes()
                             ):
-                                logger.warning(
-                                    "Rsync failed: --mkpath is not supported, falling back to creating target dir. "
-                                    "Please upgrade rsync to 3.2.0+ to improve performance."
-                                )
                                 proc.terminate()
-                                self.create_rsync_target_dir()
-                                return self.run_rsync_command(backup_rsync_cmd, create_target_dir=False)
+                                raise RuntimeError(
+                                    "rsync 3.2.0+ is required. "
+                                    "Please upgrade: `brew install rsync` (macOS) or `apt install rsync` (Linux)"
+                                )
 
                             for error_regex in error_regexes:
                                 if error_regex.search(decoded_line):
