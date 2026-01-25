@@ -365,7 +365,7 @@ def test_cli_kt_config_unset():
         for key in config_keys:
             unset_result = runner.invoke(app, ["config", "unset", key], color=False)
             assert unset_result.exit_code == 0
-            assert f"{key.capitalize()} unset" in strip_ansi_codes(unset_result.stdout)
+            assert f"{key} unset" in strip_ansi_codes(unset_result.stdout)
             get_result = runner.invoke(app, ["config", "get", key], color=False)
             assert get_result.exit_code == 0
             assert get_msg_after_unset.get(key) in strip_ansi_codes(get_result.stdout)
