@@ -96,7 +96,7 @@ jobs:
       - name: Run tests with level minimal
         run: |
           cd python_client
-          pytest -v --durations=25 --level minimal -m "gpu_test"
+          pytest -v --durations=25 --level minimal -m "gpu_test" --eager
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: false
