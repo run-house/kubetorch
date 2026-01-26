@@ -483,8 +483,8 @@ class ControllerClient:
                 # Don't retry HTTP errors (except 502/503 handled above)
                 raise
 
-            except (httpx.ConnectError, httpx.TimeoutException) as e:
-                # Retry connection errors (controller pod down/restarting)
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
+                # Retry connection errors (controller pod down/restarting, stale keep-alive)
                 if attempt < max_attempts:
                     retry_delay = base_delay * attempt
                     logger.warning(
