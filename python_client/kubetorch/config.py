@@ -12,7 +12,6 @@ logger = get_logger(__name__)
 
 ENV_MAPPINGS = {
     "username": "KT_USERNAME",
-    "license_key": "KT_LICENSE_KEY",
     "namespace": "KT_NAMESPACE",
     "install_namespace": "KT_INSTALL_NAMESPACE",
     "install_url": "KT_INSTALL_URL",
@@ -34,7 +33,6 @@ class KubetorchConfig:
         self._cluster_config = None
         self._install_namespace = None
         self._install_url = None
-        self._license_key = None
         self._namespace = None
         self._stream_logs = None
         self._stream_metrics = None
@@ -95,25 +93,6 @@ class KubetorchConfig:
         if validated != value:
             logger.info(f"Username was validated and changed to {validated} to be Kubernetes-compatible.")
         self._username = validated
-
-    @property
-    def license_key(self):
-        """License key for authentication and billing.
-
-        Required for usage reporting and cluster authentication.
-        Can be found in the `basic install guide <https://www.run.house/kubetorch/installation>`_.
-        """
-        if not self._license_key:
-            if self._get_env_var("license_key"):
-                self._license_key = self._get_env_var("license_key")
-            else:
-                self._license_key = self.file_cache.get("license_key")
-        return self._license_key
-
-    @license_key.setter
-    def license_key(self, value: str):
-        """Set kubetorch license key for current process."""
-        self._license_key = value
 
     @property
     def volumes(self):
