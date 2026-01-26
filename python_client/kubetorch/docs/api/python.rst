@@ -119,9 +119,21 @@ Kubetorch provides several observability and debugging features to help monitor 
 
 * `Log streaming <_Log streaming: https://www.run.house/kubetorch/concepts/monitoring-and-observability#log-streaming>`_ : Streams application logs in real-time for easy inspection.
 
+* `Profiling <_Profiling: https://www.run.house/kubetorch/concepts/monitoring-and-observability#Profiling>`_ : Collects profiling data from your workloads.
+
 * `Debugging tools <https://www.run.house/kubetorch/guides/debugging>`_ : Enables runtime introspection and debugging of workloads.
+
 
 .. toctree::
    :maxdepth: 1
 
    python/workload_configs
+
+
+Profiling
+-------
+
+.. toctree::
+   :maxdepth: 1
+
+   python/profiling
