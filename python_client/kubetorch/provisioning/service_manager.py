@@ -655,7 +655,6 @@ class ServiceManager:
                 response = self.controller_client.get(
                     f"/controller/check-ready/{self.namespace}/{service_name}",
                     params={
-                        "resource_type": self.resource_type,
                         "timeout": int(this_timeout),
                         "poll_interval": 2,
                     },
