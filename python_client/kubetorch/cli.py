@@ -104,7 +104,7 @@ def kt_check(
 
     - Deployment pod comes up and becomes ready (if not scaled to zero)
 
-    - Rsync has succeeded
+    - Data store connection has succeeded
 
     - Service is marked as ready and service pod(s) are ready to serve traffic
 
@@ -185,9 +185,9 @@ def kt_check(
     pod_name = running_pod["metadata"]["name"]
 
     # --------------------------------------------------
-    # 4. Rsync check
+    # 4. Data store check
     # --------------------------------------------------
-    console.print("[bold blue]Checking rsync...[/bold blue]")
+    console.print("[bold blue]Checking data store...[/bold blue]")
 
     try:
         from kubetorch.data_store import DataStoreClient
@@ -195,9 +195,9 @@ def kt_check(
         data_store = DataStoreClient(namespace=namespace)
         items = data_store.ls(key=name)
         if not items:
-            fail("Rsync directory exists but is empty.", [pod_name])
+            fail("Data store directory exists but is empty.", [pod_name])
     except Exception as e:
-        fail(f"Rsync check failed: {e}", [pod_name])
+        fail(f"Data store check failed: {e}", [pod_name])
 
     # --------------------------------------------------
     # 5. Service health check
