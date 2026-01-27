@@ -3,6 +3,7 @@ import os
 import httpx
 import kubetorch.provisioning.constants as provisioning_constants
 import pytest
+from kubernetes import client as k8s_client, config as k8s_config
 
 from .utils import create_random_name_prefix, simple_summer
 
@@ -29,12 +30,30 @@ def test_autodown_annotation_and_metrics():
 
     assert remote_fn(1, 2) == 3
 
-    # Use controller client to get Knative service (works from local/CI without kubectl proxy)
+    # Use controller client to verify resource exists in discovery
     controller = kt.globals.controller_client()
-    resources = controller.discover_resources(namespace=namespace, name_filter=remote_fn.service_name)
-    knative_services = resources.get("knative_services", [])
+    workloads = controller.discover_resources(namespace=namespace, name_filter=remote_fn.service_name)
+    knative_services = [
+        r
+        for r in workloads.get("workloads", [])
+        if r.get("api_version") == "serving.knative.dev/v1" and r.get("kind") == "KnativeService"
+    ]
     assert knative_services, f"No Knative service found for {remote_fn.service_name}"
-    knative_service = knative_services[0]
+
+    # Fetch the full Knative service object via k8s API to get metadata
+    try:
+        k8s_config.load_incluster_config()
+    except k8s_config.ConfigException:
+        k8s_config.load_kube_config()
+
+    custom_api = k8s_client.CustomObjectsApi()
+    knative_service = custom_api.get_namespaced_custom_object(
+        group="serving.knative.dev",
+        version="v1",
+        namespace=namespace,
+        plural="services",
+        name=remote_fn.service_name,
+    )
 
     # Check that the Knative service has the autodown annotation
     assert knative_service["metadata"]["labels"][provisioning_constants.KT_MODULE_LABEL] is not None

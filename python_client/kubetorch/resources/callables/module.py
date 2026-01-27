@@ -160,7 +160,11 @@ class Module:
             return self._compute._endpoint_config.get_proxied_url(self._compute.client_port())
 
         # URL format when using the NGINX proxy: /{namespace}/{service}:{port}/{path}
-        return f"http://localhost:{self._compute.client_port()}/{self.namespace}/{self.service_name}:{DEFAULT_K8S_SERVICE_PORT}"
+        svc_name = self.service_name
+        if self._compute.endpoint:
+            # Extract actual K8s service name from endpoint
+            svc_name = self._compute.endpoint.replace("http://", "").split(".")[0]
+        return f"http://localhost:{self._compute.client_port()}/{self.namespace}/{svc_name}:{DEFAULT_K8S_SERVICE_PORT}"
 
     @property
     def request_headers(self):
