@@ -79,7 +79,8 @@ if kt_log_level:
     logger.setLevel(getattr(logging, kt_log_level, logging.INFO))
 
 _CACHED_CALLABLES = {}
-_CACHED_IMAGE = []
+_CACHED_DOCKERFILE = []
+_DOCKERFILE_CONTENTS = None
 SUPERVISOR = None
 APP_PROCESS = None
 _CALLABLE_LOAD_LOCK = threading.Lock()  # Lock for thread-safe callable loading
@@ -325,6 +326,10 @@ class ControllerWebSocket:
         if runtime_config.get("allowed_serialization"):
             os.environ["KT_ALLOWED_SERIALIZATION"] = runtime_config["allowed_serialization"]
 
+        global _DOCKERFILE_CONTENTS
+        if "dockerfile" in metadata:
+            _DOCKERFILE_CONTENTS = metadata["dockerfile"]
+
         logger.info(
             f"Applied metadata from controller: module={module_info.get('module_name')}, "
             f"callable={module_info.get('cls_or_fn_name')}"
@@ -485,18 +490,21 @@ def clear_cache():
 
 def cached_image_setup():
     logger.debug("Starting cached image setup.")
-    global _CACHED_IMAGE
+    global _CACHED_DOCKERFILE
+    global _DOCKERFILE_CONTENTS
     global APP_PROCESS
 
-    dockerfile_path = kt_directory() / "image.dockerfile"
-    with open(dockerfile_path, "r") as file:
-        lines = file.readlines()
-    lines = [line.strip() for line in lines]
+    dockerfile_content = _DOCKERFILE_CONTENTS
+    if not dockerfile_content:
+        logger.debug("No dockerfile contents found, skipping image setup.")
+        return
 
-    # find first line where image differs from cache and update cache
+    lines = [line.strip() for line in dockerfile_content.splitlines()]
+
+    # find first line where dockerfile differs from cache and update cache
     cache_mismatch_index = -1
     cmd_mismatch = False
-    for i, (new_line, cached_line) in enumerate(zip(lines, _CACHED_IMAGE)):
+    for i, (new_line, cached_line) in enumerate(zip(lines, _CACHED_DOCKERFILE)):
         if new_line.startswith("CMD"):
             cmd_mismatch = True
 
@@ -504,11 +512,12 @@ def cached_image_setup():
             cache_mismatch_index = i
             break
     if cache_mismatch_index == -1:
-        if len(lines) != len(_CACHED_IMAGE):
-            cache_mismatch_index = min(len(lines), len(_CACHED_IMAGE))
+        if len(lines) != len(_CACHED_DOCKERFILE):
+            cache_mismatch_index = min(len(lines), len(_CACHED_DOCKERFILE))
         else:
             cache_mismatch_index = len(lines)
-    _CACHED_IMAGE = lines
+
+    _CACHED_DOCKERFILE = lines
 
     if cache_mismatch_index == len(lines):
         return
@@ -788,23 +797,11 @@ def cached_image_setup():
 
 
 def run_image_setup():
-    """Run image setup (rsync files, run dockerfile instructions).
-
-    With push-based reloads, files are rsynced before the pool is registered,
-    so the dockerfile should already be present when this is called.
-    """
+    """Run image setup (rsync files, run dockerfile instructions). Dockerfile is received via WebSocket metadata."""
     if os.environ.get("KT_FREEZE", "False") == "True" or not is_running_in_kubernetes():
         return
 
     rsync_file_updates()
-
-    dockerfile_path = kt_directory() / "image.dockerfile"
-    if not dockerfile_path.exists():
-        # BYO image case - no dockerfile to process because user built their own image.
-        # Code has been rsynced above, callable will be reloaded on next request via load_callable().
-        logger.info("No dockerfile found, skipping cached image setup (BYO image mode)")
-        return
-
     cached_image_setup()
 
     if not os.getenv("KT_CALLABLE_TYPE") == "app":
@@ -1548,6 +1545,10 @@ def _apply_metadata_from_dict(metadata: dict):
         os.environ["KT_DEPLOYMENT_MODE"] = metadata["deployment_mode"]
     if metadata.get("username"):
         os.environ["KT_USERNAME"] = metadata["username"]
+
+    global _DOCKERFILE_CONTENTS
+    if "dockerfile" in metadata:
+        _DOCKERFILE_CONTENTS = metadata["dockerfile"]
 
 
 @app.post("/_test_reload", include_in_schema=False)
