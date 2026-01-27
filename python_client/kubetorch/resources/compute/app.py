@@ -82,7 +82,7 @@ class App(Module):
         install_url, use_editable = get_kt_install_url(self.compute.freeze)
         if not self.compute.freeze:
             deployment_timestamp = datetime.now(timezone.utc).isoformat()
-            self._rsync_repo_and_image_patches(install_url, use_editable, init_args={})
+            self._rsync_repo_and_image_patches(install_url, use_editable)
         else:
             deployment_timestamp = None
 

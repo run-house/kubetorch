@@ -436,7 +436,7 @@ class Module:
         install_url, use_editable = get_kt_install_url(self.compute.freeze)
 
         if not dryrun and not self.compute.freeze:
-            self._rsync_repo_and_image_patches(install_url, use_editable, init_args)
+            self._rsync_repo_and_image_patches(install_url, use_editable)
 
         self._launch_service(
             install_url,
@@ -519,7 +519,7 @@ class Module:
         install_url, use_editable = get_kt_install_url(self.compute.freeze)
 
         if not dryrun and not self.compute.freeze:
-            await self._rsync_repo_and_image_patches_async(install_url, use_editable, init_args)
+            await self._rsync_repo_and_image_patches_async(install_url, use_editable)
 
         await self._launch_service_async(
             install_url,
@@ -576,7 +576,10 @@ class Module:
                 f"and reload_prefixes={reload_prefixes}: {str(e)}"
             )
 
-    def _get_rsync_dirs_and_dockerfile(self, install_url, use_editable, init_args):
+    def _get_rsync_dirs_and_dockerfile(self, install_url, use_editable):
+        if self.pointers[0] is None or self.pointers[1] is None:
+            raise ValueError("Cannot deploy functions defined interactively. Please define your function in a file.")
+
         source_dir, has_kt_dir, matched_file = locate_working_dir(self.pointers[0])
         rsync_dirs = [str(source_dir)]
         if not has_kt_dir:
@@ -603,15 +606,15 @@ class Module:
         service_dockerfile = self._get_service_dockerfile()
         return rsync_dirs, service_dockerfile
 
-    def _rsync_repo_and_image_patches(self, install_url, use_editable, init_args):
+    def _rsync_repo_and_image_patches(self, install_url, use_editable):
         logger.debug("Rsyncing data to the rsync pod")
-        rsync_dirs, service_dockerfile = self._get_rsync_dirs_and_dockerfile(install_url, use_editable, init_args)
+        rsync_dirs, service_dockerfile = self._get_rsync_dirs_and_dockerfile(install_url, use_editable)
         self._construct_and_rsync_files(rsync_dirs, service_dockerfile)
         logger.debug(f"Rsync completed for service {self.service_name}")
 
-    async def _rsync_repo_and_image_patches_async(self, install_url, use_editable, init_args):
+    async def _rsync_repo_and_image_patches_async(self, install_url, use_editable):
         logger.debug("Rsyncing data to the rsync pod")
-        rsync_dirs, service_dockerfile = self._get_rsync_dirs_and_dockerfile(install_url, use_editable, init_args)
+        rsync_dirs, service_dockerfile = self._get_rsync_dirs_and_dockerfile(install_url, use_editable)
         await self._construct_and_rsync_files_async(rsync_dirs, service_dockerfile)
         logger.debug(f"Rsync completed for service {self.service_name}")
 
