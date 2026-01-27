@@ -2490,7 +2490,6 @@ class Compute:
         Rsync files include:
         1. rsync_dirs: local paths to sync, e.g.project directory, wheel
         2. image copy_operations: user specified copies through the image
-        3. .kt/image.dockerfile - generated dockerfile content
 
         Args:
             rsync (bool): Whether to perform rsync operations. (Default: True)
@@ -2560,27 +2559,7 @@ class Compute:
         # Build final dockerfile content
         dockerfile_content = "\n".join(docker_lines) + "\n" if docker_lines else ""
 
-        # Rsync the dockerfile itself
-        if rsync and dockerfile_content:
-            self._rsync_dockerfile_content(dockerfile_content)
-
         return dockerfile_content
-
-    def _rsync_dockerfile_content(self, dockerfile_content: str):
-        """Rsync the dockerfile content to the .kt directory in the data store."""
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            temp_file = Path(tmpdir) / ".kt" / "image.dockerfile"
-            temp_file.parent.mkdir(parents=True, exist_ok=True)
-            temp_file.write_text(dockerfile_content)
-
-            client = data_store.RsyncClient(self.namespace)
-            client.upload(
-                source=str(temp_file.parent),  # .kt directory
-                dest=self.service_name,
-                contents=False,
-            )
 
     # ----------------- Copying over for now... TBD ----------------- #
     def __getstate__(self):
