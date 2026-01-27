@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {service_name}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      kubetorch.com/service: {service_name}
+  template:
+    metadata:
+      labels:
+        kubetorch.com/service: {service_name}
+    spec:
+      containers:
+      - name: main
+        image: ubuntu:22.04

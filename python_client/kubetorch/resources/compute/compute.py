@@ -272,6 +272,7 @@ class Compute:
         manifest: Union[Dict, str],
         selector: Optional[Dict[str, str]] = None,
         endpoint: Optional["Endpoint"] = None,
+        image: Optional["Image"] = None,
     ):
         """Create a Compute instance from a user-provided Kubernetes manifest.
 
@@ -287,6 +288,8 @@ class Compute:
             endpoint: Custom endpoint configuration for routing calls to pods.
                      Use ``Endpoint(url="...")`` for your own Service/Ingress, or
                      ``Endpoint(selector={...})`` to route to a subset of pool pods.
+            image: Image instance to use for the compute environment.
+                   Use ``Image.from_dockerfile("./Dockerfile")`` to load from a Dockerfile.
 
         Returns:
             Compute instance
@@ -354,6 +357,9 @@ class Compute:
 
         # Merge kubetorch defaults into user manifest
         compute._build_and_merge_kubetorch_defaults()
+
+        if image:
+            compute.image = image
 
         return compute
 

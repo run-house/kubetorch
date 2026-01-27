@@ -9,6 +9,7 @@ from pathlib import Path
 import kubetorch as kt
 
 import pytest
+import yaml
 from kubetorch.cli import app
 from kubetorch.cli_utils import get_ingress_host, load_ingress
 from kubetorch.resources.secrets.utils import get_k8s_identity_name
@@ -1580,3 +1581,133 @@ async def test_logs_cli_single_pod_wrong_name(remote_logs_fn):
         f".*{remote_logs_fn.service_name} does not have an associated pod called.*{non_existing_pod_name}.*"
     )
     assert re.search(regex_expression, logs_output, re.DOTALL)
+
+
+###############################
+####### kt apply tests ########
+###############################
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_kt_apply_dockerfile_command():
+    """Test kt apply:
+    - Extracts command from Dockerfile with CMD/ENTRYPOINT when manifest has no command
+    - Syncs files from COPY instructions to the pod
+    """
+    from kubetorch.resources.images.image import Image
+
+    # Use assets from tests/assets/apply
+    assets_dir = Path(__file__).parent / "assets" / "apply"
+    test_data_path = assets_dir / "test_data.txt"
+    manifest_template_path = assets_dir / "manifest.yaml"
+    dockerfile_path = assets_dir / "Dockerfile"
+
+    test_file_content = test_data_path.read_text().strip()
+
+    # Read manifest template, substitute service name, and write to a temp file
+    service_name = f"{kt.config.username}-apply-dockerfile"
+    manifest_content = manifest_template_path.read_text().format(service_name=service_name)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(manifest_content)
+        manifest_path = f.name
+
+    try:
+        # Verify Image.from_dockerfile parses correctly
+        image = Image.from_dockerfile(str(dockerfile_path))
+        assert image.image_id == kt.images.Debian().image_id
+        assert image.contents is not None
+        assert "COPY test_data.txt /app/test_data.txt" in image.contents
+        assert "COPY run.py /app/run.py" in image.contents
+        assert image.dockerfile_command == "python /app/run.py"
+
+        # Run kt apply with dockerfile argument
+        original_cwd = os.getcwd()
+        os.chdir(assets_dir)
+        try:
+            result = runner.invoke(app, ["apply", manifest_path, "--dockerfile", str(dockerfile_path)])
+        finally:
+            os.chdir(original_cwd)
+
+        output = strip_ansi_codes(result.output)
+
+        assert result.exit_code == 0, f"kt apply failed: {output}"
+        assert f"Applying {manifest_path} as '{service_name}'." in output
+        assert "Using command from Dockerfile:" in output
+
+        controller = kt.globals.controller_client()
+        namespace = kt.globals.config.namespace
+        pools = controller.list_pools(namespace)
+        pool_names = [p.get("name") for p in pools.get("pools", [])]
+        assert service_name in pool_names, f"Service {service_name} not found in pools: {pool_names}"
+
+        # Wait for logs to be available
+        for _ in range(5):
+            logs_result = runner.invoke(app, ["logs", service_name, "-t", "50"], color=False)
+            if test_file_content in logs_result.output:
+                break
+            time.sleep(3)
+        assert logs_result.exit_code == 0
+        assert test_file_content in logs_result.output
+
+    finally:
+        # Clean up temp manifest file
+        if os.path.exists(manifest_path):
+            os.unlink(manifest_path)
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_kt_apply_port_and_healthcheck():
+    """Test kt apply with --port and --health-check options sets correct env vars."""
+
+    # Use assets from tests/assets/apply
+    assets_dir = Path(__file__).parent / "assets" / "apply"
+    manifest_template_path = assets_dir / "manifest.yaml"
+
+    service_name = f"{kt.config.username}-apply-http-server"
+    port = 8080
+    health_endpoint = "/health"
+
+    # Read manifest template, substitute service name, add command, and write to a temp file
+    manifest = yaml.safe_load(manifest_template_path.read_text().format(service_name=service_name))
+    manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c", "sleep infinity"]
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(yaml.dump(manifest, default_flow_style=False))
+        manifest_path = f.name
+
+    try:
+        result = runner.invoke(
+            app,
+            [
+                "apply",
+                manifest_path,
+                "--port",
+                str(port),
+                "--health-check",
+                health_endpoint,
+            ],
+        )
+        output = strip_ansi_codes(result.output)
+
+        assert result.exit_code == 0, f"kt apply failed: {output}"
+        assert service_name in output
+
+        # Verify service created
+        controller = kt.globals.controller_client()
+        namespace = kt.globals.config.namespace
+        pools = controller.list_pools(namespace)
+        pool_names = [p.get("name") for p in pools.get("pools", [])]
+        assert service_name in pool_names, f"Service {service_name} not found in pools"
+
+        # Verify KT_APP_PORT and KT_APP_HEALTHCHECK env vars on pod
+        pods_result = controller.list_pods(namespace=namespace, label_selector=f"kubetorch.com/service={service_name}")
+        for pod in pods_result.get("items", []):
+            env_list = pod.get("spec", {}).get("containers", [{}])[0].get("env", [])
+            env_dict = {e["name"]: e.get("value") for e in env_list if "name" in e}
+
+            assert env_dict.get("KT_APP_PORT") == str(port)
+            assert env_dict.get("KT_APP_HEALTHCHECK") == health_endpoint
+
+    finally:
+        os.unlink(manifest_path)

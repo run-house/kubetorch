@@ -3,6 +3,7 @@ import importlib
 import inspect
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -12,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 from urllib.parse import urlparse
+
+import yaml
 
 from kubetorch.resources.compute.utils import (
     ControllerRequestError,
@@ -1167,6 +1170,119 @@ def kt_run(
         raise typer.Exit(1)
 
     app_instance.deploy()
+
+
+@app.command("apply")
+def kt_apply(
+    manifest_path: str = typer.Argument(..., help="Path to K8s manifest YAML file"),
+    dockerfile: str = typer.Option(None, "--dockerfile", "-d", help="Path to Dockerfile for image setup"),
+    port: int = typer.Option(None, "--port", "-p", help="App's listening port (enables HTTP proxying via /http)"),
+    health_check: str = typer.Option(None, "--health-check", help="Health check endpoint path (e.g., '/health')"),
+):
+    """
+    Apply a kubernetes resource from a YAML manifest file and optional Dockerfile via Kubetorch fast deployment.
+
+    Automatically injects kubetorch server into the pod, applies the manifest, syncs Dockerfile dependencies
+    (if provided), and runs the original manifest command. Supports hot-reloading on subsequent applies.
+
+    Dockerfile support:
+        Only runtime instructions are supported: FROM, RUN, CMD, ENTRYPOINT, ENV, COPY.
+        Build-time instructions (ARG, WORKDIR, EXPOSE, etc.) and multiline instructions
+        (backslash continuations) are currently not supported. If you need these features,
+        run `docker build` separately and reference the built image in your manifest.
+
+    Port forwarding:
+        If your app starts an HTTP server, use --port to specify the port. This enables
+        HTTP proxying through the kubetorch server at the /http endpoint.
+
+    Examples:
+
+    .. code-block:: bash
+
+        $ kt apply deployment.yaml
+        $ kt apply deployment.yaml --dockerfile Dockerfile
+        $ kt apply fastapi-deployment.yaml --port 8000 --health-check /health
+    """
+    from kubetorch.provisioning.utils import get_resource_config
+    from kubetorch.resources.compute.app import App
+    from kubetorch.resources.compute.compute import Compute
+    from kubetorch.resources.images.image import Image
+
+    with open(manifest_path, "r") as f:
+        manifest = yaml.safe_load(f)
+
+    service_name = manifest.get("metadata", {}).get("name")
+    if not service_name:
+        console.print("[red]Manifest must have a name.[/red]")
+        raise typer.Exit(1)
+
+    # Get pod template path based on resource type
+    kind = manifest.get("kind", "Deployment").lower()
+    api_version = manifest.get("apiVersion", "")
+    if kind == "service" and "serving.knative.dev" in api_version:
+        resource_type = "knative"
+    else:
+        resource_type = kind
+    try:
+        config = get_resource_config(resource_type)
+        pod_template_path = config.get("pod_template_path", ["spec", "template"])
+    except ValueError:
+        pod_template_path = ["spec", "template"]
+
+    current = manifest
+    for key in pod_template_path:
+        if isinstance(key, int):
+            current = current[key] if len(current) > key else {}
+        else:
+            current = current.get(key, {})
+    containers = current.get("spec", {}).get("containers", [])
+
+    # Extract original command from manifest container
+    original_cmd = None
+    if containers:
+        cmd = containers[0].get("command", [])
+        args = containers[0].get("args", [])
+        if cmd or args:
+            original_cmd = shlex.join(cmd + args)
+
+    # Construct Image from Dockerfile if provided
+    image = None
+    dockerfile_cmd = None
+    if dockerfile:
+        image = Image.from_dockerfile(dockerfile)
+        dockerfile_cmd = image.dockerfile_command
+
+    compute = Compute.from_manifest(manifest=manifest, image=image)
+
+    # Determine command: manifest > dockerfile > idle
+    if original_cmd:
+        run_cmd = original_cmd
+    elif dockerfile_cmd:
+        console.print(f"[dim]Using command from Dockerfile: {dockerfile_cmd}[/dim]")
+        run_cmd = dockerfile_cmd
+    else:
+        console.print("[yellow]Note: No command found in manifest or Dockerfile, server will run idle.[/yellow]")
+        run_cmd = "sleep infinity"
+
+    app_instance = App(
+        compute=compute,
+        cli_command=run_cmd,
+        pointers=[os.getcwd(), "", None],
+        name=service_name,
+        port=port,
+        health_check=health_check,
+        _skip_path_substitution=True,
+        run_async=True,
+    )
+    app_instance._service_name = service_name
+
+    console.print(f"[bold blue]Applying {manifest_path} as '{service_name}'.[/bold blue]")
+
+    try:
+        app_instance.deploy()
+    except Exception as e:
+        console.print(f"[red]Failed to apply: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command("secrets")
