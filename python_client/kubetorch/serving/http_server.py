@@ -208,7 +208,7 @@ class ControllerWebSocket:
     On startup, pods connect to the controller via WebSocket to:
     1. Register themselves (pod_name, namespace, service_name)
     2. Request their metadata (module pointers, init_args, etc.)
-    3. Receive updates when /pool is called (redeployments)
+    3. Receive updates when /workload is called (workload redeployments)
 
     This replaces the static env var approach where all metadata was baked
     into the pod manifest at creation time. It also replaces the push-based
@@ -336,7 +336,7 @@ class ControllerWebSocket:
     async def _handle_reload(self, metadata: dict):
         """Handle a reload message from controller.
 
-        This is called when /pool is called and the controller pushes
+        This is called when /workload is called and the controller pushes
         updated metadata to all pods. Sends an acknowledgment back to
         the controller so it can wait for all pods to process the reload.
 
@@ -422,7 +422,7 @@ class ControllerWebSocket:
                                 # Initial metadata response
                                 self._apply_metadata(data)
                             elif action == "reload":
-                                # Reload triggered by /pool call
+                                # Reload triggered by /workload call
                                 await self._handle_reload(data)
                             elif action == "error":
                                 logger.error(f"Controller error: {data.get('message')}")
@@ -790,7 +790,7 @@ def cached_image_setup():
 def run_image_setup():
     """Run image setup (rsync files, run dockerfile instructions).
 
-    With push-based reloads, files are rsynced before the pool is registered,
+    With push-based reloads, files are rsynced before the workload is registered,
     so the dockerfile should already be present when this is called.
     """
     if os.environ.get("KT_FREEZE", "False") == "True" or not is_running_in_kubernetes():

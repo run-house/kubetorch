@@ -111,6 +111,15 @@ rules:
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses"]
     verbs: ["get", "list"]
+
+  # Workloads
+  - apiGroups: ["kubetorch.com"]
+    resources: ["kubetorchworkloads"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # KubetorchWorkload status subresource for status updates
+  - apiGroups: ["kubetorch.com"]
+    resources: ["kubetorchworkloads/status"]
+    verbs: ["get", "update", "patch"]
 {{- end }}
 
 ###############################################################################

@@ -73,7 +73,7 @@ Client                          Controller                      Kubernetes
   │                                │                                │
   │  3. POST /controller/deploy    │                                │
   │     {manifest, module_info,    │                                │
-  │      pool_metadata}            │                                │
+  │      workload_metadata}        │                                │
   │────────────────────────────────>                                │
   │                                │  4. Apply manifest             │
   │                                │─────────────────────────────────>

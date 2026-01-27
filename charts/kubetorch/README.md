@@ -83,7 +83,6 @@ A Helm chart for kubetorch
 | kubetorchController.resources.cpu.request | string | `"1"` |  |
 | kubetorchController.resources.memory.request | string | `"2Gi"` |  |
 | kubetorchController.servicePort | int | `8080` |  |
-| kubetorchController.storage.size | string | `"1Gi"` |  |
 | kubetorchController.tag | string | `"0.4.2"` |  |
 | kubetorchController.tolerations | list | `[]` |  |
 | kubetorchController.ttl.enabled | bool | `true` |  |

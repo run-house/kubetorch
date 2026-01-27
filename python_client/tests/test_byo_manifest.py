@@ -206,19 +206,19 @@ def _get_basic_manifest(
     return manifest
 
 
-def get_pool_manifest(pool_name: str, namespace: str):
+def get_workload_manifest(workload_name: str, namespace: str):
     from .conftest import KUBETORCH_IMAGE
 
-    """Generate a Deployment manifest for a kubetorch worker pool."""
+    """Generate a Deployment manifest for a kubetorch worker workload."""
     return {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
-        "metadata": {"name": pool_name, "namespace": namespace},
+        "metadata": {"name": workload_name, "namespace": namespace},
         "spec": {
             "replicas": 1,
-            "selector": {"matchLabels": {"app": pool_name}},
+            "selector": {"matchLabels": {"app": workload_name}},
             "template": {
-                "metadata": {"labels": {"app": pool_name}},
+                "metadata": {"labels": {"app": workload_name}},
                 "spec": {
                     "containers": [
                         _make_container(name="worker", image=KUBETORCH_IMAGE, cpu="100m", memory="256Mi")
@@ -712,30 +712,30 @@ async def test_byo_manifest_with_selector():
     The user provides their own K8s deployment manifest and a label selector.
     When kt.fn().to(compute) is called:
     1. KT applies the manifest via /apply (creates the deployment)
-    2. KT registers the pool via /pool with the user's selector
+    2. KT registers the workload via /workload with the user's selector
     3. KT creates a K8s Service that routes to pods matching the selector
 
     The selector tells KT which pods belong to this compute, allowing proper
     tracking and routing even when the user's manifest uses custom labels.
     """
-    pool_name = f"{kt.config.username}-byo-manifest"
+    workload_name = f"{kt.config.username}-byo-manifest"
     namespace = kt.globals.config.namespace
 
     # User's raw deployment manifest with custom labels
     # Key requirement: pods have labels matching the selector we'll provide
-    byo_manifest = get_pool_manifest(pool_name, namespace)
+    byo_manifest = get_workload_manifest(workload_name, namespace)
 
     # 1. Create Compute from manifest with selector
     # The selector tells kubetorch which pods belong to this compute
     compute = kt.Compute.from_manifest(
         manifest=byo_manifest,
-        selector={"app": pool_name},
+        selector={"app": workload_name},
     )
 
     # 2. Deploy a function using the standard kt.fn().to() pattern
     # This will:
     # - Apply the manifest (creates/updates the deployment)
-    # - Register the pool with the user's selector
+    # - Register the workload with the user's selector
     # - Wait for pods to be ready
     # - Deploy the function
     remote_fn = kt.fn(summer).to(compute)
@@ -748,7 +748,7 @@ async def test_byo_manifest_with_selector():
 @pytest.mark.level("minimal")
 @pytest.mark.asyncio
 async def test_selector_only():
-    """Test selector-only flow: user deploys pods separately, KT just registers pool.
+    """Test selector-only flow: user deploys pods separately, KT just registers workload.
 
     Use Case #3: User applies manifest themselves, then uses selector to track pods.
 
@@ -756,7 +756,7 @@ async def test_selector_only():
     They just provide a selector to identify those pods:
     1. User deploys pods via kubectl/k8s API (with kubetorch server image)
     2. User creates kt.Compute(selector={"app": "workers"})
-    3. kt.fn().to(compute) just calls /pool (no /apply)
+    3. kt.fn().to(compute) just calls /workload (no /apply)
     4. K8s Service is created, function calls work
     """
     import kubetorch as kt
@@ -773,16 +773,16 @@ async def test_selector_only():
     apps_v1 = client.AppsV1Api()
     core_v1 = client.CoreV1Api()
 
-    pool_name = f"{kt.config.username}-selector-only"
+    workload_name = f"{kt.config.username}-selector-only"
     namespace = kt.globals.config.namespace
-    selector_labels = {"app": pool_name}
+    selector_labels = {"app": workload_name}
 
     # 1. User deploys their own pods via k8s API (NOT through kubetorch controller)
     # These pods must have the kubetorch server running
     user_deployment = client.V1Deployment(
         api_version="apps/v1",
         kind="Deployment",
-        metadata=client.V1ObjectMeta(name=pool_name, namespace=namespace, labels=selector_labels),
+        metadata=client.V1ObjectMeta(name=workload_name, namespace=namespace, labels=selector_labels),
         spec=client.V1DeploymentSpec(
             replicas=1,
             selector=client.V1LabelSelector(match_labels=selector_labels),
@@ -824,7 +824,7 @@ async def test_selector_only():
         apps_v1.create_namespaced_deployment(namespace=namespace, body=user_deployment)
     except client.ApiException as e:
         if e.status == 409:  # Already exists
-            apps_v1.replace_namespaced_deployment(name=pool_name, namespace=namespace, body=user_deployment)
+            apps_v1.replace_namespaced_deployment(name=workload_name, namespace=namespace, body=user_deployment)
         else:
             raise
 
@@ -847,7 +847,7 @@ async def test_selector_only():
         # 2. Create Compute with just a selector (no manifest, no cpus, etc.)
         compute = kt.Compute(selector=selector_labels)
 
-        # 3. Deploy function - should only call /pool, not /apply
+        # 3. Deploy function - should only call /workload, not /apply
         remote_fn = kt.fn(summer).to(compute)
 
         # 4. Call the function and verify it works
@@ -860,7 +860,7 @@ async def test_selector_only():
         def scale_after_delay():
             time.sleep(1)  # Wait for websocket to connect
             apps_v1.patch_namespaced_deployment_scale(
-                name=pool_name, namespace=namespace, body={"spec": {"replicas": 2}}
+                name=workload_name, namespace=namespace, body={"spec": {"replicas": 2}}
             )
 
         scale_thread = threading.Thread(target=scale_after_delay)
@@ -873,7 +873,7 @@ async def test_selector_only():
 
     finally:
         try:
-            apps_v1.delete_namespaced_deployment(name=pool_name, namespace=namespace)
+            apps_v1.delete_namespaced_deployment(name=workload_name, namespace=namespace)
         except client.ApiException:
             pass
 
@@ -886,16 +886,16 @@ async def test_byo_manifest_with_endpoint_url():
     Use Case: User wants KT to create pods that their routing layer will forward traffic to.
 
     Flow:
-    1. User creates their own K8s Service, which is configured to route to pods with selector {app: pool_name}
+    1. User creates their own K8s Service, which is configured to route to pods with selector {app: workload_name}
     2. KT creates pods compute from manifest with labels matching the Service selector, and using user endpoint url
     3. Check that function calls go through user's service URL into KT's pods
     """
-    pool_name = f"{kt.config.username}-endpoint-url"
+    workload_name = f"{kt.config.username}-endpoint-url"
     namespace = kt.globals.config.namespace
     controller = kt.globals.controller_client()
 
-    # User's routing layer - routes traffic to pods with {app: pool_name} label
-    user_service_name = f"{pool_name}-user-svc"
+    # User's routing layer - routes traffic to pods with {app: workload_name} label
+    user_service_name = f"{workload_name}-user-svc"
     user_port = 82
     user_service = {
         "apiVersion": "v1",
@@ -905,7 +905,7 @@ async def test_byo_manifest_with_endpoint_url():
             "namespace": namespace,
         },
         "spec": {
-            "selector": {"app": pool_name},  # Will route to pods KT creates
+            "selector": {"app": workload_name},  # Will route to pods KT creates
             "ports": [{"port": user_port, "targetPort": DEFAULT_KT_SERVER_PORT}],
         },
     }
@@ -913,13 +913,13 @@ async def test_byo_manifest_with_endpoint_url():
 
     try:
         # Create Compute from manifest with selector and endpoint
-        byo_manifest = get_pool_manifest(pool_name, namespace)
+        byo_manifest = get_workload_manifest(workload_name, namespace)
         user_service_url = f"http://{user_service_name}.{namespace}.svc.cluster.local:{user_port}"
         endpoint = kt.Endpoint(url=user_service_url)
 
         compute = kt.Compute.from_manifest(
             manifest=byo_manifest,
-            selector={"app": pool_name},
+            selector={"app": workload_name},
             endpoint=endpoint,
         )
         assert compute._endpoint_config == endpoint
@@ -952,7 +952,7 @@ async def test_byo_manifest_with_endpoint_selector():
     the default master routing.
 
     Verify:
-    1. Pool selector finds both master and worker pods
+    1. Workload selector finds both master and worker pods
     2. Endpoint selector routes calls ONLY to worker pod
     3. Function calls consistently go to worker
     """
@@ -974,8 +974,8 @@ async def test_byo_manifest_with_endpoint_selector():
     pytorch_manifest["metadata"]["labels"] = {}
     pytorch_manifest["metadata"]["annotations"] = {}
 
-    # Pool selector: tracks all pods (master + worker)
-    pool_selector = {"training.kubeflow.org/job-name": job_name}
+    # Workload selector: tracks all pods (master + worker)
+    workload_selector = {"training.kubeflow.org/job-name": job_name}
 
     # Endpoint selector: route only to worker pod
     endpoint_selector = {
@@ -985,20 +985,20 @@ async def test_byo_manifest_with_endpoint_selector():
     endpoint = kt.Endpoint(selector=endpoint_selector)
     compute = kt.Compute.from_manifest(
         manifest=pytorch_manifest,
-        selector=pool_selector,
+        selector=workload_selector,
         endpoint=endpoint,
     )
     assert compute._endpoint_config == endpoint
 
     hostname_fn = kt.fn(get_hostname).to(compute)
 
-    # Check that pool selector finds both master and worker pods
-    label_selector = ",".join(f"{k}={v}" for k, v in pool_selector.items())
+    # Check that workload selector finds both master and worker pods
+    label_selector = ",".join(f"{k}={v}" for k, v in workload_selector.items())
     pods_result = controller.list_pods(namespace=namespace, label_selector=label_selector)
-    pool_pods = pods_result.get("items", [])
-    assert len(pool_pods) == 2
+    workload_pods = pods_result.get("items", [])
+    assert len(workload_pods) == 2
 
-    pod_types = {p["metadata"]["labels"].get("training.kubeflow.org/replica-type") for p in pool_pods}
+    pod_types = {w["metadata"]["labels"].get("training.kubeflow.org/replica-type") for w in workload_pods}
     assert pod_types == {"master", "worker"}, f"Expected master and worker pods, got {pod_types}"
 
     # Check that function calls work. Note: In distributed mode (PyTorchJob with SPMD),

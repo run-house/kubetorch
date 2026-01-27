@@ -22,4 +22,4 @@ DEFAULT_TAIL_LENGTH = 100  # log tail length
 CONTROLLER_CONNECT_TIMEOUT = 30.0  # Time to establish TCP connection
 CONTROLLER_READ_TIMEOUT = 30.0  # Time to receive response body for quick operations (list, get)
 CONTROLLER_WRITE_TIMEOUT = 30.0  # Time to send request body
-CONTROLLER_POOL_TIMEOUT = 10.0  # Time to acquire connection from pool
+CONTROLLER_WORKLOAD_TIMEOUT = 10.0  # Time to acquire connection from workload

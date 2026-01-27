@@ -128,7 +128,7 @@ class Compute:
                 deploy functions to those pods. Example: ``{"app": "workers", "team": "ml"}``.
             endpoint (Endpoint, optional): Custom endpoint configuration for routing calls to pods.
                 Use this to specify your own URL (skip Service creation) or a custom selector
-                (route to subset of pool). See :class:`Endpoint` for details.
+                (route to subset of workload). See :class:`Endpoint` for details.
 
         Note:
 
@@ -191,7 +191,7 @@ class Compute:
 
         if selector and not any([cpus, memory, disk_size, gpus, gpu_type, gpu_memory]):
             # Selector-only mode: user provides only a selector for existing pods
-            # No manifest is built - just register pool and create service
+            # No manifest is built - just register workload and create service
             self._namespace = namespace or globals.config.namespace
             return
 
@@ -289,7 +289,7 @@ class Compute:
                 Example: ``{"app": "my-workers", "team": "ml"}``
             endpoint (Endpoint, optional): Custom endpoint configuration for routing calls
                 to pods. Use ``Endpoint(url="...")`` for your own Service/Ingress, or
-                ``Endpoint(selector={...})`` to route to a subset of pool pods.
+                ``Endpoint(selector={...})`` to route to a subset of workload pods.
             pod_template_path (str or list, optional): Path to the pod template within the
                 manifest. Use this for custom CRDs where the pod template is not at the
                 standard ``spec.template`` location. Can be a dot-separated string
@@ -324,10 +324,10 @@ class Compute:
                 endpoint=kt.Endpoint(url="my-svc.my-ns.svc.cluster.local:8080")
             )
 
-            # Route to subset of pool (e.g., head node only)
+            # Route to subset of workload (e.g., head node only)
             compute = kt.Compute.from_manifest(
                 manifest=ray_manifest,
-                selector={"app": "ray"},  # Pool: all ray pods
+                selector={"app": "ray"},  # Workload: all ray pods
                 endpoint=kt.Endpoint(selector={"app": "ray", "role": "head"})  # Route: head only
             )
 
@@ -629,7 +629,7 @@ class Compute:
 
         Selector-only mode is when the user provides a pod selector to identify
         existing running pods, without providing a manifest or resource requirements.
-        In this mode, Kubetorch just registers the pool and routes calls to the pods.
+        In this mode, Kubetorch just registers the workload and routes calls to the pods.
         """
         return self._pod_selector is not None and self._manifest is None
 
@@ -1469,7 +1469,7 @@ class Compute:
             if "failureThreshold" in startup_probe:
                 # Convert back from failure threshold (launch_timeout // 5)
                 return startup_probe["failureThreshold"] * 5
-        # Use default from config/env when not set in manifest or pool-only mode
+        # Use default from config/env when not set in manifest or workload-only mode
         return self._get_launch_timeout()
 
     @launch_timeout.setter
@@ -2009,18 +2009,18 @@ class Compute:
         it will update the service with the latest copy of the code."""
         if self.selector_only:
             if not dryrun:
-                # Selector-only mode: just register pool, no manifest to apply
+                # Selector-only mode: just register workload, no manifest to apply
                 # tells controller to notify existing pods to reload
                 specifier = {"type": "label_selector", "selector": self._pod_selector}
-                pool_response = globals.controller_client().register_pool(
+                workload_response = globals.controller_client().register_workload(
                     name=service_name,
                     namespace=self.namespace,
                     specifier=specifier,
-                    pool_metadata={"username": globals.config.username},
+                    workload_metadata={"username": globals.config.username},
                     module=module,
                 )
-                status = pool_response.get("status")
-                message = pool_response.get("message", "")
+                status = workload_response.get("status")
+                message = workload_response.get("message", "")
                 if status == "error":
                     raise Exception(f"Resource registration to kubetorch controller failed: {message}")
                 elif status == "warning":

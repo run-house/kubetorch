@@ -231,12 +231,12 @@ class Module:
         all_services = ServiceManager.discover_services(namespace=namespace)
 
         # Create name-to-service lookup for efficient searching
-        # Prefer non-selector services over selector pools (which don't have env vars)
+        # Prefer non-selector services over selector workloads (which don't have env vars)
         service_dict = {}
         for svc in all_services:
             svc_name = svc["name"]
             if svc_name not in service_dict or service_dict[svc_name].get("template_type") == "selector":
-                # Add if new, or replace selector pool with actual K8s resource
+                # Add if new, or replace selector workload with actual K8s resource
                 service_dict[svc_name] = svc
 
         # Try to find the first matching service across all service types
@@ -245,7 +245,7 @@ class Module:
             if service_info is None:
                 continue
 
-            # Skip selector-based pools - they don't have template for reload
+            # Skip selector-based workloads - they don't have template for reload
             if service_info.get("template_type") == "selector":
                 continue
 
@@ -268,12 +268,12 @@ class Module:
                         existing_volume = kt.Volume.from_name(name=v.get("name"))
                         volumes.append(existing_volume)
 
-            # Get module info from controller's pool database
-            pool_info = controller_client.get_pool(namespace, candidate)
-            if not pool_info or not pool_info.get("module"):
-                raise ValueError(f"No module info found for pool {candidate}")
+            # Get module info from controller's workload database
+            workload_info = controller_client.get_workload(namespace, candidate)
+            if not workload_info or not workload_info.get("module"):
+                raise ValueError(f"No module info found for workload {candidate}")
 
-            module_info = pool_info["module"]
+            module_info = workload_info["module"]
             module_pointers = module_info.get("pointers", {})
             pointers = (
                 module_pointers.get("file_path"),
@@ -661,7 +661,7 @@ class Module:
             # Generate dockerfile (module metadata sent via controller WebSocket)
             dockerfile = self._get_service_dockerfile()
 
-            # Build module spec for pool registration
+            # Build module spec for workload registration
             dispatch = self.compute.dispatch_method
 
             module_metadata = {
@@ -736,7 +736,7 @@ class Module:
             # Generate dockerfile (module metadata sent via controller WebSocket)
             dockerfile = self._get_service_dockerfile()
 
-            # Build module spec for pool registration
+            # Build module spec for workload registration
             dispatch = self.compute.dispatch_method
 
             module_metadata = {
