@@ -60,20 +60,33 @@ class ServiceManager:
     # Manifest Navigation (config-driven)
     # =========================================================================
 
-    def get_pod_template_path(self) -> List[str]:
-        """Get the path to the pod template in the manifest."""
-        path = self.config.get("pod_template_path")
-        if path is None:
-            raise ValueError(f"Resource type {self.resource_type} has no pod template path (selector-only?)")
-        return path
+    def get_pod_template_path(self, override: List[str] = None) -> Optional[List[str]]:
+        """Get the path to the pod template in the manifest.
 
-    def pod_spec(self, manifest: dict) -> dict:
-        """Get the pod spec from a manifest."""
-        template_path = self.get_pod_template_path()
-        current = manifest
-        for key in template_path:
-            current = current.get(key, {})
-        return current.get("spec", {})
+        For BYO manifests with unknown resource types, returns None if no override is provided.
+        The caller should handle None gracefully (e.g., skip pod spec extraction).
+        """
+        if override:
+            return override
+        return self.config.get("pod_template_path")
+
+    def pod_spec(self, manifest: dict, pod_template_path: List[str] = None) -> dict:
+        """Get the pod spec from a manifest.
+
+        Returns empty dict if pod template path is not configured and no override is provided.
+        This allows BYO manifests to work without requiring pod spec extraction.
+        """
+        from kubetorch.resources.compute.utils import navigate_path
+
+        template_path = self.get_pod_template_path(override=pod_template_path)
+        if template_path is None:
+            # Unknown resource type with no override - return empty pod spec
+            # Server port will default to 32300, which is fine for most cases
+            return {}
+        pod_template = navigate_path(manifest, template_path)
+        if pod_template is None:
+            return {}
+        return pod_template.get("spec", {})
 
     # =========================================================================
     # Replicas (config-driven with type-specific logic)
@@ -222,9 +235,15 @@ class ServiceManager:
         custom_labels: dict = None,
         custom_annotations: dict = None,
         custom_template: dict = None,
+        pod_template_path: List[str] = None,
         **kwargs,
     ) -> dict:
-        """Apply kubetorch labels and annotations to manifest."""
+        """Apply kubetorch labels and annotations to manifest.
+
+        Args:
+            pod_template_path: Override path to pod template for BYO manifests
+                with non-standard pod template locations.
+        """
         from kubetorch.provisioning.utils import nested_override
 
         labels = self._get_labels(custom_labels)
@@ -236,9 +255,10 @@ class ServiceManager:
         manifest["metadata"].setdefault("labels", {}).update(labels)
         manifest["metadata"].setdefault("annotations", {}).update(annotations)
 
-        # Apply template metadata updates
-        if self.config.get("pod_template_path"):
-            self._apply_template_metadata_updates(manifest, template_labels, annotations, **kwargs)
+        # Apply template metadata updates (use override if provided)
+        effective_path = pod_template_path or self.config.get("pod_template_path")
+        if effective_path:
+            self._apply_template_metadata_updates(manifest, template_labels, annotations, path=effective_path, **kwargs)
 
         # Apply custom template overrides
         if custom_template:
@@ -259,13 +279,20 @@ class ServiceManager:
         # Navigate to template metadata, handling both dict keys and list indices
         current = manifest
         for key in template_path:
-            if isinstance(key, int):
-                if key < len(current):
-                    current = current[key]
-                else:
-                    return  # nothing to update
-            else:
+            if isinstance(current, list):
+                # Handle list index (can be int or string like "0")
+                try:
+                    idx = int(key)
+                    if idx < len(current):
+                        current = current[idx]
+                    else:
+                        return  # nothing to update
+                except (ValueError, IndexError):
+                    return
+            elif isinstance(current, dict):
                 current = current.setdefault(key, {})
+            else:
+                return
         metadata = current.setdefault("metadata", {})
         metadata.setdefault("labels", {}).update(template_labels)
         metadata.setdefault("annotations", {}).update(annotations)
@@ -281,8 +308,16 @@ class ServiceManager:
         service_name: str,
         clean_module_name: str,
         deployment_timestamp: str,
+        pod_template_path: List[str] = None,
     ) -> dict:
-        """Update manifest with service name and deployment timestamp."""
+        """Update manifest with service name and deployment timestamp.
+
+        Args:
+            pod_template_path: Override path to pod template for BYO manifests
+                with non-standard pod template locations.
+        """
+        from kubetorch.resources.compute.utils import navigate_path
+
         updated = copy.deepcopy(manifest)
 
         # Update top-level metadata
@@ -298,40 +333,22 @@ class ServiceManager:
             updated["spec"].setdefault("selector", {}).setdefault("matchLabels", {})
             updated["spec"]["selector"]["matchLabels"][provisioning_constants.KT_SERVICE_LABEL] = service_name
 
-        # Update template metadata
-        if self.config.get("pod_template_path"):
-            template_path = self.get_pod_template_path()
-            current = updated
-            for key in template_path:
-                if isinstance(key, int):
-                    if key < len(current):
-                        current = current[key]
-                    else:
-                        current = None
-                        break
-                else:
-                    current = current.setdefault(key, {})
-            if current is None:
-                return updated
-            metadata = current.setdefault("metadata", {})
-            metadata.setdefault("labels", {})[provisioning_constants.KT_SERVICE_LABEL] = service_name
-            metadata["labels"][provisioning_constants.KT_MODULE_LABEL] = clean_module_name
-            metadata["labels"][provisioning_constants.KT_APP_LABEL] = service_name
+        # Update template metadata (use override if provided)
+        effective_path = pod_template_path or self.config.get("pod_template_path")
+        if effective_path:
+            pod_template = navigate_path(updated, effective_path, create_missing=True)
+            if pod_template is not None:
+                metadata = pod_template.setdefault("metadata", {})
+                metadata.setdefault("labels", {})[provisioning_constants.KT_SERVICE_LABEL] = service_name
+                metadata["labels"][provisioning_constants.KT_MODULE_LABEL] = clean_module_name
+                metadata["labels"][provisioning_constants.KT_APP_LABEL] = service_name
 
-            # Also update worker template for distributed resources
+            # Also update worker template for distributed resources (known types only)
             worker_path = self.config.get("worker_template_path")
             if worker_path:
-                current = updated
-                for key in worker_path:
-                    if isinstance(key, int):
-                        if key < len(current):
-                            current = current[key]
-                        else:
-                            break
-                    else:
-                        current = current.get(key, {})
-                if current:
-                    metadata = current.setdefault("metadata", {})
+                worker_template = navigate_path(updated, worker_path)
+                if worker_template is not None:
+                    metadata = worker_template.setdefault("metadata", {})
                     metadata.setdefault("labels", {})[provisioning_constants.KT_SERVICE_LABEL] = service_name
                     metadata["labels"][provisioning_constants.KT_MODULE_LABEL] = clean_module_name
 
@@ -382,7 +399,8 @@ class ServiceManager:
         deployment_mode: str = None,
         distributed_config: dict = None,
         runtime_config: dict = None,
-    ) -> Tuple[dict, dict]:
+        pod_template_path: List[str] = None,
+    ) -> Tuple[dict, dict, str]:
         """Create or update a Kubernetes service and register it with the controller.
 
         Deploys the provided manifest to the cluster and registers the resource with the
@@ -411,11 +429,13 @@ class ServiceManager:
             runtime_config (dict, optional): Runtime configuration that flows via WebSocket.
                 Includes log_streaming_enabled, metrics_enabled, inactivity_ttl, log_level,
                 allowed_serialization. These can change between deploys without pod recreation.
+            pod_template_path (List[str], optional): Custom path to pod template for BYO manifests
+                with non-standard pod template locations.
 
         Returns:
-            Tuple[dict, dict]: A tuple of (created_service, updated_manifest) where
-                created_service is the K8s resource returned by the controller and
-                updated_manifest is the manifest with applied labels and timestamps.
+            Tuple[dict, dict, str]: A tuple of (`created_service`, `updated_manifest`, `service_url`) where
+                `created_service` is the K8s resource returned by the controller, `updated_manifest` is the manifest
+                with applied labels and timestamps, and `service_url` is the url registered with the controller.
         """
         logger.info(f"Deploying {manifest.get('kind', self.resource_type)} service with name: {service_name}")
 
@@ -429,10 +449,12 @@ class ServiceManager:
         # Update manifest with service name and deployment metadata
         clean_module_name = self._clean_module_name(module_name)
         timestamp = deployment_timestamp or self._get_deployment_timestamp()
-        updated_manifest = self._update_launchtime_manifest(manifest, service_name, clean_module_name, timestamp)
+        updated_manifest = self._update_launchtime_manifest(
+            manifest, service_name, clean_module_name, timestamp, pod_template_path=pod_template_path
+        )
 
         # Create or update the resource with the controller
-        created_service = self._apply_and_register_workload(
+        result = self._apply_and_register_workload(
             manifest=updated_manifest,
             service_name=service_name,
             dry_run=dryrun,
@@ -444,9 +466,12 @@ class ServiceManager:
             deployment_mode=deployment_mode,
             distributed_config=distributed_config,
             runtime_config=runtime_config,
+            pod_template_path=pod_template_path,
         )
+        created_service = result["resource"]
+        service_url = result.get("service_url")
 
-        return created_service, updated_manifest
+        return created_service, updated_manifest, service_url
 
     def _preprocess_manifest_for_launch(self, manifest: dict) -> dict:
         """Preprocess manifest before launch."""
@@ -550,9 +575,10 @@ class ServiceManager:
         deployment_mode: str = None,
         distributed_config: dict = None,
         runtime_config: dict = None,
+        pod_template_path: List[str] = None,
     ) -> dict:
         """Create or update resource via controller using the deploy endpoint. Applies the manifest and registers the workload."""
-        pod_spec = self.pod_spec(manifest)
+        pod_spec = self.pod_spec(manifest, pod_template_path=pod_template_path)
         server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
 
         labels = manifest.get("metadata", {}).get("labels", {})
@@ -613,13 +639,16 @@ class ServiceManager:
 
                 logger.info(f"Registered {service_name} to kubetorch controller in namespace {self.namespace}")
 
-            return deploy_response.get("resource", manifest)
+            return {
+                "resource": deploy_response.get("resource", manifest),
+                "service_url": deploy_response.get("service_url"),
+            }
 
         except Exception as e:
             if http_conflict(e):
                 logger.info(f"{manifest.get('kind', self.resource_type)} {service_name} already exists, updating")
                 # Return the manifest we tried to apply - resource already exists with similar config
-                return manifest
+                return {"resource": manifest, "service_url": None}
             raise
 
     def check_service_ready(self, service_name: str, launch_timeout: int = 300, **kwargs) -> bool:
@@ -718,19 +747,26 @@ class ServiceManager:
     # Utilities
     # =========================================================================
 
-    def load_service_info(self, created_service: dict) -> dict:
-        """Extract service name, namespace, and pod template from created resource."""
+    def load_service_info(self, created_service: dict, pod_template_path: List[str] = None) -> dict:
+        """Extract service name, namespace, and pod template from created resource.
+
+        Args:
+            created_service: The created K8s resource dict
+            pod_template_path: Optional custom path to pod template (for BYO manifests with non-standard paths)
+        """
+        from kubetorch.resources.compute.utils import navigate_path
+
         service_name = created_service.get("metadata", {}).get("name")
         namespace = created_service.get("metadata", {}).get("namespace")
 
-        template_path = self.get_pod_template_path()
-        current = created_service
-        try:
-            for key in template_path:
-                current = current[key]
-            pod_template = current
-        except (KeyError, TypeError):
-            raise ValueError("Failed to find pod template in created service.")
+        template_path = pod_template_path or self.get_pod_template_path()
+        if template_path is None:
+            # BYO manifest with unknown resource type - no pod template path configured
+            pod_template = {}
+        else:
+            pod_template = navigate_path(created_service, template_path)
+            if pod_template is None:
+                raise ValueError("Failed to find pod template in created service.")
 
         return {
             "name": service_name,
@@ -763,7 +799,7 @@ class ServiceManager:
 
     @staticmethod
     def discover_services(namespace: str, name_filter: str = None) -> List[Dict]:
-        """Discover all Kubetorch services (Knative, Deployments, RayClusters, training jobs, selector workloads).
+        """Discover all Kubetorch workloads.
 
         Args:
             namespace (str): Kubernetes namespace to search.
@@ -773,72 +809,39 @@ class ServiceManager:
             List of service dictionaries with normalized structure:
             {
                 'name': str,
-                'template_type': str,  # 'ksvc', 'deployment', 'raycluster', 'pytorchjob', 'selector'
-                'resource': dict,      # The Kubernetes resource object
+                'template_type': str,  # lowercase kind (e.g., 'deployment', 'jobset', 'pytorchjob')
+                'resource': dict,      # Synthetic resource dict for display
                 'namespace': str,
                 'creation_timestamp': str
             }
         """
         controller_client = globals.controller_client()
 
-        resources = controller_client.discover_resources(
+        response = controller_client.discover_resources(
             namespace=namespace,
             name_filter=name_filter,
+            include_pods=True,  # Fetch pods in bulk
         )
-
-        def get_service_dict(resource: Dict, template_type: str) -> Dict:
-            return {
-                "name": resource.get("metadata", {}).get("name"),
-                "template_type": template_type,
-                "resource": resource,
-                "namespace": namespace,
-                "creation_timestamp": resource.get("metadata", {}).get("creationTimestamp", ""),
-            }
 
         services = []
 
-        resource_configs = [
-            ("knative_services", "ksvc"),
-            ("deployments", "deployment"),
-            ("rayclusters", "raycluster"),
-        ]
-        for resource_type, template_type in resource_configs:
-            for resource in resources.get(resource_type, []):
-                services.append(get_service_dict(resource, template_type))
+        for workload in response.get("workloads", []):
+            workload_name = workload.get("name")
+            resource_kind = workload.get("kind") or workload.get("resource_kind")
 
-        # Training jobs
-        for resource in resources.get("training_jobs", []):
-            kind = resource.get("kind", "").lower()  # e.g., "PyTorchJob" -> "pytorchjob"
-            services.append(get_service_dict(resource, kind))
+            # template_type is just the lowercased kind, or "selector" if unknown
+            template_type = (resource_kind or "selector").lower()
 
-        # Selector workloads - need to build synthetic resources
-        for workload in resources.get("workloads", []):
+            # Get pods from the workload (already fetched in bulk by controller)
+            pods_for_workload = workload.get("pods", [])
+
+            # Get specifier and selector
             specifier = workload.get("specifier")
             if not isinstance(specifier, dict):
                 specifier = {}
-            # Only include selector-based workloads (others are already discovered via K8s resources)
-            if specifier.get("type") != "label_selector":
-                continue
+            selector = specifier.get("selector", {})
 
-            # Skip workloads that have a KT-managed backing K8s resource (already discovered)
-            workload_labels = workload.get("labels") or {}
-            if workload.get("resource_kind") and provisioning_constants.KT_TEMPLATE_LABEL in workload_labels:
-                continue
-
-            workload_name = workload.get("name")
-
-            # Get pods using selector from specifier
-            pods_for_workload = []
-            selector = specifier.get("selector")
-            if selector:
-                label_selector = ",".join(f"{k}={v}" for k, v in selector.items())
-                try:
-                    pods_result = controller_client.list_pods(namespace=namespace, label_selector=label_selector)
-                    pods_for_workload = pods_result.get("items", [])
-                except Exception as e:
-                    logger.warning(f"Failed to list pods for workload {workload_name}: {e}")
-
-            # Create a synthetic resource dict for display compatibility
+            # Build a synthetic resource dict for display compatibility
             workload_metadata = workload.get("workload_metadata") or {}
             labels = (workload.get("labels") or {}).copy()
             username = workload_metadata.get("username", "")
@@ -866,6 +869,14 @@ class ServiceManager:
                 "_selector": selector,
             }
 
-            services.append(get_service_dict(synthetic_resource, "selector"))
+            services.append(
+                {
+                    "name": workload_name,
+                    "template_type": template_type,
+                    "resource": synthetic_resource,
+                    "namespace": namespace,
+                    "creation_timestamp": workload.get("created_at", ""),
+                }
+            )
 
         return services
