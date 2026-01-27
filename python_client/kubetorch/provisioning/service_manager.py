@@ -796,6 +796,7 @@ class ServiceManager:
             }
 
         services = []
+        seen_names = set()  # Track seen service names to deduplicate
 
         resource_configs = [
             ("knative_services", "ksvc"),
@@ -804,10 +805,20 @@ class ServiceManager:
         ]
         for resource_type, template_type in resource_configs:
             for resource in resources.get(resource_type, []):
+                name = resource.get("metadata", {}).get("name")
+                if name and name in seen_names:
+                    continue  # Skip duplicates
+                if name:
+                    seen_names.add(name)
                 services.append(get_service_dict(resource, template_type))
 
         # Training jobs
         for resource in resources.get("training_jobs", []):
+            name = resource.get("metadata", {}).get("name")
+            if name and name in seen_names:
+                continue  # Skip duplicates
+            if name:
+                seen_names.add(name)
             kind = resource.get("kind", "").lower()  # e.g., "PyTorchJob" -> "pytorchjob"
             services.append(get_service_dict(resource, kind))
 
@@ -826,6 +837,10 @@ class ServiceManager:
                 continue
 
             pool_name = pool.get("name")
+
+            # Skip duplicates (workload already discovered via K8s resources)
+            if workload_name and workload_name in seen_names:
+                continue
 
             # Get pods using selector from specifier
             pods_for_pool = []
@@ -866,6 +881,8 @@ class ServiceManager:
                 "_selector": selector,
             }
 
+            if workload_name:
+                seen_names.add(workload_name)
             services.append(get_service_dict(synthetic_resource, "selector"))
 
         return services
