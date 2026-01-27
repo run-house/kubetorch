@@ -951,7 +951,7 @@ def test_compute_factory_shared_memory_limit():
         assert compute_binary_units.shared_memory_limit == f"2{unit}"
 
 
-@pytest.mark.level("unit")
+@pytest.mark.level("minimal")
 def test_compute_nonexisting_priority_class():
     import kubetorch as kt
 

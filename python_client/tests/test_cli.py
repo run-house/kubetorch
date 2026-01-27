@@ -413,7 +413,7 @@ async def test_cli_kt_check_basic(remote_logs_fn):
     expected_checks = [
         "deployment service",
         "deployment pod",
-        "rsync",
+        "data store",
         "service call",
         "log streaming",
     ]
@@ -439,7 +439,7 @@ async def test_cli_kt_check_basic_multipod(remote_logs_fn_autoscaled):
     expected_checks = [
         "knative service",
         "deployment pod",
-        "rsync",
+        "data store",
         "service call",
         "log streaming",
     ]
