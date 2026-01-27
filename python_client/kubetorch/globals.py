@@ -892,7 +892,8 @@ class ControllerClient:
             "prefix_filter": prefix_filter,
         }
         params = {k: v for k, v in params.items() if v}
-        return self.get(f"/controller/discover/{namespace}", params=params or None)
+        # increase timeout since discovery can return large responses (full resource specs)
+        return self.get(f"/controller/discover/{namespace}", params=params or None, timeout=120)
 
 
 @cache
