@@ -19,7 +19,7 @@ from kubetorch.logger import get_logger
 from kubetorch.provisioning.autoscaling import AutoscalingConfig
 from kubetorch.provisioning.utils import pod_is_running, SUPPORTED_TRAINING_JOBS
 from kubetorch.resources.callables.utils import find_locally_installed_version
-from kubetorch.resources.compute.utils import _run_bash
+from kubetorch.resources.compute.utils import _run_bash, navigate_path
 from kubetorch.resources.images.image import Image
 from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecretsClient
 from kubetorch.resources.volumes.volume import Volume
@@ -413,6 +413,7 @@ class Compute:
             custom_labels={},
             custom_annotations=manifest_annotations,
             inactivity_ttl=template_vars["inactivity_ttl"],
+            pod_template_path=self._pod_template_path_override,
         )
 
     def _build_kubetorch_pod_spec(self, config: dict):
@@ -660,13 +661,7 @@ class Compute:
             # Unknown resource type - no pod template path configured
             return None
         path = template_path + ["spec"]
-
-        current = self._manifest
-        for key in path:
-            if current is None:
-                return None
-            current = current.get(key)
-        return current
+        return navigate_path(self._manifest, path)
 
     @pod_spec.setter
     def pod_spec(self, value: dict):
@@ -679,10 +674,17 @@ class Compute:
             )
         path = template_path + ["spec"]
 
-        current = self._manifest
-        for key in path[:-1]:
-            current = current.setdefault(key, {})
-        current[path[-1]] = value
+        # Navigate to parent, creating dicts as needed
+        parent = navigate_path(self._manifest, path[:-1], create_missing=True)
+        if parent is not None:
+            last_key = path[-1]
+            if isinstance(parent, list):
+                try:
+                    parent[int(last_key)] = value
+                except (ValueError, IndexError):
+                    pass
+            else:
+                parent[last_key] = value
 
     @property
     def service_manager(self):
@@ -1749,10 +1751,8 @@ class Compute:
         """Get the pod template from the manifest (includes metadata and spec)."""
         template_path = self._get_pod_template_path()
         if template_path:
-            current = self._manifest
-            for key in template_path:
-                current = current.get(key, {})
-            return current
+            result = navigate_path(self._manifest, template_path)
+            return result if result is not None else {}
         return {}
 
     def add_labels(self, labels: Dict):
@@ -2074,7 +2074,7 @@ class Compute:
         # - distributed_config is set (explicit SPMD/distributed)
         # - deployment_mode is "raycluster" (Ray auto-enables distributed mode for worker connectivity)
         needs_headless = bool(distributed_config) or self.deployment_mode == "raycluster"
-        created_service, updated_manifest = self.service_manager.create_or_update_service(
+        created_service, updated_manifest, service_url = self.service_manager.create_or_update_service(
             service_name=service_name,
             module_name=module_name,
             manifest=self._manifest,
@@ -2088,10 +2088,18 @@ class Compute:
             deployment_mode=self.deployment_mode,
             distributed_config=distributed_config,
             runtime_config=runtime_config,
+            pod_template_path=self._pod_template_path_override,
         )
         self._manifest = updated_manifest
 
-        service_info = self.service_manager.load_service_info(created_service)
+        # Use the service URL from the controller
+        if service_url:
+            self.endpoint = f"http://{service_url}:80"
+            logger.debug(f"Using service URL: {self.endpoint}")
+
+        service_info = self.service_manager.load_service_info(
+            created_service, pod_template_path=self._pod_template_path_override
+        )
         service_name = service_info["name"]
         service_template = {
             "metadata": {

@@ -372,16 +372,20 @@ RESOURCE_CONFIGS: Dict[str, dict] = {
 def get_resource_config(resource_type: str) -> dict:
     """Get configuration for a resource type.
 
-    For unknown resource types (e.g., BYO manifests with StatefulSet, DaemonSet, etc.),
-    returns a generic config that works with selector-based routing. The controller
-    handles arbitrary resource types via the dynamic K8s client.
+    For unknown resource types (e.g., BYO manifests with JobSet, custom CRDs, etc.),
+    returns a minimal config with no pod_template_path. The caller should provide
+    an explicit pod_template_path for these cases, or the code will gracefully
+    handle the missing path (e.g., use default server port).
+
+    The controller handles arbitrary resource types via the dynamic K8s client.
     """
     resource_type = resource_type.lower()
     if resource_type not in RESOURCE_CONFIGS:
-        # Use generic config for BYO manifests - these are handled via the dynamic client on the controller side
-        # Note: most K8s workloads (StatefulSet, DaemonSet, Job, ReplicaSet) use spec.template
+        # For unknown resource types, return minimal config
+        # pod_template_path is intentionally None - caller must provide it for BYO manifests
+        # with non-standard pod template locations (e.g., JobSet, custom CRDs)
         return {
-            "pod_template_path": ["spec", "template"],
+            "pod_template_path": None,
             "default_routing": None,
             "template_label": resource_type,
         }

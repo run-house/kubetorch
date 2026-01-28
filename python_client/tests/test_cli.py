@@ -1637,9 +1637,9 @@ async def test_kt_apply_dockerfile_command():
 
         controller = kt.globals.controller_client()
         namespace = kt.globals.config.namespace
-        pools = controller.list_pools(namespace)
-        pool_names = [p.get("name") for p in pools.get("pools", [])]
-        assert service_name in pool_names, f"Service {service_name} not found in pools: {pool_names}"
+        workloads = controller.list_workloads(namespace)
+        workload_names = [w.get("name") for w in workloads.get("workloads", [])]
+        assert service_name in workload_names, f"Service {service_name} not found in workloads: {workload_names}"
 
         # Wait for logs to be available
         for _ in range(5):
@@ -1696,9 +1696,9 @@ async def test_kt_apply_port_and_healthcheck():
         # Verify service created
         controller = kt.globals.controller_client()
         namespace = kt.globals.config.namespace
-        pools = controller.list_pools(namespace)
-        pool_names = [p.get("name") for p in pools.get("pools", [])]
-        assert service_name in pool_names, f"Service {service_name} not found in pools"
+        workloads = controller.list_workloads(namespace)
+        workload_names = [w.get("name") for w in workloads.get("workloads", [])]
+        assert service_name in workload_names, f"Service {service_name} not found in workloads"
 
         # Verify KT_APP_PORT and KT_APP_HEALTHCHECK env vars on pod
         pods_result = controller.list_pods(namespace=namespace, label_selector=f"kubetorch.com/service={service_name}")

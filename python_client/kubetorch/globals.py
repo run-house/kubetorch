@@ -865,9 +865,10 @@ class ControllerClient:
         label_selector: Optional[str] = None,
         name_filter: Optional[str] = None,
         prefix_filter: Optional[str] = None,
+        include_pods: bool = False,
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Discover all kubetorch-managed resources in a namespace.
+        Discover all kubetorch-managed workloads in a namespace.
 
         Args:
             namespace (str): Kubernetes namespace to search.
@@ -875,21 +876,22 @@ class ControllerClient:
                 (e.g., "kubetorch.com/username=xyz"). (Default: None)
             name_filter (Optional[str]): Filter by name substring. (Default: None)
             prefix_filter (Optional[str]): Filter by name prefix. (Default: None)
+            include_pods (bool): If True, include pods for each workload (avoids N+1 requests).
 
         Returns:
-            Dict mapping resource type to list of resources:
+            Dict with workloads list:
             {
-                "knative_services": [...],
-                "deployments": [...],
-                "rayclusters": [...],
-                "training_jobs": [...],
-                "workloads": [...],
+                "workloads": [
+                    {"name": "...", "kind": "Deployment", "pods": [...], ...},
+                    {"name": "...", "kind": "JobSet", "pods": [...], ...},
+                ]
             }
         """
         params = {
             "label_selector": label_selector,
             "name_filter": name_filter,
             "prefix_filter": prefix_filter,
+            "include_pods": include_pods,
         }
         params = {k: v for k, v in params.items() if v}
         return self.get(f"/controller/discover/{namespace}", params=params or None)
