@@ -29,7 +29,7 @@ class App(Module):
         run_async: bool = False,
         port: int = None,
         health_check: str = None,
-        _skip_path_substitution: bool = False,
+        _from_manifest: bool = False,
     ):
         """
         Initialize an App object for remote execution.
@@ -49,6 +49,8 @@ class App(Module):
             port (int, optional): Server port that the app listens on. If provided, enables HTTP proxying
                 to the app via the /http endpoint.
             health_check (str, optional): Health check endpoint path (e.g., '/health') to verify the app is ready.
+            _from_manifest (bool, optional): Whether the app was created from a manifest (kt apply).
+                When True, skips workdir sync and path substitution. (Default: ``False``)
         """
         super().__init__(name=name, pointers=pointers)
         self.cli_command = cli_command
@@ -58,7 +60,7 @@ class App(Module):
         self._run_async = run_async
         self._port = port
         self._health_check = health_check
-        self._skip_path_substitution = _skip_path_substitution
+        self._from_manifest = _from_manifest
         self._remote_pointers = None
 
         self._http_client = None
@@ -97,25 +99,21 @@ class App(Module):
             self.compute.add_env_vars(app_env_vars)
 
         install_url, use_editable = get_kt_install_url(self.compute.freeze)
-        if not self.compute.freeze:
-            deployment_timestamp = datetime.now(timezone.utc).isoformat()
-            self._rsync_repo_and_image_patches(install_url, use_editable)
-        else:
-            deployment_timestamp = None
+        deployment_timestamp = datetime.now(timezone.utc).isoformat() if not self.compute.freeze else None
 
         self.setup_signal_handlers()
 
         stream_logs = not self._run_async
         self._launch_service(install_url, use_editable, deployment_timestamp, stream_logs)
 
-    def _get_service_dockerfile(self):
-        image_instructions = super()._get_service_dockerfile()
+    def _get_service_dockerfile(self, rsync_dirs: list = None, rsync: bool = True):
+        image_instructions = super()._get_service_dockerfile(rsync_dirs=rsync_dirs, rsync=rsync)
 
-        if self._skip_path_substitution:
-            # For kt apply, no need to update command
+        if self._from_manifest:
+            # Command is already configured for remote execution
             remote_cmd = self.cli_command
         else:
-            # For kt run, substitute local paths with remote paths
+            # Substitute local paths with remote paths
             remote_script = os.path.join(self.remote_pointers[0], self.remote_pointers[1])
             local_script = r"\b" + re.escape(self.remote_pointers[1]) + r"\b"
             remote_cmd = re.sub(local_script, remote_script, self.cli_command)
@@ -123,10 +121,8 @@ class App(Module):
         image_instructions += f"CMD {remote_cmd}\n"
         return image_instructions
 
-    def _get_rsync_dirs_and_dockerfile(self, install_url, use_editable, sync_workdir: bool = True):
-        return super()._get_rsync_dirs_and_dockerfile(
-            install_url, use_editable, sync_workdir=not self._skip_path_substitution
-        )
+    def _get_rsync_dirs(self, install_url, use_editable, sync_workdir: bool = True):
+        return super()._get_rsync_dirs(install_url, use_editable, sync_workdir=not self._from_manifest)
 
     def _wait_for_http_health(self, timeout=120, retry_interval=0.5, backoff=1.5, max_interval=2):
         """Wait for the HTTP server to be ready. For apps, only check /health (server up).

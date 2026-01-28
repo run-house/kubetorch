@@ -1,6 +1,5 @@
 import asyncio
 import json
-import tempfile
 import threading
 import time
 import urllib.parse
@@ -435,9 +434,6 @@ class Module:
         deployment_timestamp = datetime.now(timezone.utc).isoformat()
         install_url, use_editable = get_kt_install_url(self.compute.freeze)
 
-        if not dryrun and not self.compute.freeze:
-            self._rsync_repo_and_image_patches(install_url, use_editable)
-
         self._launch_service(
             install_url,
             use_editable,
@@ -518,9 +514,6 @@ class Module:
         deployment_timestamp = datetime.now(timezone.utc).isoformat()
         install_url, use_editable = get_kt_install_url(self.compute.freeze)
 
-        if not dryrun and not self.compute.freeze:
-            await self._rsync_repo_and_image_patches_async(install_url, use_editable)
-
         await self._launch_service_async(
             install_url,
             use_editable,
@@ -576,12 +569,23 @@ class Module:
                 f"and reload_prefixes={reload_prefixes}: {str(e)}"
             )
 
-    def _get_rsync_dirs_and_dockerfile(self, install_url, use_editable, sync_workdir: bool = True):
+    def _get_rsync_dirs(self, install_url, use_editable, sync_workdir: bool = True):
+        """Determine what local paths need to be synced to the cluster.
+
+        Args:
+            install_url: The kubetorch install URL (wheel path or package path).
+            use_editable: Whether using editable install.
+            sync_workdir: Whether to sync the working directory.
+
+        Returns:
+            List[str]: List of local paths to sync.
+        """
         if self.pointers[0] is None or self.pointers[1] is None:
             raise ValueError("Cannot deploy functions defined interactively. Please define your function in a file.")
 
         rsync_dirs = []
         source_dir = None
+
         if sync_workdir:
             source_dir, has_kt_dir, matched_file = locate_working_dir(self.pointers[0])
             rsync_dirs.append(str(source_dir))
@@ -606,21 +610,7 @@ class Module:
         if install_url.endswith(".whl") or (use_editable and install_url != str(source_dir)):
             rsync_dirs.append(install_url)
 
-        # Module metadata is now sent via controller WebSocket, not baked into dockerfile
-        service_dockerfile = self._get_service_dockerfile()
-        return rsync_dirs, service_dockerfile
-
-    def _rsync_repo_and_image_patches(self, install_url, use_editable):
-        logger.debug("Rsyncing data to the rsync pod")
-        rsync_dirs, service_dockerfile = self._get_rsync_dirs_and_dockerfile(install_url, use_editable)
-        self._construct_and_rsync_files(rsync_dirs, service_dockerfile)
-        logger.debug(f"Rsync completed for service {self.service_name}")
-
-    async def _rsync_repo_and_image_patches_async(self, install_url, use_editable):
-        logger.debug("Rsyncing data to the rsync pod")
-        rsync_dirs, service_dockerfile = self._get_rsync_dirs_and_dockerfile(install_url, use_editable)
-        await self._construct_and_rsync_files_async(rsync_dirs, service_dockerfile)
-        logger.debug(f"Rsync completed for service {self.service_name}")
+        return rsync_dirs
 
     def _launch_service(
         self,
@@ -657,9 +647,13 @@ class Module:
 
         try:
             startup_rsync_command = self._startup_rsync_command(use_editable, install_url, dryrun)
+            should_rsync = not dryrun and not self.compute.freeze
+            rsync_dirs = self._get_rsync_dirs(install_url, use_editable) if should_rsync else None
 
-            # Generate dockerfile (module metadata sent via controller WebSocket)
-            dockerfile = self._get_service_dockerfile()
+            dockerfile = self._get_service_dockerfile(
+                rsync_dirs=rsync_dirs,
+                rsync=should_rsync,
+            )
 
             # Build module spec for workload registration
             dispatch = self.compute.dispatch_method
@@ -732,9 +726,13 @@ class Module:
 
         try:
             startup_rsync_command = self._startup_rsync_command(use_editable, install_url, dryrun)
+            should_rsync = not dryrun and not self.compute.freeze
+            rsync_dirs = self._get_rsync_dirs(install_url, use_editable) if should_rsync else None
 
-            # Generate dockerfile (module metadata sent via controller WebSocket)
-            dockerfile = self._get_service_dockerfile()
+            dockerfile = self._get_service_dockerfile(
+                rsync_dirs=rsync_dirs,
+                rsync=should_rsync,
+            )
 
             # Build module spec for workload registration
             dispatch = self.compute.dispatch_method
@@ -782,55 +780,20 @@ class Module:
                     except asyncio.CancelledError:
                         pass
 
-    def _get_service_dockerfile(self):
+    def _get_service_dockerfile(self, rsync_dirs: list = None, rsync: bool = True):
+        """Generate the service dockerfile and optionally rsync all files to the data store.
+
+        Args:
+            rsync_dirs (list): List of local paths to sync.
+            rsync (bool): Whether to perform rsync operations. (Default: True)
+        """
         # Module metadata is now sent via controller WebSocket, not baked into dockerfile
-        image_instructions = self.compute._image_setup_and_instructions()
+        image_instructions = self.compute._image_setup_and_instructions(
+            rsync=rsync,
+            rsync_dirs=rsync_dirs,
+        )
         logger.debug(f"Generated Dockerfile for service {self.service_name}:\n{image_instructions}")
         return image_instructions
-
-    def _construct_and_rsync_files(self, rsync_dirs, service_dockerfile):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            temp_file = Path(tmpdir) / ".kt" / "image.dockerfile"
-            temp_file.parent.mkdir(parents=True, exist_ok=True)
-            temp_file.write_text(service_dockerfile)
-
-            # Add .kt directory to the list of directories to sync
-            source_dir = str(Path(tmpdir) / ".kt")
-            all_dirs = rsync_dirs + [source_dir]
-
-            logger.debug(f"Rsyncing directories: {all_dirs}")
-            # Use DataStoreClient KV interface - files go to rsync pod, then sync to service pods at startup
-            # Using contents=False preserves directory structure - each directory becomes a subdirectory
-            # This matches the old behavior where python_client/ and .kt/ were both preserved as subdirectories
-            from kubetorch import data_store
-
-            dt_client = data_store.DataStoreClient(namespace=self.compute.namespace)
-            # Use absolute key path (starting with /) to prevent auto-prepending of caller's service name
-            # This is critical when a parent service creates a child service - we want files at
-            # /data/{namespace}/{child_service_name}/, not /data/{namespace}/{parent_service_name}/{child_service_name}/
-            dt_client.put(key=f"/{self.compute.service_name}", src=all_dirs, contents=False)
-
-    async def _construct_and_rsync_files_async(self, rsync_dirs, service_dockerfile):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            temp_file = Path(tmpdir) / ".kt" / "image.dockerfile"
-            temp_file.parent.mkdir(parents=True, exist_ok=True)
-            temp_file.write_text(service_dockerfile)
-
-            # Add .kt directory to the list of directories to sync
-            source_dir = str(Path(tmpdir) / ".kt")
-            all_dirs = rsync_dirs + [source_dir]
-
-            logger.debug(f"Rsyncing directories: {all_dirs}")
-            # Use DataStoreClient KV interface - files go to rsync pod, then sync to service pods at startup
-            # Using contents=False preserves directory structure - each directory becomes a subdirectory
-            # This matches the old behavior where python_client/ and .kt/ were both preserved as subdirectories
-            from kubetorch import data_store
-
-            dt_client = data_store.DataStoreClient(namespace=self.compute.namespace)
-            # Use absolute key path (starting with /) to prevent auto-prepending of caller's service name
-            # This is critical when a parent service creates a child service - we want files at
-            # /data/{namespace}/{child_service_name}/, not /data/{namespace}/{parent_service_name}/{child_service_name}/
-            dt_client.put(key=f"/{self.compute.service_name}", src=all_dirs, contents=False)
 
     def _startup_rsync_command(self, use_editable, install_url, dryrun):
         if dryrun or config.install_url == "NO_SYNC":

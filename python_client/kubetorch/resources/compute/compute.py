@@ -2467,29 +2467,65 @@ class Compute:
             container=container,
         )
 
-    def _image_setup_and_instructions(self, rsync: bool = True):
+    def _image_setup_and_instructions(
+        self,
+        rsync: bool = True,
+        rsync_dirs: List[str] = None,
+    ):
         """
         Return image instructions in Dockerfile format, and optionally rsync over content to the rsync pod.
+
+        Rsync files include:
+        1. rsync_dirs: local paths to sync, e.g.project directory, wheel
+        2. image copy_operations: user specified copies through the image
+        3. .kt/image.dockerfile - generated dockerfile content
+
+        Args:
+            rsync (bool): Whether to perform rsync operations. (Default: True)
+            rsync_dirs (List[str]): List of local paths to sync (e.g., project directory, wheel).
         """
-        lines = []
+        docker_lines = []
+        copy_operations = []  # list of copy arguments for rsync
+
         if self.server_image:
-            lines.append(f"FROM {self.server_image}")
+            docker_lines.append(f"FROM {self.server_image}")
         if self.python_path:
-            lines.append(f"ENV KT_PYTHON_PATH {self.python_path}")
-        if not self.image:
-            return "\n".join(lines) + "\n" if lines else ""
-        else:
-            lines.extend(self.image._dockerfile_contents)
+            docker_lines.append(f"ENV KT_PYTHON_PATH {self.python_path}")
+
+        if self.image:
+            copy_operations.extend(self.image.copy_operations)
+            docker_lines.extend(self.image._dockerfile_contents)
+
+        if rsync_dirs:
+            for src in rsync_dirs:
+                src_path = Path(src)
+                copy_operations.append(
+                    {
+                        "source": str(src_path),
+                        "dest": src_path.name,
+                        "contents": False,
+                        "filter_options": None,
+                        "force": False,
+                        "_is_sync_path": True,
+                    }
+                )
+                docker_lines.append(f"COPY {src_path} {src_path.name}")
 
         logger.debug("Processing image setup.")
 
-        # Perform rsync operations for all image copy_operations
-        if rsync:
-            for op in self.image.copy_operations:
-                client = data_store.RsyncClient(self.namespace)
+        # Perform rsync operations for all copy operations
+        if rsync and copy_operations:
+            client = data_store.RsyncClient(self.namespace)
+
+            for op in copy_operations:
+                source = op["source"]
                 dest_dir = op.get("dest")
-                # Transform paths (tilde, absolute) and prepend service name
-                if dest_dir:
+
+                # Transform destination path for rsync upload
+                if op.get("_is_sync_path", False):
+                    # rsync_dirs: upload to service_name directly
+                    service_dest = self.service_name
+                elif dest_dir:
                     # Strip tilde prefix - treat as relative to working directory
                     upload_dest = dest_dir[2:] if dest_dir.startswith("~/") else dest_dir
                     if upload_dest.startswith("/"):
@@ -2499,15 +2535,40 @@ class Compute:
                         service_dest = f"{self.service_name}/{upload_dest}"
                 else:
                     service_dest = self.service_name
+
+                logger.debug(f"Rsyncing copy operation: {source} -> {service_dest}")
                 client.upload(
-                    source=op["source"],
+                    source=source,
                     dest=service_dest,
                     contents=op.get("contents", False),
                     filter_options=op.get("filter_options"),
                     force=op.get("force", False),
                 )
 
-        return "\n".join(lines) + "\n" if lines else ""
+        # Build final dockerfile content
+        dockerfile_content = "\n".join(docker_lines) + "\n" if docker_lines else ""
+
+        # Rsync the dockerfile itself
+        if rsync and dockerfile_content:
+            self._rsync_dockerfile_content(dockerfile_content)
+
+        return dockerfile_content
+
+    def _rsync_dockerfile_content(self, dockerfile_content: str):
+        """Rsync the dockerfile content to the .kt directory in the data store."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_file = Path(tmpdir) / ".kt" / "image.dockerfile"
+            temp_file.parent.mkdir(parents=True, exist_ok=True)
+            temp_file.write_text(dockerfile_content)
+
+            client = data_store.RsyncClient(self.namespace)
+            client.upload(
+                source=str(temp_file.parent),  # .kt directory
+                dest=self.service_name,
+                contents=False,
+            )
 
     # ----------------- Copying over for now... TBD ----------------- #
     def __getstate__(self):
