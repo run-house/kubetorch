@@ -1,0 +1,215 @@
+---
+# KubetorchWorkload CRD - Represents a logical compute workload
+#
+# A workload is a group of pods that can receive calls and execute user code.
+#
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: kubetorchworkloads.kubetorch.com
+  labels:
+    app.kubernetes.io/name: kubetorch
+    app.kubernetes.io/component: controller
+spec:
+  group: kubetorch.com
+  names:
+    kind: KubetorchWorkload
+    listKind: KubetorchWorkloadList
+    plural: kubetorchworkloads
+    singular: kubetorchworkload
+    shortNames:
+      - ktworkload
+      - ktworkloads
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - selector
+              properties:
+                selector:
+                  type: object
+                  description: Label selector to identify pods in this workload
+                  additionalProperties:
+                    type: string
+                serviceConfig:
+                  type: object
+                  description: How to route traffic to this workload
+                  properties:
+                    url:
+                      type: string
+                      description: User-provided service URL (e.g., Knative)
+                    selector:
+                      type: object
+                      description: Custom selector for routing (e.g., Ray head only)
+                      additionalProperties:
+                        type: string
+                    name:
+                      type: string
+                      description: Custom service name
+                module:
+                  type: object
+                  description: Code/application deployed on this workload
+                  properties:
+                    type:
+                      type: string
+                      description: Module type
+                      enum:
+                        - fn
+                        - cls
+                        - cmd
+                        - app
+                    dispatch:
+                      type: string
+                      description: Call dispatch mode
+                      enum:
+                        - regular
+                        - spmd
+                        - load_balanced
+                      default: regular
+                    procs:
+                      description: Number of processes or process indices
+                      x-kubernetes-int-or-string: true
+                    pointers:
+                      type: object
+                      description: Information to locate and load the callable
+                      properties:
+                        filePath:
+                          type: string
+                          description: Path to the Python file
+                        moduleName:
+                          type: string
+                          description: Python module name
+                        clsOrFnName:
+                          type: string
+                          description: Class or function name
+                        projectRoot:
+                          type: string
+                          description: Root directory for imports
+                        initArgs:
+                          type: object
+                          description: Arguments for initialization
+                          x-kubernetes-preserve-unknown-fields: true
+                workloadMetadata:
+                  type: object
+                  description: Metadata about the workload deployment
+                  properties:
+                    username:
+                      type: string
+                      description: User who created this workload
+                    deploymentMode:
+                      type: string
+                      description: How the workload was deployed (serverless, persistent, distributed, byo)
+                    distributedConfig:
+                      type: object
+                      description: Configuration for distributed workloads
+                      x-kubernetes-preserve-unknown-fields: true
+                    runtimeConfig:
+                      type: object
+                      description: Runtime settings pushed to pods
+                      properties:
+                        logStreamingEnabled:
+                          type: boolean
+                          default: true
+                        metricsEnabled:
+                          type: boolean
+                          default: true
+                        inactivityTtl:
+                          type: string
+                          description: Auto-shutdown after inactivity (e.g., 30m, 1h)
+                        logLevel:
+                          type: string
+                          description: Python log level
+                        allowedSerialization:
+                          type: string
+                          description: Serialization mode
+                serverPort:
+                  type: integer
+                  description: Port pods listen on
+                  default: 32300
+                resourceKind:
+                  type: string
+                  description: K8s resource type backing this workload (Deployment, PyTorchJob, etc.)
+                resourceName:
+                  type: string
+                  description: Name of the backing K8s resource
+                dockerfile:
+                  type: string
+                  description: Build instructions for hot-reload
+                createHeadlessService:
+                  type: boolean
+                  description: Create headless service for pod-to-pod discovery
+                  default: false
+            status:
+              type: object
+              properties:
+                serviceUrl:
+                  type: string
+                  description: URL to reach this workload
+                podIps:
+                  type: array
+                  description: IPs of connected pods
+                  items:
+                    type: string
+                podCount:
+                  type: integer
+                  description: Number of connected pods
+                lastDeployedAt:
+                  type: string
+                  format: date-time
+                  description: Timestamp of last module deployment
+                conditions:
+                  type: array
+                  description: Standard K8s conditions
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - "Unknown"
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Resource
+          type: string
+          jsonPath: .spec.resourceKind
+        - name: User
+          type: string
+          jsonPath: .spec.workloadMetadata.username
+        - name: Pods
+          type: integer
+          jsonPath: .status.podCount
+        - name: Service URL
+          type: string
+          jsonPath: .status.serviceUrl
+          priority: 1
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
