@@ -13,6 +13,7 @@ from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecr
 def setup_test_env():
     """Setup test environment"""
     os.environ["KT_GPU_ANTI_AFFINITY"] = "True"
+    os.environ["KT_HTTP_HEALTH_TIMEOUT"] = "120"
     yield
 
 

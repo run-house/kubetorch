@@ -32,6 +32,7 @@ from .utils import get_hostname, log_n_messages, SlowNumpyArray, summer
 @pytest.fixture(autouse=True, scope="module")
 def setup_test_env():
     os.environ["KT_LAUNCH_TIMEOUT"] = "180"
+    os.environ["KT_HTTP_HEALTH_TIMEOUT"] = "120"
     yield
 
 
