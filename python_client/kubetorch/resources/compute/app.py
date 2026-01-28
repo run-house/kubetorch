@@ -187,13 +187,14 @@ class App(Module):
             thread.start()
 
             # Wait for pods to be ready before exiting out
+            launch_timeout = self.compute.launch_timeout
             start_time = time.time()
-            while not self.compute.is_up() and time.time() - start_time < 60:
+            while not self.compute.is_up() and time.time() - start_time < launch_timeout:
                 time.sleep(5)
 
             if not self.compute.is_up():
                 logger.error(self.compute.manifest)
-                raise ServiceTimeoutError(f"Service {self.service_name} is not up after 60 seconds.")
+                raise ServiceTimeoutError(f"Service {self.service_name} is not up after {launch_timeout} seconds.")
         else:
             super()._launch_service(
                 install_url,

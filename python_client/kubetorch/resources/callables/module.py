@@ -1270,14 +1270,18 @@ class Module:
                 except (asyncio.TimeoutError, Exception):
                     pass
 
-    def _wait_for_http_health(self, timeout=60, retry_interval=0.2, backoff=1.5, max_interval=2):
+    def _wait_for_http_health(self, timeout=None, retry_interval=0.2, backoff=1.5, max_interval=2):
         """Wait for the HTTP server to be ready by checking the /health and /ready endpoints.
 
         Args:
-            timeout: Maximum time to wait in seconds
+            timeout: Maximum time to wait in seconds. Defaults to 60, or KT_HTTP_HEALTH_TIMEOUT env var.
             retry_interval: Time between health check attempts in seconds
         """
+        import os
         import time
+
+        if timeout is None:
+            timeout = int(os.getenv("KT_HTTP_HEALTH_TIMEOUT", 60))
 
         logger.info(f"Polling {self.service_name} service health endpoint")
         start_time = time.time()
@@ -1329,14 +1333,18 @@ class Module:
         # If we get here, we've timed out
         raise ServiceTimeoutError(f"Service {self.service_name} not ready after {timeout}s")
 
-    async def _wait_for_http_health_async(self, timeout=60, retry_interval=0.2, backoff=1.5, max_interval=2):
+    async def _wait_for_http_health_async(self, timeout=None, retry_interval=0.2, backoff=1.5, max_interval=2):
         """Async version of _wait_for_http_health. Wait for the HTTP server to be ready by checking the /health and /ready endpoints.
 
         Args:
-            timeout: Maximum time to wait in seconds
+            timeout: Maximum time to wait in seconds. Defaults to 60, or KT_HTTP_HEALTH_TIMEOUT env var.
             retry_interval: Time between health check attempts in seconds
         """
         import asyncio
+        import os
+
+        if timeout is None:
+            timeout = int(os.getenv("KT_HTTP_HEALTH_TIMEOUT", 60))
 
         logger.debug(f"Waiting for HTTP server to be ready for service {self.service_name}")
         start_time = time.time()
