@@ -1,0 +1,17 @@
+{{- range (.Values.kubetorchConfig.deployment_namespaces | default list) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kubetorch-data-store-pvc
+  namespace: {{ . }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ $.Values.dataStore.storage.size | default "100Gi" }}
+  {{- if $.Values.dataStore.storage.storageClassName }}
+  storageClassName: {{ $.Values.dataStore.storage.storageClassName }}
+  {{- end }}
+{{- end }}

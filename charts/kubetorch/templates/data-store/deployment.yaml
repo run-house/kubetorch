@@ -1,46 +1,5 @@
 {{- range (.Values.kubetorchConfig.deployment_namespaces | default list) }}
 ---
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: kubetorch-rsyncd-config
-  namespace: {{ . }}
-data:
-  rsyncd.conf: |
-    pid file = /var/run/rsyncd.pid
-    log file = /var/log/rsyncd.log
-    uid = root
-    gid = root
-    use chroot = false
-    max connections = {{ $.Values.dataStore.maxConnections | default 100 }}
-    timeout = {{ $.Values.dataStore.timeout | default 600 }}
-    # Performance tuning
-    socket options = SO_KEEPALIVE TCP_NODELAY IPTOS_LOWDELAY
-    # Log verbosity (0-4, lower is better for performance)
-    max verbosity = {{ $.Values.dataStore.maxVerbosity | default 0 }}
-    [data]
-    path = /data
-    comment = Shared rsync data
-    read only = false
-    mkdir mode = 0777
-    # Per-module connection limit (optional, 0 = use global limit)
-    max connections = {{ $.Values.dataStore.maxConnectionsPerModule | default 0 }}
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: kubetorch-data-store-pvc
-  namespace: {{ . }}
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: {{ $.Values.dataStore.storage.size | default "100Gi" }}
-  {{- if $.Values.dataStore.storage.storageClassName }}
-  storageClassName: {{ $.Values.dataStore.storage.storageClassName }}
-  {{- end }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -110,11 +69,13 @@ spec:
 
       containers:
         - name: data-store
-          image: {{ $.Values.dataStore.image }}
+          image: "ghcr.io/run-house/kubetorch-data-store:{{ $.Values.dataStore.tag }}"
           imagePullPolicy: {{ $.Values.dataStore.imagePullPolicy | default "IfNotPresent" }}
           env:
             - name: POD_NAMESPACE
-              value: "{{ . }}" # Note: value is baked in from helm install, no need for downward API
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: LOKI_ENABLED
               value: "{{ $.Values.logStreaming.enabled }}"
           ports:
@@ -122,11 +83,6 @@ spec:
             - containerPort: 8080  # HTTP/WebSocket tunnel
             - containerPort: {{ $.Values.dataStore.metadataPort | default 8081 }}  # Metadata server API
             - containerPort: 3100  # Loki log storage
-          env:
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
           volumeMounts:
             - name: data-store-storage
               mountPath: /data
@@ -155,27 +111,4 @@ spec:
           configMap:
             name: kubetorch-loki-config
         {{- end }}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: kubetorch-data-store
-  namespace: {{ . }}
-spec:
-  selector:
-    app: kubetorch-data-store
-  ports:
-    - name: rsync
-      port: 873
-      targetPort: 873
-    - name: http-tunnel
-      port: 8080
-      targetPort: 8080
-    - name: metadata
-      port: {{ $.Values.dataStore.metadataPort | default 8081 }}
-      targetPort: {{ $.Values.dataStore.metadataPort | default 8081 }}
-    - name: loki
-      port: 3100
-      targetPort: 3100
-  type: ClusterIP
 {{- end }}
