@@ -136,6 +136,15 @@ spec:
               value: {{ .Values.kubetorchController.ttl.prometheusUrl | quote }}
             - name: WATCH_NAMESPACES
               value: {{ $allNamespaces | join "," | quote }}
+            - name: WORKERS
+              {{- if .Values.kubetorchController.workers }}
+              value: {{ .Values.kubetorchController.workers | quote }}
+              {{- else }}
+              # Derive from CPU request (floor to integer, minimum 1)
+              {{- $cpuRequest := .Values.kubetorchController.resources.cpu.request | default "1" }}
+              {{- $cpuNum := regexReplaceAll "[^0-9.]" ($cpuRequest | toString) "" | float64 }}
+              value: {{ max 1 (floor $cpuNum) | int | quote }}
+              {{- end }}
           ports:
             - containerPort: {{ .Values.kubetorchController.port }}
               name: controller
