@@ -1,0 +1,14 @@
+{{- if .Values.kubetorchController.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kubetorch-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: kubetorch-controller
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: kubetorch-controller
+{{- end }}

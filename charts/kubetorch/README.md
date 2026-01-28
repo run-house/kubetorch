@@ -78,6 +78,7 @@ A Helm chart for kubetorch
 | kubetorchController.nginx.resources.cpu.request | string | `"200m"` |  |
 | kubetorchController.nginx.resources.memory.request | string | `"256Mi"` |  |
 | kubetorchController.nodeSelector | object | `{}` |  |
+| kubetorchController.pdb.enabled | bool | `true` |  |
 | kubetorchController.port | int | `8081` |  |
 | kubetorchController.resources.cpu.request | string | `"1"` |  |
 | kubetorchController.resources.memory.request | string | `"2Gi"` |  |

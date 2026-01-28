@@ -50,6 +50,10 @@ kubetorchController:
   nodeSelector: {}
   affinity: {}
 
+  # PodDisruptionBudget - prevents cluster autoscaler from evicting the controller
+  pdb:
+    enabled: true
+
   # TTL configuration
   ttl:
     enabled: true
