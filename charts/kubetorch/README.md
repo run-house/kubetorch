@@ -19,7 +19,6 @@ A Helm chart for kubetorch
 | dataStore.cleanupCron.enabled | bool | `false` |  |
 | dataStore.cpu.request | int | `1` |  |
 | dataStore.ephemeralStorage.request | string | `"5Gi"` |  |
-| dataStore.image | string | `"ghcr.io/run-house/kubetorch-data-store:0.4.2"` |  |
 | dataStore.imagePullPolicy | string | `"Always"` |  |
 | dataStore.maxConnections | int | `500` |  |
 | dataStore.maxConnectionsPerModule | int | `0` |  |
@@ -29,6 +28,7 @@ A Helm chart for kubetorch
 | dataStore.nodeSelector | object | `{}` |  |
 | dataStore.storage.size | string | `"100Gi"` |  |
 | dataStore.storage.storageClassName | string | `""` |  |
+| dataStore.tag | string | `"0.4.2"` |  |
 | dataStore.timeout | int | `600` |  |
 | dataStore.tolerations | list | `[]` |  |
 | dcgm-exporter.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key | string | `"karpenter.k8s.aws/instance-gpu-manufacturer"` |  |
@@ -66,7 +66,6 @@ A Helm chart for kubetorch
 | kubetorchController.eventWatcher.batchSize | int | `10` |  |
 | kubetorchController.eventWatcher.enabled | bool | `true` |  |
 | kubetorchController.eventWatcher.flushInterval | float | `1` |  |
-| kubetorchController.image | string | `"ghcr.io/run-house/kubetorch-controller"` |  |
 | kubetorchController.imagePullPolicy | string | `"Always"` |  |
 | kubetorchController.nginx.healthRoute | string | `"/health"` |  |
 | kubetorchController.nginx.image.pullPolicy | string | `"IfNotPresent"` |  |

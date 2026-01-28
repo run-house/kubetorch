@@ -1,0 +1,28 @@
+{{- range (.Values.kubetorchConfig.deployment_namespaces | default list) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubetorch-rsyncd-config
+  namespace: {{ . }}
+data:
+  rsyncd.conf: |
+    pid file = /var/run/rsyncd.pid
+    log file = /var/log/rsyncd.log
+    uid = root
+    gid = root
+    use chroot = false
+    max connections = {{ $.Values.dataStore.maxConnections | default 100 }}
+    timeout = {{ $.Values.dataStore.timeout | default 600 }}
+    # Performance tuning
+    socket options = SO_KEEPALIVE TCP_NODELAY IPTOS_LOWDELAY
+    # Log verbosity (0-4, lower is better for performance)
+    max verbosity = {{ $.Values.dataStore.maxVerbosity | default 0 }}
+    [data]
+    path = /data
+    comment = Shared rsync data
+    read only = false
+    mkdir mode = 0777
+    # Per-module connection limit (optional, 0 = use global limit)
+    max connections = {{ $.Values.dataStore.maxConnectionsPerModule | default 0 }}
+{{- end }}
