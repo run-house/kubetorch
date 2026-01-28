@@ -43,6 +43,8 @@ kubetorchController:
     memory:
       request: "2Gi"    # Minimum guaranteed memory
 
+  # workers: 4  # Optional explicit override; if unset, derived from resources.cpu.request
+
   tolerations: []
   nodeSelector: {}
   affinity: {}
