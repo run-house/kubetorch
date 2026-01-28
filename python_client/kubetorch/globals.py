@@ -16,8 +16,8 @@ import httpx
 from kubetorch.config import KubetorchConfig
 from kubetorch.constants import (
     CONTROLLER_CONNECT_TIMEOUT,
-    CONTROLLER_POOL_TIMEOUT,
     CONTROLLER_READ_TIMEOUT,
+    CONTROLLER_WORKLOAD_TIMEOUT,
     CONTROLLER_WRITE_TIMEOUT,
 )
 from kubetorch.logger import get_logger
@@ -390,7 +390,7 @@ class ControllerClient:
             connect=CONTROLLER_CONNECT_TIMEOUT,
             read=CONTROLLER_READ_TIMEOUT,
             write=CONTROLLER_WRITE_TIMEOUT,
-            pool=CONTROLLER_POOL_TIMEOUT,
+            pool=CONTROLLER_WORKLOAD_TIMEOUT,
         )
 
         # No default timeout - long-running operations (e.g.: deploy, check-ready) should not time out
@@ -688,7 +688,7 @@ class ControllerClient:
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get(f"/controller/ingresses/{namespace}", params=params)
 
-    def register_pool(
+    def register_workload(
         self,
         name: str,
         namespace: str,
@@ -696,7 +696,7 @@ class ControllerClient:
         service: Optional[Dict[str, Any]] = None,
         dockerfile: Optional[str] = None,
         module: Optional[Dict[str, Any]] = None,
-        pool_metadata: Optional[Dict[str, Any]] = None,
+        workload_metadata: Optional[Dict[str, Any]] = None,
         server_port: int = 32300,
         labels: Optional[Dict[str, Any]] = None,
         annotations: Optional[Dict[str, Any]] = None,
@@ -704,33 +704,33 @@ class ControllerClient:
         resource_name: Optional[str] = None,
         create_headless_service: bool = False,
     ) -> Dict[str, Any]:
-        """Register a compute pool via /controller/pool.
+        """Register a compute workload via /controller/workload.
 
-        A pool is a logical group of pods that calls can be directed to.
-        This registers the pool in the controller and creates K8s Service(s)
-        for label_selector pools, but does not create pods.
+        A workload is a logical group of pods that calls can be directed to.
+        This registers the workload in the controller and creates K8s Service(s)
+        for label_selector workloads, but does not create pods.
 
         Args:
-            name (str): Unique identifier for the pool
+            name (str): Unique identifier for the workload
             namespace (str): Kubernetes namespace
-            specifier (dict, optional): How to track pods in the pool:
+            specifier (dict, optional): How to track pods in the workload:
                 - {"type": "label_selector", "selector": {"app": "workers"}}
             service (dict, optional): Optional service configuration:
                 - {"url": "..."} - user-provided URL (e.g. Knative)
                 - {"selector": {...}} - custom selector for routing
                 - {"name": "..."} - custom service name
             dockerfile (str, optional): Optional dockerfile instructions for rebuilding workers
-            module (dict, optional): Optional application to deploy onto a pool.
-            pool_metadata (dict, optional): Optional metadata (username, etc.)
+            module (dict, optional): Optional application to deploy onto a workload.
+            workload_metadata (dict, optional): Optional metadata (username, etc.)
             server_port (int, optional): Port for the K8s service (default: 32300)
             labels (dict, optional): Labels for the K8s service
             annotations (dict, optional): Annotations for the K8s service
             resource_kind (str, optional): K8s resource kind for teardown (e.g., "Deployment", "PyTorchJob")
-            resource_name (str, optional): K8s resource name for teardown (defaults to pool name)
+            resource_name (str, optional): K8s resource name for teardown (defaults to workload name)
             create_headless_service (bool, optional): Whether to create a headless service for distributed pod discovery
 
         Returns:
-            Pool response with status, message, and service_url
+            Workload response with status, message, and service_url
         """
         body = {
             "name": name,
@@ -742,7 +742,7 @@ class ControllerClient:
             "service": service,
             "dockerfile": dockerfile,
             "module": module,
-            "pool_metadata": pool_metadata,
+            "workload_metadata": workload_metadata,
             "labels": labels,
             "annotations": annotations,
             "create_headless_service": create_headless_service,
@@ -752,15 +752,15 @@ class ControllerClient:
         filtered_args = {k: v for k, v in args.items() if v not in (None, False)}
         body.update(filtered_args)
 
-        return self.post("/controller/pool", json=body, timeout=None)
+        return self.post("/controller/workload", json=body, timeout=None)
 
-    def get_pool(self, namespace: str, name: str) -> Dict[str, Any]:
-        """Get information about a registered pool."""
-        return self.get(f"/controller/pool/{namespace}/{name}", ignore_not_found=True)
+    def get_workload(self, namespace: str, name: str) -> Dict[str, Any]:
+        """Get information about a registered workload."""
+        return self.get(f"/controller/workload/{namespace}/{name}", ignore_not_found=True)
 
-    def delete_pool(self, namespace: str, name: str) -> Dict[str, Any]:
-        """Delete a registered pool and its associated K8s services."""
-        return self.delete(f"/controller/pool/{namespace}/{name}", ignore_not_found=True)
+    def delete_workload(self, namespace: str, name: str) -> Dict[str, Any]:
+        """Delete a registered workload and its associated K8s services."""
+        return self.delete(f"/controller/workload/{namespace}/{name}", ignore_not_found=True)
 
     def apply(
         self,
@@ -772,7 +772,7 @@ class ControllerClient:
         """Apply a K8s compute manifest via /controller/apply.
 
         This creates pods/workloads in the cluster by applying the provided manifest.
-        It does not create K8s Services (use register_pool for that).
+        It does not create K8s Services (use register_workload for that).
 
         Args:
             service_name (str): Name of the service.
@@ -801,25 +801,25 @@ class ControllerClient:
         service: Optional[Dict[str, Any]] = None,
         dockerfile: Optional[str] = None,
         module: Optional[Dict[str, Any]] = None,
-        pool_metadata: Optional[Dict[str, Any]] = None,
+        workload_metadata: Optional[Dict[str, Any]] = None,
         server_port: int = 32300,
         labels: Optional[Dict[str, Any]] = None,
         annotations: Optional[Dict[str, Any]] = None,
         create_headless_service: bool = False,
     ) -> Dict[str, Any]:
-        """Deploy K8s resource and register pool.
+        """Deploy K8s resource and register workload.
 
         Args:
             service_name (str): Name of the service.
             namespace (str): Kubernetes namespace.
             resource_type (str): Type of resource (deployment, knative, raycluster, etc.).
             resource_manifest (Dict[str, Any]): The full K8s manifest to apply.
-            specifier (Dict[str, Any]): How to track pods in the pool
+            specifier (Dict[str, Any]): How to track pods in the workload
                 (e.g., {"type": "label_selector", "selector": {...}}).
             service (Optional[Dict[str, Any]]): Service configuration for routing. (Default: None)
             dockerfile (Optional[str]): Dockerfile instructions for rebuilding workers. (Default: None)
-            module (Optional[Dict[str, Any]]): Application to deploy onto a pool. (Default: None)
-            pool_metadata (Optional[Dict[str, Any]]): Metadata (username, etc.). (Default: None)
+            module (Optional[Dict[str, Any]]): Application to deploy onto a workload. (Default: None)
+            workload_metadata (Optional[Dict[str, Any]]): Metadata (username, etc.). (Default: None)
             server_port (int): Port for the K8s service. (Default: 32300)
             labels (Optional[Dict[str, Any]]): Labels for the K8s service. (Default: None)
             annotations (Optional[Dict[str, Any]]): Annotations for the K8s service. (Default: None)
@@ -827,7 +827,7 @@ class ControllerClient:
                 distributed pod discovery. (Default: False)
 
         Returns:
-            Deploy response with apply_status, pool_status, service_url, and created resource.
+            Deploy response with apply_status, workload_status, service_url, and created resource.
         """
         body = {
             "service_name": service_name,
@@ -841,7 +841,7 @@ class ControllerClient:
             "service": service,
             "dockerfile": dockerfile,
             "module": module,
-            "pool_metadata": pool_metadata,
+            "workload_metadata": workload_metadata,
             "labels": labels,
             "annotations": annotations,
             "create_headless_service": create_headless_service,
@@ -851,12 +851,12 @@ class ControllerClient:
 
         return self.post("/controller/deploy", json=body, timeout=None)
 
-    def list_pools(self, namespace: str) -> Dict[str, Any]:
-        """List all compute pools."""
-        return self.get(f"/controller/pools/{namespace}")
+    def list_workloads(self, namespace: str) -> Dict[str, Any]:
+        """List all compute workloads."""
+        return self.get(f"/controller/workloads/{namespace}")
 
     def get_connections(self) -> Dict[str, Any]:
-        """Get WebSocket connection debug info (connected pods for each pool)."""
+        """Get WebSocket connection debug info (connected pods for each workload)."""
         return self.get("/controller/debug/connections")
 
     def discover_resources(
@@ -883,7 +883,7 @@ class ControllerClient:
                 "deployments": [...],
                 "rayclusters": [...],
                 "training_jobs": [...],
-                "pools": [...],
+                "workloads": [...],
             }
         """
         params = {

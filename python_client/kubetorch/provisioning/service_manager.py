@@ -342,7 +342,7 @@ class ServiceManager:
     # =========================================================================
 
     def _resolve_service_config(
-        self, endpoint: Optional[Endpoint], service_name: str, pool_selector: dict
+        self, endpoint: Optional[Endpoint], service_name: str, workload_selector: dict
     ) -> Optional[dict]:
         """Resolve service config from endpoint or use resource-specific default."""
         if endpoint:
@@ -350,15 +350,15 @@ class ServiceManager:
 
         default_routing = self.config.get("default_routing")
         if default_routing is None:
-            # Use pool selector for service routing
+            # Use workload selector for service routing
             return None
         elif default_routing == "knative_url":
             # Knative provides its own URL
             url = f"http://{service_name}.{self.namespace}.svc.cluster.local"
             return {"type": "url", "url": url}
         elif isinstance(default_routing, dict):
-            # Merge pool selector with default routing labels
-            service_selector = {**pool_selector, **default_routing}
+            # Merge workload selector with default routing labels
+            service_selector = {**workload_selector, **default_routing}
             return {"type": "selector", "selector": service_selector}
         else:
             return None
@@ -432,7 +432,7 @@ class ServiceManager:
         updated_manifest = self._update_launchtime_manifest(manifest, service_name, clean_module_name, timestamp)
 
         # Create or update the resource with the controller
-        created_service = self._apply_and_register_pool(
+        created_service = self._apply_and_register_workload(
             manifest=updated_manifest,
             service_name=service_name,
             dry_run=dryrun,
@@ -513,13 +513,13 @@ class ServiceManager:
 
         return False
 
-    def _load_pool_metadata(
+    def _load_workload_metadata(
         self,
         deployment_mode: str = None,
         distributed_config: dict = None,
         runtime_config: dict = None,
     ) -> dict:
-        """Build pool metadata dict for controller registration.
+        """Build workload metadata dict for controller registration.
 
         Args:
             deployment_mode: Deployment mode (e.g., "deployment", "knative").
@@ -537,7 +537,7 @@ class ServiceManager:
             metadata["runtime_config"] = runtime_config
         return metadata
 
-    def _apply_and_register_pool(
+    def _apply_and_register_workload(
         self,
         manifest: dict,
         service_name: str,
@@ -551,7 +551,7 @@ class ServiceManager:
         distributed_config: dict = None,
         runtime_config: dict = None,
     ) -> dict:
-        """Create or update resource via controller using the deploy endpoint. Applies the manifest and registers the pool."""
+        """Create or update resource via controller using the deploy endpoint. Applies the manifest and registers the workload."""
         pod_spec = self.pod_spec(manifest)
         server_port = pod_spec.get("containers", [{}])[0].get("ports", [{}])[0].get("containerPort", 32300)
 
@@ -560,18 +560,18 @@ class ServiceManager:
 
         # Use custom pod_selector if provided, otherwise use KT service label for pods
         if pod_selector:
-            pool_selector_for_specifier = pod_selector
+            workload_selector_for_specifier = pod_selector
         else:
-            pool_selector_for_specifier = {
+            workload_selector_for_specifier = {
                 provisioning_constants.KT_SERVICE_LABEL: service_name,
             }
         specifier = {
             "type": "label_selector",
-            "selector": pool_selector_for_specifier,
+            "selector": workload_selector_for_specifier,
         }
 
-        service_config = self._resolve_service_config(endpoint, service_name, pool_selector_for_specifier)
-        pool_metadata = self._load_pool_metadata(
+        service_config = self._resolve_service_config(endpoint, service_name, workload_selector_for_specifier)
+        workload_metadata = self._load_workload_metadata(
             deployment_mode=deployment_mode,
             distributed_config=distributed_config,
             runtime_config=runtime_config,
@@ -591,7 +591,7 @@ class ServiceManager:
                 server_port=server_port,
                 labels=labels,
                 annotations=annotations,
-                pool_metadata=pool_metadata,
+                workload_metadata=workload_metadata,
                 dockerfile=dockerfile,
                 module=module,
                 create_headless_service=create_headless_service,
@@ -605,11 +605,11 @@ class ServiceManager:
                 f"Applied {manifest.get('kind', self.resource_type)} {service_name} in namespace {self.namespace}"
             )
 
-            # Check pool registration result
+            # Check workload registration result
             if not dry_run:
-                pool_status = deploy_response.get("pool_status")
-                if pool_status not in ("success", "warning", "partial"):
-                    raise Exception(f"Resource registration failed: {deploy_response.get('pool_message')}")
+                workload_status = deploy_response.get("workload_status")
+                if workload_status not in ("success", "warning", "partial"):
+                    raise Exception(f"Resource registration failed: {deploy_response.get('workload_message')}")
 
                 logger.info(f"Registered {service_name} to kubetorch controller in namespace {self.namespace}")
 
@@ -763,7 +763,7 @@ class ServiceManager:
 
     @staticmethod
     def discover_services(namespace: str, name_filter: str = None) -> List[Dict]:
-        """Discover all Kubetorch services (Knative, Deployments, RayClusters, training jobs, selector pools).
+        """Discover all Kubetorch services (Knative, Deployments, RayClusters, training jobs, selector workloads).
 
         Args:
             namespace (str): Kubernetes namespace to search.
@@ -811,48 +811,48 @@ class ServiceManager:
             kind = resource.get("kind", "").lower()  # e.g., "PyTorchJob" -> "pytorchjob"
             services.append(get_service_dict(resource, kind))
 
-        # Selector pools - need to build synthetic resources
-        for pool in resources.get("pools", []):
-            specifier = pool.get("specifier")
+        # Selector workloads - need to build synthetic resources
+        for workload in resources.get("workloads", []):
+            specifier = workload.get("specifier")
             if not isinstance(specifier, dict):
                 specifier = {}
-            # Only include selector-based pools (others are already discovered via K8s resources)
+            # Only include selector-based workloads (others are already discovered via K8s resources)
             if specifier.get("type") != "label_selector":
                 continue
 
-            # Skip pools that have a KT-managed backing K8s resource (already discovered)
-            pool_labels = pool.get("labels") or {}
-            if pool.get("resource_kind") and provisioning_constants.KT_TEMPLATE_LABEL in pool_labels:
+            # Skip workloads that have a KT-managed backing K8s resource (already discovered)
+            workload_labels = workload.get("labels") or {}
+            if workload.get("resource_kind") and provisioning_constants.KT_TEMPLATE_LABEL in workload_labels:
                 continue
 
-            pool_name = pool.get("name")
+            workload_name = workload.get("name")
 
             # Get pods using selector from specifier
-            pods_for_pool = []
+            pods_for_workload = []
             selector = specifier.get("selector")
             if selector:
                 label_selector = ",".join(f"{k}={v}" for k, v in selector.items())
                 try:
                     pods_result = controller_client.list_pods(namespace=namespace, label_selector=label_selector)
-                    pods_for_pool = pods_result.get("items", [])
+                    pods_for_workload = pods_result.get("items", [])
                 except Exception as e:
-                    logger.warning(f"Failed to list pods for pool {pool_name}: {e}")
+                    logger.warning(f"Failed to list pods for workload {workload_name}: {e}")
 
             # Create a synthetic resource dict for display compatibility
-            pool_metadata = pool.get("pool_metadata") or {}
-            labels = (pool.get("labels") or {}).copy()
-            username = pool_metadata.get("username", "")
+            workload_metadata = workload.get("workload_metadata") or {}
+            labels = (workload.get("labels") or {}).copy()
+            username = workload_metadata.get("username", "")
             if username:
                 labels[provisioning_constants.KT_USERNAME_LABEL] = username
 
-            num_pods = len(pods_for_pool)
+            num_pods = len(pods_for_workload)
             synthetic_resource = {
                 "metadata": {
-                    "name": pool_name,
+                    "name": workload_name,
                     "namespace": namespace,
-                    "creationTimestamp": pool.get("created_at", ""),
+                    "creationTimestamp": workload.get("created_at", ""),
                     "labels": labels,
-                    "annotations": pool.get("annotations") or {},
+                    "annotations": workload.get("annotations") or {},
                 },
                 "spec": {
                     "replicas": num_pods,
@@ -861,8 +861,8 @@ class ServiceManager:
                     "readyReplicas": num_pods,
                     "replicas": num_pods,
                 },
-                "_pods": pods_for_pool,
-                "_pool_metadata": pool_metadata,
+                "_pods": pods_for_workload,
+                "_workload_metadata": workload_metadata,
                 "_selector": selector,
             }
 

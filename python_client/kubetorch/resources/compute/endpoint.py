@@ -7,16 +7,16 @@ from kubetorch.provisioning.constants import DEFAULT_NGINX_PORT
 
 
 class Endpoint:
-    """Configure how kubetorch routes calls to a compute pool.
+    """Configure how kubetorch routes calls to a compute workload.
 
-    An Endpoint controls the routing layer - how HTTP requests reach pods in the pool.
-    This is separate from pool membership (which pods belong to the pool).
+    An Endpoint controls the routing layer - how HTTP requests reach pods in the workload.
+    This is separate from workload membership (which pods belong to the workload).
 
     Args:
         url (str, optional): User-provided URL to route calls to. When set, no K8s Service is created.
             Example: "my-service.default.svc.cluster.local:8080". (Default: None)
         selector (Optional[Dict[str, str]]): Custom selector for the K8s Service that kubetorch creates.
-            Use this to route to a subset of pool pods.
+            Use this to route to a subset of workload pods.
             Example: {"app": "ray", "ray.io/node-type": "head"}. (Default: None)
 
     Examples:
@@ -25,7 +25,7 @@ class Endpoint:
 
             import kubetorch as kt
 
-            # No specified endpoint - KT creates Service using pool selector
+            # No specified endpoint - KT creates Service using workload selector
             compute = kt.Compute(cpus=4)
 
             # URL - Use your own Service/Ingress
@@ -35,10 +35,10 @@ class Endpoint:
                 endpoint=kt.Endpoint(url="my-lb.default.svc:8080")
             )
 
-            # Custom selector - Route to subset of pool
+            # Custom selector - Route to subset of workload
             compute = kt.Compute.from_manifest(
                 manifest=ray_manifest,
-                selector={"app": "ray"},  # Pool: all ray pods
+                selector={"app": "ray"},  # Workload: all ray pods
                 endpoint=kt.Endpoint(selector={"app": "ray", "role": "head"})  # Route: head only
             )
     """
@@ -58,7 +58,7 @@ class Endpoint:
         self.selector = selector
 
     def to_service_config(self) -> Optional[Dict]:
-        """Convert endpoint to service config for controller's register_pool API."""
+        """Convert endpoint to service config for controller's register_workload API."""
         if self.url:
             return {"type": "url", "url": self.url}
         elif self.selector:

@@ -792,11 +792,11 @@ def kt_list(
             logger.warning(f"Failed to list pods for all services in namespace {namespace}: {e}")
             return
 
-        # Build pod map - for selector-based pools, use _pods from the resource (found via selector)
+        # Build pod map - for selector-based workloads, use _pods from the resource (found via selector)
         pod_map = {}
         for svc in unified_services:
             if svc["template_type"] == "selector":
-                # For selector-based pools, use actual pods from K8s (found via selector)
+                # For selector-based workloads, use actual pods from K8s (found via selector)
                 pod_map[svc["name"]] = svc["resource"].get("_pods", [])
             else:
                 pod_map[svc["name"]] = [
@@ -870,7 +870,7 @@ def kt_list(
                     except Exception as e:
                         logger.warning(f"Could not get resources from pod for {name}: {e}")
             elif kind == "selector":
-                # Selector-based pools: status based on actual pods found via selector
+                # Selector-based workloads: status based on actual pods found via selector
                 num_pods = len(pods)
                 has_selector = bool(res.get("_selector"))
                 if num_pods > 0:
@@ -904,7 +904,7 @@ def kt_list(
                         memory = reqs.get("memory")
                         gpu = reqs.get("nvidia.com/gpu") or reqs.get("gpu")
                     except Exception as e:
-                        logger.warning(f"Failed to get resources for selector pool {name}: {e}")
+                        logger.warning(f"Failed to get resources for selector workload {name}: {e}")
                 elif has_selector:
                     display_status = "[yellow]No pods[/yellow]"
                 else:
@@ -1663,7 +1663,7 @@ def kt_teardown(
                 console.print("[yellow]Teardown cancelled[/yellow]")
                 raise typer.Exit(0)
 
-        # Pass the dict directly (controller uses resources, fetches pools internally)
+        # Pass the dict directly (controller uses resources, fetches workloads internally)
         services = teardown_result
         prefix = None
         teardown_all = None
@@ -2456,8 +2456,8 @@ def kt_rm(
         raise typer.Exit(1)
 
 
-@app.command("pool", hidden=True)
-def kt_pool(
+@app.command("workload", hidden=True)
+def kt_workload(
     namespace: str = typer.Option(
         globals.config.namespace,
         "-n",
@@ -2477,7 +2477,7 @@ def kt_pool(
     ),
 ):
     """
-    List registered pools.
+    List registered workloads.
     """
     import kubetorch as kt
 
@@ -2487,7 +2487,7 @@ def kt_pool(
     if connections:
         connection_data = controller.get_connections()
         if not connection_data:
-            console.print("[yellow]No pools found[/yellow]")
+            console.print("[yellow]No workloads found[/yellow]")
             raise typer.Exit()
 
         table = Table(
@@ -2495,17 +2495,17 @@ def kt_pool(
             border_style="bright_black",
             expand=True,
         )
-        table.add_column("Pool Name", style="bold magenta", no_wrap=True)
+        table.add_column("Workload Name", style="bold magenta", no_wrap=True)
         table.add_column("Namespace", style="cyan", no_wrap=True)
         table.add_column("Pods", style="green", no_wrap=True)
         table.add_column("Pod IPs", style="yellow", overflow="fold")
 
-        for pool_name, info in connection_data.items():
+        for workload_name, info in connection_data.items():
             connected_pods = info.get("connected_pods", [])
             pod_count = info.get("pod_count", len(connected_pods))
             ips = [p["ip"] for p in connected_pods if p.get("ip")]
             table.add_row(
-                pool_name,
+                workload_name,
                 info.get("namespace", "-"),
                 str(pod_count),
                 ", ".join(ips) if ips else "-",
@@ -2522,11 +2522,11 @@ def kt_pool(
         except Exception:
             return ts
 
-    resp = controller.list_pools(namespace=namespace)
-    pools = resp.get("pools", [])
+    resp = controller.list_workloads(namespace=namespace)
+    workloads = resp.get("workloads", [])
 
-    if not pools:
-        console.print(f"[yellow]No pools found in {namespace} namespace[/yellow]")
+    if not workloads:
+        console.print(f"[yellow]No workloads found in {namespace} namespace[/yellow]")
         raise typer.Exit()
 
     table = Table(
@@ -2534,40 +2534,40 @@ def kt_pool(
         border_style="bright_black",
     )
 
-    table.add_column("Pool Name", style="bold magenta", no_wrap=True)
+    table.add_column("Workload Name", style="bold magenta", no_wrap=True)
     table.add_column("User", style="green", no_wrap=True)
     table.add_column("Resource", style="cyan", no_wrap=True)
     table.add_column("Last Deployed", style="white", no_wrap=True)
 
-    for p in pools:
-        metadata = p.get("pool_metadata") or {}
+    for w in workloads:
+        metadata = w.get("workload_metadata") or {}
         user = metadata.get("username", "-")
-        resource_kind = p.get("resource_kind") or "-"
+        resource_kind = w.get("resource_kind") or "-"
 
         table.add_row(
-            p.get("name", "-"),
+            w.get("name", "-"),
             user,
             resource_kind,
-            fmt(p.get("last_deployed_at", "-")),
+            fmt(w.get("last_deployed_at", "-")),
         )
 
     console.print(table)
 
-    # Show detailed JSON for each pool only in verbose mode
+    # Show detailed JSON for each workload only in verbose mode
     if verbose:
         console.print()
-        console.rule("[bold]Pool Details[/bold]", style="bright_black")
-        for p in pools:
-            pool_name = p.get("name", "-")
-            module = p.get("module") or {}
-            specifier = p.get("specifier", {})
-            labels = p.get("labels") or {}
-            annotations = p.get("annotations") or {}
+        console.rule("[bold]Workload Details[/bold]", style="bright_black")
+        for w in workloads:
+            workload_name = w.get("name", "-")
+            module = w.get("module") or {}
+            specifier = w.get("specifier", {})
+            labels = w.get("labels") or {}
+            annotations = w.get("annotations") or {}
 
             console.print()
             console.print(
                 Panel.fit(
-                    f"[bold magenta]{pool_name}[/bold magenta]",
+                    f"[bold magenta]{workload_name}[/bold magenta]",
                     border_style="magenta",
                 )
             )
@@ -2599,11 +2599,11 @@ def kt_server_start(
         "-h",
         help="Host to bind the HTTP server to",
     ),
-    pool_name: str = typer.Option(
+    workload_name: str = typer.Option(
         os.getenv("KT_SERVICE"),
-        "--pool",
+        "--workload",
         "-n",
-        help="Pool/service name for WebSocket registration with controller",
+        help="Workload/service name for WebSocket registration with controller",
     ),
     controller_url: str = typer.Option(
         os.getenv("KT_CONTROLLER_URL"),
@@ -2622,7 +2622,7 @@ def kt_server_start(
 
     .. code-block:: bash
 
-        $ kubetorch server start --pool my-workers --controller-url http://kubetorch-controller:8080
+        $ kubetorch server start --workload my-workers --controller-url http://kubetorch-controller:8080
 
         $ export KT_SERVICE=my-workers
 
@@ -2642,14 +2642,14 @@ def kt_server_start(
             "It's not recommended to run this command directly on your local machine.[/yellow]"
         )
 
-    if pool_name:
-        os.environ["KT_SERVICE"] = pool_name
+    if workload_name:
+        os.environ["KT_WORKLOAD"] = workload_name
 
     if controller_url:
         os.environ["KT_CONTROLLER_URL"] = controller_url
 
-    elif pool_name and not os.getenv("KT_CONTROLLER_URL"):
-        # Default controller URL if not provided but pool name is set
+    elif workload_name and not os.getenv("KT_CONTROLLER_URL"):
+        # Default controller URL if not provided but workload name is set
         namespace = os.getenv("POD_NAMESPACE", "kubetorch")
         default_url = f"http://kubetorch-controller.{namespace}.svc.cluster.local:8080"
         os.environ["KT_CONTROLLER_URL"] = default_url

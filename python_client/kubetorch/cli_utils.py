@@ -541,9 +541,9 @@ def detect_deployment_mode(name: str, namespace: str):
     controller_client = globals.controller_client()
     resources = controller_client.discover_resources(namespace=namespace, name_filter=name)
     # extract resource_kind from the controller DB
-    for pool in resources.get("pools", []):
-        if pool.get("name") == name:
-            resource_kind = pool.get("resource_kind", "")
+    for workload in resources.get("workloads", []):
+        if workload.get("name") == name:
+            resource_kind = workload.get("resource_kind", "")
             if resource_kind:
                 kind_lower = resource_kind.lower()
                 if kind_lower == "knativeservice":
