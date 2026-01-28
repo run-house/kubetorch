@@ -1,6 +1,5 @@
 import copy
 import os
-import subprocess
 import time
 
 import kubetorch as kt
@@ -250,11 +249,19 @@ async def test_byo_manifest_with_overrides(kind):
         ]
     )
 
+    from .conftest import KUBETORCH_IMAGE
+
     # Get manifest with container included
     test_manifest = _get_basic_manifest(kind, container=container)
 
-    image_type = "Ray" if kind == "RayCluster" else "Debian"
-    image = getattr(kt.images, image_type)()
+    # Use appropriate image for each kind
+    if kind == "RayCluster":
+        image = kt.images.Ray()
+    elif kind in SUPPORTED_TRAINING_JOBS:
+        # Training jobs need kubetorch server image
+        image = kt.Image(image_id=KUBETORCH_IMAGE)
+    else:
+        image = kt.images.Debian()
 
     # Create compute with comprehensive overrides
     compute = kt.Compute.from_manifest(test_manifest)
@@ -719,6 +726,12 @@ async def test_byo_manifest_with_endpoint_url():
 
     # User's routing layer - routes traffic to pods with {app: pool_name} label
     user_service_name = f"{pool_name}-user-svc"
+
+    # Clean up any leftover service from previous test runs
+    try:
+        controller.delete_service(namespace=namespace, name=user_service_name)
+    except Exception:
+        pass
     user_port = 82
     user_service = {
         "apiVersion": "v1",
@@ -760,7 +773,11 @@ async def test_byo_manifest_with_endpoint_url():
         assert result == 15, f"Expected 15, got {result}"
 
     finally:
-        subprocess.run(["kt", "teardown", user_service_name, "-n", namespace, "-y"])
+        # Clean up the user-created service (not managed by kubetorch)
+        try:
+            controller.delete_service(namespace=namespace, name=user_service_name)
+        except Exception:
+            pass  # Service may already be deleted
 
 
 @pytest.mark.level("minimal")

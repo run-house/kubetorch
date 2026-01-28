@@ -9,7 +9,7 @@ from .assets.test_distributed.distributed_test_class import DistributedTestClass
 
 # Import test functions and classes from assets
 from .assets.test_distributed.distributed_test_functions import (
-    adaptive_ray_fn_with_bs4,
+    adaptive_ray_fn_with_flask,
     jax_distributed_fn,
     pytorch_distributed_fn,
     raise_test_exception,
@@ -472,8 +472,8 @@ def test_ray_package_iteration_flow():
 
     This test validates the end-to-end iteration workflow:
     1. Create Ray cluster with 2 workers, no additional dependencies
-    2. Send function that tests for 'beautifulsoup4' package (should not be available)
-    3. Update the image to include 'beautifulsoup4' package
+    2. Send function that tests for 'flask' package (should not be available)
+    3. Update the image to include 'flask' package
     4. Send same function again with same service name
     5. Verify the new package is installed and available on all workers
     """
@@ -486,33 +486,33 @@ def test_ray_package_iteration_flow():
     name = f"{get_test_fn_name()}"
 
     # Deploy the initial function
-    remote_fn = kt.fn(adaptive_ray_fn_with_bs4, name=name).to(ray_compute)
+    remote_fn = kt.fn(adaptive_ray_fn_with_flask, name=name).to(ray_compute)
 
-    # Step 2: Test the initial function (should not have beautifulsoup4 package)
+    # Step 2: Test the initial function (should not have flask package)
     result1 = remote_fn()
 
     # Verify the function used both workers
     assert result1["num_tasks"] == 8
     assert result1["unique_hostnames"] >= 2
 
-    # KEY TEST: Verify beautifulsoup4 is NOT available initially
-    assert result1["bs4_available"] is False, "beautifulsoup4 should not be available in base rayproject/ray image"
+    # KEY TEST: Verify flask is NOT available initially
+    assert result1["flask_available"] is False, "flask should not be available in base rayproject/ray image"
 
     # Verify basic calculations work
     expected_sum = 0 + 10 + 20 + 30 + 40 + 50 + 60 + 70  # 0*10 + 1*10 + 2*10 + 3*10 + 4*10 + 5*10 + 6*10 + 7*10
     assert result1["sum_calculations"] == expected_sum
 
-    # Step 3: Update the image to include beautifulsoup4 package
-    ray_compute_with_bs4 = kt.Compute(
+    # Step 3: Update the image to include flask package
+    ray_compute_with_flask = kt.Compute(
         cpus="1",
         memory="2Gi",
-        image=kt.Image(image_id="rayproject/ray").pip_install(["beautifulsoup4"]),
+        image=kt.Image(image_id="rayproject/ray").pip_install(["flask"]),
     ).distribute("ray", workers=2)
 
     # Step 4: Deploy the SAME function with SAME service name but updated image
-    updated_remote_fn = kt.fn(adaptive_ray_fn_with_bs4, name=name).to(ray_compute_with_bs4)
+    updated_remote_fn = kt.fn(adaptive_ray_fn_with_flask, name=name).to(ray_compute_with_flask)
 
-    # Step 5: Test the updated function (should now have beautifulsoup4 package)
+    # Step 5: Test the updated function (should now have flask package)
     result2 = updated_remote_fn()
 
     # Verify the updated function works
@@ -523,13 +523,13 @@ def test_ray_package_iteration_flow():
     if "error" in result2:
         assert False, f"Function execution failed: {result2['error']}"
 
-    # KEY TEST: Verify beautifulsoup4 is NOW available on all workers
-    assert result2["bs4_available"] is True, "beautifulsoup4 should be available after image update"
+    # KEY TEST: Verify flask is NOW available on all workers
+    assert result2["flask_available"] is True, "flask should be available after image update"
 
-    # Verify all workers report having beautifulsoup4
+    # Verify all workers report having flask
     for task_result in result2["task_results"]:
-        assert task_result["bs4_available"] is True, f"Worker {task_result['worker_id']} missing beautifulsoup4"
-        assert task_result["bs4_version"] is not None, f"Worker {task_result['worker_id']} missing bs4 version"
+        assert task_result["flask_available"] is True, f"Worker {task_result['worker_id']} missing flask"
+        assert task_result["flask_version"] is not None, f"Worker {task_result['worker_id']} missing flask version"
 
     # Verify calculations still work
     assert result2["sum_calculations"] == expected_sum

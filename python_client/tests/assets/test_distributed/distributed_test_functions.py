@@ -141,16 +141,28 @@ def raise_test_exception():
     raise ValueError("Test exception from distributed worker")
 
 
-def adaptive_ray_fn_with_bs4():
+def adaptive_ray_fn_with_flask():
     """Ray function that tests package availability on workers."""
     try:
         import os
         import socket
+        import time
 
         import ray
 
         # Initialize Ray to connect to cluster
         ray.init(address="auto")
+
+        # Wait for workers to be ready (expect head + 2 workers = 3 nodes)
+        expected_nodes = 3
+        max_wait = 120  # seconds
+        start = time.time()
+        while time.time() - start < max_wait:
+            nodes = ray.nodes()
+            alive_nodes = [n for n in nodes if n.get("Alive", False)]
+            if len(alive_nodes) >= expected_nodes:
+                break
+            time.sleep(2)
 
         @ray.remote
         def worker_task(worker_id):
@@ -159,14 +171,14 @@ def adaptive_ray_fn_with_bs4():
 
             time.sleep(0.1)  # Simulate some work
 
-            # Test if beautifulsoup4 package is available (definitely not in base rayproject/ray)
-            bs4_available = False
-            bs4_version = None
+            # Test if flask package is available (not in base rayproject/ray)
+            flask_available = False
+            flask_version = None
             try:
-                import bs4
+                import flask
 
-                bs4_available = True
-                bs4_version = bs4.__version__
+                flask_available = True
+                flask_version = flask.__version__
             except ImportError:
                 pass
 
@@ -174,14 +186,14 @@ def adaptive_ray_fn_with_bs4():
                 "worker_id": worker_id,
                 "hostname": socket.gethostname(),
                 "worker_pid": os.getpid(),
-                "bs4_available": bs4_available,
-                "bs4_version": bs4_version,
+                "flask_available": flask_available,
+                "flask_version": flask_version,
                 "calculation": worker_id * 10,  # Simple calculation
             }
 
         # Launch tasks on both workers
         tasks = []
-        for i in range(8):  # Launch 4 tasks to ensure both workers are used
+        for i in range(8):  # Launch 8 tasks to ensure both workers are used
             task = worker_task.remote(i)
             tasks.append(task)
 
@@ -197,14 +209,14 @@ def adaptive_ray_fn_with_bs4():
             "cluster_resources": cluster_resources,
             "available_resources": available_resources,
             "num_tasks": len(results),
-            "bs4_available": all(r["bs4_available"] for r in results),
+            "flask_available": all(r["flask_available"] for r in results),
             "unique_hostnames": len(set(r["hostname"] for r in results)),
             "sum_calculations": sum(r["calculation"] for r in results),
         }
 
     except Exception as e:
         return {
-            "error": f"Top-level error in my_ray_fn_adaptive: {str(e)}",
+            "error": f"Top-level error in adaptive_ray_fn_with_flask: {str(e)}",
             "num_tasks": 0,
-            "bs4_available": False,
+            "flask_available": False,
         }
