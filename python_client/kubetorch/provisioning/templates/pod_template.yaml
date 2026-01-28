@@ -20,7 +20,7 @@ affinity:
               operator: DoesNotExist
 {% endif %}
 
-{% if node_selector is not none %}
+{% if node_selector is not none and node_selector %}
 nodeSelector:
   {% for key, value in node_selector.items() %}
   {{ key }}: {{ value }}

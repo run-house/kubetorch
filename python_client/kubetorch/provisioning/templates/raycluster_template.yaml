@@ -20,7 +20,6 @@ spec:
       node-manager-port: "8077"
       dashboard-port: "8265"
       metrics-export-port: "8080"
-    replicas: 1
     template:
       metadata:
         annotations: {{ template_annotations | tojson }}
