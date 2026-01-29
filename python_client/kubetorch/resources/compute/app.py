@@ -124,7 +124,7 @@ class App(Module):
     def _get_rsync_dirs(self, install_url, use_editable, sync_workdir: bool = True):
         return super()._get_rsync_dirs(install_url, use_editable, sync_workdir=not self._from_manifest)
 
-    def _wait_for_http_health(self, timeout=120, retry_interval=0.5, backoff=1.5, max_interval=2):
+    def _wait_for_http_health(self, timeout=120, retry_interval=0.5, backoff=1.5, max_interval=2, **kwargs):
         """Wait for the HTTP server to be ready. For apps, only check /health (server up).
 
         Apps have a different lifecycle - the app process starts after image setup,
