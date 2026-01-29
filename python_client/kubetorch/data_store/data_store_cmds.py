@@ -334,9 +334,9 @@ def _sync_workdir_from_store(namespace: str, service_name: str):
     - Absolute path files (under __absolute__/...) into their absolute destinations (only if dockerfile has absolute COPY destinations)
 
     Uses tree-based broadcast to avoid overloading the data store when many pods sync
-    simultaneously (e.g., during .to() deployments to thousands of pods). The broadcast
-    group is persistent per pool, so pods cache their parent assignment and reuse it
-    across deployments.
+    simultaneously (e.g., during .to() deployments to thousands of pods). Each deployment
+    gets a unique broadcast group via launch_id to avoid stale parent assignments from
+    previous deployments.
     """
     logger.info(
         f"Syncing workdir from data store: namespace={namespace}, service_name={service_name}, " f"cwd={os.getcwd()}"
@@ -349,11 +349,16 @@ def _sync_workdir_from_store(namespace: str, service_name: str):
     # This avoids any auto-prepending of the current pod's service name
     service_key = f"/{service_name}"
 
-    # Create broadcast window with persistent group_id per pool - this enables tree-based
-    # propagation so pods rsync from each other rather than all hitting the data store.
-    # The group persists across deployments, so pods cache and reuse their parent assignment.
+    # Include launch_id in group_id to ensure each deployment gets fresh tree topology.
+    # Without this, pods would be assigned parents from previous deployments that no longer exist.
+    launch_id = os.getenv("KT_LAUNCH_ID", "")
+    group_id = f"workdir-sync-{namespace}-{service_name}"
+    if launch_id:
+        # Use first 8 chars of launch_id for brevity
+        group_id = f"{group_id}-{launch_id[:8]}"
+
     broadcast = BroadcastWindow(
-        group_id=f"workdir-sync-{namespace}-{service_name}",
+        group_id=group_id,
         timeout=120.0,  # 2 minute timeout for broadcast coordination
         fanout=50,  # Standard fanout for filesystem broadcasts
     )
