@@ -158,6 +158,15 @@ jobs:
             - apiGroups: ["networking.k8s.io"]
               resources: ["ingresses"]
               verbs: ["get", "list", "watch"]
+            - apiGroups: ["kubetorch.com"]
+              resources: ["kubetorchworkloads", "kubetorchworkloads/status"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            - apiGroups: ["serving.knative.dev"]
+              resources: ["services", "revisions"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            - apiGroups: ["ray.io"]
+              resources: ["rayclusters"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
           ---
           apiVersion: rbac.authorization.k8s.io/v1
           kind: RoleBinding
