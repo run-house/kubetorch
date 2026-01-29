@@ -234,6 +234,7 @@ def get_workload_manifest(workload_name: str, namespace: str):
 @pytest.fixture(autouse=True, scope="session")
 def setup_test_env():
     os.environ["KT_LAUNCH_TIMEOUT"] = "300"
+    os.environ["KT_HTTP_HEALTH_TIMEOUT"] = "120"
     yield
 
 
