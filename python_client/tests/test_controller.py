@@ -424,14 +424,17 @@ def test_discover_resources():
 
     result = controller_client.discover_resources(namespace=namespace)
 
-    # Verify the response structure contains expected resource types
+    # Verify the response structure contains a workloads list
     assert result is not None
     assert isinstance(result, dict)
+    assert "workloads" in result, "Missing expected key: workloads"
+    assert isinstance(result["workloads"], list), "workloads should be a list"
 
-    expected_keys = ["knative_services", "deployments", "rayclusters", "training_jobs", "pools"]
-    for key in expected_keys:
-        assert key in result, f"Missing expected key: {key}"
-        assert isinstance(result[key], list), f"{key} should be a list"
+    # Verify each workload has the expected fields
+    for workload in result["workloads"]:
+        assert "name" in workload
+        assert "namespace" in workload
+        assert "kind" in workload or workload.get("is_byo", False)
 
 
 @pytest.mark.level("unit")
@@ -447,7 +450,8 @@ def test_discover_resources_with_filters():
     )
     assert result is not None
     assert isinstance(result, dict)
-    assert [result.get(key) == [] for key in result.keys()]
+    assert "workloads" in result
+    assert result["workloads"] == []
 
     # Test with prefix_filter
     result = controller_client.discover_resources(
@@ -456,7 +460,8 @@ def test_discover_resources_with_filters():
     )
     assert result is not None
     assert isinstance(result, dict)
-    assert [result.get(key) == [] for key in result.keys()]
+    assert "workloads" in result
+    assert result["workloads"] == []
 
 
 @pytest.mark.level("unit")

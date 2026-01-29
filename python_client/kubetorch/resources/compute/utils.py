@@ -15,6 +15,45 @@ from kubetorch.serving.utils import StartupError
 logger = get_logger(__name__)
 
 
+def navigate_path(obj, path, create_missing=False):
+    """Navigate a path through nested dicts/lists to reach the pod template.
+
+    Different K8s resource types have their pod templates at different nested locations - for example:
+    - Deployment/StatefulSet: spec.template.spec
+    - PyTorchJob: spec.pytorchReplicaSpecs.Master.template.spec
+    - RayCluster: spec.headGroupSpec.template.spec
+    - Custom CRDs: arbitrary paths (e.g., spec.workload.template.spec)
+
+    This abstracts path navigation so code can work with any resource type
+    without hardcoding each one. For BYO manifests, users specify `pod_template_path`
+    and this function traverses to the right location.
+
+    Returns:
+        The value at the path, or None if not found
+    """
+    if path is None:
+        return None
+    current = obj
+    for i, key in enumerate(path):
+        if current is None:
+            return None
+        # Handle numeric indices for lists
+        if isinstance(current, list):
+            try:
+                idx = int(key)
+                current = current[idx] if idx < len(current) else None
+            except (ValueError, IndexError):
+                return None
+        elif isinstance(current, dict):
+            if create_missing and i < len(path) - 1:
+                current = current.setdefault(key, {})
+            else:
+                current = current.get(key)
+        else:
+            return None
+    return current
+
+
 class KnativeServiceError(Exception):
     """Base exception for Knative service errors."""
 

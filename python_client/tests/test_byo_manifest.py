@@ -554,13 +554,15 @@ def test_from_manifest_custom_pod_template_path():
         },
     }
 
-    # Without pod_template_path, kubetorch defaults to spec.template (wrong location)
+    # Without pod_template_path, kubetorch can't find the pod spec for unknown CRDs
     # It won't find the user's "main" container since it's at spec.workload.template
     compute_without_path = kt.Compute.from_manifest(
         manifest=copy.deepcopy(custom_manifest),
         selector={"app": "custom-app"},
     )
-    container_names = [c["name"] for c in compute_without_path.pod_spec.get("containers", [])]
+    # pod_spec returns None when no pod template path is configured for unknown CRDs
+    pod_spec = compute_without_path.pod_spec
+    container_names = [c["name"] for c in (pod_spec.get("containers", []) if pod_spec else [])]
     assert "main" not in container_names, "Without custom path, user's container should not be found"
 
     # With pod_template_path, Compute correctly finds the pod spec at the nested location
@@ -585,7 +587,7 @@ def test_from_manifest_custom_pod_template_path():
 
 @pytest.mark.level("minimal")
 @pytest.mark.asyncio
-async def test_byo_manifest_with_pod_template_path_override():
+async def test_byo_deployment_manifest_with_pod_template_path_override():
     """Test BYO manifest with explicit pod_template_path override deploys correctly.
 
     Uses a Deployment with an explicit pod_template_path to verify the override
@@ -642,6 +644,82 @@ async def test_byo_manifest_with_pod_template_path_override():
     assert compute.pod_spec["containers"][0]["name"] == "kubetorch"
 
     # Deploy and verify function works
+    remote_fn = kt.fn(summer).to(compute)
+    result = remote_fn(5, 10)
+    assert result == 15
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_byo_jobset_manifest_with_pod_template_path_override():
+    """Test BYO manifest with explicit pod_template_path override deploys correctly.
+
+    Uses a JobSet to test the pod_template_path override mechanism. JobSet is ideal because:
+    1. It's NOT explicitly supported by kubetorch (not in RESOURCE_CONFIGS)
+    2. Its pod template is at spec.replicatedJobs[0].template.spec.template (NOT spec.template)
+    3. Deleting the JobSet cleans up all child resources (Jobs, Pods)
+
+    Without `pod_template_path`, kubetorch would look at spec.template (wrong location).
+    This test verifies that the override correctly finds the pod spec at the nested path.
+    """
+    from .conftest import KUBETORCH_IMAGE
+
+    job_name = f"{kt.config.username}-byo-jobset"
+    namespace = kt.globals.config.namespace
+
+    # JobSet manifest - pod template is at spec.replicatedJobs[0].template.spec.template
+    # CRD installation: https://jobset.sigs.k8s.io/docs/installation/
+    jobset_manifest = {
+        "apiVersion": "jobset.x-k8s.io/v1alpha2",
+        "kind": "JobSet",
+        "metadata": {
+            "name": job_name,
+            "namespace": namespace,
+        },
+        "spec": {
+            "replicatedJobs": [
+                {
+                    "name": "worker",
+                    "replicas": 1,
+                    "template": {
+                        "spec": {
+                            "parallelism": 1,
+                            "completions": 1,
+                            "template": {
+                                "metadata": {"labels": {"app": job_name}},
+                                "spec": {
+                                    "restartPolicy": "Never",
+                                    "containers": [
+                                        {
+                                            "name": "kubetorch",
+                                            "image": KUBETORCH_IMAGE,
+                                            "imagePullPolicy": "Always",
+                                            "resources": {"requests": {"cpu": "100m", "memory": "256Mi"}},
+                                        }
+                                    ],
+                                    "affinity": copy.deepcopy(GPU_ANTI_AFFINITY),
+                                },
+                            },
+                        },
+                    },
+                }
+            ],
+        },
+    }
+
+    # Create Compute with explicit pod_template_path override
+    # Without this, kubetorch would look at spec.template and fail to find the containers
+    compute = kt.Compute.from_manifest(
+        manifest=jobset_manifest,
+        selector={"app": job_name},
+        pod_template_path="spec.replicatedJobs.0.template.spec.template",
+    )
+
+    # Verify the override is set and pod_spec is found at the correct nested location
+    assert compute._pod_template_path_override == ["spec", "replicatedJobs", "0", "template", "spec", "template"]
+    assert compute.pod_spec is not None
+    assert compute.pod_spec["containers"][0]["name"] == "kubetorch"
+
     remote_fn = kt.fn(summer).to(compute)
     result = remote_fn(5, 10)
     assert result == 15

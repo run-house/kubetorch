@@ -143,7 +143,11 @@ subjects:
 {{- end }}
 
 ###############################################################################
-# ClusterRole for Ray + Knative + Kubeflow CRDs
+# ClusterRole for Ray + Knative + Kubeflow + JobSet CRDs
+#
+# NOTE: To use BYO manifests with custom resource types (e.g., Volcano, Flux),
+# add their apiGroups and resources here. Alternatively, apply the manifest
+# yourself (kubectl apply) and use kt.Compute(selector={...}) to track pods.
 ###############################################################################
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -174,6 +178,11 @@ rules:
   # Kubeflow Training Jobs
   - apiGroups: ["kubeflow.org"]
     resources: ["pytorchjobs", "tfjobs", "mxjobs", "xgboostjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # JobSet CRDs
+  - apiGroups: ["jobset.x-k8s.io"]
+    resources: ["jobsets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
   # StorageClasses (read-only)
