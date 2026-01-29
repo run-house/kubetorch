@@ -23,8 +23,8 @@ class Cls(Module):
 
         Args:
             name (str): The name of the class to be executed remotely.
-            pointers (tuple, optional): A tuple containing pointers/references needed to locate and execute
-                the class, typically including module path and class name.
+            pointers (tuple): A tuple of (root_path, import_path, callable_name) containing
+                the information needed to locate and import the class.
             init_args (dict, optional): Dictionary of arguments to pass to the class constructor.
                 Defaults to None.
         """
