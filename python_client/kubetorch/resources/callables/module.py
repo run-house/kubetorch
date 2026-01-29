@@ -3,6 +3,7 @@ import json
 import threading
 import time
 import urllib.parse
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Union
@@ -675,6 +676,10 @@ class Module:
                 "procs": 1,
             }
 
+            # Generate unique launch ID to ensure CRD is updated on each .to() call
+            # This triggers pod code syncing via controller WebSocket
+            launch_id = str(uuid.uuid4())
+
             # Launch the compute in the form of a service with the requested resources
             # Note: module metadata (pointers, init_args) is now sent via controller WebSocket
             service_config = self.compute._launch(
@@ -686,13 +691,14 @@ class Module:
                 dryrun=dryrun,
                 dockerfile=dockerfile,
                 module=module_metadata,
+                launch_id=launch_id,
             )
             self.service_config = service_config
 
             if not dryrun:
                 self.compute._check_service_ready()
                 # Additional health check to ensure HTTP server is ready
-                self._wait_for_http_health()
+                self._wait_for_http_health(launch_id=launch_id)
         finally:
             # Stop log streaming
             if log_thread:
@@ -754,6 +760,10 @@ class Module:
                 "procs": 1,
             }
 
+            # Generate unique launch ID to ensure CRD is updated on each .to() call
+            # This triggers pod code syncing via controller WebSocket
+            launch_id = str(uuid.uuid4())
+
             # Launch the compute in the form of a service with the requested resources
             # Note: module metadata (pointers, init_args) is now sent via controller WebSocket
             service_config = await self.compute._launch_async(
@@ -765,12 +775,14 @@ class Module:
                 dryrun=dryrun,
                 dockerfile=dockerfile,
                 module=module_metadata,
+                launch_id=launch_id,
             )
             self.service_config = service_config
 
             if not dryrun:
                 await self.compute._check_service_ready_async()
-                await self._wait_for_http_health_async()
+                # Additional health check to ensure HTTP server is ready
+                await self._wait_for_http_health_async(launch_id=launch_id)
         finally:
             # Stop log streaming
             if log_task:
@@ -1274,16 +1286,18 @@ class Module:
                 except (asyncio.TimeoutError, Exception):
                     pass
 
-    def _wait_for_http_health(self, timeout=60, retry_interval=0.2, backoff=1.5, max_interval=2):
+    def _wait_for_http_health(self, timeout=60, retry_interval=0.2, backoff=1.5, max_interval=2, launch_id: str = None):
         """Wait for the HTTP server to be ready by checking the /health and /ready endpoints.
 
         Args:
             timeout: Maximum time to wait in seconds
             retry_interval: Time between health check attempts in seconds
+            launch_id: Optional launch ID to verify. If provided, waits until the pod's
+                current launch_id matches, ensuring reload from this .to() call completed.
         """
         import time
 
-        logger.info(f"Polling {self.service_name} service health endpoint")
+        logger.info(f"Polling {self.service_name} service health endpoint (launch_id={launch_id})")
         start_time = time.time()
         health_ok = False
 
@@ -1308,13 +1322,17 @@ class Module:
                         continue
 
                 # Then check /ready (callable is loaded)
+                # If launch_id provided, include it as query param to verify reload completed
+                ready_endpoint = f"{self.base_endpoint}/ready"
+                if launch_id:
+                    ready_endpoint = f"{ready_endpoint}?launch_id={launch_id}"
                 response = client.get(
-                    endpoint=f"{self.base_endpoint}/ready",
+                    endpoint=ready_endpoint,
                     headers=self.request_headers,
                     timeout=5,
                 )
                 if response.status_code == 200:
-                    logger.info(f"Service {self.service_name} ready")
+                    logger.info(f"Service {self.service_name} ready (launch_id verified: {launch_id})")
                     return
                 else:
                     logger.debug(f"Readiness check returned status {response.status_code}, retrying...")
@@ -1333,12 +1351,16 @@ class Module:
         # If we get here, we've timed out
         raise ServiceTimeoutError(f"Service {self.service_name} not ready after {timeout}s")
 
-    async def _wait_for_http_health_async(self, timeout=60, retry_interval=0.2, backoff=1.5, max_interval=2):
+    async def _wait_for_http_health_async(
+        self, timeout=60, retry_interval=0.2, backoff=1.5, max_interval=2, launch_id: str = None
+    ):
         """Async version of _wait_for_http_health. Wait for the HTTP server to be ready by checking the /health and /ready endpoints.
 
         Args:
             timeout: Maximum time to wait in seconds
             retry_interval: Time between health check attempts in seconds
+            launch_id: Optional launch ID to verify. If provided, waits until the pod's
+                current launch_id matches, ensuring reload from this .to() call completed.
         """
         import asyncio
 
@@ -1367,8 +1389,12 @@ class Module:
                         continue
 
                 # Then check /ready (callable is loaded)
+                # If launch_id provided, include it as query param to verify reload completed
+                ready_endpoint = f"{self.base_endpoint}/ready"
+                if launch_id:
+                    ready_endpoint = f"{ready_endpoint}?launch_id={launch_id}"
                 response = client.get(
-                    endpoint=f"{self.base_endpoint}/ready",
+                    endpoint=ready_endpoint,
                     headers=self.request_headers,
                     timeout=5,
                 )

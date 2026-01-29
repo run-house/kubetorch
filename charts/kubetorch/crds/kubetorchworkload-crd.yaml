@@ -119,6 +119,9 @@ spec:
                       type: object
                       description: Configuration for distributed workloads
                       x-kubernetes-preserve-unknown-fields: true
+                    launchId:
+                      type: string
+                      description: Unique ID for this launch/deployment (changes on each .to() call)
                     runtimeConfig:
                       type: object
                       description: Runtime settings pushed to pods
