@@ -2004,6 +2004,7 @@ class Compute:
         dryrun: bool = False,
         dockerfile: str = None,
         module: dict = None,
+        launch_id: str = None,
     ):
         """Creates a new service on the compute for the provided service. If the service already exists,
         it will update the service with the latest copy of the code."""
@@ -2089,6 +2090,7 @@ class Compute:
             distributed_config=distributed_config,
             runtime_config=runtime_config,
             pod_template_path=self._pod_template_path_override,
+            launch_id=launch_id,
         )
         self._manifest = updated_manifest
 
@@ -2123,6 +2125,7 @@ class Compute:
         dryrun: bool = False,
         dockerfile: str = None,
         module: dict = None,
+        launch_id: str = None,
     ):
         """Async version of _launch. Creates a new service on the compute for the provided service.
         If the service already exists, it will update the service with the latest copy of the code."""
@@ -2142,6 +2145,7 @@ class Compute:
             dryrun,
             dockerfile,
             module,
+            launch_id,
         )
 
         return service_template

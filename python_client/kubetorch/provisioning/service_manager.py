@@ -400,6 +400,7 @@ class ServiceManager:
         distributed_config: dict = None,
         runtime_config: dict = None,
         pod_template_path: List[str] = None,
+        launch_id: str = None,
     ) -> Tuple[dict, dict, str]:
         """Create or update a Kubernetes service and register it with the controller.
 
@@ -467,6 +468,7 @@ class ServiceManager:
             distributed_config=distributed_config,
             runtime_config=runtime_config,
             pod_template_path=pod_template_path,
+            launch_id=launch_id,
         )
         created_service = result["resource"]
         service_url = result.get("service_url")
@@ -543,6 +545,7 @@ class ServiceManager:
         deployment_mode: str = None,
         distributed_config: dict = None,
         runtime_config: dict = None,
+        launch_id: str = None,
     ) -> dict:
         """Build workload metadata dict for controller registration.
 
@@ -552,6 +555,7 @@ class ServiceManager:
             runtime_config: Runtime configuration that flows via WebSocket to pods.
                 Includes log_streaming_enabled, metrics_enabled, inactivity_ttl,
                 log_level, allowed_serialization.
+            launch_id: Unique ID for this launch/deployment (changes on each .to() call).
         """
         metadata = {"username": globals.config.username}
         if deployment_mode:
@@ -560,6 +564,8 @@ class ServiceManager:
             metadata["distributed_config"] = distributed_config
         if runtime_config:
             metadata["runtime_config"] = runtime_config
+        if launch_id:
+            metadata["launch_id"] = launch_id
         return metadata
 
     def _apply_and_register_workload(
@@ -576,6 +582,7 @@ class ServiceManager:
         distributed_config: dict = None,
         runtime_config: dict = None,
         pod_template_path: List[str] = None,
+        launch_id: str = None,
     ) -> dict:
         """Create or update resource via controller using the deploy endpoint. Applies the manifest and registers the workload."""
         pod_spec = self.pod_spec(manifest, pod_template_path=pod_template_path)
@@ -601,6 +608,7 @@ class ServiceManager:
             deployment_mode=deployment_mode,
             distributed_config=distributed_config,
             runtime_config=runtime_config,
+            launch_id=launch_id,
         )
 
         try:

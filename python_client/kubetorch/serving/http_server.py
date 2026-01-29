@@ -250,11 +250,16 @@ class ControllerWebSocket:
             "request_metadata": True,  # Always request metadata on connect
         }
 
-    def _apply_metadata(self, metadata: dict):
+    def _apply_metadata(self, metadata: dict, set_launch_id: bool = True):
         """Apply received metadata by setting environment variables.
 
         This maintains backwards compatibility with existing code that reads
         from env vars. The supervisor and load_callable will use these env vars.
+
+        Args:
+            metadata: The metadata dict from controller.
+            set_launch_id: Whether to set KT_LAUNCH_ID. Set to False during reload
+                to avoid race condition (launch_id should be set after reload completes).
         """
         global _METADATA_RECEIVED
 
@@ -325,9 +330,15 @@ class ControllerWebSocket:
         if runtime_config.get("allowed_serialization"):
             os.environ["KT_ALLOWED_SERIALIZATION"] = runtime_config["allowed_serialization"]
 
+        # Set launch_id - used by client to verify reload completed for specific .to() call
+        # For reload case, set_launch_id=False to avoid race condition (set after reload completes)
+        launch_id_val = metadata.get("launch_id")
+        if set_launch_id and launch_id_val:
+            os.environ["KT_LAUNCH_ID"] = launch_id_val
+
         logger.info(
             f"Applied metadata from controller: module={module_info.get('module_name')}, "
-            f"callable={module_info.get('cls_or_fn_name')}"
+            f"callable={module_info.get('cls_or_fn_name')}, launch_id={launch_id_val}"
         )
 
         # Signal that metadata has been received
@@ -349,7 +360,8 @@ class ControllerWebSocket:
 
         try:
             # Apply the new metadata (sets env vars - fast, ok to run in event loop)
-            self._apply_metadata(metadata)
+            # NOTE: set_launch_id=False to avoid race condition - we set it after reload completes
+            self._apply_metadata(metadata, set_launch_id=False)
 
             # Run image setup for the reload - use thread pool to avoid blocking event loop
             await asyncio.to_thread(run_image_setup)
@@ -372,6 +384,13 @@ class ControllerWebSocket:
                 clear_cache()
                 await asyncio.to_thread(load_callable)
                 logger.info("Supervisor recreated successfully")
+
+            # Set launch_id AFTER reload completes successfully
+            # This ensures client's /ready?launch_id=X check only passes when code is actually updated
+            launch_id_val = metadata.get("launch_id")
+            if launch_id_val:
+                os.environ["KT_LAUNCH_ID"] = launch_id_val
+                logger.debug(f"Set KT_LAUNCH_ID={launch_id_val} after successful reload")
 
             # Send acknowledgment to controller
             if self._ws:
@@ -1596,6 +1615,11 @@ async def test_reload(request: Request, metadata: Dict = Body(...)):
             await asyncio.to_thread(load_callable)
             logger.info("Supervisor recreated successfully")
 
+        # Set launch_id AFTER reload completes (same as _handle_reload)
+        launch_id_val = metadata.get("launch_id") or metadata.get("launchId")
+        if launch_id_val:
+            os.environ["KT_LAUNCH_ID"] = launch_id_val
+
         return {"status": "ok", "message": "Reload completed successfully"}
 
     except Exception as e:
@@ -1630,15 +1654,33 @@ async def metrics(request: Request):
 
 
 @app.get("/ready", include_in_schema=False)
-async def ready():
-    """Readiness check - returns 200 only when callable is loaded and ready to serve."""
+async def ready(launch_id: Optional[str] = Query(None)):
+    """Readiness check - returns 200 only when callable is loaded and ready to serve.
+
+    Args:
+        launch_id: Optional launch ID to verify. If provided, returns 503 if the pod's
+            current launch_id doesn't match. This ensures the client waits until the
+            reload triggered by a specific .to() call has completed.
+    """
     callable_name = os.getenv("KT_CLS_OR_FN_NAME")
     if not callable_name:
         raise HTTPException(
             status_code=503,
             detail="Callable not loaded yet",
         )
-    return {"status": "ready", "callable": callable_name}
+
+    # If launch_id provided, verify we're running that version
+    # Only check if pod has a launch_id set - if not, controller may not support it yet
+    current_launch_id = os.getenv("KT_LAUNCH_ID")
+    if launch_id:
+        logger.debug(f"Ready check: requested launch_id={launch_id}, current={current_launch_id}")
+        if current_launch_id and current_launch_id != launch_id:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Launch ID mismatch: expected {launch_id}, current is {current_launch_id}",
+            )
+
+    return {"status": "ready", "callable": callable_name, "launch_id": current_launch_id}
 
 
 @app.get("/app/status", include_in_schema=False)
