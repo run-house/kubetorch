@@ -1281,7 +1281,7 @@ def kt_apply(
     app_instance = App(
         compute=compute,
         cli_command=run_cmd,
-        pointers=[os.getcwd(), "", None],
+        pointers=(os.getcwd(), "", None),
         name=service_name,
         port=port,
         health_check=health_check,
