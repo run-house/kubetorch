@@ -9,7 +9,7 @@ import pytest
 
 from pydantic import BaseModel
 
-from .utils import SlowNumpyArray, summer, TestModel
+from .utils import return_response, SlowNumpyArray, summer, TestModel
 
 
 class OSInfoRequest(BaseModel):
@@ -116,7 +116,7 @@ async def test_failure_to_reload_non_existent_fn(remote_fn):
 @pytest.mark.level("minimal")
 @pytest.mark.asyncio
 async def test_serialization_formats(remote_fn, remote_cls):
-    """Test that both JSON and pickle serialization work correctly."""
+    """Test that both JSON, pickle, and none serialization work correctly."""
     compute_type = os.getenv("TEST_COMPUTE_TYPE", "deployment")
     if compute_type == "ray":
         pytest.skip("Skipping serialization tests for Ray compute type")
@@ -174,6 +174,9 @@ async def test_serialization_formats(remote_fn, remote_cls):
         # Can still override for individual calls
         result_override = remote_fn(3, 4, serialization="json")
         assert result_override == 7
+
+        result_none = remote_fn(3, 4, serialization="none")
+        assert result_none == 7
     except Exception as e:
         raise e
     finally:
@@ -195,10 +198,56 @@ async def test_serialization_formats(remote_fn, remote_cls):
         # Can still override for individual calls
         result_override = remote_cls.size_minus_cpus(serialization="json")
         assert isinstance(result_override, int)
+
+        result_none = remote_cls.size_minus_cpus(serialization="none")
+        assert isinstance(result_none, int)
     except Exception as e:
         raise e
     finally:
         remote_cls.serialization = original_serialization
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_serialization_none():
+    """Test serialization="none" with Response and regular return values."""
+    import kubetorch as kt
+
+    compute = kt.Compute(
+        cpus=".01",
+        gpu_anti_affinity=True,
+        launch_timeout=300,
+        allowed_serialization=["json", "none"],
+        image=kt.images.Debian().pip_install(["pytest", "fastapi"]),
+    )
+    remote_response_fn = kt.fn(return_response, name="response_fn").to(compute)
+
+    result = remote_response_fn("Hello, World!", serialization="none")
+
+    assert hasattr(result, "text")
+    assert result.text == "Hello, World!"
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_serialization_none_regular_return():
+    """Test that serialization='none' still works with regular return values."""
+    compute_type = os.getenv("TEST_COMPUTE_TYPE", "deployment")
+    if compute_type == "ray":
+        pytest.skip("Skipping serialization tests for Ray compute type")
+
+    import kubetorch as kt
+
+    compute = kt.Compute(
+        cpus=".01",
+        gpu_anti_affinity=True,
+        launch_timeout=300,
+        allowed_serialization=["json", "none"],
+    )
+    remote_summer_fn = kt.fn(summer, name="summer_none").to(compute)
+
+    result = remote_summer_fn(5, 3, serialization="none")
+    assert result == 8
 
 
 @pytest.mark.level("minimal")

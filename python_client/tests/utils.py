@@ -377,6 +377,12 @@ def python_version_and_path():
     return sys.version, os.environ.get("PATH")
 
 
+def return_response(text: str):
+    from fastapi.responses import Response
+
+    return Response(content=text, media_type="text/plain")
+
+
 OP_SUM = """
 def operation(a, b):
     return a+b

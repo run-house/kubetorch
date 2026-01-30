@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional
 
 import httpx
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from kubetorch.serving.distributed_supervisor import DistributedSupervisor
 from kubetorch.serving.global_http_clients import get_sync_client
@@ -547,7 +547,7 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                             logger.debug(f"Got {len(local_responses)} responses from local processes")
                             # Check for errors in local responses
                             for response in local_responses:
-                                if isinstance(response, JSONResponse):
+                                if isinstance(response, (JSONResponse, Response)):
                                     # Fast failure - return error immediately
                                     executor.shutdown(wait=False)
                                     return response
@@ -580,9 +580,9 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
             logger.debug(f"Sample worker response type: {type(worker_responses[0]).__name__}")
         responses = local_responses + worker_responses
         for response in responses:
-            # If the response is a JSONResponse, we need to check if it contains an exception,
+            # If the response is a JSONResponse or Response, we need to check if it contains an exception,
             # and "raise" it if so - essentially just returning it immediately rather than the full result list.
-            if isinstance(response, JSONResponse):
+            if isinstance(response, (JSONResponse, Response)):
                 return response
             # This is primarily to handle exceptions while packaging an exception, which will cause the server to hang.
             if isinstance(response, Exception):
