@@ -971,7 +971,7 @@ def _load_callable_internal(
 def load_supervisor():
     global SUPERVISOR
 
-    if os.environ["KT_FILE_PATH"] not in sys.path:
+    if os.environ.get("KT_FILE_PATH") and os.environ["KT_FILE_PATH"] not in sys.path:
         sys.path.insert(0, os.environ["KT_FILE_PATH"])
 
     distributed_config = os.environ["KT_DISTRIBUTED_CONFIG"]
@@ -1003,10 +1003,12 @@ def load_supervisor():
 
 
 def patch_sys_path():
-    abs_path = str(Path(os.environ["KT_FILE_PATH"]).expanduser().resolve())
-    if os.environ["KT_FILE_PATH"] not in sys.path:
-        sys.path.insert(0, abs_path)
-        logger.debug(f"Added {abs_path} to sys.path")
+    abs_path = None
+    if os.environ.get("KT_FILE_PATH"):
+        abs_path = str(Path(os.environ["KT_FILE_PATH"]).expanduser().resolve())
+        if os.environ["KT_FILE_PATH"] not in sys.path:
+            sys.path.insert(0, abs_path)
+            logger.debug(f"Added {abs_path} to sys.path")
 
     # Add project root to sys.path to enable imports from sibling directories
     # This allows scripts in subdirectories (e.g., experimental/script.py) to import
@@ -1023,7 +1025,7 @@ def patch_sys_path():
     existing_path_list = existing_path.split(os.pathsep) if existing_path else []
     paths_to_add = []
 
-    if abs_path not in existing_path_list:
+    if abs_path and abs_path not in existing_path_list:
         paths_to_add.append(abs_path)
     if abs_project_root and abs_project_root not in existing_path_list:
         paths_to_add.append(abs_project_root)
@@ -1061,7 +1063,10 @@ def load_callable_from_env():
     except (ImportError, ValueError) as original_error:
         # Fall back to file-based import if package import fails
         try:
-            module = import_from_file(os.environ["KT_FILE_PATH"], module_name)
+            if os.environ.get("KT_FILE_PATH"):
+                module = import_from_file(os.environ["KT_FILE_PATH"], module_name)
+            else:
+                raise ImportError(f"KT_FILE_PATH is not set, cannot import module {module_name}")
             # Ensure structured logging after file-based import
             ensure_structured_logging()
             callable_obj = getattr(module, cls_or_fn_name)
