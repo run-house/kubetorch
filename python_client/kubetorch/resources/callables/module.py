@@ -44,6 +44,7 @@ class Module:
         self,
         name: str,
         pointers: tuple,
+        sync_dir: Union[str, Path, bool] = None,
     ):
         """
         Initialize a Module object.
@@ -56,6 +57,10 @@ class Module:
                     This is where the module can be imported from (added to sys.path).
                 - import_path: The dotted Python import path (e.g., "mypackage.mymodule").
                 - callable_name: The name of the class or function within the module.
+            sync_dir (str, Path, or bool): Controls which module directory to sync to compute:
+                If None (default), auto-detect and sync package directory.
+                If False, skip syncing files (this assumes files are already on compute).
+                If str/Path, sync the specified directory. Must contain the module.
         """
         self._compute = None
         self._service_config = None
@@ -73,6 +78,10 @@ class Module:
         self._callable_name = pointers[2]
 
         self.name = clean_and_validate_k8s_name(name, allow_full_length=False) if name else None
+
+        if sync_dir:
+            self._validate_module_in_sync_dir(sync_dir)
+        self.sync_dir = sync_dir
 
     @property
     def callable_name(self):
@@ -136,18 +145,83 @@ class Module:
         if self._remote_root_path is not None:
             return self._remote_root_path
 
-        # Compute and cache remote_root_path and container_project_root
-        source_dir, _, _ = locate_working_dir(self._root_path)
-        relative_module_path = Path(self._root_path).expanduser().relative_to(source_dir)
-        source_dir_name = Path(source_dir).name
-        if self.compute.working_dir is not None:
-            self._remote_root_path = str(Path(self.compute.working_dir) / source_dir_name / relative_module_path)
-            self._container_project_root = str(Path(self.compute.working_dir) / source_dir_name)
+        if self.sync_dir is False:
+            # Files already on compute, user is responsible for PYTHONPATH
+            self._remote_root_path = None
+            self._container_project_root = None
+            return self._remote_root_path
+
+        if self.sync_dir is not None:
+            source_dir = str(Path(self.sync_dir).expanduser().resolve())
+            source_dir_name = Path(source_dir).name
+            root_path = Path(self._root_path).expanduser().resolve()
+
+            try:
+                # sync_dir is parent/equal to _root_path: compute container equivalent of _root_path
+                relative_root = root_path.relative_to(source_dir)
+                if self.compute.working_dir is not None:
+                    self._remote_root_path = str(Path(self.compute.working_dir) / source_dir_name / relative_root)
+                    self._container_project_root = str(Path(self.compute.working_dir) / source_dir_name)
+                else:
+                    self._remote_root_path = str(Path(source_dir_name) / relative_root)
+                    self._container_project_root = source_dir_name
+            except ValueError:
+                # sync_dir is child of _root_path: use sync_dir as import root
+                if self.compute.working_dir is not None:
+                    self._remote_root_path = str(Path(self.compute.working_dir) / source_dir_name)
+                    self._container_project_root = str(Path(self.compute.working_dir) / source_dir_name)
+                else:
+                    self._remote_root_path = source_dir_name
+                    self._container_project_root = source_dir_name
         else:
-            # Leave it as relative path
-            self._remote_root_path = str(Path(source_dir_name) / relative_module_path)
-            self._container_project_root = source_dir_name
+            # Auto-detect working directory (default behavior)
+            source_dir, _, _ = locate_working_dir(self._root_path)
+            relative_module_path = Path(self._root_path).expanduser().relative_to(source_dir)
+            source_dir_name = Path(source_dir).name
+            if self.compute.working_dir is not None:
+                self._remote_root_path = str(Path(self.compute.working_dir) / source_dir_name / relative_module_path)
+                self._container_project_root = str(Path(self.compute.working_dir) / source_dir_name)
+            else:
+                self._remote_root_path = str(Path(source_dir_name) / relative_module_path)
+                self._container_project_root = source_dir_name
+
         return self._remote_root_path
+
+    def _validate_module_in_sync_dir(self, sync_dir: str):
+        """Validate that the module file is contained within sync_dir."""
+        sync_path = Path(sync_dir).expanduser().resolve()
+        root_path = Path(self._root_path).expanduser().resolve()
+        module_file = root_path / (self._import_path.replace(".", "/") + ".py")
+
+        # Check if the module file is within sync_dir
+        try:
+            module_file.relative_to(sync_path)
+        except ValueError:
+            raise ValueError(
+                f"Module file '{module_file}' is not within sync_dir '{sync_dir}'. "
+                f"The sync_dir must contain the module file for it to be available on compute. "
+                f"To sync other files onto the compute, use kt.Image().copy()."
+            )
+
+    @property
+    def remote_import_path(self):
+        """Returns the import_path adjusted for the container based on sync_dir."""
+        if self.sync_dir is False or self.sync_dir is None:
+            return self._import_path
+
+        root_path = Path(self._root_path).expanduser().resolve()
+        sync_dir = Path(self.sync_dir).expanduser().resolve()
+
+        try:
+            # sync_dir is parent/equal to _root_path: import path unchanged
+            root_path.relative_to(sync_dir)
+            return self._import_path
+        except ValueError:
+            # sync_dir is child of _root_path: compute adjusted import path relative to sync_dir
+            module_file = root_path / (self._import_path.replace(".", "/") + ".py")
+            relative_module_file = module_file.relative_to(sync_dir)
+            parts = list(relative_module_file.with_suffix("").parts)
+            return ".".join(parts)
 
     @property
     def container_project_root(self):
@@ -611,25 +685,39 @@ class Module:
         source_dir = None
 
         if sync_workdir:
-            source_dir, has_kt_dir, matched_file = locate_working_dir(self._root_path)
-            rsync_dirs.append(str(source_dir))
-            if not has_kt_dir:
-                if self._import_path:
-                    # Convert import path (e.g., "mypackage.mymodule") to file path
-                    source_file = Path(f"{self._root_path}/{self._import_path.replace('.', '/')}.py")
-                    rsync_dirs = [str(source_file)]
-                    logger.info(f"No project markers found, syncing file {source_file}")
-            else:
+            # Determine source directory based on sync_dir
+            if self.sync_dir is False:
+                pass
+            elif self.sync_dir is not None:
+                source_dir = str(Path(self.sync_dir).expanduser().resolve())
                 source_dir_name = Path(source_dir).name
+                rsync_dirs.append(source_dir)
                 if self.compute.working_dir:
                     remote_path = f"{self.compute.working_dir}/{source_dir_name}"
-                    logger.info(
-                        f"Syncing project directory {source_dir} -> {remote_path} (working directory detected via {matched_file})"
-                    )
+                    logger.info(f"Syncing specified directory {source_dir} -> {remote_path}")
                 else:
-                    logger.info(
-                        f"Syncing project directory {source_dir} -> ./{source_dir_name} (working directory detected via {matched_file})"
-                    )
+                    logger.info(f"Syncing specified directory {source_dir} -> ./{source_dir_name}")
+            else:
+                # Auto-detect working directory (default behavior)
+                source_dir, has_kt_dir, matched_file = locate_working_dir(self._root_path)
+                rsync_dirs.append(str(source_dir))
+                if not has_kt_dir:
+                    if self._import_path:
+                        # Convert import path (e.g., "mypackage.mymodule") to file path
+                        source_file = Path(f"{self._root_path}/{self._import_path.replace('.', '/')}.py")
+                        rsync_dirs = [str(source_file)]
+                        logger.info(f"No project markers found, syncing file {source_file}")
+                else:
+                    source_dir_name = Path(source_dir).name
+                    if self.compute.working_dir:
+                        remote_path = f"{self.compute.working_dir}/{source_dir_name}"
+                        logger.info(
+                            f"Syncing project directory {source_dir} -> {remote_path} (working directory detected via {matched_file})"
+                        )
+                    else:
+                        logger.info(
+                            f"Syncing project directory {source_dir} -> ./{source_dir_name} (working directory detected via {matched_file})"
+                        )
 
         if install_url.endswith(".whl") or (use_editable and install_url != str(source_dir)):
             rsync_dirs.append(install_url)
@@ -686,7 +774,7 @@ class Module:
                 "type": self.MODULE_TYPE,
                 "pointers": {
                     "file_path": self.remote_root_path,
-                    "module_name": self._import_path,
+                    "module_name": self.remote_import_path,
                     "cls_or_fn_name": self.callable_name,
                     "project_root": self.container_project_root,
                     "init_args": init_args,
@@ -704,7 +792,7 @@ class Module:
             service_config = self.compute._launch(
                 service_name=self.compute.service_name,
                 install_url=install_url if not use_editable else None,
-                module_name=self._import_path,  # module_name for labels
+                module_name=self.remote_import_path or self._import_path,
                 startup_rsync_command=startup_rsync_command,
                 deployment_timestamp=deployment_timestamp,
                 dryrun=dryrun,
@@ -770,7 +858,7 @@ class Module:
                 "type": self.MODULE_TYPE,
                 "pointers": {
                     "file_path": self.remote_root_path,
-                    "module_name": self._import_path,
+                    "module_name": self.remote_import_path,
                     "cls_or_fn_name": self.callable_name,
                     "project_root": self.container_project_root,
                     "init_args": init_args,
@@ -788,7 +876,7 @@ class Module:
             service_config = await self.compute._launch_async(
                 service_name=self.compute.service_name,
                 install_url=install_url if not use_editable else None,
-                module_name=self._import_path,  # module_name for labels
+                module_name=self.remote_import_path or self._import_path,
                 startup_rsync_command=startup_rsync_command,
                 deployment_timestamp=deployment_timestamp,
                 dryrun=dryrun,
