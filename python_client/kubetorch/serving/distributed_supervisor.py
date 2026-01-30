@@ -80,11 +80,9 @@ class DistributedSupervisor(ExecutionSupervisor):
         # Stop DNS monitoring first
         self.stop_dns_monitoring()
 
-        # Stop remote worker pool
-        if self.remote_worker_pool:
-            self.remote_worker_pool.stop()
-            self.remote_worker_pool = None
-            logger.debug("Stopped remote worker pool")
+        # Note: RemoteWorkerPool is a singleton and persists across supervisor recreations.
+        # We intentionally do NOT stop it here - just clear our reference.
+        self.remote_worker_pool = None
 
         # Clean up process pool
         super().cleanup()
@@ -120,6 +118,10 @@ class DistributedSupervisor(ExecutionSupervisor):
 
         pod_ips = []
         last_count = 0
+
+        # Aggressive retry with exponential backoff (100ms -> 200ms -> 400ms -> ... -> 2s max)
+        retry_delay = 0.1
+        max_retry_delay = 2.0
 
         while True:
             try:
@@ -167,7 +169,9 @@ class DistributedSupervisor(ExecutionSupervisor):
                     logger.info(f"{len(pod_ips)}/{expected_workers} workers found, waiting for quorum...")
                 last_count = len(pod_ips)
 
-            time.sleep(2)
+            # Exponential backoff: 100ms -> 200ms -> 400ms -> 800ms -> 1.6s -> 2s (capped)
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, max_retry_delay)
 
     def _get_pod_ips_fast(self) -> list:
         """Get pod IPs from DNS without waiting for quorum - for monitoring only."""

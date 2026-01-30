@@ -376,11 +376,8 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         if subcall_ips:
             logger.debug(f"Have {len(subcall_ips)} remote workers to call")
             if not self.remote_worker_pool:
-                # Create RemoteWorkerPool lazily when first needed
-                # This avoids spawning unnecessary processes for single-pod distributed jobs
-                logger.info(f"Creating RemoteWorkerPool to call {len(subcall_ips)} remote workers")
-                self.remote_worker_pool = RemoteWorkerPool(quorum_timeout=self.quorum_timeout)
-                self.remote_worker_pool.start(max_workers=min(len(subcall_ips) + 50, 200))
+                # Get the singleton RemoteWorkerPool (created lazily, reused across supervisors)
+                self.remote_worker_pool = RemoteWorkerPool.get_instance(quorum_timeout=self.quorum_timeout)
             logger.debug(f"Using RemoteWorkerPool to call {len(subcall_ips)} workers")
 
             def call_remote_workers():
@@ -437,24 +434,6 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
 
         else:
             logger.debug(f"No remote workers to call (subcall_ips is empty or None: {subcall_ips})")
-
-        # Verify RemoteWorkerPool is running if we have remote workers
-        # (It should have been created lazily above when subcall_ips was first checked)
-        if subcall_ips:
-            if not self.remote_worker_pool:
-                # Should not happen - pool is created lazily above
-                raise RuntimeError(
-                    f"RemoteWorkerPool not available for worker at {this_pod_ip}. "
-                    "This is required for distributed execution with subcall_ips."
-                )
-            elif (
-                not hasattr(self.remote_worker_pool, "process")
-                or not self.remote_worker_pool.process
-                or not self.remote_worker_pool.process.is_alive()
-            ):
-                # Pool exists but not started/alive - restart it
-                logger.warning(f"RemoteWorkerPool exists but not running for {this_pod_ip}, starting it now")
-                self.remote_worker_pool.start(max_workers=min(len(subcall_ips) + 50, 200))
 
         # Submit local process calls
         def call_local_processes():
