@@ -43,6 +43,18 @@ class Module:
         name: str,
         pointers: tuple,
     ):
+        """
+        Initialize a Module object.
+
+        Args:
+            name (str): The name to give the remote module (used for service naming).
+            pointers (tuple): A tuple of (root_path, import_path, callable_name) containing
+                the information needed to locate and import the callable:
+                - root_path: The directory path that is the parent of the top-level package.
+                    This is where the module can be imported from (added to sys.path).
+                - import_path: The dotted Python import path (e.g., "mypackage.mymodule").
+                - callable_name: The name of the class or function within the module.
+        """
         self._compute = None
         self._service_config = None
         self._http_client = None
@@ -50,17 +62,15 @@ class Module:
         self._reload_prefixes = None
         self._serialization = "json"  # Default serialization format
         self._async = False
-        self._remote_pointers = None
+        self._remote_root_path = None
         self._container_project_root = None
         self._service_name = None
 
-        self.pointers = pointers
-        self.name = clean_and_validate_k8s_name(name, allow_full_length=False) if name else None
+        self._root_path = pointers[0]
+        self._import_path = pointers[1]
+        self.callable_name = pointers[2]
 
-    @property
-    def module_name(self):
-        """Name of the function or class."""
-        return self.pointers[2]
+        self.name = clean_and_validate_k8s_name(name, allow_full_length=False) if name else None
 
     @property
     def reload_prefixes(self):
@@ -111,33 +121,30 @@ class Module:
         self._compute = compute
 
     @property
-    def remote_pointers(self):
-        if self._remote_pointers:
-            return self._remote_pointers
+    def remote_root_path(self):
+        """Returns the root_path transformed for the container filesystem."""
+        if self._remote_root_path is not None:
+            return self._remote_root_path
 
-        source_dir, _, _ = locate_working_dir(self.pointers[0])
-        relative_module_path = Path(self.pointers[0]).expanduser().relative_to(source_dir)
+        # Compute and cache remote_root_path and container_project_root
+        source_dir, _, _ = locate_working_dir(self._root_path)
+        relative_module_path = Path(self._root_path).expanduser().relative_to(source_dir)
         source_dir_name = Path(source_dir).name
         if self.compute.working_dir is not None:
-            container_module_path = str(Path(self.compute.working_dir) / source_dir_name / relative_module_path)
+            self._remote_root_path = str(Path(self.compute.working_dir) / source_dir_name / relative_module_path)
             self._container_project_root = str(Path(self.compute.working_dir) / source_dir_name)
         else:
             # Leave it as relative path
-            container_module_path = str(Path(source_dir_name) / relative_module_path)
+            self._remote_root_path = str(Path(source_dir_name) / relative_module_path)
             self._container_project_root = source_dir_name
-        self._remote_pointers = (
-            container_module_path,
-            self.pointers[1],
-            self.pointers[2],
-        )
-        return self._remote_pointers
+        return self._remote_root_path
 
     @property
     def container_project_root(self):
         """Returns the project root path in the container."""
         if self._container_project_root is None:
-            # Trigger computation via remote_pointers
-            _ = self.remote_pointers
+            # Trigger computation via remote_root_path
+            _ = self.remote_root_path
         return self._container_project_root
 
     @property
@@ -326,7 +333,9 @@ class Module:
             # Update settable attributes with reloaded module values
             self.compute = self.compute or reloaded_module.compute
             self.service_config = reloaded_module.service_config
-            self.pointers = reloaded_module.pointers
+            self._root_path = reloaded_module._root_path
+            self._import_path = reloaded_module._import_path
+            self.callable_name = reloaded_module.callable_name
             self.name = reloaded_module.name
             self.service_name = reloaded_module.service_name
 
@@ -340,9 +349,9 @@ class Module:
 
     def endpoint(self, method_name: str = None):
         if not hasattr(self, "init_args"):
-            return f"{self.base_endpoint}/{self.module_name}"
+            return f"{self.base_endpoint}/{self.callable_name}"
         else:
-            return f"{self.base_endpoint}/{self.module_name}/{method_name}"
+            return f"{self.base_endpoint}/{self.callable_name}/{method_name}"
 
     def deploy(self):
         """
@@ -585,19 +594,19 @@ class Module:
         Returns:
             List[str]: List of local paths to sync.
         """
-        if self.pointers[0] is None or self.pointers[1] is None:
+        if self._root_path is None or self._import_path is None:
             raise ValueError("Cannot deploy functions defined interactively. Please define your function in a file.")
 
         rsync_dirs = []
         source_dir = None
 
         if sync_workdir:
-            source_dir, has_kt_dir, matched_file = locate_working_dir(self.pointers[0])
+            source_dir, has_kt_dir, matched_file = locate_working_dir(self._root_path)
             rsync_dirs.append(str(source_dir))
             if not has_kt_dir:
-                if self.pointers[1]:
-                    # Use the source file (.py) instead of directory
-                    source_file = Path(f"{self.pointers[0]}/{self.pointers[1]}.py")
+                if self._import_path:
+                    # Convert import path (e.g., "mypackage.mymodule") to file path
+                    source_file = Path(f"{self._root_path}/{self._import_path.replace('.', '/')}.py")
                     rsync_dirs = [str(source_file)]
                     logger.info(f"No project markers found, syncing file {source_file}")
             else:
@@ -666,9 +675,9 @@ class Module:
             module_metadata = {
                 "type": self.MODULE_TYPE,
                 "pointers": {
-                    "file_path": self.remote_pointers[0],
-                    "module_name": self.remote_pointers[1],
-                    "cls_or_fn_name": self.remote_pointers[2],
+                    "file_path": self.remote_root_path,
+                    "module_name": self._import_path,
+                    "cls_or_fn_name": self.callable_name,
                     "project_root": self.container_project_root,
                     "init_args": init_args,
                 },
@@ -685,7 +694,7 @@ class Module:
             service_config = self.compute._launch(
                 service_name=self.compute.service_name,
                 install_url=install_url if not use_editable else None,
-                module_name=self.remote_pointers[1],  # module_name for labels
+                module_name=self._import_path,  # module_name for labels
                 startup_rsync_command=startup_rsync_command,
                 deployment_timestamp=deployment_timestamp,
                 dryrun=dryrun,
@@ -750,9 +759,9 @@ class Module:
             module_metadata = {
                 "type": self.MODULE_TYPE,
                 "pointers": {
-                    "file_path": self.remote_pointers[0],
-                    "module_name": self.remote_pointers[1],
-                    "cls_or_fn_name": self.remote_pointers[2],
+                    "file_path": self.remote_root_path,
+                    "module_name": self._import_path,
+                    "cls_or_fn_name": self.callable_name,
                     "project_root": self.container_project_root,
                     "init_args": init_args,
                 },
@@ -769,7 +778,7 @@ class Module:
             service_config = await self.compute._launch_async(
                 service_name=self.compute.service_name,
                 install_url=install_url if not use_editable else None,
-                module_name=self.remote_pointers[1],  # module_name for labels
+                module_name=self._import_path,  # module_name for labels
                 startup_rsync_command=startup_rsync_command,
                 deployment_timestamp=deployment_timestamp,
                 dryrun=dryrun,
@@ -1421,10 +1430,10 @@ class Module:
         # Remove local stateful values that shouldn't be serialized
         state["_http_client"] = None
         state["_service_config"] = None
-        state["_remote_pointers"] = None
-        # Pointers need to be converted to not be absolute paths if we're passing
+        state["_remote_root_path"] = None
+        # root_path needs to be converted to remote path if we're passing
         # the service elsewhere, e.g. into another service
-        state["pointers"] = self.remote_pointers
+        state["_root_path"] = self._remote_root_path
         return state
 
     def __setstate__(self, state):
@@ -1433,7 +1442,7 @@ class Module:
         # Reset local stateful values to None to ensure clean initialization
         self._http_client = None
         self._service_config = None
-        self._remote_pointers = None
+        self._remote_root_path = state.get("_root_path")
 
     def __del__(self):
         if hasattr(self, "_http_client") and self._http_client is not None:
