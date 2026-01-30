@@ -772,6 +772,7 @@ async def test_byo_manifest_statefulset():
     compute = kt.Compute.from_manifest(
         manifest=statefulset_manifest,
         selector={"app": sts_name},
+        pod_template_path="spec.template",
     )
 
     remote_fn = kt.fn(summer).to(compute)
