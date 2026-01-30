@@ -785,7 +785,15 @@ def kill_process_tree(pid, sig=9):
 
 
 def _deserialize_response(response, serialization: str):
-    if serialization == "pickle":
+    if serialization == "none":
+        content_type = response.headers.get("content-type", "").lower()
+        if "application/json" in content_type:
+            # Regular return value serialized to JSON by FastAPI
+            return response.json()
+        else:
+            # Return the raw response
+            return response
+    elif serialization == "pickle":
         response_data = response.json()
         if isinstance(response_data, list):
             # If this is a response from an spmd call, it's a list of serialized dicts

@@ -176,8 +176,8 @@ class Module:
     @serialization.setter
     def serialization(self, value: str):
         """Set the default serialization format for this module."""
-        if value not in ["json", "pickle"]:
-            raise ValueError("Serialization must be 'json' or 'pickle'")
+        if value not in ["json", "pickle", "none"]:
+            raise ValueError("Serialization must be 'json', 'pickle', or 'none'")
         self._serialization = value
 
     @property

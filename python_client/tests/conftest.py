@@ -174,7 +174,7 @@ def get_compute(compute_type: str):
             image=kt.images.Ray()
             .pip_install(["pytest", "pytest-asyncio", "typer", "rich"])
             .run_bash("uv pip install --system --break-system-packages numpy"),
-            allowed_serialization=["json", "pickle"],
+            allowed_serialization=["json", "pickle", "none"],
         ).distribute("ray", workers=2)
 
     compute = kt.Compute(
@@ -183,7 +183,7 @@ def get_compute(compute_type: str):
         gpu_anti_affinity=True,
         launch_timeout=450,
         shared_memory_limit="512Mi",
-        allowed_serialization=["json", "pickle"],
+        allowed_serialization=["json", "pickle", "none"],
         image=kt.images.Debian().pip_install(["pytest", "pytest-asyncio", "typer", "rich"]),
     )
 
@@ -264,7 +264,7 @@ async def remote_cls():
         "labels": {"test-label": "test_value"},
         "annotations": {"test-annotation": "test_value"},
         "gpu_anti_affinity": True,
-        "allowed_serialization": ["json", "pickle"],
+        "allowed_serialization": ["json", "pickle", "none"],
         "env_vars": {"OMP_NUM_THREADS": 1},
         "inactivity_ttl": "5m",
     }

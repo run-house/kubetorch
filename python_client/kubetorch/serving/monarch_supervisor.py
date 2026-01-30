@@ -5,7 +5,7 @@ import threading
 from bdb import BdbQuit
 from typing import Dict, Optional
 
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from kubetorch.serving.distributed_supervisor import DistributedSupervisor
 from kubetorch.serving.http_server import load_callable, logger, package_exception, request_id_ctx_var
@@ -577,7 +577,7 @@ class MonarchDistributed(DistributedSupervisor):
         )
 
         # Handle exceptions from subprocess
-        if isinstance(result, JSONResponse):
+        if isinstance(result, (JSONResponse, Response)):
             return result
         if isinstance(result, Exception):
             raise result

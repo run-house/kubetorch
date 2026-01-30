@@ -1661,8 +1661,8 @@ async def app_status():
 
 
 # Catch-all routes for callable invocation - must be defined AFTER specific routes
-@app.post("/{cls_or_fn_name}", response_class=JSONResponse)
-@app.post("/{cls_or_fn_name}/{method_name}", response_class=JSONResponse)
+@app.post("/{cls_or_fn_name}")
+@app.post("/{cls_or_fn_name}/{method_name}")
 def run_callable(
     request: Request,
     cls_or_fn_name: str,
@@ -1744,7 +1744,7 @@ def _parse_callable_params(
                 pickled_data = base64.b64decode(params.encode("utf-8"))
                 params = pickle.loads(pickled_data)
 
-        # Default JSON handling
+        # Default JSON/none handling
         args = params.get("args", [])
         kwargs = params.get("kwargs", {})
         debugger: dict = params.get("debugger", None) if params else None
@@ -1776,7 +1776,7 @@ def _serialize_result(result, serialization: str):
         except Exception as e:
             logger.error(f"Failed to pickle result: {str(e)}")
             raise SerializationError(f"Result could not be serialized with pickle: {str(e)}")
-    else:
+    elif serialization == "json":
         # Default JSON serialization
         try:
             json.dumps(result)

@@ -12,7 +12,7 @@ For distributed execution with remote workers, see DistributedSupervisor.
 import multiprocessing
 from typing import Dict, Optional
 
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from kubetorch.serving.http_server import logger
 from kubetorch.serving.log_capture import get_subprocess_queue
@@ -149,7 +149,7 @@ class ExecutionSupervisor:
         )
 
         # Handle exceptions from subprocess
-        if isinstance(result, JSONResponse):
+        if isinstance(result, (JSONResponse, Response)):
             return result
         if isinstance(result, Exception):
             raise result
