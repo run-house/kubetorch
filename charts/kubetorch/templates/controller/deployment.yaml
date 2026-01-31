@@ -163,9 +163,9 @@ spec:
             httpGet:
               path: /health
               port: {{ .Values.kubetorchController.port }}
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 3
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 4
           # Once startup succeeds, readiness checks if ready to serve traffic
           # Check controller directly to ensure it's ready before routing traffic
           readinessProbe:
