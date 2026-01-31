@@ -14,8 +14,8 @@ KUBETORCH_NAMESPACE = "kubetorch"
 DEFAULT_NAMESPACE = "default"
 
 # Images
-SERVER_IMAGE_MINIMAL = "ghcr.io/run-house/server:v3"
-SERVER_IMAGE_WITH_OTEL = "ghcr.io/run-house/server-otel:v3"
+SERVER_IMAGE_MINIMAL = "ghcr.io/run-house/server:v4"
+SERVER_IMAGE_WITH_OTEL = "ghcr.io/run-house/server-otel:v4"
 
 UBUNTU_IMAGE_MINIMAL = "ghcr.io/run-house/ubuntu:v1"
 UBUNTU_IMAGE_WITH_OTEL = "ghcr.io/run-house/ubuntu:v1"
