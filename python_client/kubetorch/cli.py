@@ -738,6 +738,7 @@ def kt_list(
         "--tag",
         help="Service tag or prefix (ex: 'myusername', 'some-git-branch').",
     ),
+    show_pods: bool = typer.Option(False, "-p", "--pods", help="Show pod names in output"),
 ):
     """List all Kubetorch resources.
 
@@ -748,6 +749,8 @@ def kt_list(
       $ kt list
 
       $ kt list -t dev-branch
+
+      $ kt list --pods  # Show pod names
     """
 
     # Import here to avoid circular imports
@@ -812,15 +815,20 @@ def kt_list(
             ("TYPE", "magenta"),
             ("STATUS", "green"),
             ("# OF PODS", "yellow"),
-            ("POD NAMES", "red"),
-            ("VOLUMES", "blue"),
-            ("LAST STATUS CHANGE", "yellow"),
-            ("TTL", "yellow"),
-            ("CREATOR", "yellow"),
-            ("CPUs", "yellow"),
-            ("MEMORY", "yellow"),
-            ("GPUs", "yellow"),
         ]
+        if show_pods:
+            table_columns.append(("POD NAMES", "red"))
+        table_columns.extend(
+            [
+                ("VOLUMES", "blue"),
+                ("LAST STATUS CHANGE", "yellow"),
+                ("TTL", "yellow"),
+                ("CREATOR", "yellow"),
+                ("CPUs", "yellow"),
+                ("MEMORY", "yellow"),
+                ("GPUs", "yellow"),
+            ]
+        )
         table = create_table_for_output(
             columns=table_columns,
             no_wrap_columns_names=["SERVICE"],
@@ -976,20 +984,26 @@ def kt_list(
                 if pod_status == "Pending":
                     display_status = "[yellow]Pending[/yellow]"
 
-            table.add_row(
+            row_data = [
                 name,
                 f"[magenta]{kind}[/magenta]",
                 display_status,
                 str(len(pods)),
-                "\n".join(pod_lines),
-                "\n".join(volumes_display) or "-",
-                timestamp,
-                ttl,
-                creator,
-                cpu or "—",
-                memory or "—",
-                gpu or "—",
+            ]
+            if show_pods:
+                row_data.append("\n".join(pod_lines))
+            row_data.extend(
+                [
+                    "\n".join(volumes_display) or "-",
+                    timestamp,
+                    ttl,
+                    creator,
+                    cpu or "—",
+                    memory or "—",
+                    gpu or "—",
+                ]
             )
+            table.add_row(*row_data)
 
         table.pad_bottom = 1
         console.print(table)
