@@ -105,6 +105,20 @@ spec:
                           type: object
                           description: Arguments for initialization
                           x-kubernetes-preserve-unknown-fields: true
+                autoTermination:
+                  type: object
+                  description: Auto-termination policies for this workload
+                  properties:
+                    inactivityTtl:
+                      type: string
+                      description: Terminate after this duration of inactivity (e.g., 30m, 1h, 1d)
+                    # Future expansion:
+                    # maxDuration:
+                    #   type: string
+                    #   description: Maximum lifetime regardless of activity
+                    # gpuIdleThreshold:
+                    #   type: object
+                    #   description: Terminate when GPU utilization falls below threshold
                 workloadMetadata:
                   type: object
                   description: Metadata about the workload deployment
@@ -132,9 +146,6 @@ spec:
                         metricsEnabled:
                           type: boolean
                           default: true
-                        inactivityTtl:
-                          type: string
-                          description: Auto-shutdown after inactivity (e.g., 30m, 1h)
                         logLevel:
                           type: string
                           description: Python log level
@@ -209,6 +220,9 @@ spec:
         - name: Pods
           type: integer
           jsonPath: .status.podCount
+        - name: TTL
+          type: string
+          jsonPath: .spec.autoTermination.inactivityTtl
         - name: Service URL
           type: string
           jsonPath: .status.serviceUrl

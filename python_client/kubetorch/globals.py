@@ -806,6 +806,7 @@ class ControllerClient:
         labels: Optional[Dict[str, Any]] = None,
         annotations: Optional[Dict[str, Any]] = None,
         create_headless_service: bool = False,
+        auto_termination: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Deploy K8s resource and register workload.
 
@@ -825,6 +826,8 @@ class ControllerClient:
             annotations (Optional[Dict[str, Any]]): Annotations for the K8s service. (Default: None)
             create_headless_service (bool): Whether to create a headless service for
                 distributed pod discovery. (Default: False)
+            auto_termination (Optional[Dict[str, Any]]): Auto-termination policies for the workload.
+                E.g., {"inactivityTtl": "30m"}. Written to CRD spec.autoTermination. (Default: None)
 
         Returns:
             Deploy response with apply_status, workload_status, service_url, and created resource.
@@ -845,6 +848,7 @@ class ControllerClient:
             "labels": labels,
             "annotations": annotations,
             "create_headless_service": create_headless_service,
+            "auto_termination": auto_termination,
         }
         filtered_args = {k: v for k, v in args.items() if v not in (None, False)}
         body.update(filtered_args)

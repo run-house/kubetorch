@@ -611,6 +611,12 @@ class ServiceManager:
             launch_id=launch_id,
         )
 
+        # Build auto_termination config for CRD spec.autoTermination
+        # This is separate from runtime_config (which flows to pods via WebSocket)
+        auto_termination = None
+        if runtime_config and runtime_config.get("inactivity_ttl"):
+            auto_termination = {"inactivityTtl": runtime_config["inactivity_ttl"]}
+
         try:
             manifest_replicas = manifest.get("spec", {}).get("replicas", "NOT_SET")
             logger.debug(f"Deploying {service_name}: replicas={manifest_replicas}")
@@ -629,6 +635,7 @@ class ServiceManager:
                 dockerfile=dockerfile,
                 module=module,
                 create_headless_service=create_headless_service,
+                auto_termination=auto_termination,
             )
 
             # Check apply result

@@ -1,4 +1,5 @@
 import os
+from unittest.mock import MagicMock, patch
 
 import httpx
 import kubetorch.provisioning.constants as provisioning_constants
@@ -14,6 +15,121 @@ def setup_test_env():
     # Keep the launch timeout low for this test suite, unless overridden (ex: for GPU tests)
     os.environ["KT_LAUNCH_TIMEOUT"] = "150"
     yield
+
+
+# =============================================================================
+# Unit Tests for auto_termination payload
+# =============================================================================
+
+
+@pytest.mark.level("unit")
+def test_auto_termination_payload_construction():
+    """Test that auto_termination dict is correctly built and passed to controller.deploy()"""
+    from kubetorch.provisioning.service_manager import ServiceManager
+
+    # Mock the controller client
+    mock_controller = MagicMock()
+    mock_controller.deploy.return_value = {
+        "apply_status": "success",
+        "workload_status": "success",
+        "service_url": "http://test-service.default.svc.cluster.local",
+        "resource": {"metadata": {"name": "test-service"}},
+    }
+
+    # Create a service manager with mocked controller
+    with patch("kubetorch.provisioning.service_manager.globals") as mock_globals:
+        mock_globals.config.username = "test-user"
+        mock_globals.controller_client.return_value = mock_controller
+
+        manager = ServiceManager.__new__(ServiceManager)
+        manager.namespace = "default"
+        manager.resource_type = "deployment"
+        manager.config = {}
+
+        # Call _apply_and_register_workload with inactivity_ttl in runtime_config
+        runtime_config = {
+            "log_streaming_enabled": True,
+            "metrics_enabled": True,
+            "inactivity_ttl": "30m",
+        }
+
+        # Mock required methods
+        manager.pod_spec = MagicMock(return_value={"containers": [{"ports": [{"containerPort": 32300}]}]})
+        manager._resolve_service_config = MagicMock(return_value=None)
+        manager._load_workload_metadata = MagicMock(return_value={"username": "test-user"})
+
+        manager._apply_and_register_workload(
+            manifest={"metadata": {"labels": {}, "annotations": {}}, "spec": {}},
+            service_name="test-service",
+            runtime_config=runtime_config,
+        )
+
+        # Verify auto_termination was passed to deploy()
+        deploy_call = mock_controller.deploy.call_args
+        assert deploy_call is not None
+
+        # Check that auto_termination kwarg was passed with correct structure
+        _, kwargs = deploy_call
+        assert "auto_termination" in kwargs
+        assert kwargs["auto_termination"] == {"inactivityTtl": "30m"}
+
+
+@pytest.mark.level("unit")
+def test_auto_termination_not_set_when_no_ttl():
+    """Test that auto_termination is None when inactivity_ttl is not provided"""
+    from kubetorch.provisioning.service_manager import ServiceManager
+
+    # Mock the controller client
+    mock_controller = MagicMock()
+    mock_controller.deploy.return_value = {
+        "apply_status": "success",
+        "workload_status": "success",
+        "service_url": "http://test-service.default.svc.cluster.local",
+        "resource": {"metadata": {"name": "test-service"}},
+    }
+
+    # Create a service manager with mocked controller
+    with patch("kubetorch.provisioning.service_manager.globals") as mock_globals:
+        mock_globals.config.username = "test-user"
+        mock_globals.controller_client.return_value = mock_controller
+
+        manager = ServiceManager.__new__(ServiceManager)
+        manager.namespace = "default"
+        manager.resource_type = "deployment"
+        manager.config = {}
+
+        # Call without inactivity_ttl
+        runtime_config = {
+            "log_streaming_enabled": True,
+            "metrics_enabled": True,
+        }
+
+        manager.pod_spec = MagicMock(return_value={"containers": [{"ports": [{"containerPort": 32300}]}]})
+        manager._resolve_service_config = MagicMock(return_value=None)
+        manager._load_workload_metadata = MagicMock(return_value={"username": "test-user"})
+
+        manager._apply_and_register_workload(
+            manifest={"metadata": {"labels": {}, "annotations": {}}, "spec": {}},
+            service_name="test-service",
+            runtime_config=runtime_config,
+        )
+
+        # Verify auto_termination was not passed (should be filtered out as None)
+        deploy_call = mock_controller.deploy.call_args
+        _, kwargs = deploy_call
+        # auto_termination should either not be in kwargs or be None
+        assert kwargs.get("auto_termination") is None
+
+
+# =============================================================================
+# Integration Tests
+#
+# These tests verify backward compatibility via annotations on K8s resources.
+# Once the controller is updated to write autoTermination to the CRD spec,
+# add tests to verify:
+#   1. KubetorchWorkload has spec.autoTermination.inactivityTtl set
+#   2. KubetorchWorkload has label kubetorch.com/inactivity-ttl with the TTL value
+# =============================================================================
 
 
 @pytest.mark.level("minimal")
@@ -33,11 +149,8 @@ def test_autodown_annotation_and_metrics():
     # Use controller client to verify resource exists in discovery
     controller = kt.globals.controller_client()
     workloads = controller.discover_resources(namespace=namespace, name_filter=remote_fn.service_name)
-    knative_services = [
-        r
-        for r in workloads.get("workloads", [])
-        if r.get("api_version") == "serving.knative.dev/v1" and r.get("kind") == "KnativeService"
-    ]
+    # For Knative, the K8s kind is "Service" (not "KnativeService")
+    knative_services = [r for r in workloads.get("workloads", []) if r.get("kind") == "Service"]
     assert knative_services, f"No Knative service found for {remote_fn.service_name}"
 
     # Fetch the full Knative service object via k8s API to get metadata
