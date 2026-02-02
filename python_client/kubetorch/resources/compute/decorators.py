@@ -9,6 +9,9 @@ from kubetorch.resources.compute.compute import Compute
 # Helper class which allows us to chain decorators in a way that allows us to reverse the order of the decorators
 # The `compute` decorator ultimately unwinds the calls to properly construct the Module.
 class PartialModule:
+    # Marker to identify kubetorch decorators
+    _kt_partial_module = True
+
     def __init__(
         self,
         fn_or_cls=None,

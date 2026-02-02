@@ -1075,8 +1075,8 @@ def load_callable_from_env():
             detail=f"Callable '{cls_or_fn_name}' not found in module '{module_name}'",
         ) from e
 
-    # Unwrap to remove any kt deploy decorators (e.g. @kt.compute)
-    if hasattr(callable_obj, "__wrapped__"):
+    # Unwrap to remove any kt deploy decorators (e.g. @kt.compute, identified by _kt_partial_module)
+    if getattr(callable_obj, "_kt_partial_module", False) and hasattr(callable_obj, "__wrapped__"):
         callable_obj = callable_obj.__wrapped__
 
     if isinstance(callable_obj, type):
