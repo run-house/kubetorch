@@ -54,13 +54,11 @@ def check_kubetorch_versions(response):
         return
 
     if python_client_version != helm_installed_version:
-        msg = (
-            f"client={python_client_version}, cluster={helm_installed_version}. "
-            "To suppress this error, set the environment variable "
-            "`KUBETORCH_IGNORE_VERSION_MISMATCH=1`."
-        )
+        msg = f"client={python_client_version}, cluster={helm_installed_version}. "
         if not os.getenv("KUBETORCH_IGNORE_VERSION_MISMATCH"):
-            raise VersionMismatchError(msg)
+            raise VersionMismatchError(
+                f"{msg} To suppress this error, set the environment variable " "`KUBETORCH_IGNORE_VERSION_MISMATCH=1`."
+            )
 
         warnings.warn(f"Kubetorch version mismatch: {msg}")
 
