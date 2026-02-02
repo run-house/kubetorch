@@ -233,6 +233,19 @@ class ProcessWorker(multiprocessing.Process):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
 
+        # Eagerly load the callable at subprocess startup to ensure __init__ runs
+        # This is important for callables like MonarchGateway that need to start
+        # background processes during initialization on all pods
+        try:
+            load_callable(
+                distributed_subprocess=True,
+                reload_cleanup_fn=self.framework_cleanup,
+            )
+            logger.debug("Callable loaded during subprocess startup")
+        except Exception as e:
+            logger.error(f"Failed to load callable during subprocess startup: {e}")
+            # Don't fail startup - let the error surface when a request arrives
+
         try:
             self._loop.run_until_complete(self._poll_queue())
 
