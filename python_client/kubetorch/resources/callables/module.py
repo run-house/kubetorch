@@ -45,6 +45,8 @@ class Module:
         name: str,
         pointers: tuple,
         sync_dir: Union[str, Path, bool] = None,
+        remote_dir: Union[str, Path] = None,
+        remote_import_path: str = None,
     ):
         """
         Initialize a Module object.
@@ -57,10 +59,16 @@ class Module:
                     This is where the module can be imported from (added to sys.path).
                 - import_path: The dotted Python import path (e.g., "mypackage.mymodule").
                 - callable_name: The name of the class or function within the module.
-            sync_dir (str, Path, or bool): Controls which module directory to sync to compute:
-                If None (default), auto-detect and sync package directory.
-                If False, skip syncing files (this assumes files are already on compute).
+            sync_dir (str, Path, or bool, optional): Controls which module directory to sync
+                to compute: If None (default), auto-detect and sync package directory.
+                If False, skip syncing files (assumes files are already on compute).
                 If str/Path, sync the specified directory. Must contain the module.
+            remote_dir (str or Path, optional): Path on the container where the module exists.
+                When specified, files are not synced (assumes files are already on compute,
+                e.g., via image.copy()). This path is added to the remote sys.path for imports,
+                and can not be used with sync_dir.
+            remote_import_path (str, optional): Override the computed import path for the module.
+                Only used when remote_dir is specified.
         """
         self._compute = None
         self._service_config = None
@@ -79,9 +87,25 @@ class Module:
 
         self.name = clean_and_validate_k8s_name(name, allow_full_length=False) if name else None
 
+        if sync_dir and remote_dir:
+            raise ValueError(
+                "sync_dir and remote_dir can not both be set. "
+                "Use sync_dir to sync a local directory, or remote_dir to specify "
+                "where files already exist on the container."
+            )
+        if remote_import_path and not remote_dir:
+            raise ValueError(
+                "remote_import_path can only be set when remote_dir is also set. "
+                "Use remote_dir to specify where files already exist on the container, "
+                "and remote_import_path to override the computed import path."
+            )
+
         if sync_dir:
             self._validate_module_in_sync_dir(sync_dir)
         self.sync_dir = sync_dir
+
+        self._remote_root_path = str(remote_dir) if remote_dir else None
+        self._remote_import_path = remote_import_path
 
     @property
     def callable_name(self):
@@ -146,8 +170,7 @@ class Module:
             return self._remote_root_path
 
         if self.sync_dir is False:
-            # Files already on compute, user is responsible for PYTHONPATH
-            self._remote_root_path = None
+            # Files already on compute and no remote_dir specified, user responsible for PYTHONPATH imports
             self._container_project_root = None
             return self._remote_root_path
 
@@ -205,23 +228,28 @@ class Module:
 
     @property
     def remote_import_path(self):
-        """Returns the import_path adjusted for the container based on sync_dir."""
+        """Returns the import_path adjusted for the container based on sync_dir or import_path override."""
+        if self._remote_import_path is not None:
+            return self._remote_import_path
+
         if self.sync_dir is False or self.sync_dir is None:
-            return self._import_path
+            self._remote_import_path = self._import_path
+        else:
+            root_path = Path(self._root_path).expanduser().resolve()
+            sync_dir = Path(self.sync_dir).expanduser().resolve()
 
-        root_path = Path(self._root_path).expanduser().resolve()
-        sync_dir = Path(self.sync_dir).expanduser().resolve()
+            try:
+                # sync_dir is parent/equal to _root_path: import path unchanged
+                root_path.relative_to(sync_dir)
+                self._remote_import_path = self._import_path
+            except ValueError:
+                # sync_dir is child of _root_path: compute adjusted import path relative to sync_dir
+                module_file = root_path / (self._import_path.replace(".", "/") + ".py")
+                relative_module_file = module_file.relative_to(sync_dir)
+                parts = list(relative_module_file.with_suffix("").parts)
+                self._remote_import_path = ".".join(parts)
 
-        try:
-            # sync_dir is parent/equal to _root_path: import path unchanged
-            root_path.relative_to(sync_dir)
-            return self._import_path
-        except ValueError:
-            # sync_dir is child of _root_path: compute adjusted import path relative to sync_dir
-            module_file = root_path / (self._import_path.replace(".", "/") + ".py")
-            relative_module_file = module_file.relative_to(sync_dir)
-            parts = list(relative_module_file.with_suffix("").parts)
-            return ".".join(parts)
+        return self._remote_import_path
 
     @property
     def container_project_root(self):
