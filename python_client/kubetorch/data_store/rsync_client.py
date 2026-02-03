@@ -96,25 +96,6 @@ class RsyncClient:
             is_download: True if downloading from cluster
             in_cluster: True if running inside Kubernetes cluster
         """
-        if in_cluster:
-            return self._build_in_cluster_rsync_cmd(source, dest, contents, filter_options, force, is_download)
-        else:
-            return self._build_external_rsync_cmd(
-                source, dest, rsync_local_port, contents, filter_options, force, is_download
-            )
-
-    def _build_external_rsync_cmd(
-        self,
-        source: Union[str, List[str]],
-        dest: str,
-        rsync_local_port: int,
-        contents: bool = False,
-        filter_options: Optional[str] = None,
-        force: bool = False,
-        is_download: bool = False,
-    ) -> str:
-        """Build rsync command for external (outside cluster) execution."""
-        base_url = self.get_base_rsync_url(rsync_local_port)
 
         if is_download:
             # For downloads, source is already a full rsync URL
@@ -124,41 +105,21 @@ class RsyncClient:
                 source_str = source
             remote_dest = dest
         else:
-            # For uploads, build the remote destination
-            if dest:
-                # Handle tilde prefix - treat as relative to home/working directory
-                if dest.startswith("~/"):
-                    dest = dest[2:]
-
-                # Handle absolute vs relative paths
-                if dest.startswith("/"):
-                    # For absolute paths, store under special __absolute__ subdirectory
-                    dest_for_rsync = f"__absolute__{dest}"
-                else:
-                    dest_for_rsync = dest
-                remote_dest = f"{base_url}/{dest_for_rsync}"
-            else:
-                remote_dest = base_url
-
             # Process source paths and determine if we're uploading a file or directory
             source = [source] if isinstance(source, str) else source
-            expanded_sources = []
-            source_is_file = False
-            for s in source:
-                path = Path(s).expanduser().absolute()
-                if not path.exists():
-                    raise ValueError(f"Could not locate path to sync up: {s}")
 
-                # Check if source is a file (not a directory)
-                if not contents and path.is_file():
-                    source_is_file = True
+            # Handle tilde prefix in dest
+            if dest and dest.startswith("~/"):
+                dest = dest[2:]
 
-                path_str = str(path)
-                if contents and path.is_dir() and not str(s).endswith("/"):
-                    path_str += "/"
-                expanded_sources.append(path_str)
-
-            source_str = " ".join(expanded_sources)
+            if in_cluster:
+                remote_dest, source_str, source_is_file = self._build_remote_dest_for_in_cluster_upload(
+                    source, dest, contents
+                )
+            else:
+                remote_dest, source_str, source_is_file = self._build_remote_dest_for_external_upload(
+                    source, dest, contents, rsync_local_port
+                )
 
             # Only append "/" to remote_dest if:
             # 1. Source is a directory (not a single file), OR
@@ -204,124 +165,83 @@ class RsyncClient:
         # Order: includes first, then default excludes, then custom excludes
         default_excludes = _get_rsync_exclude_options()
         rsync_options = f"{include_opts} {default_excludes} {exclude_opts}".strip()
-        rsync_cmd = f"rsync -avL {rsync_options}"
+        rsync_cmd = f"rsync -av{'' if in_cluster else 'L'} {rsync_options}"
 
         if force:
             rsync_cmd += " --ignore-times"
 
-        if is_download:
-            rsync_cmd += f" {source_str} {remote_dest}"
-        else:
-            rsync_cmd += f" {source_str} {remote_dest}"
+        rsync_cmd += f" {source_str} {remote_dest}"
 
         return rsync_cmd
 
-    def _build_in_cluster_rsync_cmd(
-        self,
-        source: Union[str, List[str]],
-        dest: str,
-        contents: bool = False,
-        filter_options: Optional[str] = None,
-        force: bool = False,
-        is_download: bool = False,
-    ) -> str:
-        """Build rsync command for in-cluster execution."""
+    def _build_remote_dest_for_in_cluster_upload(
+        self, source: List[str], dest: str, contents: bool
+    ) -> tuple[str, str, bool]:
+        """Build the remote destination for upload."""
         base_remote = self.get_rsync_pod_url()
 
-        if is_download:
-            # For downloads, source is the remote path
-            if isinstance(source, list):
-                source_str = " ".join(source)
-            else:
-                source_str = source
-            remote_dest = dest
+        # Determine if source is a file or directory
+        # Check if any source path exists and is a file (not a directory)
+        source_is_file = False
+        if not contents:
+            for s in source:
+                src_path = Path(s)
+                if src_path.exists() and src_path.is_file():
+                    source_is_file = True
+                    break
+
+        if contents:
+            source = [s if s.endswith("/") or not Path(s).is_dir() else s + "/" for s in source]
+
+        source_str = " ".join(source)
+
+        if dest is None:
+            remote = base_remote
+        elif dest.startswith("rsync://"):
+            remote = dest
         else:
-            # For uploads, build remote destination
-            source = [source] if isinstance(source, str) else source
+            remote = base_remote + dest.lstrip("/")
 
-            # Handle tilde prefix in dest
-            if dest and dest.startswith("~/"):
-                dest = dest[2:]
+        return remote, source_str, source_is_file
 
-            # Determine if source is a file or directory
-            # Check if any source path exists and is a file (not a directory)
-            source_is_file = False
-            if not contents:
-                for s in source:
-                    src_path = Path(s)
-                    if src_path.exists() and src_path.is_file():
-                        source_is_file = True
-                        break
+    def _build_remote_dest_for_external_upload(
+        self, source: List[str], dest: str, contents: bool, rsync_local_port: int
+    ) -> tuple[str, str, bool]:
+        """Build the remote destination for external upload."""
+        base_url = self.get_base_rsync_url(rsync_local_port)
 
-            if contents:
-                source = [s if s.endswith("/") or not Path(s).is_dir() else s + "/" for s in source]
-
-            source_str = " ".join(source)
-
-            if dest is None:
-                remote = base_remote
-            elif dest.startswith("rsync://"):
-                remote = dest
+        # For uploads, build the remote destination
+        if dest:
+            # Handle absolute vs relative paths
+            if dest.startswith("/"):
+                # For absolute paths, store under special __absolute__ subdirectory
+                dest_for_rsync = f"__absolute__{dest}"
             else:
-                remote = base_remote + dest.lstrip("/")
-
-            # Only append "/" if:
-            # 1. Source is a directory (not a single file), OR
-            # 2. Dest already ends with "/", OR
-            # 3. Contents flag is set (for single files, this means put file inside directory at key)
-            # Don't append "/" if uploading a single file without contents flag (key is exact destination path)
-            if not remote.endswith("/"):
-                if not source_is_file or contents or dest.endswith("/"):
-                    remote += "/"
-
-            remote_dest = remote
-
-        # Build command (includes must come before excludes in rsync)
-        # Parse filter_options to separate includes and excludes
-        include_opts = ""
-        exclude_opts = ""
-        if filter_options:
-            # Use shlex to properly handle quoted values
-            import shlex
-
-            parts = shlex.split(filter_options)
-            i = 0
-            while i < len(parts):
-                if parts[i] == "--include":
-                    if i + 1 < len(parts):
-                        include_opts += f" --include={parts[i+1]}"
-                        i += 2
-                    else:
-                        i += 1
-                elif parts[i] == "--exclude":
-                    if i + 1 < len(parts):
-                        exclude_opts += f" --exclude={parts[i+1]}"
-                        i += 2
-                    else:
-                        i += 1
-                elif parts[i].startswith("--include="):
-                    include_opts += f" {parts[i]}"
-                    i += 1
-                elif parts[i].startswith("--exclude="):
-                    exclude_opts += f" {parts[i]}"
-                    i += 1
-                else:
-                    i += 1
-
-        # Order: includes first, then default excludes, then custom excludes
-        default_excludes = _get_rsync_exclude_options()
-        rsync_options = f"{include_opts} {default_excludes} {exclude_opts}".strip()
-        rsync_cmd = f"rsync -av {rsync_options}"
-
-        if force:
-            rsync_cmd += " --ignore-times"
-
-        if is_download:
-            rsync_cmd += f" {source_str} {remote_dest}"
+                dest_for_rsync = dest
+            remote_dest = f"{base_url}/{dest_for_rsync}"
         else:
-            rsync_cmd += f" {source_str} {remote_dest}"
+            remote_dest = base_url
 
-        return rsync_cmd
+        # Process source paths and determine if we're uploading a file or directory
+        expanded_sources = []
+        source_is_file = False
+        for s in source:
+            path = Path(s).expanduser().absolute()
+            if not path.exists():
+                raise ValueError(f"Could not locate path to sync up: {s}")
+
+            # Check if source is a file (not a directory)
+            if not contents and path.is_file():
+                source_is_file = True
+
+            path_str = str(path)
+            if contents and path.is_dir() and not str(s).endswith("/"):
+                path_str += "/"
+            expanded_sources.append(path_str)
+
+        source_str = " ".join(expanded_sources)
+
+        return remote_dest, source_str, source_is_file
 
     def run_rsync_command(self, rsync_cmd: str, create_target_dir: bool = True):
         """Execute rsync command with retry logic for transient errors."""
@@ -343,8 +263,6 @@ class RsyncClient:
 
     def _run_rsync_command_once(self, rsync_cmd: str, create_target_dir: bool = True):
         """Execute rsync command with proper error handling (single attempt)."""
-        logger.debug(f"Executing rsync command: {rsync_cmd}")
-
         # Extract source paths from rsync command for user-friendly logging
         # Rsync command format: rsync [options] source1 source2 ... dest
         # For uploads: sources are local paths, dest is rsync://...
@@ -382,10 +300,10 @@ class RsyncClient:
         if "--mkpath" not in rsync_cmd and create_target_dir:
             # Add --mkpath for rsync 3.2.0+ (creates parent directories automatically)
             rsync_cmd = rsync_cmd.replace("rsync ", "rsync --mkpath ", 1)
-            logger.debug(f"Added --mkpath flag: {rsync_cmd}")
+            logger.debug("Added --mkpath flag to rsync command")
 
         # Run with PTY for better output handling
-        logger.debug(f"Rsync command: {rsync_cmd}")
+        logger.debug(f"Executing rsync command: {rsync_cmd}")
 
         leader, follower = pty.openpty()
         proc = subprocess.Popen(

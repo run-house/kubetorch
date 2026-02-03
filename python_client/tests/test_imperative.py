@@ -973,3 +973,58 @@ def test_compute_nonexisting_priority_class():
         remote_fn = kt.fn(summer, name="random-priority-class-summer").to(my_compute)
 
         assert remote_fn(4, 5) == 9
+
+
+@pytest.mark.level("minimal")
+def test_single_file_sync_no_project_markers():
+    """Test that deploying a function from a standalone file (no project markers)
+    only syncs that single file, not the entire directory.
+
+    This mimics: python ~/Downloads/helloworld.py
+    Where ~/Downloads has no .git, pyproject.toml, etc.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    import kubetorch as kt
+
+    # Create isolated temp directory with ONLY a single .py file (no project markers)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Write a standalone Python file
+        script_path = Path(tmpdir) / "standalone_script.py"
+        script_path.write_text(
+            '''
+def standalone_fn(x, y):
+    """A function in a standalone file with no project markers."""
+    return x + y
+'''
+        )
+
+        # Also create a decoy file that should NOT be synced
+        decoy_file = Path(tmpdir) / "decoy.txt"
+        decoy_file.write_text("This file should NOT be synced")
+
+        # Import the function from the standalone file
+        spec = importlib.util.spec_from_file_location("standalone_script", script_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["standalone_script"] = module
+        spec.loader.exec_module(module)
+
+        try:
+            compute = kt.Compute(cpus=".01", gpu_anti_affinity=True)
+            remote_fn = kt.fn(module.standalone_fn, name="standalone-file-test").to(compute)
+
+            # Verify function works
+            result = remote_fn(3, 4)
+            assert result == 7, f"Function should return 7, got {result}"
+
+            # Verify only the .py file was synced, not the decoy
+            # Check via bash command on the remote
+            # run_bash returns [[exit_code, stdout, stderr]] structure
+            ls_result = remote_fn.compute.run_bash("ls -la")
+            ls_output = str(ls_result)  # Convert to string for simple containment check
+            assert "standalone_script.py" in ls_output, "Script file should be synced"
+            assert "decoy.txt" not in ls_output, "Decoy file should NOT be synced (single-file mode)"
+
+        finally:
+            sys.modules.pop("standalone_script", None)

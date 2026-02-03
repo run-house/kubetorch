@@ -2537,8 +2537,8 @@ class Compute:
 
                 # Transform destination path for rsync upload
                 if op.get("_is_sync_path", False):
-                    # rsync_dirs: upload to service_name directly
-                    service_dest = self.service_name
+                    # rsync_dirs: upload to service_name directory
+                    service_dest = f"{self.service_name}/"
                 elif dest_dir:
                     # Strip tilde prefix - treat as relative to working directory
                     upload_dest = dest_dir[2:] if dest_dir.startswith("~/") else dest_dir
@@ -2548,7 +2548,8 @@ class Compute:
                     else:
                         service_dest = f"{self.service_name}/{upload_dest}"
                 else:
-                    service_dest = self.service_name
+                    # No dest specified - put in service directory
+                    service_dest = f"{self.service_name}/"
 
                 logger.debug(f"Rsyncing copy operation: {source} -> {service_dest}")
                 client.upload(
