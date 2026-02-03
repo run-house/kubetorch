@@ -531,7 +531,7 @@ def _validate_callable(cls_or_fn_name: str) -> Optional[dict]:
     if cls_or_fn_name != configured_callable:
         return {
             "type": "NotFound",
-            "message": f"Callable '{cls_or_fn_name}' not found. Found '{configured_callable}' instead.",
+            "message": f"Callable '{cls_or_fn_name}' not found in metadata configuration.",
             "traceback": "",
         }
 
