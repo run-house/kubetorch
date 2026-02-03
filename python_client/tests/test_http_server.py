@@ -33,7 +33,6 @@ def _reset_http_server_state():
 
     http_server.SUPERVISOR = None
     http_server._CACHED_CALLABLES.clear()
-    http_server._CACHED_IMAGE.clear()
 
     # Give processes and threads time to fully terminate
     time.sleep(0.2)
