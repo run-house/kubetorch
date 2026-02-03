@@ -9,12 +9,27 @@ from kubernetes import client as k8s_client, config as k8s_config
 from .utils import create_random_name_prefix, simple_summer
 
 
-@pytest.fixture(autouse=True, scope="session")
-def setup_test_env():
-    os.environ["KT_GPU_ANTI_AFFINITY"] = "True"
-    # Keep the launch timeout low for this test suite, unless overridden (ex: for GPU tests)
-    os.environ["KT_LAUNCH_TIMEOUT"] = "150"
-    yield
+@pytest.fixture(autouse=True)
+def setup_test_env(request):
+    """Only set env vars for minimal-level tests that actually deploy to cluster."""
+    marker = request.node.get_closest_marker("level")
+    if marker and marker.args[0] == "minimal":
+        old_gpu_anti_affinity = os.environ.get("KT_GPU_ANTI_AFFINITY")
+        old_launch_timeout = os.environ.get("KT_LAUNCH_TIMEOUT")
+        os.environ["KT_GPU_ANTI_AFFINITY"] = "True"
+        os.environ["KT_LAUNCH_TIMEOUT"] = "150"
+        yield
+        # Restore original values
+        if old_gpu_anti_affinity is None:
+            os.environ.pop("KT_GPU_ANTI_AFFINITY", None)
+        else:
+            os.environ["KT_GPU_ANTI_AFFINITY"] = old_gpu_anti_affinity
+        if old_launch_timeout is None:
+            os.environ.pop("KT_LAUNCH_TIMEOUT", None)
+        else:
+            os.environ["KT_LAUNCH_TIMEOUT"] = old_launch_timeout
+    else:
+        yield
 
 
 # =============================================================================
