@@ -43,6 +43,9 @@ KT_SECRET_NAME_LABEL = "kubetorch.com/secret-name"
 KT_APP_LABEL = "app"  # Stable app identifier for easy querying
 KUEUE_QUEUE_NAME_LABEL = "kueue.x-k8s.io/queue-name"  # Kueue queue label for GPU scheduling
 
+# Auto-termination labels (placed on KubetorchWorkload CRD for efficient querying)
+KT_INACTIVITY_TTL_LABEL = "kubetorch.com/inactivity-ttl"
+
 # Templates
 KNATIVE_SERVICE_TEMPLATE_FILE = "knative_service_template.yaml"
 POD_TEMPLATE_FILE = "pod_template.yaml"
