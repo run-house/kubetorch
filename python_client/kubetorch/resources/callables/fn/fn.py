@@ -16,6 +16,8 @@ class Fn(Module):
         name: str,
         pointers: tuple = None,
         sync_dir: Union[str, Path, bool] = None,
+        remote_dir: Union[str, Path] = None,
+        remote_import_path: str = None,
     ):
         """
         Initialize a Fn object for remote function execution.
@@ -28,9 +30,18 @@ class Fn(Module):
             name (str): The name of the function to be executed remotely.
             pointers (tuple): A tuple of (root_path, import_path, callable_name) containing
                 the information needed to locate and import the function.
-            sync_dir (str, Path, or bool): Controls which module directory to sync to compute.
+            sync_dir (str, Path, or bool): Controls which local function directory to sync to compute.
+            remote_dir (str or Path): Path on container where function already exists. Can not be used with sync_dir.
+            remote_import_path (str, optional): Override the computed import path for the function.
+                Only used when remote_dir is specified.
         """
-        super().__init__(name=name, pointers=pointers, sync_dir=sync_dir)
+        super().__init__(
+            name=name,
+            pointers=pointers,
+            sync_dir=sync_dir,
+            remote_dir=remote_dir,
+            remote_import_path=remote_import_path,
+        )
 
     def __call__(self, *args, **kwargs):
         async_ = kwargs.pop("async_", self.async_)
@@ -114,6 +125,8 @@ def fn(
     get_if_exists=True,
     reload_prefixes=None,
     sync_dir: Union[str, Path, bool] = None,
+    remote_dir: Union[str, Path] = None,
+    remote_import_path: str = None,
 ) -> Fn:
     """
     Builds an instance of :class:`Fn`.
@@ -135,10 +148,14 @@ def fn(
         reload_prefixes (Union[str, List[str]], optional):
             A list of prefixes to use when reloading the function (e.g., ["qa", "prod", "git-branch-name"]).
             If not provided, will use the current username, git branch, and prod.
-        sync_dir (str, Path, or bool): Controls which directory to sync to compute.
+        sync_dir (str, Path, or bool, optional): Controls which directory to sync to compute.
             If None (default), auto-detect and sync package directory.
-            If False, skip syncing files (this assumes files are already on compute).
-            If str/Path, sync the specified directory. Must contain the module.
+            If False, skip syncing files (assumes files are already on compute).
+            If str/Path, sync the specified directory. Must contain the function.
+        remote_dir (str or Path, optional): Path on container where function already exists.
+            When specified, files are not synced. This path is added to the remote sys.path.
+        remote_import_path (str, optional): Override the computed import path for the function.
+            Only used when remote_dir is specified.
 
     Example:
 
@@ -159,6 +176,8 @@ def fn(
             name=name,
             pointers=fn_pointers,
             sync_dir=sync_dir,
+            remote_dir=remote_dir,
+            remote_import_path=remote_import_path,
         )
         new_fn.get_if_exists = get_if_exists
         new_fn.reload_prefixes = reload_prefixes or []
