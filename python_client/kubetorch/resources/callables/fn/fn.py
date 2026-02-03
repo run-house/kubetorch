@@ -66,6 +66,8 @@ class Fn(Module):
             headers=self.request_headers,
             body=body,
             serialization=serialization,
+            cls_or_fn_name=self.module_name,
+            method_name=None,
         )
         return response
 
@@ -100,6 +102,8 @@ class Fn(Module):
             headers=self.request_headers,
             body=body,
             serialization=serialization,
+            cls_or_fn_name=self.module_name,
+            method_name=None,
         )
         return response
 
