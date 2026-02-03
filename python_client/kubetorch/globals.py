@@ -799,7 +799,6 @@ class ControllerClient:
         resource_manifest: Dict[str, Any],
         specifier: Dict[str, Any],
         service: Optional[Dict[str, Any]] = None,
-        dockerfile: Optional[str] = None,
         module: Optional[Dict[str, Any]] = None,
         workload_metadata: Optional[Dict[str, Any]] = None,
         server_port: int = 32300,
@@ -817,7 +816,6 @@ class ControllerClient:
             specifier (Dict[str, Any]): How to track pods in the workload
                 (e.g., {"type": "label_selector", "selector": {...}}).
             service (Optional[Dict[str, Any]]): Service configuration for routing. (Default: None)
-            dockerfile (Optional[str]): Dockerfile instructions for rebuilding workers. (Default: None)
             module (Optional[Dict[str, Any]]): Application to deploy onto a workload. (Default: None)
             workload_metadata (Optional[Dict[str, Any]]): Metadata (username, etc.). (Default: None)
             server_port (int): Port for the K8s service. (Default: 32300)
@@ -839,7 +837,6 @@ class ControllerClient:
         }
         args = {
             "service": service,
-            "dockerfile": dockerfile,
             "module": module,
             "workload_metadata": workload_metadata,
             "labels": labels,

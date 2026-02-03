@@ -546,6 +546,7 @@ class ServiceManager:
         distributed_config: dict = None,
         runtime_config: dict = None,
         launch_id: str = None,
+        dockerfile: str = None,
     ) -> dict:
         """Build workload metadata dict for controller registration.
 
@@ -556,6 +557,7 @@ class ServiceManager:
                 Includes log_streaming_enabled, metrics_enabled, inactivity_ttl,
                 log_level, allowed_serialization.
             launch_id: Unique ID for this launch/deployment (changes on each .to() call).
+            dockerfile: Dockerfile contents for image build.
         """
         metadata = {"username": globals.config.username}
         if deployment_mode:
@@ -566,6 +568,8 @@ class ServiceManager:
             metadata["runtime_config"] = runtime_config
         if launch_id:
             metadata["launch_id"] = launch_id
+        if dockerfile:
+            metadata["dockerfile"] = dockerfile
         return metadata
 
     def _apply_and_register_workload(
@@ -609,6 +613,7 @@ class ServiceManager:
             distributed_config=distributed_config,
             runtime_config=runtime_config,
             launch_id=launch_id,
+            dockerfile=dockerfile,
         )
 
         try:
@@ -626,7 +631,6 @@ class ServiceManager:
                 labels=labels,
                 annotations=annotations,
                 workload_metadata=workload_metadata,
-                dockerfile=dockerfile,
                 module=module,
                 create_headless_service=create_headless_service,
             )

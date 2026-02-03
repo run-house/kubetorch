@@ -122,6 +122,9 @@ spec:
                     launchId:
                       type: string
                       description: Unique ID for this launch/deployment (changes on each .to() call)
+                    dockerfile:
+                      type: string
+                      description: Dockerfile contents for image build
                     runtimeConfig:
                       type: object
                       description: Runtime settings pushed to pods
@@ -151,9 +154,6 @@ spec:
                 resourceName:
                   type: string
                   description: Name of the backing K8s resource
-                dockerfile:
-                  type: string
-                  description: Build instructions for hot-reload
                 createHeadlessService:
                   type: boolean
                   description: Create headless service for pod-to-pod discovery
