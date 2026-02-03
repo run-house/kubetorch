@@ -340,7 +340,6 @@ class ServiceManager:
             if pod_template is not None:
                 metadata = pod_template.setdefault("metadata", {})
                 metadata.setdefault("labels", {})[provisioning_constants.KT_SERVICE_LABEL] = service_name
-                metadata["labels"][provisioning_constants.KT_MODULE_LABEL] = clean_module_name
                 metadata["labels"][provisioning_constants.KT_APP_LABEL] = service_name
 
             # Also update worker template for distributed resources (known types only)
@@ -350,7 +349,6 @@ class ServiceManager:
                 if worker_template is not None:
                     metadata = worker_template.setdefault("metadata", {})
                     metadata.setdefault("labels", {})[provisioning_constants.KT_SERVICE_LABEL] = service_name
-                    metadata["labels"][provisioning_constants.KT_MODULE_LABEL] = clean_module_name
 
         return updated
 

@@ -343,7 +343,8 @@ class ControllerWebSocket:
 
         logger.info(
             f"Applied metadata from controller: module={module_info.get('module_name')}, "
-            f"callable={module_info.get('cls_or_fn_name')}, launch_id={launch_id_val}"
+            f"callable={module_info.get('cls_or_fn_name')}, callable_type={module_info.get('callable_type')}, "
+            f"launch_id={launch_id_val}"
         )
 
         # Signal that metadata has been received
@@ -579,15 +580,29 @@ async def _invoke_callable(
     # Create request-like object for supervisor
     mock_request = MockRequest(request_id, serialization)
 
-    # Route call through supervisor - run in thread pool since SUPERVISOR.call is sync
-    result = await asyncio.to_thread(
-        SUPERVISOR.call,
-        mock_request,
-        cls_or_fn_name,
-        method_name,
-        params,
-        distributed_subcall,
-    )
+    # Route call through supervisor
+    # For LoadBalancedSupervisor, use async path directly; for others, use thread pool
+    from kubetorch.serving.load_balanced_supervisor import LoadBalancedSupervisor
+
+    if isinstance(SUPERVISOR, LoadBalancedSupervisor):
+        # Use async path for load-balanced supervisor (native async support)
+        result = await SUPERVISOR.call_async(
+            mock_request,
+            cls_or_fn_name,
+            method_name,
+            params,
+            distributed_subcall,
+        )
+    else:
+        # Run in thread pool since other supervisor.call methods are sync
+        result = await asyncio.to_thread(
+            SUPERVISOR.call,
+            mock_request,
+            cls_or_fn_name,
+            method_name,
+            params,
+            distributed_subcall,
+        )
 
     # Handle JSONResponse from supervisor (e.g., errors)
     if isinstance(result, JSONResponse):
@@ -755,7 +770,8 @@ def cached_image_setup():
         if command:
             is_app_cmd = line.startswith("CMD")
             if is_app_cmd:
-                logger.info(f"Running app command: {command}")
+                callable_type = os.getenv("KT_CALLABLE_TYPE")
+                logger.info(f"Running app command: {command} (KT_CALLABLE_TYPE={callable_type})")
             else:
                 logger.info(f"Running: {command}")
 

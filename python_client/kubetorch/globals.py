@@ -119,6 +119,73 @@ class DebugConfig:
         return {"mode": self.mode, "port": self.port}
 
 
+# Match FastAPI/ProcessWorker default thread pool size
+DEFAULT_CONCURRENCY = 40
+
+
+@dataclass
+class CallConfig:
+    """Configuration for how calls are distributed and executed.
+
+    Replaces the .distribute() API with explicit configuration.
+
+    Attributes:
+        call_mode (str): How calls are distributed across workers.
+            Options: "local", "spmd", "pytorch", "jax", "tensorflow", "ray", "monarch", "load-balanced".
+            (Default: "local")
+        concurrency (int): Max concurrent calls per worker. Matches FastAPI's default of 40 threads
+            for consistent behavior. For load-balanced mode, also controls slot-based routing.
+            (Default: 40)
+        procs (int): Number of local processes per pod. Use "auto" to detect from framework.
+            (Default: 1)
+        quorum_workers (int): Number of workers to wait for before accepting calls.
+            (Default: None - no quorum wait)
+        quorum_timeout (int): Timeout in seconds for quorum.
+            (Default: 300)
+        monitor_members (bool): Monitor DNS for worker membership changes. Disabled automatically
+            for Ray/Monarch which manage their own membership.
+            (Default: None - uses supervisor default)
+        queue_size (int): Max pending calls when all workers busy (load-balanced only).
+            None means unlimited queue.
+            (Default: None)
+        port (int): Framework-specific port for distributed communication.
+            (Default: None)
+        tree_fanout (int): Max children per node in tree topology for large clusters.
+            (Default: 50)
+        tree_minimum (int): Min cluster size to use tree topology.
+            (Default: 100)
+    """
+
+    call_mode: Literal["local", "spmd", "pytorch", "jax", "tensorflow", "ray", "monarch", "load-balanced"] = "local"
+    concurrency: int = DEFAULT_CONCURRENCY
+    procs: int = 1
+    quorum_workers: Optional[int] = None
+    quorum_timeout: int = 300
+    monitor_members: Optional[bool] = None
+    queue_size: Optional[int] = None
+    port: Optional[int] = None
+    tree_fanout: int = 50
+    tree_minimum: int = 100
+
+    def to_dict(self) -> dict:
+        """Convert to dict for JSON serialization (sent to pods via WebSocket metadata)."""
+        config = {
+            "distribution_type": self.call_mode,
+            "concurrency": self.concurrency,
+            "num_proc": self.procs,
+            "quorum_workers": self.quorum_workers,
+            "quorum_timeout": self.quorum_timeout,
+            "port": self.port,
+            "tree_fanout": self.tree_fanout,
+            "tree_minimum": self.tree_minimum,
+        }
+        if self.monitor_members is not None:
+            config["monitor_members"] = self.monitor_members
+        if self.queue_size is not None:
+            config["queue_size"] = self.queue_size
+        return {k: v for k, v in config.items() if v is not None}
+
+
 @dataclass(frozen=True)
 class PFHandle:
     process: subprocess.Popen

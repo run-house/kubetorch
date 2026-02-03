@@ -141,6 +141,26 @@ def raise_test_exception():
     raise ValueError("Test exception from distributed worker")
 
 
+def load_balanced_worker_info(sleep_time: float = 0.0):
+    """Return information about which worker handled this call.
+
+    Used for load-balanced mode testing to verify calls are distributed.
+    """
+    import socket
+    import threading
+    import time
+
+    if sleep_time > 0:
+        time.sleep(sleep_time)
+
+    return {
+        "pod_name": os.environ.get("POD_NAME", "unknown"),
+        "pod_ip": os.environ.get("POD_IP", "unknown"),
+        "hostname": socket.gethostname(),
+        "thread_id": threading.current_thread().ident,
+    }
+
+
 def adaptive_ray_fn_with_bs4():
     """Ray function that tests package availability on workers."""
     try:
