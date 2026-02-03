@@ -10,6 +10,8 @@ metadata:
   labels:
     app.kubernetes.io/name: kubetorch
     app.kubernetes.io/component: controller
+  annotations:
+    helm.sh/resource-policy: keep # Prevent CRD from being deleted by Helm
 spec:
   group: kubetorch.com
   names:
