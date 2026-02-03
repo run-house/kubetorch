@@ -25,9 +25,21 @@ ExecutionSupervisor (base - ProcessPool only)
     │   - RemoteWorkerPool for cross-pod execution (created lazily when needed)
     │
     ├── SPMDDistributedSupervisor
-    │   - Multi-process local execution (num_proc configurable)
-    │   - Tree topology for large clusters (>100 workers)
-    │   - Framework-specific process classes (PyTorch, JAX, TensorFlow)
+    │   │   - Multi-process local execution (num_proc configurable)
+    │   │   - Tree topology for large clusters (>100 workers)
+    │   │   - Framework-specific process classes (PyTorch, JAX, TensorFlow)
+    │   │   - Broadcasts calls to ALL workers (SPMD pattern)
+    │   │
+    │   └── Framework-specific process classes:
+    │       - PyTorchProcess: torch.distributed initialization
+    │       - JaxProcess: JAX distributed initialization
+    │       - TensorflowProcess: TF distributed initialization
+    │
+    ├── LoadBalancedSupervisor
+    │   - Routes each call to ONE worker based on availability
+    │   - Async slot-based routing (tracks in-flight calls per worker)
+    │   - Optional queue for calls when all workers busy
+    │   - Native async support (call_async method)
     │
     ├── RayDistributed
     │   - Ray GCS server management
@@ -50,11 +62,12 @@ run_callable() in http_server.py
 load_callable()
     ├─→ Creates ExecutionSupervisor via supervisor_factory()
     ├─→ Default: "local" for non-distributed mode
-    └─→ Distributed: "pytorch", "ray", "monarch", etc.
+    └─→ Distributed: "pytorch", "ray", "monarch", "load-balanced", etc.
     ↓
-SUPERVISOR.call_distributed()
+SUPERVISOR.call() or SUPERVISOR.call_async()
     ├─→ Local: Routes to subprocess via ProcessPool
-    └─→ Distributed: Coordinates across local processes + remote workers
+    ├─→ SPMD: Broadcasts to all workers, collects results
+    └─→ Load-balanced: Routes to least-busy worker (async)
 ```
 
 ### Subprocess Isolation Benefits
@@ -277,3 +290,61 @@ Pod metadata is derived without K8s Downward API env vars:
 
 Note: `POD_NAME`, `POD_NAMESPACE`, and `POD_IP` are derived at runtime without Downward API.
 See "Pod Identity" section above.
+
+## CallConfig API
+
+The `kt.CallConfig` dataclass provides configuration for how calls are distributed and executed.
+It replaces the legacy `.distribute()` method with explicit configuration.
+
+### Usage
+
+```python
+import kubetorch as kt
+
+compute = kt.Compute(
+    cpus="4",
+    replicas=4,
+    call_config=kt.CallConfig(
+        call_mode="pytorch",      # Distribution mode
+        concurrency=10,           # Max concurrent calls per worker
+        procs=2,                  # Local processes per pod
+        quorum_workers=4,         # Workers to wait for
+        quorum_timeout=300,       # Timeout for quorum
+    )
+)
+```
+
+### Call Modes
+
+| Mode | Supervisor | Description |
+|------|------------|-------------|
+| `local` | ExecutionSupervisor | Single pod, subprocess isolation |
+| `spmd` | SPMDDistributedSupervisor | Generic SPMD, broadcasts to all workers |
+| `pytorch` | SPMDDistributedSupervisor | PyTorch distributed with torch.distributed |
+| `jax` | SPMDDistributedSupervisor | JAX distributed |
+| `tensorflow` | SPMDDistributedSupervisor | TensorFlow distributed |
+| `ray` | RayDistributed | Ray cluster, head node only |
+| `monarch` | MonarchDistributed | Monarch framework |
+| `load-balanced` | LoadBalancedSupervisor | Routes each call to least-busy worker |
+
+### Load-Balanced Mode
+
+Load-balanced mode is designed for stateless inference or embarrassingly parallel workloads:
+
+```python
+compute = kt.Compute(
+    cpus="1",
+    replicas=3,
+    call_config=kt.CallConfig(
+        call_mode="load-balanced",
+        concurrency=5,            # Max 5 concurrent calls per worker
+        queue_size=100,           # Queue up to 100 calls when all busy
+    )
+)
+```
+
+Key features:
+- **Slot-based routing**: Tracks in-flight calls per worker, routes to least-busy
+- **Async implementation**: Uses asyncio for high concurrency with minimal overhead
+- **Optional queue**: Queue calls when all workers at capacity (vs. wait-and-retry)
+- **Single worker per call**: Unlike SPMD which broadcasts, each call goes to one worker

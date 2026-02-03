@@ -1,4 +1,5 @@
 from kubetorch.serving.execution_supervisor import ExecutionSupervisor
+from kubetorch.serving.load_balanced_supervisor import LoadBalancedSupervisor
 from kubetorch.serving.monarch_supervisor import MonarchDistributed
 from kubetorch.serving.process_worker import ProcessWorker
 from kubetorch.serving.ray_supervisor import RayDistributed
@@ -22,18 +23,32 @@ def supervisor_factory(distribution_type, *args, **kwargs):
             - 'jax': JAX SPMD distributed
             - 'tensorflow'/'tf': TensorFlow SPMD distributed
             - 'spmd' or None: Generic SPMD distributed
+            - 'load-balanced': Load-balanced routing to workers
 
         *args: Positional arguments to pass to the supervisor constructor.
         **kwargs: Keyword arguments to pass to the supervisor constructor.
                  Common kwargs include:
                  - restart_procs: Whether to restart processes on setup (default True)
                  - max_threads_per_proc: Max threads per subprocess (default 10)
+                 - concurrency: Max concurrent calls per worker (maps to max_threads_per_proc)
                  - quorum_timeout: Timeout for workers to become ready (default 300s)
                  - quorum_workers: Number of workers to wait for
 
     Returns:
         ExecutionSupervisor: An instance of the specified supervisor.
     """
+    # Load-balanced mode needs concurrency as its own parameter, not mapped
+    # Handle it first before the general concurrency->max_threads_per_proc mapping
+    if distribution_type == "load-balanced":
+        # Extract concurrency for LoadBalancedSupervisor (uses it directly)
+        concurrency = kwargs.pop("concurrency", 40)
+        queue_size = kwargs.pop("queue_size", None)
+        return LoadBalancedSupervisor(concurrency=concurrency, queue_size=queue_size, *args, **kwargs)
+
+    # Map 'concurrency' to 'max_threads_per_proc' for other supervisor constructors
+    if "concurrency" in kwargs:
+        kwargs["max_threads_per_proc"] = kwargs.pop("concurrency")
+
     # Local execution - subprocess isolation without remote workers
     if distribution_type == "local":
         return ExecutionSupervisor(*args, **kwargs)
