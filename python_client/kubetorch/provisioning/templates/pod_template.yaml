@@ -113,6 +113,7 @@ containers:
         path: /health
         port: {{ server_port }}
       periodSeconds: 3
+      timeoutSeconds: 5
       successThreshold: 1
       failureThreshold: 5
     # Ongoing health monitoring with less frequent checks
@@ -121,7 +122,7 @@ containers:
         path: /health
         port: {{ server_port }}
       periodSeconds: 30
-      timeoutSeconds: 1
+      timeoutSeconds: 5
       failureThreshold: 3
 
 volumes:

@@ -10,7 +10,41 @@ from kubetorch.serving.utils import kill_process_tree
 
 
 class RemoteWorkerPool:
-    """Manages async HTTP calls to remote workers in a separate process."""
+    """Manages async HTTP calls to remote workers in a separate process.
+
+    This class implements a singleton pattern - only one pool exists per pod.
+    Use RemoteWorkerPool.get_instance() to get the shared instance.
+    """
+
+    _instance = None
+    _instance_lock = threading.Lock()
+
+    @classmethod
+    def get_instance(cls, quorum_timeout=3600, max_workers=200):
+        """Get or create the singleton RemoteWorkerPool instance.
+
+        The pool is created lazily on first call and reused thereafter.
+        If the existing pool is dead, a new one is created.
+
+        Args:
+            quorum_timeout: Timeout for quorum operations (only used on creation)
+            max_workers: Max concurrent workers (only used on creation)
+
+        Returns:
+            The singleton RemoteWorkerPool instance, started and ready.
+        """
+        with cls._instance_lock:
+            if cls._instance is None or not cls._instance.is_alive():
+                if cls._instance is not None:
+                    logger.info("RemoteWorkerPool was dead, creating new instance")
+                    cls._instance.stop()
+
+                logger.info(f"Creating singleton RemoteWorkerPool (max_workers={max_workers})")
+                cls._instance = cls(quorum_timeout=quorum_timeout)
+                cls._instance.start(max_workers=max_workers)
+                logger.info("Singleton RemoteWorkerPool ready")
+
+            return cls._instance
 
     def __init__(self, quorum_timeout=300):
         self.quorum_timeout = quorum_timeout
@@ -22,6 +56,10 @@ class RemoteWorkerPool:
         self._response_events = {}
         self._response_lock = threading.Lock()
         self._router_thread = None
+
+    def is_alive(self):
+        """Check if the pool's subprocess is running."""
+        return self.process is not None and self.process.is_alive()
 
     def start(self, max_workers=2000):
         """Start the worker process and router thread."""
