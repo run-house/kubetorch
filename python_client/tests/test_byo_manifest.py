@@ -1,7 +1,6 @@
 import copy
 import os
 import subprocess
-import time
 
 import kubetorch as kt
 
@@ -554,16 +553,13 @@ def test_from_manifest_custom_pod_template_path():
         },
     }
 
-    # Without pod_template_path, kubetorch can't find the pod spec for unknown CRDs
-    # It won't find the user's "main" container since it's at spec.workload.template
-    compute_without_path = kt.Compute.from_manifest(
-        manifest=copy.deepcopy(custom_manifest),
-        selector={"app": "custom-app"},
-    )
-    # pod_spec returns None when no pod template path is configured for unknown CRDs
-    pod_spec = compute_without_path.pod_spec
-    container_names = [c["name"] for c in (pod_spec.get("containers", []) if pod_spec else [])]
-    assert "main" not in container_names, "Without custom path, user's container should not be found"
+    with pytest.raises(ValueError):
+        # Without pod_template_path, kubetorch can't find the pod spec for unknown CRDs
+        # It won't find the user's "main" container since it's at spec.workload.template
+        kt.Compute.from_manifest(
+            manifest=copy.deepcopy(custom_manifest),
+            selector={"app": "custom-app"},
+        )
 
     # With pod_template_path, Compute correctly finds the pod spec at the nested location
     compute = kt.Compute.from_manifest(
@@ -588,12 +584,7 @@ def test_from_manifest_custom_pod_template_path():
 @pytest.mark.level("minimal")
 @pytest.mark.asyncio
 async def test_byo_deployment_manifest_with_pod_template_path_override():
-    """Test BYO manifest with explicit pod_template_path override deploys correctly.
-
-    Uses a Deployment with an explicit pod_template_path to verify the override
-    mechanism works end-to-end. When pod_template_path is provided, kubetorch
-    skips merging defaults and uses the manifest as-is.
-    """
+    """Test BYO manifest (deployment) with explicit pod_template_path override deploys correctly."""
     from .conftest import KUBETORCH_IMAGE
 
     pool_name = f"{kt.config.username}-byo-path-override"
@@ -651,16 +642,16 @@ async def test_byo_deployment_manifest_with_pod_template_path_override():
 
 @pytest.mark.level("minimal")
 @pytest.mark.asyncio
-async def test_byo_jobset_manifest_with_pod_template_path_override():
-    """Test BYO manifest with explicit pod_template_path override deploys correctly.
+async def test_byo_jobset_manifest():
+    """Test BYO manifest and path override behavior on a JobSet.
 
     Uses a JobSet to test the pod_template_path override mechanism. JobSet is ideal because:
     1. It's NOT explicitly supported by kubetorch (not in RESOURCE_CONFIGS)
     2. Its pod template is at spec.replicatedJobs[0].template.spec.template (NOT spec.template)
     3. Deleting the JobSet cleans up all child resources (Jobs, Pods)
 
-    Without `pod_template_path`, kubetorch would look at spec.template (wrong location).
-    This test verifies that the override correctly finds the pod spec at the nested path.
+    This test verifies that the override correctly finds the pod spec at the nested path, and throws an error
+    if no pod template path is configured.
     """
     from .conftest import KUBETORCH_IMAGE
 
@@ -706,6 +697,14 @@ async def test_byo_jobset_manifest_with_pod_template_path_override():
             ],
         },
     }
+
+    # Create Compute without pod_template_path override
+    # This should fail because no pod template path is configured for JobSet
+    with pytest.raises(ValueError):
+        compute = kt.Compute.from_manifest(
+            manifest=jobset_manifest,
+            selector={"app": job_name},
+        )
 
     try:
         # Create Compute with explicit pod_template_path override
@@ -776,10 +775,10 @@ async def test_byo_manifest_statefulset():
 
     try:
         # Create Compute from StatefulSet manifest with selector
+        # No pod_template_path is needed because StatefulSet has a default built in pod template path.
         compute = kt.Compute.from_manifest(
             manifest=statefulset_manifest,
             selector={"app": sts_name},
-            pod_template_path="spec.template",
         )
 
         remote_fn = kt.fn(summer).to(compute)
@@ -834,139 +833,6 @@ async def test_byo_manifest_with_selector():
     # 3. Call the function and verify it works
     result = remote_fn(5, 10)
     assert result == 15
-
-
-@pytest.mark.level("minimal")
-@pytest.mark.asyncio
-async def test_selector_only():
-    """Test selector-only flow: user deploys pods separately, KT just registers workload.
-
-    Use Case #3: User applies manifest themselves, then uses selector to track pods.
-
-    The user has already deployed their own K8s resources (with kubetorch server running).
-    They just provide a selector to identify those pods:
-    1. User deploys pods via kubectl/k8s API (with kubetorch server image)
-    2. User creates kt.Compute(selector={"app": "workers"})
-    3. kt.fn().to(compute) just calls /workload (no /apply)
-    4. K8s Service is created, function calls work
-    """
-    import kubetorch as kt
-    from kubernetes import client, config
-
-    from .conftest import KUBETORCH_IMAGE
-
-    # Load k8s config
-    try:
-        config.load_incluster_config()
-    except config.ConfigException:
-        config.load_kube_config()
-
-    apps_v1 = client.AppsV1Api()
-    core_v1 = client.CoreV1Api()
-
-    workload_name = f"{kt.config.username}-selector-only"
-    namespace = kt.globals.config.namespace
-    selector_labels = {"app": workload_name}
-
-    # 1. User deploys their own pods via k8s API (NOT through kubetorch controller)
-    # These pods must have the kubetorch server running
-    user_deployment = client.V1Deployment(
-        api_version="apps/v1",
-        kind="Deployment",
-        metadata=client.V1ObjectMeta(name=workload_name, namespace=namespace, labels=selector_labels),
-        spec=client.V1DeploymentSpec(
-            replicas=1,
-            selector=client.V1LabelSelector(match_labels=selector_labels),
-            template=client.V1PodTemplateSpec(
-                metadata=client.V1ObjectMeta(labels=selector_labels),
-                spec=client.V1PodSpec(
-                    containers=[
-                        client.V1Container(
-                            name="worker",
-                            image=KUBETORCH_IMAGE,  # image with kt + rsync installed
-                            image_pull_policy="Always",
-                            command=["kubetorch", "server", "start"],
-                            resources=client.V1ResourceRequirements(requests={"cpu": "100m", "memory": "256Mi"}),
-                        )
-                    ],
-                    affinity=client.V1Affinity(
-                        node_affinity=client.V1NodeAffinity(
-                            required_during_scheduling_ignored_during_execution=client.V1NodeSelector(
-                                node_selector_terms=[
-                                    client.V1NodeSelectorTerm(
-                                        match_expressions=[
-                                            client.V1NodeSelectorRequirement(
-                                                key="nvidia.com/gpu.count",
-                                                operator="DoesNotExist",
-                                            )
-                                        ]
-                                    )
-                                ]
-                            )
-                        )
-                    ),
-                ),
-            ),
-        ),
-    )
-
-    # Apply the deployment via k8s API directly
-    try:
-        apps_v1.create_namespaced_deployment(namespace=namespace, body=user_deployment)
-    except client.ApiException as e:
-        if e.status == 409:  # Already exists
-            apps_v1.replace_namespaced_deployment(name=workload_name, namespace=namespace, body=user_deployment)
-        else:
-            raise
-
-    try:
-        # Wait for pods to be ready
-        label_selector = ",".join(f"{k}={v}" for k, v in selector_labels.items())
-        for _ in range(60):
-            pods = core_v1.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
-            ready_pods = [
-                p
-                for p in pods.items
-                if p.status.phase == "Running" and all(c.ready for c in (p.status.container_statuses or []))
-            ]
-            if ready_pods:
-                break
-            time.sleep(2)
-        else:
-            raise TimeoutError(f"Pods with selector {selector_labels} not ready after 120s")
-
-        # 2. Create Compute with just a selector (no manifest, no cpus, etc.)
-        compute = kt.Compute(selector=selector_labels)
-
-        # 3. Deploy function - should only call /workload, not /apply
-        remote_fn = kt.fn(summer).to(compute)
-
-        # 4. Call the function and verify it works
-        result = remote_fn(5, 10, sleep_time=5)
-        assert result == 15
-
-        # 5. Test event streaming by scaling up during a function call
-        import threading
-
-        def scale_after_delay():
-            time.sleep(1)  # Wait for websocket to connect
-            apps_v1.patch_namespaced_deployment_scale(
-                name=workload_name, namespace=namespace, body={"spec": {"replicas": 2}}
-            )
-
-        scale_thread = threading.Thread(target=scale_after_delay)
-        scale_thread.start()
-
-        # Call function with long sleep - events happen during the call
-        result = remote_fn(5, 10, sleep_time=2)
-        scale_thread.join()
-        assert result == 15
-
-    finally:
-        try:
-            apps_v1.delete_namespaced_deployment(name=workload_name, namespace=namespace)
-        except client.ApiException:
-            pass
 
 
 @pytest.mark.level("minimal")

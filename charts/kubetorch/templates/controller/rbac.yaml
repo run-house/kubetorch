@@ -59,7 +59,7 @@ rules:
   # Pods
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
   # Pod Logs
   - apiGroups: [""]

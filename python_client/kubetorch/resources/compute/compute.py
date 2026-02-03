@@ -353,11 +353,12 @@ class Compute:
         compute._manifest.setdefault("metadata", {})
         compute._manifest.setdefault("spec", {})
 
+        kind = compute._manifest.get("kind", "").lower()
+
         # Store selector and endpoint configuration
         if selector:
             compute._pod_selector = selector
             # For training jobs, auto-derive manifest name from job-name selector if not set
-            kind = compute._manifest.get("kind", "").lower()
             current_name = compute._manifest["metadata"].get("name", "")
             job_name_from_selector = selector.get("training.kubeflow.org/job-name")
             if not current_name and job_name_from_selector and kind in SUPPORTED_TRAINING_JOBS:
@@ -370,6 +371,10 @@ class Compute:
             if isinstance(pod_template_path, str):
                 pod_template_path = pod_template_path.split(".")
             compute._pod_template_path_override = pod_template_path
+        if compute._get_pod_template_path() is None:
+            raise ValueError(
+                f"No pod template path configured for resource type: {kind}. Please provide a pod_template_path."
+            )
 
         # Extract kubeconfig_path from manifest annotations if present
         user_annotations = compute._manifest["metadata"].get("annotations", {})
@@ -657,7 +662,7 @@ class Compute:
     def pod_spec(self):
         """Get the pod spec from the manifest."""
         template_path = self._get_pod_template_path()
-        if not template_path:
+        if template_path is None:
             # Unknown resource type - no pod template path configured
             return None
         path = template_path + ["spec"]
@@ -667,7 +672,7 @@ class Compute:
     def pod_spec(self, value: dict):
         """Set the pod spec in the manifest."""
         template_path = self._get_pod_template_path()
-        if not template_path:
+        if template_path is None:
             raise ValueError(
                 f"No pod template path configured for resource type '{self.kind}'. "
                 f"Use the `pod_template_path` parameter in `Compute.from_manifest()` to specify the path."
