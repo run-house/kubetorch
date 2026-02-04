@@ -1,0 +1,193 @@
+name: Reusable Test Job
+
+on:
+  workflow_call:
+    inputs:
+      test_name:
+        description: 'Name of the test suite (used for job naming and concurrency)'
+        required: true
+        type: string
+      test_suffix:
+        description: 'Suffix for TEST_HASH (e.g., -cli, -mon)'
+        required: true
+        type: string
+      pytest_command:
+        description: 'The pytest command to run (relative to python_client directory)'
+        required: true
+        type: string
+      timeout_minutes:
+        description: 'Timeout for the test run in minutes'
+        type: number
+        default: 60
+      install_additional_deps:
+        description: 'Whether to install additional dependencies'
+        type: boolean
+        default: false
+      install_ray:
+        description: 'Whether to install Ray'
+        type: boolean
+        default: false
+      stream_logs:
+        description: 'Value for KT_STREAM_LOGS env var'
+        type: boolean
+        default: false
+      stream_metrics:
+        description: 'Value for KT_STREAM_METRICS env var'
+        type: boolean
+        default: false
+      extra_env_vars:
+        description: 'Additional environment variables as KEY=VALUE pairs separated by newlines'
+        type: string
+        default: ''
+      configure_rbac:
+        description: 'Whether to configure test namespace RBAC'
+        type: boolean
+        default: false
+      setup_kueue:
+        description: 'Whether to setup Kueue LocalQueue'
+        type: boolean
+        default: false
+    secrets:
+      GCP_PROJECT_ID:
+        required: true
+      GOOGLE_WORKLOAD_IDENTITY_PROVIDER:
+        required: true
+      KUBECONFIG:
+        required: true
+      CI_CLUSTER_NAME:
+        required: true
+      CI_CLUSTER_REGION:
+        required: true
+
+env:
+  CI: true
+  KUBETORCH_IGNORE_VERSION_MISMATCH: 1
+
+jobs:
+  test:
+    name: ${{ inputs.test_name }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ inputs.test_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
+
+      - name: Install Additional Dependencies
+        if: ${{ inputs.install_additional_deps }}
+        uses: ./.github/workflows/install_additional_dependencies
+
+      - name: Install Ray
+        if: ${{ inputs.install_ray }}
+        run: uv pip install --system ray
+
+      - name: Setup Test Environment
+        id: setup
+        uses: ./.github/workflows/setup_test_environment
+        with:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+          CI_CLUSTER_NAME: ${{ secrets.CI_CLUSTER_NAME }}
+          CI_CLUSTER_REGION: ${{ secrets.CI_CLUSTER_REGION }}
+          test_suffix: ${{ inputs.test_suffix }}
+
+      - name: Configure test namespace RBAC
+        if: ${{ inputs.configure_rbac }}
+        run: |
+          TEST_NS="kt-test-${{ steps.setup.outputs.test_hash }}"
+          echo "Creating test namespace $TEST_NS and configuring RBAC..."
+          kubectl create namespace $TEST_NS --dry-run=client -o yaml | kubectl apply -f -
+
+          # Use namespace output or fallback to 'kubetorch' (service account setup)
+          CONTROLLER_NS="${{ steps.setup.outputs.namespace }}"
+          CONTROLLER_NS="${CONTROLLER_NS:-kubetorch}"
+
+          # Create Role for the test namespace
+          kubectl apply -f - <<EOF
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: kubetorch-controller-role-$TEST_NS
+            namespace: $TEST_NS
+          rules:
+            - apiGroups: [""]
+              resources: ["persistentvolumeclaims", "pods", "services", "configmaps", "secrets", "events"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+            - apiGroups: [""]
+              resources: ["pods/exec", "pods/log"]
+              verbs: ["create", "get"]
+            - apiGroups: ["apps"]
+              resources: ["deployments", "deployments/status", "replicasets", "replicasets/status"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            - apiGroups: ["networking.k8s.io"]
+              resources: ["ingresses"]
+              verbs: ["get", "list", "watch"]
+            - apiGroups: ["kubetorch.com"]
+              resources: ["kubetorchworkloads", "kubetorchworkloads/status"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            - apiGroups: ["serving.knative.dev"]
+              resources: ["services", "revisions"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            - apiGroups: ["ray.io"]
+              resources: ["rayclusters"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: kubetorch-controller-rolebinding-$TEST_NS
+            namespace: $TEST_NS
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: kubetorch-controller-role-$TEST_NS
+          subjects:
+            - kind: ServiceAccount
+              name: kubetorch-controller
+              namespace: $CONTROLLER_NS
+          EOF
+
+      - name: Ensure Kueue LocalQueue exists
+        if: ${{ inputs.setup_kueue }}
+        shell: bash
+        run: |
+          CONTROLLER_NS="${{ steps.setup.outputs.namespace }}"
+
+          if kubectl get namespace "$CONTROLLER_NS" >/dev/null 2>&1; then
+            echo "Ensuring LocalQueue gpu-queue in $CONTROLLER_NS"
+
+            kubectl apply -f - <<EOF
+          apiVersion: kueue.x-k8s.io/v1beta2
+          kind: LocalQueue
+          metadata:
+            name: gpu-queue
+            namespace: "$CONTROLLER_NS"
+          spec:
+            clusterQueue: gpu-cluster-queue
+          EOF
+          else
+            echo "Controller namespace $CONTROLLER_NS does not exist, skipping LocalQueue"
+          fi
+
+      - name: Set extra environment variables
+        if: ${{ inputs.extra_env_vars != '' }}
+        run: |
+          echo "${{ inputs.extra_env_vars }}" >> $GITHUB_ENV
+
+      - name: Run Tests
+        run: |
+          cd python_client
+          ${{ inputs.pytest_command }}
+        timeout-minutes: ${{ inputs.timeout_minutes }}
+        env:
+          KT_STREAM_LOGS: ${{ inputs.stream_logs }}
+          KT_STREAM_METRICS: ${{ inputs.stream_metrics }}
