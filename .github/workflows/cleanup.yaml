@@ -1,0 +1,150 @@
+name: Cleanup
+
+on:
+  workflow_call:
+    inputs:
+      test_suffixes:
+        description: 'Comma-separated list of test suffixes to clean up (e.g., "-cli,-mon,-pod")'
+        required: true
+        type: string
+      configure_rbac:
+        description: 'Whether to configure test namespace RBAC before cleanup'
+        type: boolean
+        default: false
+      delete_byo_pods:
+        description: 'Whether to delete BYO pods'
+        type: boolean
+        default: false
+      delete_test_namespaces:
+        description: 'Whether to delete test namespaces'
+        type: boolean
+        default: false
+    secrets:
+      GCP_PROJECT_ID:
+        required: true
+      GOOGLE_WORKLOAD_IDENTITY_PROVIDER:
+        required: true
+      KUBECONFIG:
+        required: true
+      CI_CLUSTER_NAME:
+        required: true
+      CI_CLUSTER_REGION:
+        required: true
+
+env:
+  CI: true
+  KUBETORCH_IGNORE_VERSION_MISMATCH: 1
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v3
+
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
+
+      - name: Setup Test Environment
+        id: setup
+        uses: ./.github/workflows/setup_test_environment
+        with:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+          CI_CLUSTER_NAME: ${{ secrets.CI_CLUSTER_NAME }}
+          CI_CLUSTER_REGION: ${{ secrets.CI_CLUSTER_REGION }}
+          test_suffix: ''
+
+      - name: Configure test namespace RBAC
+        if: ${{ inputs.configure_rbac }}
+        run: |
+          TEST_HASH="${{ steps.setup.outputs.test_hash }}"
+          TEST_NS="kt-test-$TEST_HASH"
+          echo "Creating test namespace $TEST_NS and configuring RBAC..."
+          kubectl create namespace $TEST_NS --dry-run=client -o yaml | kubectl apply -f -
+
+          # Use namespace output or fallback to 'kubetorch' (service account setup)
+          CONTROLLER_NS="${{ steps.setup.outputs.namespace }}"
+          CONTROLLER_NS="${CONTROLLER_NS:-kubetorch}"
+
+          # Create Role for the test namespace
+          kubectl apply -f - <<EOF
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: kubetorch-controller-role-$TEST_NS
+            namespace: $TEST_NS
+          rules:
+            - apiGroups: [""]
+              resources: ["persistentvolumeclaims", "pods", "services", "configmaps", "secrets", "events"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+            - apiGroups: [""]
+              resources: ["pods/exec", "pods/log"]
+              verbs: ["create", "get"]
+            - apiGroups: ["apps"]
+              resources: ["deployments", "deployments/status", "replicasets", "replicasets/status"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            - apiGroups: ["networking.k8s.io"]
+              resources: ["ingresses"]
+              verbs: ["get", "list", "watch"]
+            - apiGroups: ["kubetorch.com"]
+              resources: ["kubetorchworkloads", "kubetorchworkloads/status"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            - apiGroups: ["serving.knative.dev"]
+              resources: ["services", "revisions"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            - apiGroups: ["ray.io"]
+              resources: ["rayclusters"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: kubetorch-controller-rolebinding-$TEST_NS
+            namespace: $TEST_NS
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: kubetorch-controller-role-$TEST_NS
+          subjects:
+            - kind: ServiceAccount
+              name: kubetorch-controller
+              namespace: $CONTROLLER_NS
+          EOF
+
+      - name: Run Teardown Commands
+        run: |
+          TEST_HASH="${{ steps.setup.outputs.test_hash }}"
+          IFS=',' read -ra SUFFIXES <<< "${{ inputs.test_suffixes }}"
+          for suffix in "${SUFFIXES[@]}"; do
+            echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --force"
+            kt teardown --prefix "${TEST_HASH}${suffix}" --force || true
+            echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} --force"
+            kt teardown --prefix "${TEST_HASH}${suffix}" --namespace "test-${TEST_HASH}${suffix}" --force || true
+          done
+
+      - name: Delete secrets
+        run: |
+          TEST_HASH="${{ steps.setup.outputs.test_hash }}"
+          kt config set username "${TEST_HASH}-secret"
+          kt secrets delete -A -y
+
+      - name: Delete BYO pods
+        if: ${{ inputs.delete_byo_pods }}
+        run: |
+          TEST_HASH="${{ steps.setup.outputs.test_hash }}"
+          NS=$(kt config get namespace | tail -1 | tr -d '[:space:]')
+          kubectl get pods -n "$NS" --no-headers -o custom-columns=":metadata.name" | grep "^${TEST_HASH}" | xargs -r kubectl delete pod --force --grace-period=0 -n "$NS"
+
+      - name: Delete test namespaces
+        if: ${{ inputs.delete_test_namespaces }}
+        run: |
+          TEST_HASH="${{ steps.setup.outputs.test_hash }}"
+          kubectl get ns --no-headers -o custom-columns=":metadata.name" \
+            | grep "^kt-test-${TEST_HASH}" \
+            | xargs -r kubectl delete ns

@@ -1,0 +1,107 @@
+name: Setup Test Environment
+description: Complete test environment setup including namespace, credentials, and config
+
+inputs:
+  GCP_PROJECT_ID:
+    description: 'GCP Project ID'
+    required: true
+  GCP_WORKLOAD_IDENTITY_PROVIDER:
+    description: 'Workload identity provider for Google Cloud auth'
+    required: true
+  KUBECONFIG:
+    description: 'Kubeconfig content'
+    required: true
+  CI_CLUSTER_NAME:
+    description: 'GKE cluster name'
+    required: true
+  CI_CLUSTER_REGION:
+    description: 'GKE cluster region'
+    required: true
+  test_suffix:
+    description: 'Suffix for TEST_HASH (e.g., -cli, -mon). Leave empty for no suffix.'
+    required: false
+    default: ''
+
+outputs:
+  namespace:
+    description: 'Generated namespace from branch name'
+    value: ${{ steps.generate_ns.outputs.NAMESPACE }}
+  test_hash:
+    description: 'Generated test hash'
+    value: ${{ steps.set_hash.outputs.TEST_HASH }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup authentications
+      uses: ./.github/workflows/gke_authentications
+      with:
+        GCP_PROJECT_ID: ${{ inputs.GCP_PROJECT_ID }}
+        GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ inputs.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+
+    - name: Setup Test Cluster
+      uses: ./.github/workflows/setup_test_cluster
+      with:
+        KUBECONFIG: ${{ inputs.KUBECONFIG }}
+
+    - name: Get GKE credentials
+      shell: bash
+      run: |
+        gcloud container clusters get-credentials ${{ inputs.CI_CLUSTER_NAME }} \
+          --region ${{ inputs.CI_CLUSTER_REGION }} \
+          --project ${{ inputs.GCP_PROJECT_ID }}
+
+    - name: Set Python Source Root
+      shell: bash
+      run: echo "PYTHONPATH=$(pwd)/python_client" >> $GITHUB_ENV
+
+    - name: Set Test Hash
+      id: set_hash
+      shell: bash
+      run: |
+        TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)${{ inputs.test_suffix }}"
+        echo "TEST_HASH=$TEST_HASH" >> $GITHUB_ENV
+        echo "TEST_HASH=$TEST_HASH" >> $GITHUB_OUTPUT
+        echo "Using test hash $TEST_HASH"
+
+    - name: Generate Namespace from branch name
+      id: generate_ns
+      shell: bash
+      run: |
+        BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+
+        # Create namespace only if the branch is in format {namespace}---{featurename}
+        # Namespace will be {namespace}
+        if [[ "$BRANCH" == *"---"* ]]; then
+          # Get part before '---'
+          NAMESPACE="${BRANCH%%---*}"
+          # If branch has a slash (e.g., username/prefix---feature), keep what's after '/'
+          NAMESPACE="${NAMESPACE##*/}"
+        else
+          NAMESPACE="${BRANCH##*/}"
+        fi
+
+        # Sanitize for k8s namespace
+        NAMESPACE=$(echo "$NAMESPACE" \
+          | tr '[:upper:]' '[:lower:]' \
+          | sed 's#[^a-z0-9]#-#g' \
+          | sed 's/--*/-/g' \
+          | sed 's/^-//;s/-$//' \
+          | cut -c1-63)
+
+        echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+        echo "Generated namespace: $NAMESPACE"
+
+    - name: Update kt config with controller namespace
+      shell: bash
+      run: |
+        NAMESPACE="${{ steps.generate_ns.outputs.NAMESPACE }}"
+
+        # Check if namespace exists
+        if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+          echo "Namespace $NAMESPACE exists, setting kt config"
+          kt config set namespace "$NAMESPACE"
+          kt config set install_namespace "$NAMESPACE"
+        else
+          echo "Namespace $NAMESPACE does not exist, kt config remains unchanged"
+        fi
