@@ -107,11 +107,6 @@ rules:
     resources: ["queues"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # StorageClasses (read-only)
-  - apiGroups: ["storage.k8s.io"]
-    resources: ["storageclasses"]
-    verbs: ["get", "list"]
-
   # Workloads
   - apiGroups: ["kubetorch.com"]
     resources: ["kubetorchworkloads"]
@@ -193,10 +188,7 @@ rules:
   # KubetorchWorkloads CRD (cluster-scoped access for CRD existence check + cross-namespace listing)
   - apiGroups: ["kubetorch.com"]
     resources: ["kubetorchworkloads"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["kubetorch.com"]
-    resources: ["kubetorchworkloads/status"]
-    verbs: ["get", "update", "patch"]
+    verbs: ["get", "list", "watch"]
 
 ###############################################################################
 # ClusterRoleBinding for CRDs
