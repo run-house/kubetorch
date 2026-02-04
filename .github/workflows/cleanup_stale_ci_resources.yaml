@@ -1,0 +1,162 @@
+name: Cleanup Stale CI Resources
+
+# Cleans up orphaned test resources from CI runs that failed to clean up properly.
+# Deletes resources matching the CI test naming pattern (t-xxxxx-*) that are
+# older than the age threshold.
+
+on:
+  schedule:
+    # Run daily at 8am UTC (3am EDT or 4am EDT)
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      age_threshold_hours:
+        description: 'Max age in hours for resources (default: 3)'
+        required: false
+        default: '3'
+      dry_run:
+        description: 'Dry run mode (true = only list, false = delete)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+env:
+  AGE_THRESHOLD_HOURS: ${{ github.event.inputs.age_threshold_hours || '3' }}
+  DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+
+      - name: Setup authentications
+        uses: ./.github/workflows/gke_authentications
+        with:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials ${{ secrets.CI_CLUSTER_NAME }} \
+            --region ${{ secrets.CI_CLUSTER_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Cleanup stale CI resources
+        run: |
+          set -euo pipefail
+
+          AGE_THRESHOLD_SECONDS=$((AGE_THRESHOLD_HOURS * 3600))
+          NOW=$(date +%s)
+
+          echo "Cleaning up stale CI resources:"
+          echo "Threshold: ${AGE_THRESHOLD_HOURS}h | Dry run: ${DRY_RUN}"
+          echo ""
+
+          get_age_hours() {
+            local created_at="$1"
+            local created_ts
+            created_ts=$(date -d "$created_at" +%s 2>/dev/null) || return 1
+            RESOURCE_AGE_HOURS=$(( (NOW - created_ts) / 3600 ))
+            [[ $((NOW - created_ts)) -gt $AGE_THRESHOLD_SECONDS ]]
+          }
+
+          cleanup_resources() {
+            local resource_type="$1"
+            local label_selector="${2:-kubetorch.com/service}"
+            local header_printed=false
+
+            local resources
+            resources=$(kubectl get "$resource_type" --all-namespaces \
+              -l "$label_selector" \
+              -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{.metadata.creationTimestamp}{"\n"}{end}' 2>/dev/null || true)
+
+            [[ -z "$resources" ]] && return
+
+            while IFS=$'\t' read -r ns name created; do
+              [[ -z "$name" ]] && continue
+              [[ ! "$name" =~ ^t-[a-z0-9]{5,6}- ]] && continue
+
+              if get_age_hours "$created"; then
+                if [[ "$header_printed" == false ]]; then
+                  if [[ "$DRY_RUN" == "true" ]]; then
+                    echo "${resource_type}:"
+                  else
+                    echo "Deleting ${resource_type}:"
+                  fi
+                  header_printed=true
+                fi
+                echo "  * ${ns}/${name}: ${RESOURCE_AGE_HOURS}h"
+                if [[ "$DRY_RUN" != "true" ]]; then
+                  if [[ "$resource_type" == "pods" ]]; then
+                    kubectl delete pod "$name" -n "$ns" --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
+                  else
+                    kubectl delete "$resource_type" "$name" -n "$ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+                  fi
+                fi
+              fi
+            done <<< "$resources"
+
+            [[ "$header_printed" == true ]] && echo ""
+          }
+
+          cleanup_namespaces() {
+            local header_printed=false
+            local namespaces
+            namespaces=$(kubectl get namespaces \
+              -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.creationTimestamp}{"\n"}{end}' 2>/dev/null || true)
+
+            while IFS=$'\t' read -r ns created; do
+              [[ -z "$ns" ]] && continue
+              [[ ! "$ns" =~ ^kt-test-t-[a-z0-9]{5,6} ]] && continue
+
+              if get_age_hours "$created"; then
+                if [[ "$header_printed" == false ]]; then
+                  if [[ "$DRY_RUN" == "true" ]]; then
+                    echo "namespaces:"
+                  else
+                    echo "Deleting namespaces:"
+                  fi
+                  header_printed=true
+                fi
+                echo "  * ${ns}: ${RESOURCE_AGE_HOURS}h"
+                if [[ "$DRY_RUN" != "true" ]]; then
+                  kubectl delete namespace "$ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+                fi
+              fi
+            done <<< "$namespaces"
+
+            [[ "$header_printed" == true ]] && echo ""
+          }
+
+          # Run cleanup
+          # Custom resources
+          cleanup_resources "kubetorchworkloads.kubetorch.com"
+
+          # Workload types
+          cleanup_resources "deployments.apps"
+          cleanup_resources "services.serving.knative.dev"
+          cleanup_resources "rayclusters.ray.io"
+          cleanup_resources "pytorchjobs.kubeflow.org"
+          cleanup_resources "tfjobs.kubeflow.org"
+          cleanup_resources "mxjobs.kubeflow.org"
+          cleanup_resources "xgboostjobs.kubeflow.org"
+
+          # Supporting resources
+          cleanup_resources "services" "kubetorch.com/service"
+          cleanup_resources "configmaps" "kubetorch.com/service"
+          cleanup_resources "secrets" "kubetorch.com/service"
+          cleanup_resources "persistentvolumeclaims" "kubetorch.com/service"
+          cleanup_resources "replicasets.apps" "kubetorch.com/service"
+          cleanup_resources "pods" "kubetorch.com/service"
+
+          # Namespaces
+          cleanup_namespaces
