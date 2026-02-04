@@ -707,22 +707,28 @@ async def test_byo_jobset_manifest_with_pod_template_path_override():
         },
     }
 
-    # Create Compute with explicit pod_template_path override
-    # Without this, kubetorch would look at spec.template and fail to find the containers
-    compute = kt.Compute.from_manifest(
-        manifest=jobset_manifest,
-        selector={"app": job_name},
-        pod_template_path="spec.replicatedJobs.0.template.spec.template",
-    )
+    try:
+        # Create Compute with explicit pod_template_path override
+        # Without this, kubetorch would look at spec.template and fail to find the containers
+        compute = kt.Compute.from_manifest(
+            manifest=jobset_manifest,
+            selector={"app": job_name},
+            pod_template_path="spec.replicatedJobs.0.template.spec.template",
+        )
 
-    # Verify the override is set and pod_spec is found at the correct nested location
-    assert compute._pod_template_path_override == ["spec", "replicatedJobs", "0", "template", "spec", "template"]
-    assert compute.pod_spec is not None
-    assert compute.pod_spec["containers"][0]["name"] == "kubetorch"
+        # Verify the override is set and pod_spec is found at the correct nested location
+        assert compute._pod_template_path_override == ["spec", "replicatedJobs", "0", "template", "spec", "template"]
+        assert compute.pod_spec is not None
+        assert compute.pod_spec["containers"][0]["name"] == "kubetorch"
 
-    remote_fn = kt.fn(summer).to(compute)
-    result = remote_fn(5, 10)
-    assert result == 15
+        remote_fn = kt.fn(summer).to(compute)
+        result = remote_fn(5, 10)
+        assert result == 15
+    finally:
+        subprocess.run(
+            ["kubectl", "delete", "jobset", job_name, "-n", namespace, "--ignore-not-found"],
+            capture_output=True,
+        )
 
 
 @pytest.mark.level("minimal")
@@ -768,17 +774,23 @@ async def test_byo_manifest_statefulset():
         },
     }
 
-    # Create Compute from StatefulSet manifest with selector
-    compute = kt.Compute.from_manifest(
-        manifest=statefulset_manifest,
-        selector={"app": sts_name},
-        pod_template_path="spec.template",
-    )
+    try:
+        # Create Compute from StatefulSet manifest with selector
+        compute = kt.Compute.from_manifest(
+            manifest=statefulset_manifest,
+            selector={"app": sts_name},
+            pod_template_path="spec.template",
+        )
 
-    remote_fn = kt.fn(summer).to(compute)
+        remote_fn = kt.fn(summer).to(compute)
 
-    result = remote_fn(5, 10)
-    assert result == 15
+        result = remote_fn(5, 10)
+        assert result == 15
+    finally:
+        subprocess.run(
+            ["kubectl", "delete", "statefulset", sts_name, "-n", namespace, "--ignore-not-found"],
+            capture_output=True,
+        )
 
 
 @pytest.mark.level("minimal")
