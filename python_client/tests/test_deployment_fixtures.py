@@ -213,6 +213,9 @@ async def test_serialization_none():
     """Test serialization="none" with Response and regular return values."""
     import kubetorch as kt
 
+    compute_type = os.getenv("TEST_COMPUTE_TYPE", "deployment")
+    service_name_prefix = os.getenv("SERVICE_NAME_PREFIX", compute_type)
+
     compute = kt.Compute(
         cpus=".01",
         gpu_anti_affinity=True,
@@ -220,7 +223,8 @@ async def test_serialization_none():
         allowed_serialization=["json", "none"],
         image=kt.images.Debian().pip_install(["pytest", "fastapi"]),
     )
-    remote_response_fn = kt.fn(return_response, name="response_fn").to(compute)
+    name = f"{service_name_prefix}-response-fn"
+    remote_response_fn = kt.fn(return_response, name=name).to(compute)
 
     result = remote_response_fn("Hello, World!", serialization="none")
 
@@ -238,13 +242,16 @@ async def test_serialization_none_regular_return():
 
     import kubetorch as kt
 
+    service_name_prefix = os.getenv("SERVICE_NAME_PREFIX", compute_type)
+
     compute = kt.Compute(
         cpus=".01",
         gpu_anti_affinity=True,
         launch_timeout=300,
         allowed_serialization=["json", "none"],
     )
-    remote_summer_fn = kt.fn(summer, name="summer_none").to(compute)
+    name = f"{service_name_prefix}-summer-none"
+    remote_summer_fn = kt.fn(summer, name=name).to(compute)
 
     result = remote_summer_fn(5, 3, serialization="none")
     assert result == 8
