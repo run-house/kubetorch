@@ -239,14 +239,14 @@ User                            Kubernetes
   │  1. Create pod via kubectl     │
   │     or K8s API                 │
   │     (with kubetorch image,     │
-  │      --pool argument)          │
+  │      --workload argument)          │
   │────────────────────────────────>
   │                                │
 ```
 
 **Pod startup command:**
 ```bash
-kubetorch server start --pool my-service-name
+kubetorch server start --workload my-service-name
 ```
 
 This sets `KT_SERVICE=my-service-name` before starting the HTTP server.

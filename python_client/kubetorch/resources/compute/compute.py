@@ -2013,11 +2013,14 @@ class Compute:
                 # Selector-only mode: just register workload, no manifest to apply
                 # tells controller to notify existing pods to reload
                 specifier = {"type": "label_selector", "selector": self._pod_selector}
+                workload_metadata = {"username": globals.config.username}
+                if dockerfile:
+                    workload_metadata["dockerfile"] = dockerfile
                 workload_response = globals.controller_client().register_workload(
                     name=service_name,
                     namespace=self.namespace,
                     specifier=specifier,
-                    workload_metadata={"username": globals.config.username},
+                    workload_metadata=workload_metadata,
                     module=module,
                 )
                 status = workload_response.get("status")

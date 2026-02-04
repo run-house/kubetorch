@@ -2657,7 +2657,7 @@ def kt_server_start(
         )
 
     if workload_name:
-        os.environ["KT_WORKLOAD"] = workload_name
+        os.environ["KT_SERVICE"] = workload_name
 
     if controller_url:
         os.environ["KT_CONTROLLER_URL"] = controller_url
