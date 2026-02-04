@@ -22,9 +22,8 @@ class Fn(Module):
 
         Args:
             name (str): The name of the function to be executed remotely.
-            pointers (tuple, optional): A tuple containing pointers/references needed to locate and execute
-                the function, typically including module path, class name (if applicable), and
-                function name.
+            pointers (tuple): A tuple of (root_path, import_path, callable_name) containing
+                the information needed to locate and import the function.
         """
         super().__init__(name=name, pointers=pointers)
 

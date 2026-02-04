@@ -41,8 +41,10 @@ class App(Module):
         Args:
             compute (Compute): Compute
             cli_command (str): CLI command to run on the compute.
-            pointers (tuple): A tuple containing references needed to locate the app file, of the format
-                (current working directory, path of file relative to cwd, None)
+            pointers (tuple, optional): A tuple of (root_path, file_path, None) containing:
+                - root_path: The current working directory from which the app was run.
+                - file_path: Path of the app file relative to root_path.
+                - None: Apps don't have a callable name in the traditional sense.
             name (str, optional): Name to assign the app. If not provided, will be based on the name of the file in
                 which the app was defined.
             run_async (bool, optional): Whether to run the app async. (Default: ``False``)
@@ -54,20 +56,19 @@ class App(Module):
         """
         super().__init__(name=name, pointers=pointers)
         self.cli_command = cli_command
-        self.pointers = pointers
-        self.name = name or self.module_name
+        self.file_path = pointers[1]
+        self.name = name or self.callable_name
         self._compute = compute
         self._run_async = run_async
         self._port = port
         self._health_check = health_check
         self._from_manifest = _from_manifest
-        self._remote_pointers = None
 
         self._http_client = None
 
     @property
-    def module_name(self):
-        return os.path.splitext(self.pointers[1])[0]
+    def callable_name(self):
+        return os.path.splitext(self.file_path)[0] if self.file_path else None
 
     def from_name(self):
         raise ValueError("Reloading app is not supported.")
@@ -114,8 +115,8 @@ class App(Module):
             remote_cmd = self.cli_command
         else:
             # Substitute local paths with remote paths
-            remote_script = os.path.join(self.remote_pointers[0], self.remote_pointers[1])
-            local_script = r"\b" + re.escape(self.remote_pointers[1]) + r"\b"
+            remote_script = os.path.join(self.remote_root_path, self.file_path)
+            local_script = r"\b" + re.escape(self.file_path) + r"\b"
             remote_cmd = re.sub(local_script, remote_script, self.cli_command)
 
         image_instructions += f"CMD {remote_cmd}\n"
@@ -362,7 +363,7 @@ def app(
 
     main_file = os.getenv("KT_RUN_FILE") or os.path.abspath(sys.modules["__main__"].__file__)
     relative_path = os.path.relpath(main_file, os.getcwd())
-    pointers = [os.getcwd(), relative_path, None]
+    pointers = (os.getcwd(), relative_path, None)
     relative_cli_command = re.sub(main_file, relative_path, cli_command)
 
     kt_app = App(
