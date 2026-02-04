@@ -112,7 +112,7 @@ export KT_LOG_LEVEL=DEBUG
 ls /tmp/kubetorch
 pip install /tmp/kubetorch/python_client
 echo "Starting kubetorch server..."
-exec kubetorch server start --pool {service_name}
+exec kubetorch server start --workload {service_name}
 """
 
     # Create a bare Pod (not a Deployment) - this is specifically NOT a resource
