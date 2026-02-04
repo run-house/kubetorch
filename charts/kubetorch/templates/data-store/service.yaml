@@ -1,4 +1,4 @@
-{{- range (.Values.kubetorchConfig.deployment_namespaces | default list) }}
+{{- range (.Values.kubetorchConfig.deployment_namespaces | default list | concat (list .Release.Namespace) | uniq) }}
 ---
 apiVersion: v1
 kind: Service
