@@ -154,25 +154,6 @@ class WebSocketRsyncTunnel:
             except:
                 break
 
-    def _log_websocket_error(self, e: Exception):
-        error_str = str(e)
-        ns = self.ws_url.rstrip("/").split("/")[-1] if "/" in self.ws_url else "unknown"
-
-        if "502" in error_str or "Bad Gateway" in error_str:
-            logger.error(
-                f"502 Bad Gateway: kubetorch-data-store unreachable in namespace '{ns}'\n"
-                f"Possible causes:\n"
-                f"  - Data store pod not running \n"
-                f"  - '{ns}' is not a Kubetorch deployment namespace set in install helm values \n"
-                f"Debug:\n"
-                f"  kubectl get pods -A -l app=kubetorch-data-store\n"
-                f"  kt config set namespace <valid deployment namespace>"
-            )
-        elif "503" in error_str:
-            logger.error("503 Service Unavailable: Data store starting up or restarting")
-        else:
-            logger.error(f"WebSocket connection error: {e}")
-
     def _handle_client(self, client_sock):
         ws = None
         try:
@@ -205,7 +186,7 @@ class WebSocketRsyncTunnel:
             t2.join()
 
         except Exception as e:
-            self._log_websocket_error(e)
+            print(f"WebSocket connection error: {e}")
 
         finally:
             # close both connections
