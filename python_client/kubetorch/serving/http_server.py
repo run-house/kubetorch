@@ -1144,7 +1144,11 @@ def rsync_file_updates():
         return
 
     logger.info(f"Starting rsync for service {service_name} in namespace {namespace}")
-    _dt._sync_workdir_from_store(namespace=namespace, service_name=service_name)
+    _dt._sync_workdir_from_store(
+        namespace=namespace,
+        service_name=service_name,
+        dockerfile_content=_DOCKERFILE_CONTENTS,
+    )
 
 
 #####################################

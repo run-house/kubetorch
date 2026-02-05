@@ -296,38 +296,32 @@ def rm(
     _default_client.rm(key=key, recursive=recursive, prefix_mode=prefix, verbose=verbose)
 
 
-def _dockerfile_has_absolute_copies() -> bool:
-    """
-    Check if the dockerfile has any COPY instructions with absolute destinations.
-
-    Returns True if there are COPY instructions with destinations starting with '/'.
-    """
-    dockerfile_path = Path.cwd() / ".kt" / "image.dockerfile"
-    if not dockerfile_path.exists():
+def _dockerfile_has_absolute_copies(dockerfile_content: str) -> bool:
+    """Check if dockerfile content has any COPY instructions with absolute destinations."""
+    if not dockerfile_content:
         return False
-
-    try:
-        content = dockerfile_path.read_text()
-        for line in content.splitlines():
-            line = line.strip()
-            if line.startswith("COPY"):
-                parts = line.split()
-                if len(parts) >= 3:
-                    dest = parts[-1]  # Last part is destination
-                    if dest.startswith("/"):
-                        return True
-        return False
-    except Exception as e:
-        logger.warning(f"Failed to read dockerfile for absolute path check: {e}")
-        return False
+    for line in dockerfile_content.splitlines():
+        line = line.strip()
+        if line.startswith("COPY"):
+            parts = line.split()
+            if len(parts) >= 3:
+                dest = parts[-1]
+                if dest.startswith("/"):
+                    return True
+    return False
 
 
-def _sync_workdir_from_store(namespace: str, service_name: str):
+def _sync_workdir_from_store(namespace: str, service_name: str, dockerfile_content: str = None):
     """
     Sync files from the rsync pod into the current working directory inside the server pod.
 
     This function is called by http_server.py during pod startup to sync files that were
     uploaded via the KV interface (kt.put or DataStoreClient.put) into the server pod's working directory.
+
+    Args:
+        namespace: Kubernetes namespace.
+        service_name: Name of the service.
+        dockerfile_content: Dockerfile content from workload metadata (used to check for absolute paths).
 
     Performs two download operations sequentially using the same broadcast window:
     - Regular files (excluding __absolute__*) into the working directory
@@ -392,8 +386,7 @@ def _sync_workdir_from_store(namespace: str, service_name: str):
 
     # Sync 2: Absolute path files (under __absolute__/) to root filesystem
     # Only perform this sync if the dockerfile has COPY instructions with absolute destinations.
-    # This avoids unnecessary rsync calls for the common case where no absolute paths are used.
-    if not _dockerfile_has_absolute_copies():
+    if not _dockerfile_has_absolute_copies(dockerfile_content):
         logger.debug("No absolute COPY destinations in dockerfile, skipping absolute files sync")
         return
 
