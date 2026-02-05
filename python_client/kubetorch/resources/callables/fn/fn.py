@@ -103,7 +103,7 @@ class Fn(Module):
         return response
 
 
-def fn(function_obj=None, name: str = None, get_if_exists=True, reload_prefixes=None):
+def fn(function_obj=None, name: str = None, get_if_exists=True, reload_prefixes=None) -> Fn:
     """
     Builds an instance of :class:`Fn`.
 

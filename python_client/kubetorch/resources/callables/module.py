@@ -6,7 +6,9 @@ import urllib.parse
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Union
+from typing import Dict, List, TypeVar, Union
+
+ModuleT = TypeVar("ModuleT", bound="Module")
 
 import websockets
 
@@ -380,14 +382,14 @@ class Module:
         return await self.to_async(self.compute, init_args=getattr(self, "init_args", None))
 
     def to(
-        self,
+        self: ModuleT,
         compute: "Compute",
         init_args: Dict = None,
         stream_logs: Union[bool, None] = None,
         get_if_exists: bool = False,
         reload_prefixes: Union[str, List[str]] = [],
         dryrun: bool = False,
-    ):
+    ) -> ModuleT:
         """
         Send the function or class to the specified compute.
 
@@ -468,14 +470,14 @@ class Module:
         return self
 
     async def to_async(
-        self,
+        self: ModuleT,
         compute: "Compute",
         init_args: Dict = None,
         stream_logs: Union[bool, None] = None,
         get_if_exists: bool = False,
         reload_prefixes: Union[str, List[str]] = [],
         dryrun: bool = False,
-    ):
+    ) -> ModuleT:
         """
         Async version of the `.to` method. Send the function or class to the specified compute asynchronously.
 
