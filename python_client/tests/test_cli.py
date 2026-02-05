@@ -1673,7 +1673,7 @@ async def test_kt_apply_port_and_healthcheck():
 
     # Use assets from tests/assets/apply
     assets_dir = Path(__file__).parent / "assets" / "apply"
-    manifest_template_path = assets_dir / "manifest.yaml"
+    manifest_template_path = assets_dir / "pod_manifest.yaml"
 
     service_name = f"{kt.config.username}-apply-http-server"
     port = 8080
@@ -1681,7 +1681,7 @@ async def test_kt_apply_port_and_healthcheck():
 
     # Read manifest template, substitute service name, add command, and write to a temp file
     manifest = yaml.safe_load(manifest_template_path.read_text().format(service_name=service_name))
-    manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c", "sleep infinity"]
+    manifest["spec"]["containers"][0]["command"] = ["/bin/sh", "-c", "sleep infinity"]
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
         f.write(yaml.dump(manifest, default_flow_style=False))
         manifest_path = f.name

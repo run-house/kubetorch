@@ -1190,6 +1190,7 @@ def kt_run(
 def kt_apply(
     manifest_path: str = typer.Argument(..., help="Path to K8s manifest YAML file"),
     dockerfile: str = typer.Option(None, "--dockerfile", "-d", help="Path to Dockerfile for image setup"),
+    pod_template_path: str = typer.Option(None, "--pod-template-path", "-t", help="Path to the pod template"),
     port: int = typer.Option(None, "--port", "-p", help="App's listening port (enables HTTP proxying via /http)"),
     health_check: str = typer.Option(None, "--health-check", help="Health check endpoint path (e.g., '/health')"),
 ):
@@ -1237,11 +1238,15 @@ def kt_apply(
         resource_type = "knative"
     else:
         resource_type = kind
-    try:
-        config = get_resource_config(resource_type)
-        pod_template_path = config.get("pod_template_path", ["spec", "template"])
-    except ValueError:
-        pod_template_path = ["spec", "template"]
+
+    config = get_resource_config(resource_type)
+    pod_template_path = pod_template_path or config.get("pod_template_path")
+    if pod_template_path is None:
+        raise ValueError(
+            f"No pod template path configured for resource type: {resource_type}. "
+            "Please provide the path to the pod template (e.g. `--pod-template-path spec.template`) "
+            "so that kubetorch can find or set the container command to run."
+        )
 
     current = manifest
     for key in pod_template_path:
@@ -1266,7 +1271,7 @@ def kt_apply(
         image = Image.from_dockerfile(dockerfile)
         dockerfile_cmd = image.dockerfile_command
 
-    compute = Compute.from_manifest(manifest=manifest, image=image)
+    compute = Compute.from_manifest(manifest=manifest, image=image, pod_template_path=pod_template_path)
 
     # Determine command: manifest > dockerfile > idle
     if original_cmd:
