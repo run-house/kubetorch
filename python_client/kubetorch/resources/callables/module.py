@@ -68,9 +68,17 @@ class Module:
 
         self._root_path = pointers[0]
         self._import_path = pointers[1]
-        self.callable_name = pointers[2]
+        self._callable_name = pointers[2]
 
         self.name = clean_and_validate_k8s_name(name, allow_full_length=False) if name else None
+
+    @property
+    def callable_name(self):
+        return self._callable_name
+
+    @callable_name.setter
+    def callable_name(self, value):
+        self._callable_name = value
 
     @property
     def reload_prefixes(self):
