@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {service_name}
+  labels:
+    kubetorch.com/service: {service_name}
+spec:
+  containers:
+  - name: main
+    image: ubuntu:22.04
