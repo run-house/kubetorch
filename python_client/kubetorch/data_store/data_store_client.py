@@ -1045,7 +1045,18 @@ class DataStoreClient:
                 logger.info(f"Successfully retrieved key '{key}'")
 
         except RsyncError as e:
-            logger.error(f"Failed to retrieve key '{key}' from store pod: {e}")
+            if e.returncode == 10:  # Connection refused
+                logger.error(
+                    f"Connection refused to data store (rsync error 10)\n"
+                    f"Possible causes:\n"
+                    f"  - Data store pod not running \n"
+                    f"  - Network policy blocking data store pod to service pod traffic \n"
+                    f"Debug:\n"
+                    f"  kubectl get pods -n {self.namespace} -l app=kubetorch-data-store\n"
+                    f"  kubectl logs -n {self.namespace} -l app=kubetorch-data-store"
+                )
+            else:
+                logger.error(f"Failed to retrieve key '{key}' from store pod: {e}")
             raise
 
     def ls(self, key: str = "", verbose: bool = False) -> List[dict]:
