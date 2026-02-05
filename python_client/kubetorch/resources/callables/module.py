@@ -1292,8 +1292,8 @@ class Module:
                     except (asyncio.TimeoutError, Exception):
                         pass
         except Exception as e:
-            logger.error(f"Error in websocket stream: {e}")
-            raise e
+            logger.warning("Log streaming unavailable. Set KT_LOG_LEVEL=DEBUG for details.")
+            logger.debug(f"Log streaming error: {e}")
         finally:
             # Ensure websocket is closed even if we didn't enter the try block
             if websocket:

@@ -126,7 +126,23 @@ class RsyncError(Exception):
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
-        super().__init__(f"Rsync failed (code={returncode}): {stderr.strip()}")
+
+        msg = f"Rsync failed (code={returncode}): {stderr.strip()}"
+
+        # Add context for common errors
+        if returncode == 12 or "protocol data stream" in stderr:
+            msg += (
+                "\nData store connection failed. Debug:\n"
+                "  kubectl get pods -A -l app=kubetorch-data-store\n"
+                "  kt config set namespace <valid kt deployment namespace>"
+            )
+        elif returncode == 10:
+            msg += (
+                "\nConnection refused - data store may not be running "
+                "or network policy blocking data store to service pod connection"
+            )
+
+        super().__init__(msg)
 
 
 TERMINATE_EARLY_ERRORS = {
