@@ -1,3 +1,5 @@
+from typing import Any
+
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.module import Module
 from kubetorch.resources.callables.utils import build_call_body, extract_pointers, SHELL_COMMANDS
@@ -35,7 +37,7 @@ class Cls(Module):
 
         super().__init__(name=name, pointers=pointers)
 
-    def __getattr__(self, attr_name):
+    def __getattr__(self, attr_name) -> Any:
         if attr_name in SHELL_COMMANDS:
             return getattr(self.compute, attr_name)
 
@@ -128,7 +130,7 @@ class Cls(Module):
         return response
 
 
-def cls(class_obj=None, name: str = None, get_if_exists=True, reload_prefixes=None):
+def cls(class_obj=None, name: str = None, get_if_exists=True, reload_prefixes=None) -> Cls:
     """
     Builds an instance of :class:`Cls`.
 
