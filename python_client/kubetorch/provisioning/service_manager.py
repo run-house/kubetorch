@@ -670,15 +670,22 @@ class ServiceManager:
                 return {"resource": manifest, "service_url": None}
             raise
 
-    def check_service_ready(self, service_name: str, launch_timeout: int = 300, **kwargs) -> bool:
+    def check_service_ready(
+        self, service_name: str, launch_timeout: int = 300, launch_id: str = None, **kwargs
+    ) -> bool:
         """Check if service is ready via client-side polling.
 
         Uses short server-side timeouts with client-side retry loop to avoid
         proxy timeout issues (e.g., nginx 60s gateway timeout).
 
+        The controller reads from the KubetorchWorkload CRD status to determine readiness,
+        including launch_id verification for re-deployments.
+
         Args:
             service_name (str): Name of the service.
             launch_timeout (int): Total timeout in seconds. (Default: 300)
+            launch_id (str, optional): Launch ID to verify. If provided, waits until the
+                workload's readyLaunchId matches, ensuring the correct deployment is ready.
 
         Returns:
             True if ready. Raises exception on timeout or error.
@@ -700,20 +707,39 @@ class ServiceManager:
             this_timeout = min(server_timeout, max(5, remaining))
 
             try:
+                params = {
+                    "resource_type": self.resource_type,
+                    "timeout": int(this_timeout),
+                    "poll_interval": 2,
+                }
+                if launch_id:
+                    params["launch_id"] = launch_id
+
                 response = self.controller_client.get(
                     f"/controller/check-ready/{self.namespace}/{service_name}",
-                    params={
-                        "resource_type": self.resource_type,
-                        "timeout": int(this_timeout),
-                        "poll_interval": 2,
-                    },
+                    params=params,
                     timeout=this_timeout + 10,  # HTTP timeout slightly longer
                 )
 
                 if response.get("ready"):
-                    return True
+                    # If launch_id was provided and controller supports it, verify it matches.
+                    # If ready_launch_id is absent/None, the controller hasn't implemented
+                    # launch_id verification yet -- accept ready as-is (backwards compat).
+                    ready_launch_id = response.get("ready_launch_id")
+                    if launch_id and ready_launch_id and ready_launch_id != launch_id:
+                        # Controller is ready but for a different launch_id, keep waiting
+                        logger.debug(
+                            f"Service ready but launch_id mismatch: expected {launch_id}, got {ready_launch_id}"
+                        )
+                    else:
+                        return True
 
-                # Check for non-timeout errors (pod failures, cluster failures, etc.)
+                # Check for errors from CRD status
+                error = response.get("error")
+                if error:
+                    self._raise_error_from_crd_status(error)
+
+                # Legacy error handling (for backwards compatibility during migration)
                 details = response.get("details", {})
                 error_type = details.get("error_type")
                 if error_type:
@@ -742,6 +768,29 @@ class ServiceManager:
 
             # Not ready yet - wait before next poll
             time.sleep(poll_interval)
+
+    def _raise_error_from_crd_status(self, error: dict):
+        """Convert CRD error status to Python exception.
+
+        Args:
+            error: Error dict from CRD status with keys: type, message, reason, podName, containerName
+        """
+        from kubetorch import ImagePullError, PodTerminatedError, ResourceNotAvailableError, ServiceHealthError
+
+        error_type = error.get("type", "Unknown")
+        message = error.get("message", "Unknown error")
+        pod_name = error.get("podName")
+
+        if error_type == "ImagePullError":
+            raise ImagePullError(f"Container image failed to pull: {message}")
+        elif error_type == "OOMKilled":
+            raise PodTerminatedError(pod_name=pod_name, reason="OOMKilled")
+        elif error_type in ("CrashLoopBackOff", "StartupError", "FailedMount"):
+            raise ServiceHealthError(message)
+        elif error_type in ("ResourceNotAvailable", "ContainerError"):
+            raise ResourceNotAvailableError(message)
+        else:
+            raise RuntimeError(f"Workload error ({error_type}): {message}")
 
     # =========================================================================
     # Resource Operations
