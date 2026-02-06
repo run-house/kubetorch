@@ -2314,18 +2314,23 @@ class Compute:
                 return True
         return False
 
-    def _check_service_ready(self):
+    def _check_service_ready(self, launch_id: str = None):
         """Checks if the service is ready to start serving requests.
 
         Delegates to the appropriate service manager's check_service_ready method.
         For selector-only mode, checks that pods matching the selector are running.
+
+        Args:
+            launch_id (str, optional): Launch ID to verify. If provided, waits until the
+                workload's readyLaunchId matches, ensuring the correct deployment is ready.
+                This handles re-deployment scenarios where pods need to reload code.
         """
         if self.selector_only:
             # Selector-only mode: check for pods matching the selector
             return self._check_selector_pods_ready()
 
         return self.service_manager.check_service_ready(
-            service_name=self.service_name, launch_timeout=self.launch_timeout
+            service_name=self.service_name, launch_timeout=self.launch_timeout, launch_id=launch_id
         )
 
     def _check_selector_pods_ready(self):
@@ -2357,18 +2362,23 @@ class Compute:
 
         raise TimeoutError(f"Timeout waiting for pods with selector {label_selector} after {launch_timeout} seconds")
 
-    async def _check_service_ready_async(self):
+    async def _check_service_ready_async(self, launch_id: str = None):
         """Async version of _check_service_ready. Checks if the service is ready to start serving requests.
 
         Delegates to the appropriate service manager's check_service_ready method.
+
+        Args:
+            launch_id (str, optional): Launch ID to verify. If provided, waits until the
+                workload's readyLaunchId matches, ensuring the correct deployment is ready.
         """
         import asyncio
+        import functools
 
         loop = asyncio.get_event_loop()
 
         return await loop.run_in_executor(
             None,
-            self._check_service_ready,
+            functools.partial(self._check_service_ready, launch_id=launch_id),
         )
 
     def is_up(self):
