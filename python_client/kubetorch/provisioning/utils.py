@@ -368,6 +368,15 @@ RESOURCE_CONFIGS: Dict[str, dict] = {
     },
 }
 
+ADDITIONAL_TEMPLATE_PATHS = {
+    "pod": [],
+    "statefulset": ["spec", "template"],
+    "daemonset": ["spec", "template"],
+    "replicaset": ["spec", "template"],
+    "job": ["spec", "template"],
+    "cronjob": ["spec", "jobTemplate", "spec", "template"],
+}
+
 
 def get_resource_config(resource_type: str) -> dict:
     """Get configuration for a resource type.
@@ -384,8 +393,9 @@ def get_resource_config(resource_type: str) -> dict:
         # For unknown resource types, return minimal config
         # pod_template_path is intentionally None - caller must provide it for BYO manifests
         # with non-standard pod template locations (e.g., JobSet, custom CRDs)
+        pod_template_path = ADDITIONAL_TEMPLATE_PATHS.get(resource_type, None)
         return {
-            "pod_template_path": None,
+            "pod_template_path": pod_template_path,
             "default_routing": None,
             "template_label": resource_type,
         }
