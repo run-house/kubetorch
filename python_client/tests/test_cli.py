@@ -26,13 +26,12 @@ def strip_ansi_codes(text):
     return ansi_escape.sub("", text)
 
 
-def validate_logs_fn_service_info(list_output: str, service_name: str, compute_type: str):
+def validate_logs_fn_service_info(list_output: str, service_name: str, compute_type: str, pod_names: bool = False):
     table_column_names = [
         "RESOURCE",
         "TYPE",
         "STATUS",
         "# OF PODS",
-        "POD NAMES",
         "VOLUMES",
         "LAST STATUS CHANGE",
         "TTL",
@@ -41,6 +40,8 @@ def validate_logs_fn_service_info(list_output: str, service_name: str, compute_t
         "MEMORY",
         "GPUs",
     ]
+    if pod_names:
+        table_column_names.insert(4, "POD NAMES")
     for column_name in table_column_names:
         assert column_name in list_output
 
@@ -54,7 +55,8 @@ def validate_logs_fn_service_info(list_output: str, service_name: str, compute_t
         f"{re.escape(expected_status)}.*"
         f"{re.escape(expected_num_of_pods)}.*"
         f"{re.escape(expected_pod_prefix)}.*"
-        f"{re.escape(expected_creator)}.*"
+        if pod_names
+        else "" f"{re.escape(expected_creator)}.*"
     )
     assert re.search(service_expected_info, list_output, re.DOTALL)
 
@@ -117,6 +119,14 @@ async def test_cli_kt_list_basic(remote_logs_fn):
     assert result.exit_code == 0
     list_output = strip_ansi_codes(result.stdout)
     validate_logs_fn_service_info(list_output=list_output, service_name=service_name, compute_type=compute_type)
+
+    # test with pod names
+    result = runner.invoke(app, ["list", "--sort", "--pods"], env={"COLUMNS": "400"}, color=False)
+    assert result.exit_code == 0
+    list_output = strip_ansi_codes(result.stdout)
+    validate_logs_fn_service_info(
+        list_output=list_output, service_name=service_name, compute_type=compute_type, pod_names=True
+    )
 
 
 @pytest.mark.level("minimal")
