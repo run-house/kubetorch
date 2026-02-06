@@ -176,9 +176,10 @@ class App(Module):
                         stream_logs,
                         False,
                     )
-                except Exception:
+                except Exception as e:
                     # Daemon thread may be terminated during process shutdown;
                     # suppress errors from interrupted HTTP requests
+                    logger.debug(f"Ran into exception: {e}")
                     pass
 
             thread = threading.Thread(
