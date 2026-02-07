@@ -686,7 +686,7 @@ class ServiceManager:
         import time
 
         start_time = time.time()
-        poll_interval = 5  # Client-side wait between checks
+        poll_interval = 0.2  # Client-side wait between checks
         server_timeout = 30  # Each server call waits max 30 seconds
 
         while True:
