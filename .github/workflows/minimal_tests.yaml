@@ -276,7 +276,7 @@ jobs:
       - name: Run monitoring tests
         run: |
           cd python_client
-          pytest -v --durations=25 --level minimal -k "monitoring"
+          pytest -v --durations=25 --level minimal -k "monitoring" -m "not gpu_test"
         timeout-minutes: 60
         env:
           KT_STREAM_LOGS: true
@@ -848,6 +848,56 @@ jobs:
           KT_STREAM_LOGS: false
           KT_STREAM_METRICS: false
 
+  profiling-tests:
+    concurrency:
+      group: profiling-${{ github.ref }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+
+      - name: Install Basic Dependencies
+        uses: ./.github/workflows/install_basic_dependencies
+
+      - name: Setup authentications
+        uses: ./.github/workflows/gke_authentications
+        with:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+
+      - name: Setup Test Cluster
+        uses: ./.github/workflows/setup_test_cluster
+        with:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials ${{ secrets.CI_CLUSTER_NAME }} \
+            --region ${{ secrets.CI_CLUSTER_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Set Python Source Root
+        run: echo "PYTHONPATH=$(pwd)/python_client" >> $GITHUB_ENV
+
+      - name: Set Test Hash
+        run: |
+          TEST_HASH="t-$(echo $GITHUB_SHA | cut -c1-5)-profile"
+          echo "TEST_HASH=$TEST_HASH" >> $GITHUB_ENV
+
+      - name: Run profiling tests
+        run: |
+          cd python_client
+          pytest -v tests/test_profiling.py --durations=100 --level minimal -m "not gpu_test"
+        timeout-minutes: 60
+        env:
+          KT_STREAM_LOGS: false
+          KT_STREAM_METRICS: false
+
+
   manifest-tests:
     concurrency:
       group: manifest-${{ github.ref }}
@@ -1220,7 +1270,7 @@ jobs:
 
   cleanup:
     if: ${{ always() }}
-    needs: [cli-tests, distributed-tests, monitoring-tests, pod-from-pod-tests, python-path-tests, secret-tests, declarative-tests, app-tests, manifest-tests, imperative-tests, controller-tests, compute-tests]
+    needs: [cli-tests, distributed-tests, monitoring-tests, pod-from-pod-tests, python-path-tests, secret-tests, declarative-tests, app-tests, profiling-tests, manifest-tests, imperative-tests, controller-tests, compute-tests]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -1356,7 +1406,7 @@ jobs:
 
       - name: Run Teardown Commands
         run: |
-          for suffix in -mon -cli -pod -dist -python -secret -decl -app -manifest -imp -ctrl -comp; do
+          for suffix in -mon -cli -pod -dist -python -secret -decl -app -profile -manifest -imp -ctrl -comp; do
             echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --force"
             kt teardown --prefix ${TEST_HASH}${suffix} --force || true
             echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} --force"

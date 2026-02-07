@@ -1779,7 +1779,7 @@ def _parse_callable_params(
     # Process the call
     args = []
     kwargs = {}
-    debug_port, debug_mode = None, None
+    debug_port, debug_mode, profiler = None, None, None
 
     if params:
         if serialization == "pickle":
@@ -1798,6 +1798,7 @@ def _parse_callable_params(
         # Default JSON/none handling
         args = params.get("args", [])
         kwargs = params.get("kwargs", {})
+        profiler = params.get("profiler", None)
         debugger: dict = params.get("debugger", None) if params else None
         if debugger:
             debug_mode = debugger.get("mode")
@@ -1814,7 +1815,7 @@ def _parse_callable_params(
         user_method = callable_obj
 
     is_async_method = inspect.iscoroutinefunction(user_method)
-    return user_method, args, kwargs, debug_port, debug_mode, is_async_method
+    return user_method, args, kwargs, debug_port, debug_mode, is_async_method, profiler
 
 
 def _serialize_result(result, serialization: str):
@@ -1857,7 +1858,7 @@ async def execute_callable_async(
     Args:
         executor: ThreadPoolExecutor for running sync callables. If None, uses default executor.
     """
-    user_method, args, kwargs, debug_port, debug_mode, is_async = _parse_callable_params(
+    user_method, args, kwargs, debug_port, debug_mode, is_async, profiler = _parse_callable_params(
         callable_obj, cls_or_fn_name, method_name, params, serialization
     )
 
@@ -1866,7 +1867,30 @@ async def execute_callable_async(
         logger.info(f"Debugging remote callable {callable_name} on port {debug_port}")
         deep_breakpoint(debug_port, debug_mode)
 
-    if is_async:
+    if profiler:
+        from kubetorch.globals import ProfilerConfig
+        from kubetorch.serving.profiling import run_with_profile
+
+        profiler_config = ProfilerConfig(**profiler)
+
+        request_id = request_id_ctx_var.get("-")
+        logger.debug(
+            f"Running {cls_or_fn_name} with profiler: {profiler_config} (callable_name={callable_name}, request_id={request_id})"
+        )
+
+        if is_async:
+            # Async callable with profiler - run_with_profile doesn't support async yet
+            # Run without profiling and log warning
+            logger.warning(f"Profiling async callables not yet supported, running {callable_name} without profiling")
+            fn_output = await user_method(*args, **kwargs)
+            profiler_output = None
+        else:
+            # Sync callable with profiler
+            fn_output, profiler_output = run_with_profile(
+                user_method, *args, profiler=profiler_config, callable_name=callable_name, **kwargs
+            )
+        result = {"fn_output": fn_output, "profiler_output": profiler_output}
+    elif is_async:
         # Async callable: await directly on the event loop
         # This enables true async concurrency - many async calls can run concurrently
         logger.debug(f"Calling async callable {callable_name}")
