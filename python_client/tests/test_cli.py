@@ -601,7 +601,7 @@ def test_cli_kt_teardown_force():
     service_name = remote_fn.service_name
     teardown_result = runner.invoke(
         app,
-        ["teardown", service_name, "--force"],
+        ["teardown", service_name, "--force", "--yes"],
         color=False,
         env={"COLUMNS": "200"},
     )

@@ -1357,10 +1357,10 @@ jobs:
       - name: Run Teardown Commands
         run: |
           for suffix in -mon -cli -pod -dist -python -secret -decl -app -manifest -imp -ctrl -comp; do
-            echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --force"
-            kt teardown --prefix ${TEST_HASH}${suffix} --force || true
-            echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} --force"
-            kt teardown --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} --force || true
+            echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --force --yes"
+            kt teardown --prefix ${TEST_HASH}${suffix} --force --yes || true
+            echo "Running teardown command: kt teardown --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} --force --yes"
+            kt teardown --prefix ${TEST_HASH}${suffix} --namespace test-${TEST_HASH}${suffix} --force --yes || true
           done
           kt config set username ${TEST_HASH}-secret
           kt secrets delete -A -y
