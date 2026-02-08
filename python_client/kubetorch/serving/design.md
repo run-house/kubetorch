@@ -22,13 +22,14 @@ ExecutionSupervisor (base - ProcessPool only)
 └── DistributedSupervisor (adds distributed capabilities)
     │   - DNS-based pod discovery with quorum
     │   - Worker membership monitoring
-    │   - RemoteWorkerPool for cross-pod execution (created lazily when needed)
+    │   - RemoteWorkerPool for async WebSocket calls to other pods (created lazily)
     │
     ├── SPMDDistributedSupervisor
     │   │   - Multi-process local execution (num_proc configurable)
     │   │   - Tree topology for large clusters (>100 workers)
     │   │   - Framework-specific process classes (PyTorch, JAX, TensorFlow)
     │   │   - Broadcasts calls to ALL workers (SPMD pattern)
+    │   │   - Uses asyncio.new_event_loop() per call for async WebSocket
     │   │
     │   └── Framework-specific process classes:
     │       - PyTorchProcess: torch.distributed initialization
@@ -37,7 +38,10 @@ ExecutionSupervisor (base - ProcessPool only)
     │
     ├── LoadBalancedSupervisor
     │   - Routes each call to ONE worker based on availability
-    │   - Async slot-based routing (tracks in-flight calls per worker)
+    │   - Async slot-based routing with round-robin tiebreaking
+    │   - DNS caching (2s TTL) to avoid blocking getaddrinfo()
+    │   - Dedicated ThreadPoolExecutor for local process pool calls
+    │   - Direct async WebSocket routing (no subprocess/IPC overhead)
     │   - Optional queue for calls when all workers busy
     │   - Native async support (call_async method)
     │
@@ -69,6 +73,30 @@ SUPERVISOR.call() or SUPERVISOR.call_async()
     ├─→ SPMD: Broadcasts to all workers, collects results
     └─→ Load-balanced: Routes to least-busy worker (async)
 ```
+
+### RemoteWorkerPool (In-Process Async WebSocket)
+
+RemoteWorkerPool manages persistent WebSocket connections to remote worker pods.
+All calls run in-process via async WebSocket — no subprocess, no pickle, no IPC.
+
+```
+Caller's event loop
+  ↓
+call_workers_async(worker_ips, ...)
+  ├─→ Health checks (SPMD only): wait_for_worker_health() per IP
+  └─→ _call_single_worker_async() per IP (concurrent via asyncio.gather)
+        ├─→ _get_ws_connection(): persistent WebSocket with fast-path check
+        ├─→ ws.send(request) with request_id
+        └─→ await response_future (set by _ws_response_listener)
+```
+
+Key design decisions:
+- **Single codepath**: Both SPMD and load-balanced modes use `call_workers_async()`
+- **Health checks conditional**: SPMD passes `workers_arg="all"` for health checks;
+  load-balanced skips them (routes to whatever's available)
+- **SPMD integration**: `spmd_supervisor.py` runs `loop.run_until_complete()` in a thread
+  (safe because SPMD's `call()` already runs in a thread via `asyncio.to_thread`)
+- **Connection multiplexing**: One WebSocket per worker IP, request_id-based routing
 
 ### Subprocess Isolation Benefits
 

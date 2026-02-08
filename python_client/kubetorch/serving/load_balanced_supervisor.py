@@ -13,7 +13,9 @@ Key features:
 
 import asyncio
 import os
-from typing import Dict, Optional
+import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Optional
 
 from kubetorch.serving.distributed_supervisor import DistributedSupervisor
 from kubetorch.serving.http_server import logger
@@ -54,7 +56,18 @@ class LoadBalancedSupervisor(DistributedSupervisor):
 
         # Slot tracking (worker_ip -> in_flight count)
         self._worker_slots: Dict[str, int] = {}
-        self._slots_lock: Optional[asyncio.Lock] = None
+        self._rr_index: int = 0  # Round-robin start index for even distribution
+
+        # Cached DNS results — avoids blocking socket.getaddrinfo() on every call
+        self._cached_worker_ips: List[str] = []
+        self._cached_worker_ips_time: float = 0.0
+        self._dns_cache_ttl: float = 2.0  # seconds
+
+        # Dedicated executor for ProcessPool.call() — avoids the default executor
+        # which is limited to min(32, cpu_count+4) threads (5 on 1-CPU pods).
+        # Each thread just blocks on threading.Event (zero CPU cost), so sizing
+        # to concurrency is safe.
+        self._call_executor: Optional[ThreadPoolExecutor] = None
 
         # Pending call queue
         self._pending_queue: Optional[asyncio.Queue] = None
@@ -63,9 +76,6 @@ class LoadBalancedSupervisor(DistributedSupervisor):
     def setup(self):
         """Set up load-balanced execution environment."""
         super().setup()
-
-        # Create async primitives (must be done in async context or lazily)
-        # These will be initialized on first async call
         self._worker_slots = {}
 
     def cleanup(self):
@@ -75,16 +85,26 @@ class LoadBalancedSupervisor(DistributedSupervisor):
             self._queue_processor_task.cancel()
             self._queue_processor_task = None
 
+        # Close in-process async WebSocket connections
+        if self.remote_worker_pool:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self.remote_worker_pool.cleanup_async())
+            except RuntimeError:
+                # No running loop — run synchronously
+                asyncio.run(self.remote_worker_pool.cleanup_async())
+
+        if self._call_executor:
+            self._call_executor.shutdown(wait=False)
+            self._call_executor = None
+
         self._worker_slots = {}
-        self._slots_lock = None
         self._pending_queue = None
 
         super().cleanup()
 
     def _ensure_async_primitives(self):
         """Lazily initialize async primitives (must be called from async context)."""
-        if self._slots_lock is None:
-            self._slots_lock = asyncio.Lock()
         if self._pending_queue is None:
             maxsize = self.queue_size or 0  # 0 = unlimited
             self._pending_queue = asyncio.Queue(maxsize=maxsize)
@@ -98,7 +118,8 @@ class LoadBalancedSupervisor(DistributedSupervisor):
     async def _acquire_slot(self, worker_ips: list) -> Optional[str]:
         """Find worker with available slot, return None if all busy.
 
-        Uses least-loaded routing: selects the worker with the most available slots.
+        Uses least-loaded routing with round-robin tiebreaking for even distribution.
+        No lock needed — asyncio is single-threaded and there are no await points here.
 
         Args:
             worker_ips: List of worker IP addresses to consider.
@@ -106,35 +127,36 @@ class LoadBalancedSupervisor(DistributedSupervisor):
         Returns:
             IP address of selected worker, or None if all workers at capacity.
         """
-        async with self._slots_lock:
-            # Find least-busy worker with available slots
-            best_worker = None
-            best_available = -1
+        n = len(worker_ips)
+        best_worker = None
+        best_available = -1
 
-            for ip in worker_ips:
-                in_flight = self._worker_slots.get(ip, 0)
-                available = self.concurrency - in_flight
+        for i in range(n):
+            ip = worker_ips[(self._rr_index + i) % n]
+            in_flight = self._worker_slots.get(ip, 0)
+            available = self.concurrency - in_flight
 
-                if available > best_available:
-                    best_available = available
-                    best_worker = ip
+            if available > best_available:
+                best_available = available
+                best_worker = ip
 
-            if best_available > 0:
-                self._worker_slots[best_worker] = self._worker_slots.get(best_worker, 0) + 1
-                logger.debug(
-                    f"Acquired slot on {best_worker} " f"({self._worker_slots[best_worker]}/{self.concurrency} in use)"
-                )
-                return best_worker
+        if best_available > 0:
+            self._worker_slots[best_worker] = self._worker_slots.get(best_worker, 0) + 1
+            self._rr_index = (self._rr_index + 1) % n
+            logger.debug(
+                f"Acquired slot on {best_worker} ({self._worker_slots[best_worker]}/{self.concurrency} in use)"
+            )
+            return best_worker
 
-            return None
+        return None
 
     async def _release_slot(self, worker_ip: str):
-        """Release a slot on a worker."""
-        async with self._slots_lock:
-            self._worker_slots[worker_ip] = max(0, self._worker_slots.get(worker_ip, 0) - 1)
-            logger.debug(
-                f"Released slot on {worker_ip} " f"({self._worker_slots[worker_ip]}/{self.concurrency} in use)"
-            )
+        """Release a slot on a worker.
+
+        No lock needed — asyncio is single-threaded and there are no await points here.
+        """
+        self._worker_slots[worker_ip] = max(0, self._worker_slots.get(worker_ip, 0) - 1)
+        logger.debug(f"Released slot on {worker_ip} ({self._worker_slots[worker_ip]}/{self.concurrency} in use)")
 
     async def call_async(
         self,
@@ -147,16 +169,6 @@ class LoadBalancedSupervisor(DistributedSupervisor):
         """Async call method for load-balanced routing.
 
         Routes each call to a single worker based on availability.
-
-        Args:
-            request: The HTTP request object.
-            cls_or_fn_name: Name of the callable.
-            method_name: Method name to call (for class instances).
-            params: Parameters for the call.
-            distributed_subcall: Whether this is a subcall from another node.
-
-        Returns:
-            The result of the callable execution.
         """
         self._ensure_async_primitives()
         params = params or {}
@@ -165,12 +177,15 @@ class LoadBalancedSupervisor(DistributedSupervisor):
             # Worker receiving routed call - execute locally
             return await self._execute_local_async(request, cls_or_fn_name, method_name, params)
 
-        # Coordinator - find available workers via fast DNS lookup (no quorum wait).
-        # Workers can join/leave dynamically; we route to whatever's available now.
-        worker_ips = self._get_pod_ips_fast()
-        if not worker_ips:
-            # No workers found - fall back to quorum-waiting pod_ips() for initial startup
-            worker_ips = self.pod_ips()
+        # Coordinator - use cached DNS to avoid blocking getaddrinfo() on every call.
+        now = time.monotonic()
+        if not self._cached_worker_ips or (now - self._cached_worker_ips_time) > self._dns_cache_ttl:
+            worker_ips = self._get_pod_ips_fast()
+            if not worker_ips:
+                worker_ips = self.pod_ips()
+            self._cached_worker_ips = worker_ips
+            self._cached_worker_ips_time = now
+        worker_ips = self._cached_worker_ips
         self._initialize_slots(worker_ips)
 
         this_pod_ip = os.environ.get("POD_IP", "")
@@ -217,9 +232,14 @@ class LoadBalancedSupervisor(DistributedSupervisor):
             debug_mode = debugger.get("mode")
             debug_port = debugger.get("port")
 
-        # Run in thread pool to avoid blocking event loop
+        # Use dedicated executor — the default executor is limited to
+        # min(32, cpu_count+4) threads which bottlenecks 1-CPU pods at 5 threads.
+        # Each thread just blocks on threading.Event (zero CPU), so this is safe.
+        if self._call_executor is None:
+            self._call_executor = ThreadPoolExecutor(max_workers=self.concurrency)
+
         result = await asyncio.get_event_loop().run_in_executor(
-            None,
+            self._call_executor,
             lambda: self.process_pool.call(
                 idx=0,
                 method_name=method_name,
@@ -241,38 +261,32 @@ class LoadBalancedSupervisor(DistributedSupervisor):
         params: Dict,
         request,
     ):
-        """Route call to remote worker via WebSocket.
+        """Route call to remote worker via async WebSocket.
 
-        Uses RemoteWorkerPool for WebSocket-based communication.
+        Uses RemoteWorkerPool's in-process async path — no subprocess, no pickle.
         """
-        # Initialize pool if needed
         if not self.remote_worker_pool:
             from kubetorch.serving.remote_worker_pool import RemoteWorkerPool
 
             self.remote_worker_pool = RemoteWorkerPool(quorum_timeout=self.quorum_timeout)
-            self.remote_worker_pool.start()
+            # No .start() needed — async path doesn't use subprocess
 
         request_headers = {
             "X-Request-ID": request.headers.get("X-Request-ID", "-"),
             "X-Serialization": request.headers.get("X-Serialization", "json"),
         }
 
-        # Mark as distributed subcall for the receiving worker
-        params_with_flag = dict(params)
-
-        # Call single worker (not all workers like SPMD)
-        # Run in thread pool since RemoteWorkerPool.call_workers is sync
-        results = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: self.remote_worker_pool.call_workers(
-                worker_ips=[worker_ip],
-                cls_or_fn_name=cls_or_fn_name,
-                method_name=method_name,
-                params=params_with_flag,
-                request_headers=request_headers,
-            ),
+        # workers_arg=None skips health checks — load-balanced routes to
+        # whatever workers are available, no quorum needed.
+        results = await self.remote_worker_pool.call_workers_async(
+            worker_ips=[worker_ip],
+            cls_or_fn_name=cls_or_fn_name,
+            method_name=method_name,
+            params=params,
+            request_headers=request_headers,
+            workers_arg=None,
         )
-        return results[0]  # Single result, not list
+        return results[0]
 
     async def _queue_and_wait(
         self,
@@ -282,10 +296,8 @@ class LoadBalancedSupervisor(DistributedSupervisor):
         params: Dict,
     ):
         """Queue call and wait for available worker."""
-        # Create future for result
         result_future = asyncio.get_event_loop().create_future()
 
-        # Queue the pending call
         pending = (request, cls_or_fn_name, method_name, params, result_future)
         await self._pending_queue.put(pending)
 
@@ -293,7 +305,6 @@ class LoadBalancedSupervisor(DistributedSupervisor):
         if self._queue_processor_task is None or self._queue_processor_task.done():
             self._queue_processor_task = asyncio.create_task(self._process_queue())
 
-        # Wait for result
         return await result_future
 
     async def _process_queue(self):
@@ -303,25 +314,21 @@ class LoadBalancedSupervisor(DistributedSupervisor):
 
         while True:
             try:
-                # Get pending call (with timeout to allow checking for shutdown)
                 try:
                     pending = await asyncio.wait_for(self._pending_queue.get(), timeout=1.0)
                 except asyncio.TimeoutError:
-                    # Check if there are more items
                     if self._pending_queue.empty():
                         break
                     continue
 
                 request, cls_or_fn_name, method_name, params, result_future = pending
 
-                # Wait for available worker
                 worker_ip = None
                 while worker_ip is None:
                     worker_ip = await self._acquire_slot(worker_ips)
                     if worker_ip is None:
                         await asyncio.sleep(0.01)
 
-                # Route and complete future
                 try:
                     if worker_ip == this_pod_ip:
                         result = await self._execute_local_async(request, cls_or_fn_name, method_name, params)
@@ -357,19 +364,15 @@ class LoadBalancedSupervisor(DistributedSupervisor):
         For load-balanced mode, we prefer the async path for better concurrency.
         This method is provided for compatibility with the ExecutionSupervisor interface.
         """
-        # Check if we're already in an event loop
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = None
 
         if loop is not None:
-            # Already in async context - create task
-            # This shouldn't happen in normal usage since http_server handles this
             raise RuntimeError(
                 "LoadBalancedSupervisor.call() called from async context. "
                 "Use call_async() directly or let http_server handle routing."
             )
         else:
-            # No event loop - create one and run
             return asyncio.run(self.call_async(request, cls_or_fn_name, method_name, params, distributed_subcall))

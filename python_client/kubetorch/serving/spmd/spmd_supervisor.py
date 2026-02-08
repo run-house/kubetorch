@@ -4,11 +4,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional
 
-import httpx
 from starlette.responses import JSONResponse, Response
 
 from kubetorch.serving.distributed_supervisor import DistributedSupervisor
-from kubetorch.serving.global_http_clients import get_sync_client
 from kubetorch.serving.http_server import logger
 from kubetorch.serving.process_worker import ProcessWorker
 from kubetorch.serving.remote_worker_pool import RemoteWorkerPool
@@ -276,66 +274,6 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
             # For now, assume we're the first worker if not found
             node_rank = 0
 
-        # Call the workers using RemoteWorkerPool for async operations
-        def call_worker(worker_ip):
-            # Keep this function for backward compatibility but it won't be used
-            # when RemoteWorkerPool is available
-            client = get_sync_client()
-            port = os.environ["KT_SERVER_PORT"]
-            worker_url = f"http://{worker_ip}:{port}"
-            # First check that the worker is alive, replicas don't finish setup at exactly the same moment
-            # Use quorum_timeout to control how long to wait for workers
-            for i in range(int(self.quorum_timeout)):
-                try:
-                    resp = client.get(f"{worker_url}/health", timeout=5.0)
-                    if resp.status_code == 200:
-                        break
-                except httpx.RequestError:
-                    if workers_arg == "ready":
-                        logger.debug(f"Worker {worker_ip} not ready, skipping as per 'ready' workers argument")
-                        return None
-                    time.sleep(1)
-            else:
-                # Timeout reached without successful health check
-                logger.warning(f"Worker {worker_ip} failed to respond after {self.quorum_timeout}s timeout")
-                if workers_arg != "ready":
-                    raise TimeoutError(
-                        f"Worker {worker_ip} did not become ready within {self.quorum_timeout} seconds. "
-                        "This may indicate the pod is still starting or there's a resource constraint. "
-                        "Consider increasing quorum_timeout in .distribute() call."
-                    )
-
-            call_url = (
-                f"{worker_url}/{cls_or_fn_name}/{method_name}?distributed_subcall=true"
-                if method_name is not None
-                else f"{worker_url}/{cls_or_fn_name}?distributed_subcall=true"
-            )
-
-            # Clean headers to avoid potential Content-Length issues
-            clean_headers = {}
-            if request.headers:
-                for key, value in request.headers.items():
-                    # Skip headers that could interfere with httpx's automatic handling
-                    if key.lower() not in [
-                        "content-length",
-                        "transfer-encoding",
-                        "connection",
-                    ]:
-                        clean_headers[key] = value
-
-            try:
-                logger.debug(f"Making distributed call to {worker_url}")
-                resp = client.post(
-                    url=call_url,
-                    json=params,
-                    headers=clean_headers,
-                    timeout=None,  # No timeout for distributed calls
-                )
-                return resp
-            except (httpx.RequestError, httpx.HTTPError) as e:
-                logger.error(f"Failed to call worker {worker_url}: {e}")
-                raise
-
         # Prepare per-process parameters
         num_procs = len(self.process_pool)
         params_list = [params] * num_procs
@@ -376,14 +314,12 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
         if subcall_ips:
             logger.debug(f"Have {len(subcall_ips)} remote workers to call")
             if not self.remote_worker_pool:
-                # Get the singleton RemoteWorkerPool (created lazily, reused across supervisors)
                 self.remote_worker_pool = RemoteWorkerPool.get_instance(quorum_timeout=self.quorum_timeout)
             logger.debug(f"Using RemoteWorkerPool to call {len(subcall_ips)} workers")
 
             def call_remote_workers():
                 nonlocal worker_exception
                 try:
-                    # Prepare headers for remote workers
                     clean_headers = {}
                     if request.headers:
                         for key, value in request.headers.items():
@@ -391,11 +327,10 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                                 "content-length",
                                 "transfer-encoding",
                                 "connection",
-                                "x-deployed-as-of",  # No longer needed with push-based reload
+                                "x-deployed-as-of",
                             ]:
                                 clean_headers[key] = value
 
-                    # Call remote workers asynchronously through the pool
                     logger.debug(f"Calling {len(subcall_ips)} remote workers via RemoteWorkerPool: {subcall_ips}")
                     results = self.remote_worker_pool.call_workers(
                         worker_ips=subcall_ips,
@@ -403,14 +338,13 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                         method_name=method_name,
                         params=params,
                         request_headers=clean_headers,
-                        workers_arg=workers_arg,
+                        workers_arg=workers_arg or "all",
                     )
-                    logger.warning(
+                    logger.info(
                         f"RemoteWorkerPool returned {len(results) if results else 0} results from {len(subcall_ips)} workers"
                     )
                     return results
                 except Exception as e:
-                    # Check if this is a connection error - might indicate worker removal
                     if any(
                         err_type in str(e)
                         for err_type in [
@@ -424,7 +358,6 @@ class SPMDDistributedSupervisor(DistributedSupervisor):
                         ]
                     ):
                         logger.debug(f"Connection error detected: {e}, checking for membership changes")
-                        # Force DNS check to see if workers were removed
                         self.check_for_membership_changes(force_dns_check=True)
                     worker_exception = e
                     raise
