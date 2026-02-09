@@ -16,11 +16,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from kubetorch.resources.compute.utils import (
-    ControllerRequestError,
-    handle_controller_delete_error,
-    print_byo_deletion_warning,
-)
+from kubetorch.resources.compute.utils import print_byo_deletion_warning
 
 from kubetorch.serving.global_http_clients import get_sync_client
 
@@ -1607,14 +1603,14 @@ def kt_teardown(
     from kubetorch.resources.compute.utils import (
         _collect_modules,
         delete_resources_for_services,
-        fetch_resources_for_teardown,
+        fetch_services_for_teardown,
         validate_teardown_inputs,
     )
 
     name, yes, teardown_all, namespace, prefix, force, exact_match = default_typer_values(
         name, yes, teardown_all, namespace, prefix, force, exact_match
     )
-    services = []
+    services = {}
 
     # Validate inputs
     username = config.username if teardown_all else None
@@ -1650,7 +1646,7 @@ def kt_teardown(
             services = [full_name]
 
     if not yes:
-        teardown_result = fetch_resources_for_teardown(
+        services_for_teardown = fetch_services_for_teardown(
             namespace=namespace,
             services=services,
             prefix=prefix,
@@ -1659,27 +1655,32 @@ def kt_teardown(
             exact_match=exact_match,
         )
 
-        # Extract resources list from the response dict
-        resource_list = teardown_result.get("resources", [])
-        service_names = list({r["name"] for r in resource_list})
-        service_count = len(service_names)
+        managed_service_names = [svc.get("name") for svc in services_for_teardown.get("managed", [])]
+        unmanaged_service_names = [svc.get("name") for svc in services_for_teardown.get("unmanaged", [])]
+        service_count = len(managed_service_names) + len(unmanaged_service_names)
 
         if teardown_all or prefix:
-            if not resource_list:
+            if service_count == 0:
                 console.print("[red]No services found[/red]")
                 raise typer.Exit(0)
             else:
                 service_word = "service" if service_count == 1 else "services"
                 console.print(f"[yellow]Found [bold]{service_count}[/bold] {service_word} to delete.[/yellow]")
-        elif name and not resource_list:
+        elif name and service_count == 0:
             console.print(f"[red]Service [bold]{name}[/bold] not found[/red]")
             raise typer.Exit(1)
 
         # Confirmation prompt
         if service_count >= 1:
-            console.print("The following resources will be deleted:")
-            for svc_name in service_names:
-                console.print(f" • [reset]{svc_name}")
+            if managed_service_names:
+                console.print("\nThe following services and underlying resources will be deleted:")
+                for svc_name in managed_service_names:
+                    console.print(f" • [reset]{svc_name}")
+
+            if unmanaged_service_names:
+                console.print("\nThe following user-managed services will be unregistered:")
+                for svc_name in unmanaged_service_names:
+                    console.print(f" • [reset]{svc_name}")
 
             confirm = typer.confirm("\nDo you want to proceed?")
             if not confirm:
@@ -1687,54 +1688,48 @@ def kt_teardown(
                 raise typer.Exit(0)
 
         # Pass the dict directly (controller uses resources, fetches workloads internally)
-        services = teardown_result
+        services = services_for_teardown
         prefix = None
         teardown_all = None
 
     # At this point, either yes flag is provided or user confirmed
-    try:
-        delete_result = delete_resources_for_services(
-            services=services,
-            namespace=namespace,
-            force=force,
-            prefix=prefix,
-            teardown_all=teardown_all,
-            username=username,
-            exact_match=exact_match,
-        )
+    delete_result = delete_resources_for_services(
+        services=services,
+        namespace=namespace,
+        force=force,
+        prefix=prefix,
+        teardown_all=teardown_all,
+        username=username,
+        exact_match=exact_match,
+    )
 
-        if isinstance(delete_result, str):
-            console.print(delete_result)
-        else:
-            deleted_resources = delete_result.get("deleted_resources", [])
-            byo_deleted_services = delete_result.get("byo_deleted_services", [])
+    deleted_managed_services = delete_result.get("deleted_managed", [])
+    deleted_unmanaged_services = delete_result.get("deleted_unmanaged", [])
 
-            # Case where no services were found
-            if not deleted_resources and not byo_deleted_services:
-                if prefix or teardown_all:
-                    console.print("No services found")
-                elif name:
-                    console.print(f"Service {name} not found")
-                return
+    # Case where no services were found
+    if not deleted_managed_services and not deleted_unmanaged_services:
+        if prefix or teardown_all:
+            console.print("No services found")
+        elif name:
+            console.print(f"Service {name} not found")
+        return
 
-            if byo_deleted_services:
-                print_byo_deletion_warning(byo_deleted_services, console)
+    force_deleted_msg_prefix = "✓ Force deleted" if force else "✓ Deleted"
 
-            force_deleted_msg_prefix = "✓ Force deleted" if force else "✓ Deleted"
+    for resource in deleted_managed_services:
+        kind = resource.get("resource_kind").lower()
+        resource_name = resource.get("resource_name")
+        console.print(f"{force_deleted_msg_prefix} [reset]{kind} [blue]{resource_name}[/blue]")
 
-            for resource in deleted_resources:
-                kind = resource.get("kind", "resource").lower()
-                resource_name = resource.get("name")
-                console.print(f"{force_deleted_msg_prefix} [reset]{kind} [blue]{resource_name}[/blue]")
+    if deleted_unmanaged_services:
+        print_byo_deletion_warning(deleted_unmanaged_services, console)
 
-            console.print("\n[green]Teardown completed successfully[/green]")
-
-    except Exception as e:
-        if isinstance(e, ControllerRequestError):
-            handle_controller_delete_error(service_name=name, controller_error=str(e), console=console)
-        else:
-            console.print(f"[red] Failed to run `kt teardown`: {e}[/red]")
-            raise typer.Exit(1)
+    if not delete_result.get("errors"):
+        console.print("\n[green]Teardown completed successfully[/green]")
+    else:
+        errors = "\n".join(delete_result.get("errors", []))
+        console.print(f"[red] Failed to run `kt teardown`: {errors}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command("volumes")

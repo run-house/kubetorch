@@ -773,23 +773,17 @@ async def test_byo_manifest_statefulset():
         },
     }
 
-    try:
-        # Create Compute from StatefulSet manifest with selector
-        # No pod_template_path is needed because StatefulSet has a default built in pod template path.
-        compute = kt.Compute.from_manifest(
-            manifest=statefulset_manifest,
-            selector={"app": sts_name},
-        )
+    # Create Compute from StatefulSet manifest with selector
+    # No pod_template_path is needed because StatefulSet has a default built in pod template path.
+    compute = kt.Compute.from_manifest(
+        manifest=statefulset_manifest,
+        selector={"app": sts_name},
+    )
 
-        remote_fn = kt.fn(summer).to(compute)
+    remote_fn = kt.fn(summer).to(compute)
 
-        result = remote_fn(5, 10)
-        assert result == 15
-    finally:
-        subprocess.run(
-            ["kubectl", "delete", "statefulset", sts_name, "-n", namespace, "--ignore-not-found"],
-            capture_output=True,
-        )
+    result = remote_fn(5, 10)
+    assert result == 15
 
 
 @pytest.mark.level("minimal")
