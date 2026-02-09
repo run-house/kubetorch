@@ -630,6 +630,10 @@ class Compute:
         return self._manifest
 
     @property
+    def api_version(self):
+        return self._manifest.get("apiVersion")
+
+    @property
     def selector_only(self) -> bool:
         """Check if this compute is in selector-only mode.
 
@@ -1607,7 +1611,7 @@ class Compute:
 
     @property
     def deployment_mode(self):
-        if self.kind == "Service":
+        if self.kind == "Service" and "serving.knative.dev" in self.api_version:
             return "knative"
         return self.kind.lower()
 
