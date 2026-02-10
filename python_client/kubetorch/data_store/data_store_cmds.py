@@ -311,7 +311,7 @@ def _dockerfile_has_absolute_copies(dockerfile_content: str) -> bool:
     return False
 
 
-def _sync_workdir_from_store(namespace: str, service_name: str, dockerfile_content: str = None):
+def _sync_workdir_from_store(namespace: str, service_name: str, dockerfile_content: Optional[str] = None):
     """
     Sync files from the rsync pod into the current working directory inside the server pod.
 

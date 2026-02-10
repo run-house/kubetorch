@@ -79,7 +79,7 @@ def wait_for_port_forward(
     process,
     local_port,
     timeout=30,
-    health_endpoint: str = None,
+    health_endpoint: Optional[str] = None,
     validate_kubetorch_versions: bool = True,
 ):
     from kubetorch import VersionMismatchError
@@ -419,11 +419,11 @@ def build_deployment_manifest(
     pod_spec: dict,
     namespace: str,
     replicas: int = 1,
-    inactivity_ttl: str = None,
-    manifest_annotations: dict = None,
-    custom_labels: dict = None,
-    custom_annotations: dict = None,
-    custom_template: dict = None,
+    inactivity_ttl: Optional[str] = None,
+    manifest_annotations: Optional[dict] = None,
+    custom_labels: Optional[dict] = None,
+    custom_annotations: Optional[dict] = None,
+    custom_template: Optional[dict] = None,
 ) -> dict:
     """Build a base deployment manifest from pod spec and configuration."""
     import os
@@ -477,11 +477,11 @@ def build_knative_manifest(
     pod_spec: dict,
     namespace: str,
     autoscaling_config: Optional[AutoscalingConfig] = None,
-    gpu_annotations: dict = None,
-    inactivity_ttl: str = None,
-    custom_labels: dict = None,
-    manifest_annotations: dict = None,
-    custom_annotations: dict = None,
+    gpu_annotations: Optional[dict] = None,
+    inactivity_ttl: Optional[str] = None,
+    custom_labels: Optional[dict] = None,
+    manifest_annotations: Optional[dict] = None,
+    custom_annotations: Optional[dict] = None,
 ) -> dict:
     """Build a Knative Service manifest from pod spec and configuration."""
     import os
@@ -543,10 +543,10 @@ def build_raycluster_manifest(
     pod_spec: dict,
     namespace: str,
     replicas: int = 1,
-    inactivity_ttl: str = None,
-    custom_labels: dict = None,
-    manifest_annotations: dict = None,
-    custom_annotations: dict = None,
+    inactivity_ttl: Optional[str] = None,
+    custom_labels: Optional[dict] = None,
+    manifest_annotations: Optional[dict] = None,
+    custom_annotations: Optional[dict] = None,
 ) -> dict:
     """Build a RayCluster manifest from pod spec and configuration."""
     import os

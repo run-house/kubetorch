@@ -108,7 +108,7 @@ def _read_file_if_exists(file_path: str) -> Optional[str]:
 # ------------------------------------------------------------------------------------------------
 
 
-def check_path_on_kubernetes_pods(path: str, service_name: str, namespace: str = None) -> bool:
+def check_path_on_kubernetes_pods(path: str, service_name: str, namespace: Optional[str] = None) -> bool:
     """
     Check if a path exists on a specific service's pods using ControllerClient.
     """
@@ -157,7 +157,7 @@ def check_path_on_kubernetes_pods(path: str, service_name: str, namespace: str =
     return path_found
 
 
-def check_env_vars_on_kubernetes_pods(env_vars: list, service_name: str, namespace: str = None) -> dict:
+def check_env_vars_on_kubernetes_pods(env_vars: list, service_name: str, namespace: Optional[str] = None) -> dict:
     """
     Check if an AWS role is assumed on a specific Knative service's pods
 

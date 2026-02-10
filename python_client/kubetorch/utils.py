@@ -221,7 +221,7 @@ class ColoredFormatter:
 
 
 class ServerLogsFormatter:
-    def __init__(self, name: str = None):
+    def __init__(self, name: Optional[str] = None):
         self.name = name
         self.start_color = ColoredFormatter.get_color("cyan")
         self.reset_color = ColoredFormatter.get_color("reset")

@@ -877,7 +877,7 @@ async def run_in_executor_with_context(executor, func, *args, **kwargs):
 
 def load_callable(
     distributed_subprocess: bool = False,
-    reload_cleanup_fn: [Callable, None] = None,
+    reload_cleanup_fn: Optional[[Callable, None]] = None,
 ):
     """Load the callable from environment.
 
@@ -915,7 +915,7 @@ def load_callable(
 
 def _load_callable_internal(
     distributed_subprocess: bool = False,
-    reload_cleanup_fn: [Callable, None] = None,
+    reload_cleanup_fn: Optional[[Callable, None]] = None,
     callable_obj=None,
 ):
     """Internal callable loading logic - should be called within lock for thread safety.

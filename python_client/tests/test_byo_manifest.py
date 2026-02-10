@@ -14,6 +14,7 @@ from kubetorch.utils import http_not_found
 
 from .assets.torch_ddp.torch_ddp import torch_ddp
 from .utils import get_hostname, summer
+from typing import Optional
 
 QUEUE_LABEL = provisioning_constants.KUEUE_QUEUE_NAME_LABEL
 
@@ -60,7 +61,7 @@ def _make_container(
     image: str = "user-image:latest",
     cpu: str = "0.3",
     memory: str = "512Mi",
-    env: list = None,
+    env: Optional[list] = None,
 ) -> dict:
     """Create a container spec with common defaults."""
     container = {
@@ -94,7 +95,7 @@ def _add_container_to_manifest(manifest: dict, container: dict) -> None:
 
 def _get_basic_manifest(
     kind: str,
-    container: dict = None,
+    container: Optional[dict] = None,
     gpu_anti_affinity: bool = False,
 ):
     """Generate a minimal manifest for the given kind with test values."""

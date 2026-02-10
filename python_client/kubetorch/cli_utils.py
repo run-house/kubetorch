@@ -13,7 +13,7 @@ import webbrowser
 from contextlib import contextmanager
 from datetime import datetime
 from enum import Enum
-from typing import List
+from typing import List, Optional
 
 import typer
 from rich import box
@@ -70,7 +70,7 @@ def default_typer_values(*args):
     return new_args
 
 
-def validate_config_key(key: str = None):
+def validate_config_key(key: Optional[str] = None):
     if key is None:
         return
 
@@ -154,10 +154,10 @@ def validate_pods_exist(name: str, namespace: str) -> list:
 @contextmanager
 def port_forward_to_pod(
     pod_name,
-    namespace: str = None,
+    namespace: Optional[str] = None,
     local_port: int = 8080,
     remote_port: int = provisioning_constants.DEFAULT_NGINX_PORT,
-    health_endpoint: str = None,
+    health_endpoint: Optional[str] = None,
 ):
     for attempt in range(MAX_PORT_TRIES):
         candidate_port = local_port + attempt
@@ -269,11 +269,11 @@ def _get_logs_from_loki_worker(uri: str, print_pod_name: bool, timeout: float = 
 
 
 def load_logs_for_pod(
-    query: str = None,
-    uri: str = None,
+    query: Optional[str] = None,
+    uri: Optional[str] = None,
     print_pod_name: bool = False,
     timeout: float = 2.0,
-    namespace: str = None,
+    namespace: Optional[str] = None,
     limit: int = 100,
 ):
     """Get logs from Loki with fail-fast approach to avoid hanging.
@@ -598,7 +598,7 @@ def load_kubetorch_volumes_from_pods(pods: list) -> List[str]:
     return list(volumes)
 
 
-def create_table_for_output(columns: List[set], no_wrap_columns_names: list = None, header_style: dict = None):
+def create_table_for_output(columns: List[set], no_wrap_columns_names: Optional[list] = None, header_style: Optional[dict] = None):
     table = Table(box=box.SQUARE, header_style=Style(**header_style))
     for name, style in columns:
         if name in no_wrap_columns_names:

@@ -12,7 +12,7 @@ With the GPU Data Server architecture, transfers are automatic:
 """
 
 import os
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import kubetorch as kt
 
@@ -608,7 +608,7 @@ class GPUTestHelper:
         self,
         fake_source_ip: str = "192.0.2.1",  # TEST-NET-1, guaranteed unreachable
         fake_source_port: int = 29400,
-        shape: List[int] = None,
+        shape: Optional[List[int]] = None,
         nccl_timeout: int = 1,
     ) -> Dict:
         """

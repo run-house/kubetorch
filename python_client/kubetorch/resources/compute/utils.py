@@ -160,7 +160,7 @@ def _run_bash(
     commands: Union[str, List[str]],
     pod_names: List[str],
     namespace: str,
-    container: str = None,
+    container: Optional[str] = None,
 ):
     if isinstance(commands, str):
         commands = [commands]
@@ -280,7 +280,7 @@ def is_pod_terminated(pod: dict) -> bool:
 def load_configmaps(
     service_name: str,
     namespace: str,
-    console: "Console" = None,
+    console: Optional["Console"] = None,
 ) -> List[str]:
     """List configmaps that start with a given service name."""
     controller_client = kubetorch.globals.controller_client()
@@ -305,7 +305,7 @@ def load_configmaps(
 
 def delete_resources_for_services(
     services: Dict,
-    namespace: str = None,
+    namespace: Optional[str] = None,
     force: bool = False,
     prefix: Optional[bool] = None,
     teardown_all: Optional[bool] = None,
@@ -511,10 +511,10 @@ def get_parsed_secret(secret):
 
 def list_secrets(
     namespace: str = "default",
-    prefix: str = None,
+    prefix: Optional[str] = None,
     all_namespaces: bool = False,
     filter_by_creator: bool = True,
-    console: "Console" = None,
+    console: Optional["Console"] = None,
 ):
     controller_client = kubetorch.globals.controller_client()
     try:
@@ -563,7 +563,7 @@ def list_secrets(
 def delete_secrets(
     secrets: List[str],
     secrets_client: KubernetesSecretsClient,
-    console: "Console" = None,
+    console: Optional["Console"] = None,
 ):
     """Delete the given list of secrets."""
     for secret in secrets:

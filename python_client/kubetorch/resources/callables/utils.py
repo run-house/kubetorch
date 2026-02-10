@@ -252,7 +252,7 @@ def add_debugger_config_to_body(body: dict, debug: Union[bool, DebugConfig], pdb
     return body
 
 
-def build_call_body(*args, debug: Union[bool, DebugConfig] = None, pdb=None, **kwargs):
+def build_call_body(*args, debug: Optional[Union[bool, DebugConfig]] = None, pdb=None, **kwargs):
     body = {"args": list(args), "kwargs": kwargs}
 
     if debug or pdb:

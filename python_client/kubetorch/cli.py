@@ -11,7 +11,7 @@ import textwrap
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from urllib.parse import urlparse
 
 import yaml
@@ -342,7 +342,7 @@ def kt_config(
         raise typer.Exit(1)
 
 
-def _connect_pdb_websocket(namespace: str, pod: str, port: int, pod_ip: str = None):
+def _connect_pdb_websocket(namespace: str, pod: str, port: int, pod_ip: Optional[str] = None):
     """Connect to a PDB WebSocket PTY server running in a pod."""
     import asyncio
 

@@ -33,38 +33,38 @@ logger = get_logger(__name__)
 class Compute:
     def __init__(
         self,
-        cpus: Union[str, int] = None,
-        memory: str = None,
-        disk_size: str = None,
-        gpus: Union[str, int] = None,
-        gpu_type: str = None,
-        priority_class_name: str = None,
-        gpu_memory: str = None,
-        namespace: str = None,
-        image: "Image" = None,
-        labels: Dict = None,
-        annotations: Dict = None,
-        volumes: List[Union[str, Volume]] = None,
-        node_selector: Dict = None,
-        service_template: Dict = None,
-        tolerations: List[Dict] = None,
-        env_vars: Dict = None,
-        secrets: List[Union[str, "Secret"]] = None,
+        cpus: Optional[Union[str, int]] = None,
+        memory: Optional[str] = None,
+        disk_size: Optional[str] = None,
+        gpus: Optional[Union[str, int]] = None,
+        gpu_type: Optional[str] = None,
+        priority_class_name: Optional[str] = None,
+        gpu_memory: Optional[str] = None,
+        namespace: Optional[str] = None,
+        image: Optional["Image"] = None,
+        labels: Optional[Dict] = None,
+        annotations: Optional[Dict] = None,
+        volumes: Optional[List[Union[str, Volume]]] = None,
+        node_selector: Optional[Dict] = None,
+        service_template: Optional[Dict] = None,
+        tolerations: Optional[List[Dict]] = None,
+        env_vars: Optional[Dict] = None,
+        secrets: Optional[List[Union[str, "Secret"]]] = None,
         freeze: bool = False,
-        kubeconfig_path: str = None,
-        service_account_name: str = None,
-        image_pull_policy: str = None,
-        inactivity_ttl: str = None,
-        gpu_anti_affinity: bool = None,
-        launch_timeout: int = None,
-        working_dir: str = None,
-        shared_memory_limit: str = None,
+        kubeconfig_path: Optional[str] = None,
+        service_account_name: Optional[str] = None,
+        image_pull_policy: Optional[str] = None,
+        inactivity_ttl: Optional[str] = None,
+        gpu_anti_affinity: Optional[bool] = None,
+        launch_timeout: Optional[int] = None,
+        working_dir: Optional[str] = None,
+        shared_memory_limit: Optional[str] = None,
         allowed_serialization: Optional[List[str]] = None,
-        replicas: int = None,
-        logging_config: LoggingConfig = None,
-        queue_name: str = None,
-        selector: Dict[str, str] = None,
-        endpoint: "Endpoint" = None,
+        replicas: Optional[int] = None,
+        logging_config: Optional[LoggingConfig] = None,
+        queue_name: Optional[str] = None,
+        selector: Optional[Dict[str, str]] = None,
+        endpoint: Optional["Endpoint"] = None,
         _skip_template_init: bool = False,
     ):
         """Initialize the compute requirements for a Kubetorch service.
@@ -1777,7 +1777,7 @@ class Compute:
         metadata.setdefault("labels", {})
         metadata["labels"].update(labels)
 
-    def add_pod_template_labels(self, labels: Dict, remove_keys: List[str] = None):
+    def add_pod_template_labels(self, labels: Dict, remove_keys: Optional[List[str]] = None):
         """Add or update labels in the pod template metadata.
 
         This is useful for labels that need to be on the pod itself, such as
@@ -2008,12 +2008,12 @@ class Compute:
         service_name: str,
         install_url: str,
         module_name: str,
-        startup_rsync_command: str = None,
-        deployment_timestamp: str = None,
+        startup_rsync_command: Optional[str] = None,
+        deployment_timestamp: Optional[str] = None,
         dryrun: bool = False,
-        dockerfile: str = None,
-        module: dict = None,
-        launch_id: str = None,
+        dockerfile: Optional[str] = None,
+        module: Optional[dict] = None,
+        launch_id: Optional[str] = None,
     ):
         """Creates a new service on the compute for the provided service. If the service already exists,
         it will update the service with the latest copy of the code."""
@@ -2132,12 +2132,12 @@ class Compute:
         service_name: str,
         install_url: str,
         module_name: str,
-        startup_rsync_command: str = None,
-        deployment_timestamp: str = None,
+        startup_rsync_command: Optional[str] = None,
+        deployment_timestamp: Optional[str] = None,
         dryrun: bool = False,
-        dockerfile: str = None,
-        module: dict = None,
-        launch_id: str = None,
+        dockerfile: Optional[str] = None,
+        module: Optional[dict] = None,
+        launch_id: Optional[str] = None,
     ):
         """Async version of _launch. Creates a new service on the compute for the provided service.
         If the service already exists, it will update the service with the latest copy of the code."""
@@ -2397,7 +2397,7 @@ class Compute:
         # Append service name to URL so startup sync only gets this service's files
         return f"{client.get_rsync_pod_url()}{self.service_name}/"
 
-    def ssh(self, pod_name: str = None):
+    def ssh(self, pod_name: Optional[str] = None):
         if pod_name is None:
             pods = self.pods()
             running_pods = [pod for pod in pods if pod_is_running(pod)]
@@ -2410,7 +2410,7 @@ class Compute:
         ssh_cmd = f"kubectl exec -it {pod_name} -n {self.namespace} -- /bin/bash"
         subprocess.run(shlex.split(ssh_cmd), check=True)
 
-    def get_env_vars(self, keys: Union[List[str], str] = None):
+    def get_env_vars(self, keys: Optional[Union[List[str], str]] = None):
         keys = [keys] if isinstance(keys, str) else keys
         env_vars = {}
         for env_var in self._container_env():
@@ -2478,7 +2478,7 @@ class Compute:
     def run_bash(
         self,
         commands,
-        node: Union[str, List[str]] = None,
+        node: Optional[Union[str, List[str]]] = None,
         container: Optional[str] = None,
     ):
         """Run bash commands on the pod(s)."""
@@ -2494,7 +2494,7 @@ class Compute:
     def _image_setup_and_instructions(
         self,
         rsync: bool = True,
-        rsync_dirs: List[str] = None,
+        rsync_dirs: Optional[List[str]] = None,
     ):
         """
         Return image instructions in Dockerfile format, and optionally rsync over content to the rsync pod.
@@ -2595,11 +2595,11 @@ class Compute:
     # ------------ Distributed / Autoscaling Helpers -------- #
     def distribute(
         self,
-        distribution_type: str = None,
-        workers: int = None,
-        quorum_timeout: int = None,
-        quorum_workers: int = None,
-        monitor_members: bool = None,
+        distribution_type: Optional[str] = None,
+        workers: Optional[int] = None,
+        quorum_timeout: Optional[int] = None,
+        quorum_workers: Optional[int] = None,
+        monitor_members: Optional[bool] = None,
         **kwargs,
     ):
         """Configure the distributed worker compute needed by each service replica.
