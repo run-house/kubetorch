@@ -166,7 +166,7 @@ class App(Module):
         if self._run_async:
 
             def _launch_in_background():
-                """Wrapper to suppress errors when daemon thread is terminated during shutdown."""
+                """Wrapper to handle errors when daemon thread is terminated during shutdown."""
                 try:
                     super(App, self)._launch_service(
                         install_url,
@@ -176,10 +176,12 @@ class App(Module):
                         stream_logs,
                         False,
                     )
-                except Exception:
-                    # Daemon thread may be terminated during process shutdown;
-                    # suppress errors from interrupted HTTP requests
-                    pass
+                except Exception as e:
+                    if isinstance(e, (ConnectionAbortedError, BrokenPipeError, ConnectionResetError)):
+                        # Daemon thread may be terminated during process shutdown
+                        logger.debug(f"Background launch interrupted: {e}")
+                    else:
+                        logger.warning(f"Background launch failed: {e}", exc_info=True)
 
             thread = threading.Thread(
                 target=_launch_in_background,
