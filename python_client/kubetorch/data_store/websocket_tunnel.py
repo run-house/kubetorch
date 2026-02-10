@@ -1,4 +1,5 @@
 import atexit
+import errno
 import random
 import socket
 import threading
@@ -105,7 +106,7 @@ class WebSocketRsyncTunnel:
                     self.local_port = port
                     break
                 except OSError as e:
-                    if e.errno == 98:  # Address already in use
+                    if e.errno == errno.EADDRINUSE:  # Address already in use
                         continue
                     else:
                         server_socket.close()
