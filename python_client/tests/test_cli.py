@@ -18,6 +18,7 @@ from typer.testing import CliRunner
 
 from tests.utils import create_random_name_prefix, get_tests_namespace, remote_fn_for_teardown, strip_ansi
 from .conftest import get_test_hash
+from typing import Optional
 
 
 def strip_ansi_codes(text):
@@ -86,7 +87,7 @@ def validate_teardown_output(
     service_name: str,
     namespace: str = kt.config.namespace,
     force_delete: bool = False,
-    prefix: str = None,
+    prefix: Optional[str] = None,
 ):
     # Strip ANSI codes for comparison
     teardown_output = strip_ansi_codes(teardown_output)

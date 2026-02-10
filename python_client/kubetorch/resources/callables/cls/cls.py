@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Optional
 
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.module import Module
@@ -13,8 +13,8 @@ class Cls(Module):
     def __init__(
         self,
         name: str,
-        pointers: tuple = None,
-        init_args: dict = None,
+        pointers: Optional[tuple] = None,
+        init_args: Optional[dict] = None,
     ):
         """
         Initialize a Cls object for remote class execution.
@@ -130,7 +130,7 @@ class Cls(Module):
         return response
 
 
-def cls(class_obj=None, name: str = None, get_if_exists=True, reload_prefixes=None) -> Cls:
+def cls(class_obj=None, name: Optional[str] = None, get_if_exists=True, reload_prefixes=None) -> Cls:
     """
     Builds an instance of :class:`Cls`.
 

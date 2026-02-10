@@ -114,7 +114,7 @@ class PodTerminatedError(Exception):
         pod_name: str = "unknown",
         reason: str = "Unknown",
         status_code: int = 503,
-        events: List[dict] = None,
+        events: Optional[List[dict]] = None,
     ):
         """
         events: List of dicts with keys:
@@ -195,11 +195,11 @@ class WorkerMembershipChanged(Exception):
 
     def __init__(
         self,
-        added_ips: set = None,
-        removed_ips: set = None,
-        previous_ips: set = None,
-        current_ips: set = None,
-        message: str = None,
+        added_ips: Optional[set] = None,
+        removed_ips: Optional[set] = None,
+        previous_ips: Optional[set] = None,
+        current_ips: Optional[set] = None,
+        message: Optional[str] = None,
     ):
         # Support both explicit construction and reconstruction from message
         if message and not (added_ips or removed_ips):
