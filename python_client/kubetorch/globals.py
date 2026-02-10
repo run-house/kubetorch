@@ -91,7 +91,7 @@ class LoggingConfig:
             (Default: 0)
     """
 
-    stream_logs: bool = None
+    stream_logs: Optional[bool] = None
     level: Literal["debug", "info", "warning", "error", "critical"] = field(default_factory=_get_log_level)
     include_system_logs: bool = False
     include_events: bool = True
