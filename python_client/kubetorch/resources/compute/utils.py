@@ -307,7 +307,7 @@ def delete_resources_for_services(
     services: Dict,
     namespace: Optional[str] = None,
     force: bool = False,
-    prefix: Optional[bool] = None,
+    prefix: Optional[str] = None,
     teardown_all: Optional[bool] = None,
     username: Optional[str] = None,
     exact_match: Optional[bool] = None,

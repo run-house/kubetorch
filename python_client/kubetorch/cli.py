@@ -1110,7 +1110,7 @@ def kt_run(
     ctx: typer.Context,
     name: str = typer.Option(None, "--name", help="Name for the run"),
     run_async: bool = typer.Option(False, "--async", help="Whether to run async and not stream logs live"),
-    file: int = typer.Option(None, "--file", help="File where the app is defined in"),
+    file: str = typer.Option(None, "--file", help="File where the app is defined in"),
 ):
     """
     Build and deploy a kubetorch app that runs the provided CLI command. In order for the app
@@ -1791,6 +1791,7 @@ def kt_volumes(
                 pvcs_items = controller_client.list_pvcs_all_namespaces().get("items", [])
                 title = "Kubetorch Volumes (All Namespaces)"
             else:
+                assert target_namespace is not None
                 result = controller_client.list_pvcs(target_namespace)
                 pvcs_items = result.get("items", [])
                 title = f"Kubetorch Volumes (Namespace: {target_namespace})"

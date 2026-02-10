@@ -598,7 +598,7 @@ def load_kubetorch_volumes_from_pods(pods: list) -> List[str]:
     return list(volumes)
 
 
-def create_table_for_output(columns: List[set], no_wrap_columns_names: Optional[list] = None, header_style: Optional[dict] = None):
+def create_table_for_output(columns: List[tuple], no_wrap_columns_names: Optional[list] = None, header_style: Optional[dict] = None):
     table = Table(box=box.SQUARE, header_style=Style(**header_style))
     for name, style in columns:
         if name in no_wrap_columns_names:
