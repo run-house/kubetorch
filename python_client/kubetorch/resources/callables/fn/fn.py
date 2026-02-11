@@ -1,3 +1,5 @@
+from typing import Optional
+
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.module import Module
 from kubetorch.resources.callables.utils import build_call_body, extract_pointers, prepare_notebook_fn
@@ -11,7 +13,7 @@ class Fn(Module):
     def __init__(
         self,
         name: str,
-        pointers: tuple = None,
+        pointers: Optional[tuple] = None,
     ):
         """
         Initialize a Fn object for remote function execution.
@@ -103,7 +105,7 @@ class Fn(Module):
         return response
 
 
-def fn(function_obj=None, name: str = None, get_if_exists=True, reload_prefixes=None) -> Fn:
+def fn(function_obj=None, name: Optional[str] = None, get_if_exists=True, reload_prefixes=None) -> Fn:
     """
     Builds an instance of :class:`Fn`.
 

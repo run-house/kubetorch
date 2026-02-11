@@ -17,9 +17,9 @@ class Secret:
         self,
         name: Optional[str] = None,
         provider: Optional[str] = None,
-        values: Dict = None,
-        path: str = None,
-        env_vars: Dict = None,
+        values: Optional[Dict] = None,
+        path: Optional[str] = None,
+        env_vars: Optional[Dict] = None,
         override: bool = False,
         **kwargs,
     ):
@@ -92,13 +92,13 @@ class Secret:
             return self._values_from_env(self.env_vars)
         return {}
 
-    def _values_from_env(self, env_vars: Dict = None):
+    def _values_from_env(self, env_vars: Optional[Dict] = None):
         env_vars = env_vars or self.env_vars
         if not env_vars:
             return {}
         return {key: os.environ[key] for key in env_vars}
 
-    def _values_from_path(self, path: str = None):
+    def _values_from_path(self, path: Optional[str] = None):
         path = path or self.path or self._DEFAULT_PATH
         if not path:
             return {}
@@ -125,7 +125,7 @@ class Secret:
             self.filenames = filenames
         return values
 
-    def _split_path_if_needed(self, path: str, filenames: list = None) -> Tuple[str, List[str]]:
+    def _split_path_if_needed(self, path: str, filenames: Optional[list] = None) -> Tuple[str, List[str]]:
         """Split path into path and filenames if a single file is specified as a full path"""
         updated_path = path
         is_default_path = updated_path == self._DEFAULT_PATH
@@ -175,7 +175,9 @@ class Secret:
         return list(_str_to_provider_class.values())
 
     @classmethod
-    def from_provider(cls, provider: str, name: str = None, path: str = None, override: bool = False):
+    def from_provider(
+        cls, provider: str, name: Optional[str] = None, path: Optional[str] = None, override: bool = False
+    ):
         """Return kubetorch provider secret object
 
         Args:
@@ -192,7 +194,7 @@ class Secret:
         return secret_class(name=name, provider=provider, path=path, override=override)
 
     @classmethod
-    def from_path(cls, path: str, name: str = None, override: bool = False):
+    def from_path(cls, path: str, name: Optional[str] = None, override: bool = False):
         """Return kubetorch provider secret object
 
         Args:
@@ -209,7 +211,7 @@ class Secret:
         return secret_class(name=name, path=path, override=override)
 
     @classmethod
-    def from_env(cls, env_vars: dict, name: str = None, override: bool = False):
+    def from_env(cls, env_vars: dict, name: Optional[str] = None, override: bool = False):
         """Return kubetorch provider secret object
 
         Args:

@@ -31,7 +31,7 @@ class ServiceManager:
         self,
         resource_type: str,
         namespace: str,
-        service_annotations: dict = None,
+        service_annotations: Optional[dict] = None,
     ):
         """Initialize the service manager.
 
@@ -60,7 +60,7 @@ class ServiceManager:
     # Manifest Navigation (config-driven)
     # =========================================================================
 
-    def get_pod_template_path(self, override: List[str] = None) -> Optional[List[str]]:
+    def get_pod_template_path(self, override: Optional[List[str]] = None) -> Optional[List[str]]:
         """Get the path to the pod template in the manifest.
 
         For BYO manifests with unknown resource types, returns None if no override is provided.
@@ -70,7 +70,7 @@ class ServiceManager:
             return override
         return self.config.get("pod_template_path")
 
-    def pod_spec(self, manifest: dict, pod_template_path: List[str] = None) -> dict:
+    def pod_spec(self, manifest: dict, pod_template_path: Optional[List[str]] = None) -> dict:
         """Get the pod spec from a manifest.
 
         Returns empty dict if pod template path is not configured and no override is provided.
@@ -104,7 +104,7 @@ class ServiceManager:
             # Standard deployment path
             return manifest.get("spec", {}).get("replicas", 1)
 
-    def set_replicas(self, manifest: dict, value: int, distributed_config: dict = None) -> None:
+    def set_replicas(self, manifest: dict, value: int, distributed_config: Optional[dict] = None) -> None:
         """Set the number of replicas in the manifest."""
         if self.resource_type == "knative":
             self._set_knative_replicas(manifest, value)
@@ -166,7 +166,7 @@ class ServiceManager:
         replica_specs = spec.get(specs_key, {})
         return sum(rs.get("replicas", 0) for rs in replica_specs.values() if isinstance(rs, dict))
 
-    def _set_trainjob_replicas(self, manifest: dict, value: int, distributed_config: dict = None) -> None:
+    def _set_trainjob_replicas(self, manifest: dict, value: int, distributed_config: Optional[dict] = None) -> None:
         """Set replicas in training job (primary=1, rest are workers)."""
         specs_key = self.config.get("replica_specs_key")
         primary_replica = self.config.get("primary_replica")
@@ -196,7 +196,7 @@ class ServiceManager:
     # Labels and Annotations
     # =========================================================================
 
-    def _get_labels(self, custom_labels: dict = None) -> dict:
+    def _get_labels(self, custom_labels: Optional[dict] = None) -> dict:
         """Get standard kubetorch labels."""
         from kubetorch import __version__
 
@@ -211,8 +211,8 @@ class ServiceManager:
 
     def _get_annotations(
         self,
-        custom_annotations: dict = None,
-        inactivity_ttl: str = None,
+        custom_annotations: Optional[dict] = None,
+        inactivity_ttl: Optional[str] = None,
     ) -> dict:
         """Get standard kubetorch annotations."""
         annotations = {}
@@ -231,11 +231,11 @@ class ServiceManager:
     def _apply_kubetorch_metadata_to_manifest(
         self,
         manifest: dict,
-        inactivity_ttl: str = None,
-        custom_labels: dict = None,
-        custom_annotations: dict = None,
-        custom_template: dict = None,
-        pod_template_path: List[str] = None,
+        inactivity_ttl: Optional[str] = None,
+        custom_labels: Optional[dict] = None,
+        custom_annotations: Optional[dict] = None,
+        custom_template: Optional[dict] = None,
+        pod_template_path: Optional[List[str]] = None,
         **kwargs,
     ) -> dict:
         """Apply kubetorch labels and annotations to manifest.
@@ -271,7 +271,7 @@ class ServiceManager:
         manifest: dict,
         template_labels: dict,
         annotations: dict,
-        path: List[str] = None,
+        path: Optional[List[str]] = None,
     ) -> None:
         """Apply template metadata updates."""
         template_path = path or self.get_pod_template_path()
@@ -308,7 +308,7 @@ class ServiceManager:
         service_name: str,
         clean_module_name: str,
         deployment_timestamp: str,
-        pod_template_path: List[str] = None,
+        pod_template_path: Optional[List[str]] = None,
     ) -> dict:
         """Update manifest with service name and deployment timestamp.
 
@@ -388,19 +388,19 @@ class ServiceManager:
         self,
         service_name: str,
         module_name: str,
-        manifest: dict = None,
-        deployment_timestamp: str = None,
+        manifest: Optional[dict] = None,
+        deployment_timestamp: Optional[str] = None,
         dryrun: bool = False,
-        dockerfile: str = None,
-        module: dict = None,
+        dockerfile: Optional[str] = None,
+        module: Optional[dict] = None,
         create_headless_service: bool = False,
         endpoint: Optional[Endpoint] = None,
         pod_selector: Optional[Dict[str, str]] = None,
-        deployment_mode: str = None,
-        distributed_config: dict = None,
-        runtime_config: dict = None,
-        pod_template_path: List[str] = None,
-        launch_id: str = None,
+        deployment_mode: Optional[str] = None,
+        distributed_config: Optional[dict] = None,
+        runtime_config: Optional[dict] = None,
+        pod_template_path: Optional[List[str]] = None,
+        launch_id: Optional[str] = None,
     ) -> Tuple[dict, dict, str]:
         """Create or update a Kubernetes service and register it with the controller.
 
@@ -542,11 +542,11 @@ class ServiceManager:
 
     def _load_workload_metadata(
         self,
-        deployment_mode: str = None,
-        distributed_config: dict = None,
-        runtime_config: dict = None,
-        launch_id: str = None,
-        dockerfile: str = None,
+        deployment_mode: Optional[str] = None,
+        distributed_config: Optional[dict] = None,
+        runtime_config: Optional[dict] = None,
+        launch_id: Optional[str] = None,
+        dockerfile: Optional[str] = None,
     ) -> dict:
         """Build workload metadata dict for controller registration.
 
@@ -577,16 +577,16 @@ class ServiceManager:
         manifest: dict,
         service_name: str,
         dry_run: bool = False,
-        dockerfile: str = None,
-        module: dict = None,
+        dockerfile: Optional[str] = None,
+        module: Optional[dict] = None,
         create_headless_service: bool = False,
         endpoint: Optional[Endpoint] = None,
         pod_selector: Optional[Dict[str, str]] = None,
-        deployment_mode: str = None,
-        distributed_config: dict = None,
-        runtime_config: dict = None,
-        pod_template_path: List[str] = None,
-        launch_id: str = None,
+        deployment_mode: Optional[str] = None,
+        distributed_config: Optional[dict] = None,
+        runtime_config: Optional[dict] = None,
+        pod_template_path: Optional[List[str]] = None,
+        launch_id: Optional[str] = None,
     ) -> dict:
         """Create or update resource via controller using the deploy endpoint. Applies the manifest and registers the workload."""
         pod_spec = self.pod_spec(manifest, pod_template_path=pod_template_path)
@@ -756,7 +756,7 @@ class ServiceManager:
             # All other types use K8s Service
             return f"http://{service_name}.{self.namespace}.svc.cluster.local:80"
 
-    def get_pods_for_service(self, service_name: str, label_selector: str = None) -> List[dict]:
+    def get_pods_for_service(self, service_name: str, label_selector: Optional[str] = None) -> List[dict]:
         """Get all pods associated with this service."""
         label_selector = label_selector or f"{provisioning_constants.KT_SERVICE_LABEL}={service_name}"
         raw = self.controller_client.list_pods(self.namespace, label_selector=label_selector)
@@ -766,7 +766,7 @@ class ServiceManager:
     # Utilities
     # =========================================================================
 
-    def load_service_info(self, created_service: dict, pod_template_path: List[str] = None) -> dict:
+    def load_service_info(self, created_service: dict, pod_template_path: Optional[List[str]] = None) -> dict:
         """Extract service name, namespace, and pod template from created resource.
 
         Args:
@@ -817,7 +817,7 @@ class ServiceManager:
     # =========================================================================
 
     @staticmethod
-    def discover_services(namespace: str, name_filter: str = None) -> List[Dict]:
+    def discover_services(namespace: str, name_filter: Optional[str] = None) -> List[Dict]:
         """Discover all Kubetorch workloads.
 
         Args:

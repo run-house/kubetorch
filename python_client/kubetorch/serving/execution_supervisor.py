@@ -34,7 +34,7 @@ class ExecutionSupervisor:
 
     def __init__(
         self,
-        process_class: ProcessWorker = None,
+        process_class: Optional[ProcessWorker] = None,
         num_processes: int = 1,
         max_threads_per_proc: int = 10,
         restart_procs: bool = True,

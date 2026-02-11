@@ -1,6 +1,7 @@
 import copy
 import os
 import subprocess
+from typing import Optional
 
 import kubetorch as kt
 
@@ -61,7 +62,7 @@ def _make_container(
     image: str = "user-image:latest",
     cpu: str = "0.3",
     memory: str = "512Mi",
-    env: list = None,
+    env: Optional[list] = None,
 ) -> dict:
     """Create a container spec with common defaults."""
     container = {
@@ -95,7 +96,7 @@ def _add_container_to_manifest(manifest: dict, container: dict) -> None:
 
 def _get_basic_manifest(
     kind: str,
-    container: dict = None,
+    container: Optional[dict] = None,
     gpu_anti_affinity: bool = False,
 ):
     """Generate a minimal manifest for the given kind with test values."""
