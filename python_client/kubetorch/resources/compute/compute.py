@@ -19,7 +19,7 @@ from kubetorch.logger import get_logger
 from kubetorch.provisioning.autoscaling import AutoscalingConfig
 from kubetorch.provisioning.utils import pod_is_running, SUPPORTED_TRAINING_JOBS
 from kubetorch.resources.callables.utils import find_locally_installed_version
-from kubetorch.resources.compute.utils import _run_bash, navigate_path
+from kubetorch.resources.compute.utils import _get_sync_package_paths, _run_bash, navigate_path
 from kubetorch.resources.images.image import Image
 from kubetorch.resources.secrets.kubernetes_secrets_client import KubernetesSecretsClient
 from kubetorch.resources.volumes.volume import Volume
