@@ -175,7 +175,9 @@ class Secret:
         return list(_str_to_provider_class.values())
 
     @classmethod
-    def from_provider(cls, provider: str, name: Optional[str] = None, path: Optional[str] = None, override: bool = False):
+    def from_provider(
+        cls, provider: str, name: Optional[str] = None, path: Optional[str] = None, override: bool = False
+    ):
         """Return kubetorch provider secret object
 
         Args:

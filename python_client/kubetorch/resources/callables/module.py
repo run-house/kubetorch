@@ -6,7 +6,7 @@ import urllib.parse
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, TypeVar, Union, Optional
+from typing import Dict, List, Optional, TypeVar, Union
 
 ModuleT = TypeVar("ModuleT", bound="Module")
 
@@ -1421,7 +1421,9 @@ class Module:
                 except (asyncio.TimeoutError, Exception):
                     pass
 
-    def _wait_for_http_health(self, timeout=60, retry_interval=0.2, backoff=1.5, max_interval=2, launch_id: Optional[str] = None):
+    def _wait_for_http_health(
+        self, timeout=60, retry_interval=0.2, backoff=1.5, max_interval=2, launch_id: Optional[str] = None
+    ):
         """Wait for the HTTP server to be ready by checking the /health and /ready endpoints.
 
         Args:

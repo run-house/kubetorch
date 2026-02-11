@@ -1,5 +1,6 @@
 import copy
 import os
+from typing import Optional
 
 import kubetorch as kt
 
@@ -14,7 +15,6 @@ from kubetorch.utils import http_not_found
 
 from .assets.torch_ddp.torch_ddp import torch_ddp
 from .utils import get_hostname, summer
-from typing import Optional
 
 QUEUE_LABEL = provisioning_constants.KUEUE_QUEUE_NAME_LABEL
 

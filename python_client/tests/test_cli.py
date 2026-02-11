@@ -5,6 +5,7 @@ import tempfile
 import textwrap
 import time
 from pathlib import Path
+from typing import Optional
 
 import kubetorch as kt
 
@@ -18,7 +19,6 @@ from typer.testing import CliRunner
 
 from tests.utils import create_random_name_prefix, get_tests_namespace, remote_fn_for_teardown, strip_ansi
 from .conftest import get_test_hash
-from typing import Optional
 
 
 def strip_ansi_codes(text):

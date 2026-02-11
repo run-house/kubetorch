@@ -6,7 +6,7 @@ import time
 import urllib.parse
 from collections import defaultdict, deque
 from datetime import datetime
-from typing import Literal, Union, Optional
+from typing import Literal, Optional, Union
 
 import httpx
 import websockets

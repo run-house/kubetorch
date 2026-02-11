@@ -2,7 +2,6 @@ from dataclasses import asdict, dataclass
 from typing import Optional
 
 from kubetorch.logger import get_logger
-from typing import Optional
 
 logger = get_logger(__name__)
 
