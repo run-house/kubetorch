@@ -33,7 +33,7 @@ logger = get_logger(__name__)
 class Compute:
     def __init__(
         self,
-        cpus: Optional[Union[str, int]] = None,
+        cpus: Optional[Union[str, float]] = None,
         memory: Optional[str] = None,
         disk_size: Optional[str] = None,
         gpus: Optional[Union[str, int]] = None,
@@ -70,7 +70,7 @@ class Compute:
         """Initialize the compute requirements for a Kubetorch service.
 
         Args:
-            cpus (str, int, optional): CPU resource request. Can be specified in cores ("1.0") or millicores ("1000m").
+            cpus (str, float, optional): CPU resource request. Can be specified in cores (0.5, "1.0") or millicores ("1000m").
             memory (str, optional): Memory resource request. Can use binary (Ki, Mi, Gi) or decimal (K, M, G) units.
             disk_size (str, optional): Ephemeral storage request. Uses same format as memory.
             gpus (str or int, optional): Number of GPUs to request. Fractional GPUs not currently supported.
@@ -898,10 +898,10 @@ class Compute:
         return self._get_container_resource("cpu")
 
     @cpus.setter
-    def cpus(self, value: str):
+    def cpus(self, value: Union[str, float]):
         """
         Args:
-            value: CPU value (e.g., "2", "1000m", "0.5")
+            value: CPU value (e.g., 0.5, "2", "1000m")
         """
         self._set_container_resource("cpu", str(value))
 
