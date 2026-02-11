@@ -13,7 +13,7 @@ import webbrowser
 from contextlib import contextmanager
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import typer
 from rich import box
@@ -114,7 +114,7 @@ def service_name_argument(*args, required: bool = True, **kwargs):
     return typer.Argument(default, callback=_lowercase, *args, **kwargs)
 
 
-def get_deployment_mode(name: str, namespace: str) -> str:
+def get_deployment_mode(name: str, namespace: str) -> Tuple[str, str]:
     """Validate service exists and return deployment mode."""
     try:
         original_name = name
