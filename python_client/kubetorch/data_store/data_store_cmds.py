@@ -6,7 +6,7 @@ call directly, as well as the sync_workdir_from_store function used internally.
 """
 import os
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from kubetorch.logger import get_logger
 from kubetorch.resources.compute.utils import RsyncError
@@ -37,7 +37,7 @@ def put(
     nccl_port: int = 29500,
     # NCCL process group mode (GPU only)
     nccl_pg_mode: Optional[str] = None,
-) -> None:
+) -> Optional[Dict[str, Any]]:
     """
     Upload data to the cluster using a key-value store interface.
 
@@ -150,7 +150,7 @@ def get(
     kubeconfig_path: Optional[str] = None,
     # NCCL process group mode (GPU only)
     nccl_pg_mode: Optional[str] = None,
-) -> None:
+) -> Optional[Dict[str, Any]]:
     """
     Download data from the cluster using a key-value store interface.
 
