@@ -1,4 +1,4 @@
-from typing import Union, Optional
+from typing import Optional, Union
 
 from .anthropic_secret import AnthropicSecret
 from .aws_secret import AWSSecret

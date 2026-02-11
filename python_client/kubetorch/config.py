@@ -1,11 +1,11 @@
 import os
 from functools import cached_property
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
 from kubetorch.logger import get_logger
-from typing import Optional
 
 
 logger = get_logger(__name__)

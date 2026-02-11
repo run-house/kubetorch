@@ -1,7 +1,8 @@
+from typing import Optional
+
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.module import Module
 from kubetorch.resources.callables.utils import build_call_body, extract_pointers, prepare_notebook_fn
-from typing import Optional
 
 logger = get_logger(__name__)
 
