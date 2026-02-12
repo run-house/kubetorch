@@ -24,13 +24,9 @@ BroadcastWindow support:
 - All participants receive a transfer manifest specifying what to send/receive
 """
 
-import os
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
 
-import httpx
-
 from kubetorch.logger import get_logger
-from kubetorch.serving.global_http_clients import get_sync_client
 from kubetorch.serving.utils import is_running_in_kubernetes
 
 if TYPE_CHECKING:
@@ -53,12 +49,6 @@ def _get_torch():
         return torch
     except ImportError:
         raise ImportError("PyTorch is required for GPU tensor transfers. Install it with: pip install torch")
-
-
-def _get_torch_distributed():
-    """Lazily import torch.distributed."""
-    torch = _get_torch()
-    return torch.distributed
 
 
 def _is_gpu_tensor(obj) -> bool:
@@ -96,31 +86,6 @@ def _flatten_state_dict(state_dict: Dict, prefix: str = "") -> Dict[str, Any]:
     return result
 
 
-def _get_sorted_tensor_keys(data: Union[Any, Dict]) -> List[str]:
-    """Get sorted list of tensor keys for consistent ordering between sender and receiver."""
-    torch = _get_torch()
-
-    if isinstance(data, torch.Tensor):
-        return [""]  # Single tensor, empty key
-
-    # State dict - flatten and sort keys
-    flat = _flatten_state_dict(data)
-    return sorted(flat.keys())
-
-
-def _get_tensor_by_key(data: Union[Any, Dict], key: str):
-    """Get tensor from data by flattened key."""
-    if key == "":
-        return data  # Single tensor
-
-    # Navigate nested dict
-    parts = key.split(".")
-    current = data
-    for part in parts:
-        current = current[part]
-    return current
-
-
 class GPUTransferManager:
     """
     Manages GPU tensor transfers via NCCL broadcast.
@@ -143,10 +108,6 @@ class GPUTransferManager:
 
         # GPU data server client (lazy initialization)
         self._gpu_server_client = None
-
-        # Legacy: Storage for pending data (kept for backward compatibility with tests)
-        self._pending_data: Dict[str, Dict] = {}
-        self._process_group = None
 
     def _get_gpu_server_client(self):
         """Get or create the GPU data server client, starting server if needed."""
@@ -261,9 +222,6 @@ class GPUTransferManager:
             if response.get("status") != "ok":
                 raise RuntimeError(f"Failed to broadcast '{key}': {response.get('error')}")
 
-            # Store reference for backward compatibility
-            self._pending_data[key] = {"data": data, "nccl_port": nccl_port}
-
             if verbose:
                 logger.info(f"Published GPU data '{key}': {len(tensors_to_register)} tensor(s) via broadcast")
 
@@ -282,9 +240,6 @@ class GPUTransferManager:
                 logger.info(f"Published GPU tensor '{key}': shape={list(tensor.shape)}, dtype={tensor.dtype}")
             else:
                 logger.info(f"Published GPU state dict '{key}': {len(tensors_to_register)} tensors")
-
-        # Store reference for backward compatibility
-        self._pending_data[key] = {"data": data, "nccl_port": nccl_port}
 
         return None
 
@@ -557,121 +512,6 @@ class GPUTransferManager:
             logger.info(f"Unpacked {len(tensors)} tensors from packed buffer")
 
         return response
-
-    def serve_broadcast(
-        self,
-        key: str,
-        broadcast_id: str,
-        world_size: int,
-        verbose: bool = False,
-    ) -> None:
-        """
-        Serve a broadcast as the source pod (rank 0).
-
-        Called when the quorum is ready and all participants are waiting.
-        """
-        _get_torch_distributed()
-
-        pending = self._pending_data.get(key)
-        if pending is None:
-            raise RuntimeError(f"No pending data for key '{key}'")
-
-        data = pending["data"]
-        nccl_port = pending["nccl_port"]
-        pod_ip = os.getenv("POD_IP")
-
-        if verbose:
-            tensor_keys = _get_sorted_tensor_keys(data)
-            logger.info(f"Starting broadcast for '{key}': world_size={world_size}, " f"tensors={len(tensor_keys)}")
-
-        # Set up NCCL
-        os.environ["MASTER_ADDR"] = pod_ip
-        os.environ["MASTER_PORT"] = str(nccl_port)
-
-        try:
-            # Initialize process group as rank 0
-            if not dist.is_initialized():
-                dist.init_process_group(
-                    backend="nccl",
-                    rank=0,
-                    world_size=world_size,
-                )
-                self._process_group = dist.group.WORLD
-            else:
-                ranks = list(range(world_size))
-                self._process_group = dist.new_group(ranks)
-
-            # Broadcast data
-            self._broadcast_data(data)
-
-            if verbose:
-                logger.info(f"Broadcast complete for '{key}'")
-
-            # Notify completion
-            self._complete_broadcast(
-                key=key,
-                broadcast_id=broadcast_id,
-                pod_ip=pod_ip,
-            )
-
-        finally:
-            self._cleanup_process_group()
-
-    def _broadcast_data(self, data: Union[Any, Dict]) -> None:
-        """Broadcast tensor or state dict (sender side)."""
-        _get_torch_distributed()
-        torch = _get_torch()
-
-        # Get sorted keys for consistent ordering
-        tensor_keys = _get_sorted_tensor_keys(data)
-
-        for key in tensor_keys:
-            tensor = _get_tensor_by_key(data, key)
-            if isinstance(tensor, torch.Tensor):
-                dist.broadcast(tensor, src=0, group=self._process_group)
-
-    def _receive_into(self, dest: Union[Any, Dict]) -> None:
-        """Receive broadcast into destination tensor or state dict."""
-        _get_torch_distributed()
-        torch = _get_torch()
-
-        # Get sorted keys for consistent ordering (must match sender)
-        tensor_keys = _get_sorted_tensor_keys(dest)
-
-        for key in tensor_keys:
-            tensor = _get_tensor_by_key(dest, key)
-            if isinstance(tensor, torch.Tensor):
-                dist.broadcast(tensor, src=0, group=self._process_group)
-
-    def _cleanup_process_group(self):
-        """Clean up NCCL process group."""
-        dist = _get_torch_distributed()
-        if self._process_group is not None:
-            if self._process_group != dist.group.WORLD:
-                dist.destroy_process_group(self._process_group)
-            else:
-                dist.destroy_process_group()
-            self._process_group = None
-
-    def _complete_broadcast(
-        self,
-        key: str,
-        broadcast_id: str,
-        pod_ip: str,
-    ) -> None:
-        """Notify that broadcast is complete."""
-        from urllib.parse import quote
-
-        encoded_key = quote(key, safe="")
-        url = f"{self.metadata_client.base_url}/api/v1/keys/{encoded_key}/gpu/quorum/{broadcast_id}/complete"
-
-        try:
-            response = get_sync_client().post(url, params={"pod_ip": pod_ip}, timeout=5)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            logger.warning(f"Failed to notify broadcast completion: HTTP {e.response.status_code} - {e.response.text}")
-        except httpx.RequestError as e:
-            logger.warning(f"Failed to notify broadcast completion: {e}")
 
 
 # Singleton instance
