@@ -53,7 +53,7 @@ class DistributedSupervisor(ExecutionSupervisor):
         self.quorum_timeout = quorum_timeout
         self.monitor_members = monitor_members
 
-        # Remote worker pool for HTTP calls to other pods
+        # Remote worker pool for async WebSocket calls to other pods
         self.remote_worker_pool: Optional[RemoteWorkerPool] = None
 
         # DNS monitoring state
@@ -70,8 +70,7 @@ class DistributedSupervisor(ExecutionSupervisor):
         """Set up distributed environment including process pool.
 
         Note: RemoteWorkerPool is created lazily when needed (i.e., when there are
-        actually remote workers to call). This avoids spawning unnecessary processes
-        for single-pod distributed jobs.
+        actually remote workers to call).
         """
         super().setup()
 
@@ -80,8 +79,8 @@ class DistributedSupervisor(ExecutionSupervisor):
         # Stop DNS monitoring first
         self.stop_dns_monitoring()
 
-        # Note: RemoteWorkerPool is a singleton and persists across supervisor recreations.
-        # We intentionally do NOT stop it here - just clear our reference.
+        # RemoteWorkerPool is lightweight (no subprocess) and may be a singleton.
+        # Just clear our reference; subclasses handle async cleanup if needed.
         self.remote_worker_pool = None
 
         # Clean up process pool
