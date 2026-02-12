@@ -13,7 +13,7 @@ import kubetorch.constants as constants
 import kubetorch.provisioning.constants as provisioning_constants
 
 from kubetorch import data_store, globals
-from kubetorch.globals import LoggingConfig
+from kubetorch.globals import CallConfig, LoggingConfig
 
 from kubetorch.logger import get_logger
 from kubetorch.provisioning.autoscaling import AutoscalingConfig
@@ -62,6 +62,7 @@ class Compute:
         allowed_serialization: Optional[List[str]] = None,
         replicas: int = None,
         logging_config: LoggingConfig = None,
+        call_config: CallConfig = None,
         queue_name: str = None,
         selector: Dict[str, str] = None,
         endpoint: "Endpoint" = None,
@@ -119,6 +120,10 @@ class Compute:
                 or up to half the node's RAM.
             logging_config (LoggingConfig, optional): Configuration for logging behavior on this service. Controls
                 log level, streaming options, and grace periods. See :class:`LoggingConfig` for details.
+            call_config (CallConfig, optional): Configuration for how calls are distributed and executed.
+                Controls call mode (local, spmd, pytorch, load-balanced, etc.), concurrency, quorum settings,
+                and other distributed execution options. See :class:`CallConfig` for details. Replaces the
+                deprecated `.distribute()` method.
             queue_name (str, optional): Kueue LocalQueue name for GPU scheduling. When set, adds the
                 ``kueue.x-k8s.io/queue-name`` label to the pod template metadata. For training jobs
                 (PyTorchJob, TFJob, etc.), also sets ``spec.runPolicy.suspend: true`` so Kueue can
@@ -181,6 +186,7 @@ class Compute:
         self._secrets_client = None
         self._volumes = volumes
         self._logging_config = logging_config or LoggingConfig()
+        self._call_config = call_config
         self._manifest = None
         self._template_vars = {}  # Will be populated by _build_kubetorch_pod_spec
         self._pod_template_path_override = None  # For BYO manifests with non-standard pod template paths
@@ -1603,7 +1609,25 @@ class Compute:
         """Get the distributed config for this compute.
 
         Distributed config flows to pods via WebSocket metadata from the controller.
+        If call_config is set, it takes precedence over _distributed_config.
         """
+        # call_config takes precedence when set
+        if self._call_config is not None:
+            config = self._call_config.to_dict()
+            # Use Compute.replicas as quorum_workers if not explicitly set in call_config.
+            # Skip for load-balanced mode: it doesn't need quorum, workers join/leave dynamically.
+            if (
+                self._call_config.quorum_workers is None
+                and self._call_config.call_mode != "load-balanced"
+                and self._manifest is not None
+            ):
+                replicas = self.service_manager.get_replicas(self._manifest)
+                if replicas and replicas > 1:
+                    config["quorum_workers"] = replicas
+            # Default quorum_timeout to launch_timeout if not set
+            if "quorum_timeout" not in config or config["quorum_timeout"] == 300:
+                config["quorum_timeout"] = self.launch_timeout
+            return config
         return getattr(self, "_distributed_config", None) or {}
 
     @distributed_config.setter
