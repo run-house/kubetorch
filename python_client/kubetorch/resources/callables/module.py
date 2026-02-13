@@ -856,9 +856,9 @@ class Module:
             msg = f"Successfully force deleted {self.service_name}"
 
             # BYO compute: kubetorch does not own the K8s resource lifecycle
-            byo_deleted_services = delete_result.pop("byo_deleted_services")
-            if byo_deleted_services:
-                print_byo_deletion_warning(byo_deleted_services)
+            is_unmanaged = delete_result.get("deleted_unmanaged")
+            if is_unmanaged:
+                print_byo_deletion_warning(self.service_name)
                 msg_suffix = "."
             else:
                 msg_suffix = " and its associated resources."

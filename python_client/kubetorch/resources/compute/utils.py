@@ -300,8 +300,11 @@ def load_configmaps(
         return []
 
 
+# ----------------- Teardown utils ----------------- #
+
+
 def delete_resources_for_services(
-    services: Union[str, List],
+    services: Dict,
     namespace: str = None,
     force: bool = False,
     prefix: Optional[bool] = None,
@@ -329,9 +332,12 @@ def delete_resources_for_services(
     return delete_result
 
 
-def print_byo_deletion_warning(byo_deleted_services: list, console=None):
+def print_byo_deletion_warning(service_names: Union[list, str], console=None):
+    if isinstance(service_names, str):
+        service_names = [service_names]
+
     byo_resources_teardown_msg = (
-        f"Resources for {','.join(byo_deleted_services)} were created outside Kubetorch. You are responsible for "
+        f"Resources for {','.join(service_names)} were created outside Kubetorch. You are responsible for "
         f"deleting the Kubernetes resources (pods, deployments, services, etc.)."
     )
 
@@ -339,21 +345,6 @@ def print_byo_deletion_warning(byo_deleted_services: list, console=None):
         console.print(f"[bold yellow]{byo_resources_teardown_msg}[/bold yellow]")
     else:
         logger.warning(byo_resources_teardown_msg)
-
-
-def handle_controller_delete_error(service_name: str, controller_error: str, console=None):
-    if "404" in controller_error:
-        if service_name:
-            error_msg = f"Service {service_name.lower()} not found"
-        else:
-            error_msg = "No services found"
-    else:
-        error_msg = controller_error.split(":")[-1]
-
-    if console:
-        console.print(error_msg)
-    else:
-        logger.error(error_msg)
 
 
 def _collect_modules(target_str):
@@ -416,7 +407,7 @@ def validate_teardown_inputs(name, prefix, teardown_all, username, console):
         raise typer.Exit(1)
 
 
-def fetch_resources_for_teardown(
+def fetch_services_for_teardown(
     namespace: str,
     services: List[str],
     prefix: Optional[str] = None,
@@ -435,7 +426,7 @@ def fetch_resources_for_teardown(
 
     controller_client = kubetorch.globals.controller_client()
     try:
-        return controller_client.fetch_resources_for_teardown(
+        return controller_client.fetch_services_for_teardown(
             namespace=namespace,
             services=services,
             prefix=prefix,
@@ -445,7 +436,7 @@ def fetch_resources_for_teardown(
         )
     except Exception as e:
         logger.warning(f"Failed to fetch resources for teardown: {e}")
-        return {"resources": []}
+        return {"managed": [], "unmanaged": []}
 
 
 # ----------------- Image Builder Utils ----------------- #

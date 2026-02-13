@@ -559,7 +559,7 @@ class ControllerClient:
         """Get a Service"""
         return self.get(f"/controller/services/{namespace}/{name}", ignore_not_found=ignore_not_found)
 
-    def fetch_resources_for_teardown(
+    def fetch_services_for_teardown(
         self,
         namespace: str,
         services: Optional[Union[str, dict, list]] = None,
