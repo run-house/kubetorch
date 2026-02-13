@@ -562,7 +562,7 @@ class ControllerClient:
     def fetch_resources_for_teardown(
         self,
         namespace: str,
-        name: Optional[Union[str, dict, list]] = None,
+        services: Optional[Union[str, dict, list]] = None,
         prefix: Optional[bool] = None,
         teardown_all: Optional[bool] = None,
         username: Optional[str] = None,
@@ -571,7 +571,7 @@ class ControllerClient:
         """Fetch K8s resources that would be deleted by a teardown request."""
         body = {
             "namespace": namespace,
-            "services": name,
+            "services": services,
             "prefix": prefix,
             "teardown_all": teardown_all,
             "username": username,

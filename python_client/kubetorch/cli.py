@@ -1608,45 +1608,51 @@ def kt_teardown(
         _collect_modules,
         delete_resources_for_services,
         fetch_resources_for_teardown,
+        validate_teardown_inputs,
     )
 
     name, yes, teardown_all, namespace, prefix, force, exact_match = default_typer_values(
         name, yes, teardown_all, namespace, prefix, force, exact_match
     )
+    services = []
 
-    force_deleting_prefix_msg = "Force deleting" if force else "Deleting"
+    # Validate inputs
+    username = config.username if teardown_all else None
+    validate_teardown_inputs(name, prefix, teardown_all, username, console)
+
+    if not yes:
+        msg_prefix = "Looking for"
+    else:
+        if force:
+            msg_prefix = "Force deleting"
+        else:
+            msg_prefix = "Deleting"
+
     if teardown_all:
-        if not config.username:
-            console.print(
-                "[red]Username is not found, can't delete all services. Please set up a username, provide a service "
-                "name or use the --prefix flag[/red]"
-            )
-            raise typer.Exit(1)
-
-        console.print(f"{force_deleting_prefix_msg} all services for username [blue]{config.username}[/blue]...")
-
+        console.print(f"{msg_prefix} all services for username [blue]{config.username}[/blue]...")
     elif prefix:
         console.print(
-            f"{force_deleting_prefix_msg} all services with prefix [blue]{prefix}[/blue] in [blue]{namespace}[/blue] namespace..."
+            f"{msg_prefix} all services with prefix [blue]{prefix}[/blue] in [blue]{namespace}[/blue] namespace..."
         )
-    else:
-        if not name:
-            console.print("[red]Please provide a service name or use the --all or --prefix flags[/red]")
-            raise typer.Exit(1)
+    else:  # name is provided
+        console.print(f"{msg_prefix} resources for [blue]{name}[/blue] in [blue]{namespace}[/blue] namespace...")
 
-        console.print(
-            f"{force_deleting_prefix_msg} resources for service [blue]{name}[/blue] in [blue]{namespace}[/blue] namespace..."
-        )
+    # Resolve service(s) when name is provided
+    if name:
+        if ":" in name or ".py" in name or "." in name:  # module or file path
+            to_down, _ = _collect_modules(name)
+            services = [mod.service_name for mod in to_down if isinstance(mod, Module)]
+        else:
+            # if the target is not prefixed with the username, add the username prefix
+            full_name = name
+            if config.username and not exact_match and not name.startswith(config.username + "-"):
+                full_name = config.username + "-" + name
+            services = [full_name]
 
-    # Case 1: confirmation or force flags are not provided. The flow will be as follows:
-    #   1. List the services that will be deleted
-    #   2. Ask for confirmation
-    #   3. Delete if confirmed
-    if not yes and not force:
-        # if --force is provided, we don't need additional confirmation
+    if not yes:
         teardown_result = fetch_resources_for_teardown(
             namespace=namespace,
-            target=name,
+            services=services,
             prefix=prefix,
             teardown_all=teardown_all,
             username=config.username if teardown_all else None,
@@ -1659,24 +1665,22 @@ def kt_teardown(
         service_count = len(service_names)
 
         if teardown_all or prefix:
-            service_word = "service" if service_count == 1 else "services"
             if not resource_list:
                 console.print("[red]No services found[/red]")
                 raise typer.Exit(0)
             else:
+                service_word = "service" if service_count == 1 else "services"
                 console.print(f"[yellow]Found [bold]{service_count}[/bold] {service_word} to delete.[/yellow]")
-
-        if name and not resource_list:
+        elif name and not resource_list:
             console.print(f"[red]Service [bold]{name}[/bold] not found[/red]")
             raise typer.Exit(1)
 
         # Confirmation prompt
-        if not yes and service_count >= 1:
+        if service_count >= 1:
             console.print("The following resources will be deleted:")
             for svc_name in service_names:
                 console.print(f" • [reset]{svc_name}")
 
-        if not yes and not force:
             confirm = typer.confirm("\nDo you want to proceed?")
             if not confirm:
                 console.print("[yellow]Teardown cancelled[/yellow]")
@@ -1687,17 +1691,8 @@ def kt_teardown(
         prefix = None
         teardown_all = None
 
-    else:
-        # Case when service_name is a module or file path (i.e. the `kt deploy` usage path)
-        if ":" in name or ".py" in name or "." in name:
-            to_down, _ = _collect_modules(name)
-            name = [mod.service_name for mod in to_down if isinstance(mod, Module)]
-
-        services = name
-        # Case 2: confirmation or force flags are provided.
-        # List the services to delete based provided name, prefix flag, or --all flag
+    # At this point, either yes flag is provided or user confirmed
     try:
-        username = config.username if teardown_all else None
         delete_result = delete_resources_for_services(
             services=services,
             namespace=namespace,

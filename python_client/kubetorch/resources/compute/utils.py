@@ -397,9 +397,28 @@ def _collect_modules(target_str):
     return to_deploy, target_fn_or_class
 
 
+def validate_teardown_inputs(name, prefix, teardown_all, username, console):
+    import typer
+
+    if prefix in ["kt", "kubetorch", "knative"]:
+        raise ValueError(f"Invalid prefix: {prefix} is reserved. Please delete these individually.")
+    if prefix and username:
+        raise ValueError("Cannot use both prefix and username flags together.")
+
+    if not (name or teardown_all or prefix):
+        raise ValueError("Please provide a service name or use the --all or --prefix flags")
+
+    if teardown_all and not username:
+        console.print(
+            "[red]Username is not found, can't delete all services. Please set up a username, provide a service "
+            "name or use the --prefix flag[/red]"
+        )
+        raise typer.Exit(1)
+
+
 def fetch_resources_for_teardown(
     namespace: str,
-    target: str,
+    services: List[str],
     prefix: Optional[str] = None,
     teardown_all: bool = False,
     username: Optional[str] = None,
@@ -413,35 +432,12 @@ def fetch_resources_for_teardown(
             - kind: K8s kind (e.g., "Deployment", "Service", "RayCluster")
             - api_version: K8s API version (e.g., "apps/v1", "serving.knative.dev/v1")
     """
-    from kubetorch.resources.callables.module import Module
-
-    services = None
-
-    if prefix in ["kt", "kubetorch", "knative"]:
-        raise ValueError(f"Invalid prefix: {prefix} is reserved. Please delete these individually.")
-    if prefix and username:
-        raise ValueError("Cannot use both prefix and username flags together.")
-
-    if not (target or teardown_all or prefix):
-        raise ValueError("Please provide a service name or use the --all or --prefix flags")
-
-    if target:
-        # Case when service_name is a module or file path (i.e. the `kt deploy` usage path)
-        if ":" in target or ".py" in target or "." in target:
-            to_down, _ = _collect_modules(target)
-            services = [mod.service_name for mod in to_down if isinstance(mod, Module)]
-        else:
-            services = [target]
-            # if the target is not prefixed with the username, add the username prefix
-            username = kubetorch.globals.config.username
-            if username and not exact_match and not target.startswith(username + "-"):
-                services.append(username + "-" + target)
 
     controller_client = kubetorch.globals.controller_client()
     try:
         return controller_client.fetch_resources_for_teardown(
             namespace=namespace,
-            name=services,
+            services=services,
             prefix=prefix,
             teardown_all=teardown_all,
             username=username,
