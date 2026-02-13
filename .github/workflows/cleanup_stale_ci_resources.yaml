@@ -105,7 +105,9 @@ jobs:
               fi
             done <<< "$resources"
 
-            [[ "$header_printed" == true ]] && echo ""
+            if [[ "$header_printed" == true ]]; then
+              echo ""
+            fi
           }
 
           cleanup_namespaces() {
@@ -134,7 +136,9 @@ jobs:
               fi
             done <<< "$namespaces"
 
-            [[ "$header_printed" == true ]] && echo ""
+            if [[ "$header_printed" == true ]]; then
+              echo ""
+            fi
           }
 
           # Run cleanup
@@ -160,3 +164,6 @@ jobs:
 
           # Namespaces
           cleanup_namespaces
+
+          echo "Cleanup completed successfully"
+          exit 0
