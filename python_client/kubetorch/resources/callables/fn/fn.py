@@ -1,3 +1,6 @@
+from pathlib import Path
+from typing import Union
+
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.module import Module
 from kubetorch.resources.callables.utils import build_call_body, extract_pointers, prepare_notebook_fn
@@ -12,6 +15,7 @@ class Fn(Module):
         self,
         name: str,
         pointers: tuple = None,
+        sync_dir: Union[str, Path, bool] = None,
     ):
         """
         Initialize a Fn object for remote function execution.
@@ -24,8 +28,9 @@ class Fn(Module):
             name (str): The name of the function to be executed remotely.
             pointers (tuple): A tuple of (root_path, import_path, callable_name) containing
                 the information needed to locate and import the function.
+            sync_dir (str, Path, or bool): Controls which module directory to sync to compute.
         """
-        super().__init__(name=name, pointers=pointers)
+        super().__init__(name=name, pointers=pointers, sync_dir=sync_dir)
 
     def __call__(self, *args, **kwargs):
         async_ = kwargs.pop("async_", self.async_)
@@ -103,7 +108,13 @@ class Fn(Module):
         return response
 
 
-def fn(function_obj=None, name: str = None, get_if_exists=True, reload_prefixes=None) -> Fn:
+def fn(
+    function_obj=None,
+    name: str = None,
+    get_if_exists=True,
+    reload_prefixes=None,
+    sync_dir: Union[str, Path, bool] = None,
+) -> Fn:
     """
     Builds an instance of :class:`Fn`.
 
@@ -124,6 +135,10 @@ def fn(function_obj=None, name: str = None, get_if_exists=True, reload_prefixes=
         reload_prefixes (Union[str, List[str]], optional):
             A list of prefixes to use when reloading the function (e.g., ["qa", "prod", "git-branch-name"]).
             If not provided, will use the current username, git branch, and prod.
+        sync_dir (str, Path, or bool): Controls which directory to sync to compute.
+            If None (default), auto-detect and sync package directory.
+            If False, skip syncing files (this assumes files are already on compute).
+            If str/Path, sync the specified directory. Must contain the module.
 
     Example:
 
@@ -143,6 +158,7 @@ def fn(function_obj=None, name: str = None, get_if_exists=True, reload_prefixes=
         new_fn = Fn(
             name=name,
             pointers=fn_pointers,
+            sync_dir=sync_dir,
         )
         new_fn.get_if_exists = get_if_exists
         new_fn.reload_prefixes = reload_prefixes or []
