@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tempfile
 
+from pathlib import Path
+
 import pytest
 
 from .utils import (
@@ -1028,3 +1030,45 @@ def standalone_fn(x, y):
 
         finally:
             sys.modules.pop("standalone_script", None)
+
+
+def test_sync_dir_child():
+    import kubetorch as kt
+    from kubetorch.resources.callables.utils import extract_pointers
+
+    from .utils import summer
+
+    default_root_path = extract_pointers(summer)[0]
+    sync_dir = Path(default_root_path) / "tests"
+    remote_fn = kt.fn(summer, name=get_test_fn_name(), sync_dir=sync_dir).to(kt.Compute(cpus=".1"))
+    assert remote_fn(4, 5) == 9
+
+
+@pytest.mark.level("minimal")
+def test_sync_dir_parent():
+    import kubetorch as kt
+    from kubetorch.resources.callables.utils import extract_pointers
+
+    from .utils import summer
+
+    default_root_path = extract_pointers(summer)[0]
+    sync_dir = Path(default_root_path).parent
+    remote_fn = kt.fn(summer, name=get_test_fn_name(), sync_dir=sync_dir).to(kt.Compute(cpus=".1"))
+    assert remote_fn(4, 5) == 9
+
+
+@pytest.mark.level("minimal")
+def test_sync_dir_false():
+    import kubetorch as kt
+    from kubetorch.resources.callables.utils import extract_pointers
+
+    from .utils import summer
+
+    default_root_path = extract_pointers(summer)[0]
+
+    # Set KT_PROJECT_ROOT to the name of the package directory for import to work.
+    # This is a workaround because of how summer is being imported in the test function,
+    # Generally the user is responsible for having set up PYTHONPATH on the computeto include the right directories.
+    image = kt.Image().copy(default_root_path).set_env_vars({"KT_PROJECT_ROOT": Path(default_root_path).name})
+    remote_fn = kt.fn(summer, name=get_test_fn_name(), sync_dir=False).to(kt.Compute(cpus=".1", image=image))
+    assert remote_fn(4, 5) == 9

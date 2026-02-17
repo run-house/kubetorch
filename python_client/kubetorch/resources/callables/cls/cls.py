@@ -1,4 +1,5 @@
-from typing import Any
+from pathlib import Path
+from typing import Any, Union
 
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.module import Module
@@ -15,6 +16,7 @@ class Cls(Module):
         name: str,
         pointers: tuple = None,
         init_args: dict = None,
+        sync_dir: Union[str, Path, bool] = None,
     ):
         """
         Initialize a Cls object for remote class execution.
@@ -29,13 +31,14 @@ class Cls(Module):
                 the information needed to locate and import the class.
             init_args (dict, optional): Dictionary of arguments to pass to the class constructor.
                 Defaults to None.
+            sync_dir (str, Path, or bool): Controls which module directory to sync to compute.
         """
         self._init_args = init_args
         if not pointers:
             # local to the class definition
             pointers = extract_pointers(self.__class__)
 
-        super().__init__(name=name, pointers=pointers)
+        super().__init__(name=name, pointers=pointers, sync_dir=sync_dir)
 
     def __getattr__(self, attr_name) -> Any:
         if attr_name in SHELL_COMMANDS:
@@ -130,7 +133,13 @@ class Cls(Module):
         return response
 
 
-def cls(class_obj=None, name: str = None, get_if_exists=True, reload_prefixes=None) -> Cls:
+def cls(
+    class_obj=None,
+    name: str = None,
+    get_if_exists=True,
+    reload_prefixes=None,
+    sync_dir: Union[str, Path, bool] = None,
+) -> Cls:
     """
     Builds an instance of :class:`Cls`.
 
@@ -151,6 +160,10 @@ def cls(class_obj=None, name: str = None, get_if_exists=True, reload_prefixes=No
         reload_prefixes (Union[str, List[str]], optional):
             A list of prefixes to use when reloading the class (e.g., ["qa", "prod", "git-branch-name"]).
             If not provided, will use the current username, git branch, and prod.
+        sync_dir (str, Path, bool, or None): Controls which directory to sync to compute.
+            If None (default), auto-detect and sync package directory.
+            If False, skip syncing files (this assumes files are already on compute).
+            If str/Path, sync the specified directory. Must contain the module.
 
     Example:
 
@@ -167,6 +180,7 @@ def cls(class_obj=None, name: str = None, get_if_exists=True, reload_prefixes=No
         new_cls = Cls(
             name=name,
             pointers=cls_pointers,
+            sync_dir=sync_dir,
         )
         new_cls.get_if_exists = get_if_exists
         new_cls.reload_prefixes = reload_prefixes or []
