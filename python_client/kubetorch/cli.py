@@ -1631,7 +1631,9 @@ def kt_teardown(
             f"{msg_prefix} all services with prefix [blue]{prefix}[/blue] in [blue]{namespace}[/blue] namespace..."
         )
     else:  # name is provided
-        console.print(f"{msg_prefix} resources for [blue]{name}[/blue] in [blue]{namespace}[/blue] namespace...")
+        console.print(
+            f"{msg_prefix} resources for service [blue]{name}[/blue] in [blue]{namespace}[/blue] namespace..."
+        )
 
     # Resolve service(s) when name is provided
     if name:
