@@ -1,6 +1,5 @@
 import copy
 import os
-import subprocess
 
 import kubetorch as kt
 
@@ -706,28 +705,22 @@ async def test_byo_jobset_manifest():
             selector={"app": job_name},
         )
 
-    try:
-        # Create Compute with explicit pod_template_path override
-        # Without this, kubetorch would look at spec.template and fail to find the containers
-        compute = kt.Compute.from_manifest(
-            manifest=jobset_manifest,
-            selector={"app": job_name},
-            pod_template_path="spec.replicatedJobs.0.template.spec.template",
-        )
+    # Create Compute with explicit pod_template_path override
+    # Without this, kubetorch would look at spec.template and fail to find the containers
+    compute = kt.Compute.from_manifest(
+        manifest=jobset_manifest,
+        selector={"app": job_name},
+        pod_template_path="spec.replicatedJobs.0.template.spec.template",
+    )
 
-        # Verify the override is set and pod_spec is found at the correct nested location
-        assert compute._pod_template_path_override == ["spec", "replicatedJobs", "0", "template", "spec", "template"]
-        assert compute.pod_spec is not None
-        assert compute.pod_spec["containers"][0]["name"] == "kubetorch"
+    # Verify the override is set and pod_spec is found at the correct nested location
+    assert compute._pod_template_path_override == ["spec", "replicatedJobs", "0", "template", "spec", "template"]
+    assert compute.pod_spec is not None
+    assert compute.pod_spec["containers"][0]["name"] == "kubetorch"
 
-        remote_fn = kt.fn(summer).to(compute)
-        result = remote_fn(5, 10)
-        assert result == 15
-    finally:
-        subprocess.run(
-            ["kubectl", "delete", "jobset", job_name, "-n", namespace, "--ignore-not-found"],
-            capture_output=True,
-        )
+    remote_fn = kt.fn(summer).to(compute)
+    result = remote_fn(5, 10)
+    assert result == 15
 
 
 @pytest.mark.level("minimal")
@@ -862,33 +855,29 @@ async def test_byo_manifest_with_endpoint_url():
     }
     controller.create_service(namespace=namespace, body=user_service)
 
-    try:
-        # Create Compute from manifest with selector and endpoint
-        byo_manifest = get_workload_manifest(workload_name, namespace)
-        user_service_url = f"http://{user_service_name}.{namespace}.svc.cluster.local:{user_port}"
-        endpoint = kt.Endpoint(url=user_service_url)
+    # Create Compute from manifest with selector and endpoint
+    byo_manifest = get_workload_manifest(workload_name, namespace)
+    user_service_url = f"http://{user_service_name}.{namespace}.svc.cluster.local:{user_port}"
+    endpoint = kt.Endpoint(url=user_service_url)
 
-        compute = kt.Compute.from_manifest(
-            manifest=byo_manifest,
-            selector={"app": workload_name},
-            endpoint=endpoint,
-        )
-        assert compute._endpoint_config == endpoint
-        assert compute.endpoint == user_service_url
+    compute = kt.Compute.from_manifest(
+        manifest=byo_manifest,
+        selector={"app": workload_name},
+        endpoint=endpoint,
+    )
+    assert compute._endpoint_config == endpoint
+    assert compute.endpoint == user_service_url
 
-        remote_fn = kt.fn(summer).to(compute)
+    remote_fn = kt.fn(summer).to(compute)
 
-        # Verify kubetorch did not create its own service (endpoint URL mode should skip service creation)
-        kt_service_name = remote_fn.service_name
-        with pytest.raises(Exception):
-            controller.get_service(name=kt_service_name, namespace=namespace)
+    # Verify kubetorch did not create its own service (endpoint URL mode should skip service creation)
+    kt_service_name = remote_fn.service_name
+    with pytest.raises(Exception):
+        controller.get_service(name=kt_service_name, namespace=namespace)
 
-        # Traffic flows through user's service here since no KT created service exists
-        result = remote_fn(5, 10, sleep_time=5)
-        assert result == 15
-
-    finally:
-        subprocess.run(["kt", "teardown", user_service_name, "-n", namespace, "-y"])
+    # Traffic flows through user's service here since no KT created service exists
+    result = remote_fn(5, 10, sleep_time=5)
+    assert result == 15
 
 
 @pytest.mark.level("minimal")
