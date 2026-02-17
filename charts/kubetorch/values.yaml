@@ -19,7 +19,7 @@ kubetorchConfig:
   imagePullSecrets: []  # e.g., [{ name: "my-registry-secret" }]
 
 kubetorchController:
-  tag: 0.4.2
+  tag: 0.5.0
   imagePullPolicy: Always
 
   servicePort: 8080  # Port the controller service is exposed on (via nginx)
@@ -104,7 +104,7 @@ nvidia-device-plugin:
       effect: "NoSchedule"
 
 dataStore:
-  tag: 0.4.2
+  tag: 0.5.0
   imagePullPolicy: Always
   # serviceAccount: kubetorch-service-account  # Optional: use specific service account for Workload Identity
   metadataPort: 8081  # Port for metadata server API
