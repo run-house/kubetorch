@@ -2,8 +2,8 @@ apiVersion: v2
 name: kubetorch
 description: A Helm chart for kubetorch
 type: application
-version: 0.4.2
-appVersion: 0.4.2
+version: 0.5.0
+appVersion: 0.5.0
 
 dependencies:
   - name: nvidia-device-plugin

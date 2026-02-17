@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       kt_version:
-        description: "Kubetorch Version (e.g. 0.4.2)"
+        description: "Kubetorch Version (e.g. 0.5.0)"
         required: true
       publish_in_pypi:
         description: 'Publish in PyPi?'
