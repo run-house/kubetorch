@@ -397,7 +397,8 @@ def validate_teardown_inputs(name, prefix, teardown_all, username, console):
         raise ValueError("Cannot use both prefix and username flags together.")
 
     if not (name or teardown_all or prefix):
-        raise ValueError("Please provide a service name or use the --all or --prefix flags")
+        console.print("[red]Please provide a service name or use the --all or --prefix flags[/red]")
+        raise typer.Exit(1)
 
     if teardown_all and not username:
         console.print(

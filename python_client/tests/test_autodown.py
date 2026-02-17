@@ -165,7 +165,7 @@ def test_autodown_annotation_and_metrics():
     controller = kt.globals.controller_client()
     workloads = controller.discover_resources(namespace=namespace, name_filter=remote_fn.service_name)
     # For Knative, the K8s kind is "Service" (not "KnativeService")
-    knative_services = [r for r in workloads.get("workloads", []) if r.get("kind") == "Service"]
+    knative_services = [r for r in workloads.get("workloads", []) if r.get("kind") == "KnativeService"]
     assert knative_services, f"No Knative service found for {remote_fn.service_name}"
 
     # Fetch the full Knative service object via k8s API to get metadata

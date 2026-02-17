@@ -615,9 +615,9 @@ def test_cli_kt_teardown_force():
 def test_cli_kt_teardown_multiple_flags():
     flag_combinations = [
         ["-p", f"{get_test_hash()}-td-", "-n", kt.config.namespace, "-y"],
-        ["-p", f"{get_test_hash()}-td-", "-f"],
-        ["-f", "-n", kt.config.namespace],
-        ["-p", f"{get_test_hash()}-td-", "-n", kt.config.namespace, "-f"],
+        ["-p", f"{get_test_hash()}-td-", "-f", "-y"],
+        ["-f", "-n", kt.config.namespace, "-y"],
+        ["-p", f"{get_test_hash()}-td-", "-n", kt.config.namespace, "-f", "-y"],
     ]
     for flag_combination in flag_combinations:
         remote_fn = remote_fn_for_teardown()
