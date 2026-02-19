@@ -519,6 +519,19 @@ def kt_debug(
         raise typer.Exit(1)
 
 
+def _resolve_image(image_str):
+    """Resolve preset name (e.g. 'pytorch', 'python:3.12') or JSON string to an Image."""
+    from kubetorch.resources.images import images as presets
+    from kubetorch.resources.images.image import Image
+
+    if not image_str.startswith("{"):
+        name, _, version = image_str.partition(":")
+        factory = getattr(presets, name, None)
+        if factory:
+            return factory(version) if version else factory()
+    return Image(**json.loads(image_str))
+
+
 @app.command("deploy")
 def kt_deploy(
     target: str = typer.Argument(
@@ -527,13 +540,119 @@ def kt_deploy(
         "single function or class to deploy. e.e. `my_module:my_cls`, or "
         "`my_file.py`.",
     ),
+    compute_json: str = typer.Option(
+        None,
+        "--compute",
+        "-c",
+        help='JSON string of Compute args (e.g. \'{"cpus": "2", "memory": "4Gi"}\')',
+    ),
+    image_str: str = typer.Option(
+        None,
+        "--image",
+        "-i",
+        help="Preset image name (pytorch, debian, ubuntu, python:3.12, ray) or JSON string of Image args",
+    ),
+    init_args_json: str = typer.Option(
+        None,
+        "--init-args",
+        help="JSON object of class constructor args (e.g. '{\"init_val\": 42}')",
+    ),
+    distribute_json: str = typer.Option(
+        None,
+        "--distribute",
+        "-d",
+        help='JSON string of distribute args (e.g. \'{"distribution_type": "pytorch", "workers": 4}\')',
+    ),
+    autoscale_json: str = typer.Option(
+        None,
+        "--autoscale",
+        help='JSON string of autoscale args (e.g. \'{"min_scale": 1, "max_scale": 10}\')',
+    ),
 ):
-    """Deploy a Python file or module to Kubetorch. This will deploy all functions and modules decorated with
-    @kt.compute in the file or module."""
+    """Deploy a Python file or module to Kubetorch.
+
+    Deploys all functions and modules decorated with @kt.compute in the file or module.
+    Use --compute and --image to provide or override compute/image config.
+
+    Examples:
+
+        Deploy a decorated module as usual:
+
+            kt deploy my_app.py
+
+        Deploy an undecorated function with compute config:
+
+            kt deploy hello_world.py:my_func --compute '{"cpus": 1, "memory": "4Gi"}'
+
+        Deploy an undecorated class with init args:
+
+            kt deploy hello_world.py:HelloClass --compute '{"cpus": 1}' --init-args '{"init_val": 42}'
+
+        Deploy with distributed PyTorch training:
+
+            kt deploy train.py:train --compute '{"gpus": 1}' --distribute '{"distribution_type": "pytorch", "workers": 4}'
+
+        Deploy with autoscaling:
+
+            kt deploy my_app.py --autoscale '{"min_scale": 1, "max_scale": 10}'
+
+        Deploy with a preset image:
+
+            kt deploy train.py:train --compute '{"gpus": 1}' --image pytorch
+
+        Deploy with a specific Python version:
+
+            kt deploy my_app.py --compute '{"cpus": 2}' --image python:3.12
+
+        Override image with custom JSON:
+
+            kt deploy my_app.py --compute '{"cpus": 4}' --image '{"image_id": "my-registry/my-image:latest"}'
+    """
+    from kubetorch.resources.callables.cls.cls import Cls
+    from kubetorch.resources.compute.compute import Compute
     from kubetorch.resources.compute.utils import _collect_modules
 
     os.environ["KT_CLI_DEPLOY_MODE"] = "1"
-    to_deploy, target_fn_or_class = _collect_modules(target)
+
+    allow_undecorated = compute_json is not None
+    to_deploy, target_fn_or_class = _collect_modules(target, allow_undecorated=allow_undecorated)
+
+    if compute_json or image_str:
+        compute_kwargs = json.loads(compute_json) if compute_json else {}
+        if image_str:
+            compute_kwargs["image"] = _resolve_image(image_str)
+        cli_compute = Compute(**compute_kwargs)
+        if distribute_json:
+            cli_compute = cli_compute.distribute(**json.loads(distribute_json))
+        if autoscale_json:
+            cli_compute = cli_compute.autoscale(**json.loads(autoscale_json))
+        for module in to_deploy:
+            module.compute = cli_compute
+            module.compute.service_name = module.service_name
+    else:
+        # Apply distribute/autoscale to existing compute from decorators
+        if distribute_json or autoscale_json:
+            for module in to_deploy:
+                if module.compute is None:
+                    console.print(
+                        f"[red]Cannot apply --distribute or --autoscale without compute config for {module.name}[/red]"
+                    )
+                    raise typer.Exit(1)
+                if distribute_json:
+                    module.compute = module.compute.distribute(**json.loads(distribute_json))
+                if autoscale_json:
+                    module.compute = module.compute.autoscale(**json.loads(autoscale_json))
+                module.compute.service_name = module.service_name
+
+    if init_args_json:
+        init_args = json.loads(init_args_json)
+        for module in to_deploy:
+            if isinstance(module, Cls):
+                module.init_args = init_args
+            else:
+                console.print(
+                    f"[yellow]Warning: --init-args ignored for function {module.name} (only applies to classes)[/yellow]"
+                )
 
     if not target_fn_or_class:
         console.print(f"Found the following functions and classes to deploy in {target}:")
@@ -560,6 +679,97 @@ def kt_deploy(
 
     if not target_fn_or_class:
         console.print(f"Successfully deployed all decorated functions and modules from {target}.")
+
+
+@app.command("call")
+def kt_call(
+    target: str = typer.Argument(
+        ...,
+        help="Service name to call, optionally with method name for classes (e.g. 'my-service' or 'my-service:method_name')",
+    ),
+    args_json: str = typer.Option(
+        None,
+        "--args",
+        "-a",
+        help="JSON array of positional args (e.g. '[5, \"hello\"]')",
+    ),
+    kwargs_json: str = typer.Option(
+        None,
+        "--kwargs",
+        "-k",
+        help="JSON object of keyword args (e.g. '{\"num_prints\": 5}')",
+    ),
+    namespace: str = typer.Option(
+        None,
+        "--namespace",
+        "-n",
+        help="Namespace of the deployed service",
+    ),
+):
+    """Call a deployed Kubetorch service.
+
+    Reconnects to an already-deployed function or class and calls it with the provided args.
+
+    Examples:
+
+        Call a deployed function with positional args:
+
+            kt call my-func --args '[5]'
+
+        Call a deployed function with keyword args:
+
+            kt call my-func --kwargs '{"num_prints": 5}'
+
+        Call a method on a deployed class:
+
+            kt call my-class:predict --args '[[1, 2, 3]]'
+    """
+    from kubetorch.resources.callables.cls.cls import Cls
+    from kubetorch.resources.callables.module import Module
+
+    if ":" in target:
+        service_name, method_name = target.split(":", 1)
+    else:
+        service_name, method_name = target, None
+
+    args = json.loads(args_json) if args_json else []
+    kwargs = json.loads(kwargs_json) if kwargs_json else {}
+
+    if not isinstance(args, list):
+        console.print("[red]--args must be a JSON array (e.g. '[5, \"hello\"]')[/red]")
+        raise typer.Exit(1)
+    if not isinstance(kwargs, dict):
+        console.print('[red]--kwargs must be a JSON object (e.g. \'{"key": "value"}\')[/red]')
+        raise typer.Exit(1)
+
+    console.print(f"Connecting to service [blue]{service_name}[/blue]...")
+    module = Module.from_name(name=service_name, namespace=namespace)
+
+    if isinstance(module, Cls):
+        if not method_name:
+            console.print(
+                f"[red]{service_name} is a class service. Specify a method to call: "
+                f"kt call {service_name}:method_name[/red]"
+            )
+            raise typer.Exit(1)
+        console.print(f"Calling [blue]{service_name}.{method_name}({_format_call_args(args, kwargs)})[/blue]...")
+        result = getattr(module, method_name)(*args, **kwargs)
+    else:
+        if method_name:
+            console.print(
+                f"[yellow]Warning: {service_name} is a function service, ignoring method name '{method_name}'[/yellow]"
+            )
+        console.print(f"Calling [blue]{service_name}({_format_call_args(args, kwargs)})[/blue]...")
+        result = module(*args, **kwargs)
+
+    console.print(f"\n[green]Result:[/green] {result}")
+
+
+def _format_call_args(args, kwargs):
+    """Format args and kwargs for display."""
+    parts = [repr(a) for a in args]
+    parts += [f"{k}={repr(v)}" for k, v in kwargs.items()]
+    return ", ".join(parts)
 
 
 @app.command("dashboard", hidden=True)

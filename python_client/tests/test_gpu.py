@@ -4,8 +4,10 @@ import os
 # resources are created with the branch name prefix
 os.environ["CI"] = "true"
 
+import json
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -160,6 +162,56 @@ def test_fn_sync_with_invalid_gpu_count():
             )
         )
     assert "Apply failed" in str(apply_exception.value)
+
+
+@pytest.mark.gpu_test
+@pytest.mark.level("minimal")
+def test_cli_deploy_and_call_gpu_fn():
+    """Test deploying and calling a GPU function via kt deploy and kt call CLI commands."""
+    utils_path = Path(__file__).parent / "utils.py"
+
+    # Deploy via CLI
+    result = subprocess.run(
+        [
+            "kt",
+            "deploy",
+            f"{utils_path}:get_cuda_version",
+            "--compute",
+            json.dumps({"cpus": ".1", "gpus": "1", "launch_timeout": 600}),
+            "--image",
+            "pytorch",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"kt deploy failed: {result.stderr}\n{result.stdout}"
+
+    # Extract service name from deploy output (e.g. "Deploying getcudaversion...")
+    # The service name is username-prefixed by kt deploy
+    service_name = None
+    for line in result.stdout.splitlines():
+        if "Deploying" in line:
+            # "Deploying getcudaversion..." -> extract the name
+            service_name = line.split("Deploying")[1].strip().rstrip(".")
+            break
+    assert service_name, f"Could not find service name in deploy output: {result.stdout}"
+
+    # Call via CLI
+    result = subprocess.run(
+        ["kt", "call", service_name],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"kt call failed: {result.stderr}\n{result.stdout}"
+    assert "12" in result.stdout
+
+    # Teardown via CLI (subprocess uses real username, not test harness username)
+    result = subprocess.run(
+        ["kt", "teardown", service_name, "-y"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"kt teardown failed: {result.stderr}\n{result.stdout}"
 
 
 @pytest.mark.gpu_test
