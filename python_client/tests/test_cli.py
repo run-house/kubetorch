@@ -404,6 +404,156 @@ def test_cli_kt_config_unknown_action():
 
 
 ####################################
+######## kt deploy tests ###########
+####################################
+@pytest.mark.level("unit")
+def test_cli_kt_deploy_help():
+    result = runner.invoke(app, ["deploy", "--help"], color=False)
+    assert result.exit_code == 0
+    output = strip_ansi_codes(result.stdout)
+    assert "--compute" in output
+    assert "--image" in output
+    assert "JSON string of Compute args" in output
+
+
+@pytest.mark.level("unit")
+def test_cli_kt_deploy_undecorated_without_compute():
+    """Deploying an undecorated function without --compute should fail."""
+    assets_dir = Path(__file__).parent / "assets" / "undecorated_modules"
+    target = f"{assets_dir / 'undecorated_modules.py'}:plain_function"
+    result = runner.invoke(app, ["deploy", target], color=False)
+    assert result.exit_code == 1
+    assert isinstance(result.exception, ValueError)
+    assert "not decorated with @kt.compute" in str(result.exception)
+    assert "--compute" in str(result.exception)
+
+
+@pytest.mark.level("unit")
+def test_cli_kt_deploy_nonexistent_target():
+    """Deploying a nonexistent function should fail."""
+    assets_dir = Path(__file__).parent / "assets" / "undecorated_modules"
+    target = f"{assets_dir / 'undecorated_modules.py'}:no_such_function"
+    result = runner.invoke(app, ["deploy", target, "--compute", '{"cpus": "1"}'], color=False)
+    assert result.exit_code == 1
+    assert isinstance(result.exception, ValueError)
+    assert "not found" in str(result.exception)
+
+
+@pytest.mark.level("unit")
+def test_cli_kt_deploy_invalid_json():
+    """Invalid JSON for --compute should fail."""
+    assets_dir = Path(__file__).parent / "assets" / "undecorated_modules"
+    target = f"{assets_dir / 'undecorated_modules.py'}:plain_function"
+    result = runner.invoke(app, ["deploy", target, "--compute", "not-json"], color=False)
+    assert result.exit_code == 1
+
+
+@pytest.mark.level("unit")
+def test_collect_modules_decorated():
+    """_collect_modules finds decorated modules."""
+    from kubetorch.resources.compute.utils import _collect_modules
+
+    assets_dir = Path(__file__).parent / "assets" / "decorated_modules"
+    target = f"{assets_dir / 'decorated_modules.py'}"
+    modules, target_fn = _collect_modules(target)
+    assert len(modules) > 0
+    assert target_fn is None
+
+
+@pytest.mark.level("unit")
+def test_collect_modules_decorated_specific():
+    """_collect_modules finds a specific decorated function."""
+    from kubetorch.resources.compute.utils import _collect_modules
+
+    assets_dir = Path(__file__).parent / "assets" / "decorated_modules"
+    target = f"{assets_dir / 'decorated_modules.py'}:get_pod_id_1"
+    modules, target_fn = _collect_modules(target)
+    assert len(modules) == 1
+    assert target_fn == "get_pod_id_1"
+
+
+@pytest.mark.level("unit")
+def test_collect_modules_undecorated_not_allowed():
+    """_collect_modules raises for undecorated targets when allow_undecorated=False."""
+    from kubetorch.resources.compute.utils import _collect_modules
+
+    assets_dir = Path(__file__).parent / "assets" / "undecorated_modules"
+    target = f"{assets_dir / 'undecorated_modules.py'}:plain_function"
+    with pytest.raises(ValueError, match="not decorated with @kt.compute"):
+        _collect_modules(target, allow_undecorated=False)
+
+
+@pytest.mark.level("unit")
+def test_collect_modules_undecorated_function_allowed():
+    """_collect_modules wraps undecorated functions with fn() when allowed."""
+    from kubetorch.resources.callables.fn.fn import Fn
+    from kubetorch.resources.compute.utils import _collect_modules
+
+    assets_dir = Path(__file__).parent / "assets" / "undecorated_modules"
+    target = f"{assets_dir / 'undecorated_modules.py'}:plain_function"
+    modules, target_fn = _collect_modules(target, allow_undecorated=True)
+    assert len(modules) == 1
+    assert target_fn == "plain_function"
+    assert isinstance(modules[0], Fn)
+
+
+@pytest.mark.level("unit")
+def test_collect_modules_undecorated_class_allowed():
+    """_collect_modules wraps undecorated classes with cls() when allowed."""
+    from kubetorch.resources.callables.cls.cls import Cls
+    from kubetorch.resources.compute.utils import _collect_modules
+
+    assets_dir = Path(__file__).parent / "assets" / "undecorated_modules"
+    target = f"{assets_dir / 'undecorated_modules.py'}:PlainClass"
+    modules, target_fn = _collect_modules(target, allow_undecorated=True)
+    assert len(modules) == 1
+    assert target_fn == "PlainClass"
+    assert isinstance(modules[0], Cls)
+
+
+@pytest.mark.level("unit")
+def test_collect_modules_undecorated_non_callable():
+    """_collect_modules raises for non-callable targets even when allow_undecorated=True."""
+    from kubetorch.resources.compute.utils import _collect_modules
+
+    assets_dir = Path(__file__).parent / "assets" / "undecorated_modules"
+    target = f"{assets_dir / 'undecorated_modules.py'}:not_a_callable"
+    with pytest.raises(ValueError, match="not a callable function or class"):
+        _collect_modules(target, allow_undecorated=True)
+
+
+####################################
+######### kt call tests ############
+####################################
+@pytest.mark.level("unit")
+def test_cli_kt_call_help():
+    result = runner.invoke(app, ["call", "--help"], color=False)
+    assert result.exit_code == 0
+    output = strip_ansi_codes(result.stdout)
+    assert "--args" in output
+    assert "--kwargs" in output
+    assert "--namespace" in output
+
+
+@pytest.mark.level("unit")
+def test_cli_kt_call_invalid_args_json():
+    """--args must be a JSON array."""
+    result = runner.invoke(app, ["call", "some-service", "--args", '{"not": "an array"}'], color=False)
+    assert result.exit_code == 1
+    output = strip_ansi_codes(result.stdout)
+    assert "must be a JSON array" in output
+
+
+@pytest.mark.level("unit")
+def test_cli_kt_call_invalid_kwargs_json():
+    """--kwargs must be a JSON object."""
+    result = runner.invoke(app, ["call", "some-service", "--kwargs", "[1, 2, 3]"], color=False)
+    assert result.exit_code == 1
+    output = strip_ansi_codes(result.stdout)
+    assert "must be a JSON object" in output
+
+
+####################################
 ########## kt check tests ##########
 ####################################
 @pytest.mark.level("minimal")
