@@ -347,7 +347,9 @@ def print_byo_deletion_warning(service_names: Union[list, str], console=None):
         logger.warning(byo_resources_teardown_msg)
 
 
-def _collect_modules(target_str):
+def _collect_modules(target_str, allow_undecorated=False):
+    from kubetorch.resources.callables.cls.cls import cls
+    from kubetorch.resources.callables.fn.fn import fn
     from kubetorch.resources.callables.module import Module
 
     to_deploy = []
@@ -371,11 +373,24 @@ def _collect_modules(target_str):
     if target_fn_or_class:
         if not hasattr(module, target_fn_or_class):
             raise ValueError(f"Function or class {target_fn_or_class} not found in {target_module_or_path}.")
-        to_deploy = [getattr(module, target_fn_or_class)]
-        if not isinstance(to_deploy[0], Module):
-            raise ValueError(
-                f"Function or class {target_fn_or_class} in {target_module_or_path} is not decorated with @kt.compute."
-            )
+        obj = getattr(module, target_fn_or_class)
+        if not isinstance(obj, Module):
+            if allow_undecorated:
+                if isinstance(obj, type):
+                    to_deploy = [cls(obj)]
+                elif callable(obj):
+                    to_deploy = [fn(obj)]
+                else:
+                    raise ValueError(
+                        f"{target_fn_or_class} in {target_module_or_path} is not a callable function or class."
+                    )
+            else:
+                raise ValueError(
+                    f"Function or class {target_fn_or_class} in {target_module_or_path} is not decorated with @kt.compute. "
+                    f"Use --compute to provide compute config for undecorated targets."
+                )
+        else:
+            to_deploy = [obj]
     else:
         # Get all functions and classes to deploy
         for name in dir(module):

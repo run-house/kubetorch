@@ -527,13 +527,38 @@ def kt_deploy(
         "single function or class to deploy. e.e. `my_module:my_cls`, or "
         "`my_file.py`.",
     ),
+    compute_json: str = typer.Option(
+        None,
+        "--compute",
+        "-c",
+        help='JSON string of Compute args (e.g. \'{"cpus": "2", "memory": "4Gi"}\')',
+    ),
+    image_json: str = typer.Option(
+        None,
+        "--image",
+        "-i",
+        help='JSON string of Image args (e.g. \'{"image_id": "my-image:latest"}\')',
+    ),
 ):
     """Deploy a Python file or module to Kubetorch. This will deploy all functions and modules decorated with
-    @kt.compute in the file or module."""
+    @kt.compute in the file or module. Use --compute and --image to provide or override compute/image config."""
+    from kubetorch.resources.compute.compute import Compute
     from kubetorch.resources.compute.utils import _collect_modules
+    from kubetorch.resources.images.image import Image
 
     os.environ["KT_CLI_DEPLOY_MODE"] = "1"
-    to_deploy, target_fn_or_class = _collect_modules(target)
+
+    allow_undecorated = compute_json is not None
+    to_deploy, target_fn_or_class = _collect_modules(target, allow_undecorated=allow_undecorated)
+
+    if compute_json or image_json:
+        compute_kwargs = json.loads(compute_json) if compute_json else {}
+        if image_json:
+            compute_kwargs["image"] = Image(**json.loads(image_json))
+        cli_compute = Compute(**compute_kwargs)
+        for module in to_deploy:
+            module.compute = cli_compute
+            module.compute.service_name = module.service_name
 
     if not target_fn_or_class:
         console.print(f"Found the following functions and classes to deploy in {target}:")
