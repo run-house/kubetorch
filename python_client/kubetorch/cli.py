@@ -519,6 +519,19 @@ def kt_debug(
         raise typer.Exit(1)
 
 
+def _resolve_image(image_str):
+    """Resolve preset name (e.g. 'pytorch', 'python:3.12') or JSON string to an Image."""
+    from kubetorch.resources.images import images as presets
+    from kubetorch.resources.images.image import Image
+
+    if not image_str.startswith("{"):
+        name, _, version = image_str.partition(":")
+        factory = getattr(presets, name, None)
+        if factory:
+            return factory(version) if version else factory()
+    return Image(**json.loads(image_str))
+
+
 @app.command("deploy")
 def kt_deploy(
     target: str = typer.Argument(
@@ -533,16 +546,27 @@ def kt_deploy(
         "-c",
         help='JSON string of Compute args (e.g. \'{"cpus": "2", "memory": "4Gi"}\')',
     ),
-    image_json: str = typer.Option(
+    image_str: str = typer.Option(
         None,
         "--image",
         "-i",
-        help='JSON string of Image args (e.g. \'{"image_id": "my-image:latest"}\')',
+        help="Preset image name (pytorch, debian, ubuntu, python:3.12, ray) or JSON string of Image args",
     ),
     init_args_json: str = typer.Option(
         None,
         "--init-args",
         help="JSON object of class constructor args (e.g. '{\"init_val\": 42}')",
+    ),
+    distribute_json: str = typer.Option(
+        None,
+        "--distribute",
+        "-d",
+        help='JSON string of distribute args (e.g. \'{"distribution_type": "pytorch", "workers": 4}\')',
+    ),
+    autoscale_json: str = typer.Option(
+        None,
+        "--autoscale",
+        help='JSON string of autoscale args (e.g. \'{"min_scale": 1, "max_scale": 10}\')',
     ),
 ):
     """Deploy a Python file or module to Kubetorch.
@@ -564,28 +588,61 @@ def kt_deploy(
 
             kt deploy hello_world.py:HelloClass --compute '{"cpus": 1}' --init-args '{"init_val": 42}'
 
-        Override compute and image for a decorated module:
+        Deploy with distributed PyTorch training:
 
-            kt deploy my_app.py --compute '{"cpus": 4, "gpus": 1}' --image '{"image_id": "python:3.11"}'
+            kt deploy train.py:train --compute '{"gpus": 1}' --distribute '{"distribution_type": "pytorch", "workers": 4}'
+
+        Deploy with autoscaling:
+
+            kt deploy my_app.py --autoscale '{"min_scale": 1, "max_scale": 10}'
+
+        Deploy with a preset image:
+
+            kt deploy train.py:train --compute '{"gpus": 1}' --image pytorch
+
+        Deploy with a specific Python version:
+
+            kt deploy my_app.py --compute '{"cpus": 2}' --image python:3.12
+
+        Override image with custom JSON:
+
+            kt deploy my_app.py --compute '{"cpus": 4}' --image '{"image_id": "my-registry/my-image:latest"}'
     """
     from kubetorch.resources.callables.cls.cls import Cls
     from kubetorch.resources.compute.compute import Compute
     from kubetorch.resources.compute.utils import _collect_modules
-    from kubetorch.resources.images.image import Image
 
     os.environ["KT_CLI_DEPLOY_MODE"] = "1"
 
     allow_undecorated = compute_json is not None
     to_deploy, target_fn_or_class = _collect_modules(target, allow_undecorated=allow_undecorated)
 
-    if compute_json or image_json:
+    if compute_json or image_str:
         compute_kwargs = json.loads(compute_json) if compute_json else {}
-        if image_json:
-            compute_kwargs["image"] = Image(**json.loads(image_json))
+        if image_str:
+            compute_kwargs["image"] = _resolve_image(image_str)
         cli_compute = Compute(**compute_kwargs)
+        if distribute_json:
+            cli_compute = cli_compute.distribute(**json.loads(distribute_json))
+        if autoscale_json:
+            cli_compute = cli_compute.autoscale(**json.loads(autoscale_json))
         for module in to_deploy:
             module.compute = cli_compute
             module.compute.service_name = module.service_name
+    else:
+        # Apply distribute/autoscale to existing compute from decorators
+        if distribute_json or autoscale_json:
+            for module in to_deploy:
+                if module.compute is None:
+                    console.print(
+                        f"[red]Cannot apply --distribute or --autoscale without compute config for {module.name}[/red]"
+                    )
+                    raise typer.Exit(1)
+                if distribute_json:
+                    module.compute = module.compute.distribute(**json.loads(distribute_json))
+                if autoscale_json:
+                    module.compute = module.compute.autoscale(**json.loads(autoscale_json))
+                module.compute.service_name = module.service_name
 
     if init_args_json:
         init_args = json.loads(init_args_json)
