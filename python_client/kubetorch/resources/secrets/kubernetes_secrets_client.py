@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 
 
 class KubernetesSecretsClient:
-    def __init__(self, namespace: str = None, kubeconfig_path: str = None):
+    def __init__(self, namespace: Optional[str] = None, kubeconfig_path: Optional[str] = None):
         self._kubeconfig_path = kubeconfig_path
         self.namespace = namespace or globals.config.namespace
 
@@ -47,7 +47,7 @@ class KubernetesSecretsClient:
         secret = Secret.from_config(secret_dict)
         return secret
 
-    def delete_secret(self, name: str, console: "Console" = None) -> bool:
+    def delete_secret(self, name: str, console: Optional["Console"] = None) -> bool:
         """Delete secret with provided name for current user."""
         name = name if self._read_secret(name=name) else self._format_secret_name(name)
         return self._delete_secret(name=name, console=console)
@@ -90,7 +90,7 @@ class KubernetesSecretsClient:
 
     def extract_envs_and_volumes_from_secrets(
         self,
-        secrets: List[Secret] = None,
+        secrets: Optional[List[Secret]] = None,
     ) -> Tuple[list, list]:
         if not secrets:
             return [], []
@@ -232,7 +232,7 @@ class KubernetesSecretsClient:
 
         return secret_body
 
-    def create_secret(self, secret: Secret, console: "Console" = None):
+    def create_secret(self, secret: Secret, console: Optional["Console"] = None):
         secret_name = self._format_secret_name(secret.name)
         secret_body = self._build_secret_body(secret=secret)
 
@@ -273,7 +273,7 @@ class KubernetesSecretsClient:
                     return None
             return None
 
-    def update_secret(self, secret: Secret, console: "Console" = None):
+    def update_secret(self, secret: Secret, console: Optional["Console"] = None):
         existing_secret = self._get_existing_secret(secret)
         if existing_secret is None:
             if console:
@@ -317,14 +317,14 @@ class KubernetesSecretsClient:
                 return False
             raise e
 
-    def create_or_update_secret(self, secret: Secret, console: "Console" = None):
+    def create_or_update_secret(self, secret: Secret, console: Optional["Console"] = None):
         try:
             return self.update_secret(secret, console)
         except kubetorch.SecretNotFound:
             # if secret not found, try to create the secret.
             return self.create_secret(secret, console)
 
-    def _delete_secret(self, name: str, console: "Console" = None):
+    def _delete_secret(self, name: str, console: Optional["Console"] = None):
         name = self._format_secret_name(name)
         try:
             self.controller_client.delete_secret(self.namespace, name)

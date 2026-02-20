@@ -1,6 +1,6 @@
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 
 class Image:
@@ -10,10 +10,10 @@ class Image:
 
     def __init__(
         self,
-        name: str = None,
-        image_id: str = None,
-        python_path: str = None,
-        install_cmd: str = None,
+        name: Optional[str] = None,
+        image_id: Optional[str] = None,
+        python_path: Optional[str] = None,
+        install_cmd: Optional[str] = None,
     ):
         """
         Kubetorch Image object, specifying cluster setup properties and steps.
@@ -105,7 +105,7 @@ class Image:
         return self
 
     @classmethod
-    def from_dockerfile(cls, dockerfile_path: str, name: str = None) -> "Image":
+    def from_dockerfile(cls, dockerfile_path: str, name: Optional[str] = None) -> "Image":
         """
         Construct an Image from an existing Dockerfile.
 
@@ -408,9 +408,9 @@ class Image:
     def copy(
         self,
         source: str,
-        dest: str = None,
+        dest: Optional[str] = None,
         contents: bool = False,
-        filter_options: str = None,
+        filter_options: Optional[str] = None,
         force: bool = False,
     ):
         """Copy files or directories from local machine to the remote container.
@@ -517,9 +517,9 @@ class Image:
     def rsync(
         self,
         source: str,
-        dest: str = None,
+        dest: Optional[str] = None,
         contents: bool = False,
-        filter_options: str = None,
+        filter_options: Optional[str] = None,
         force: bool = False,
     ):
         """Deprecated: Use :meth:`copy` instead.
