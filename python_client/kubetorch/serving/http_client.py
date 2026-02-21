@@ -19,7 +19,10 @@ from kubetorch.provisioning.constants import DEFAULT_NGINX_PORT
 from kubetorch.serving.global_http_clients import get_sync_client
 
 from kubetorch.serving.utils import (
+    _build_ws_request,
     _deserialize_response,
+    _process_ws_response,
+    _reconstruct_exception,
     _serialize_body,
     generate_unique_request_id,
     request_id_ctx_var,
@@ -93,92 +96,16 @@ class CustomResponse(httpx.Response):
         if "application/json" in self.headers.get("Content-Type", ""):
             try:
                 error_data = self.json()
+                # Check for standardized error response format
                 if all(k in error_data for k in ["error_type", "message", "traceback", "pod_name"]):
-                    error_type = error_data["error_type"]
-                    message = error_data.get("message", "")
-                    traceback = error_data["traceback"]
-                    pod_name = error_data["pod_name"]
-                    error_state = error_data.get("state", {})  # Optional serialized state
-
-                    # Try to use the actual exception class if it exists
-                    exc = None
-                    error_class = None
-
-                    # Import the exception registry
-                    try:
-                        from kubetorch import EXCEPTION_REGISTRY
-                    except ImportError:
-                        EXCEPTION_REGISTRY = {}
-
-                    # First check if it's a Python builtin exception
-                    import builtins
-
-                    if hasattr(builtins, error_type):
-                        error_class = getattr(builtins, error_type)
-                    # Otherwise try to use from the kubetorch registry
-                    elif error_type in EXCEPTION_REGISTRY:
-                        error_class = EXCEPTION_REGISTRY[error_type]
-
-                    if error_class:
-                        try:
-                            # First try to reconstruct from state if available
-                            if error_state and hasattr(error_class, "from_dict"):
-                                exc = error_class.from_dict(error_state)
-                            # Otherwise try simple construction with message
-                            else:
-                                exc = error_class(message)
-                        except Exception as e:
-                            logger.debug(f"Could not reconstruct {error_type}: {e}, will use dynamic type")
-                            # Fall back to dynamic creation
-                            pass
-
-                    # If we couldn't create the actual exception, fall back to dynamic type creation
-                    if not exc:
-
-                        def create_str_method(remote_traceback):
-                            def __str__(self):
-                                cleaned_traceback = remote_traceback.encode().decode("unicode_escape")
-                                return f"{self.args[0]}\n\n{cleaned_traceback}"
-
-                            return __str__
-
-                        # Create the exception class with the custom __str__
-                        error_class = type(
-                            error_type,
-                            (Exception,),
-                            {"__str__": create_str_method(traceback)},
-                        )
-
-                        exc = error_class(message)
-
-                    # Always add remote_traceback and pod_name
-                    exc.remote_traceback = traceback
-                    exc.pod_name = pod_name
-
-                    # Wrap the exception to display remote traceback
-                    # Create a new class that inherits from the original exception
-                    # and overrides __str__ to include the remote traceback
-                    class RemoteException(exc.__class__):
-                        def __str__(self):
-                            # Get the original message
-                            original_msg = super().__str__()
-                            # Clean up the traceback
-                            cleaned_traceback = self.remote_traceback.encode().decode("unicode_escape")
-                            return f"{original_msg}\n\n{cleaned_traceback}"
-
-                    # Create wrapped instance without calling __init__
-                    wrapped_exc = RemoteException.__new__(RemoteException)
-                    # Copy all attributes from the original exception
-                    wrapped_exc.__dict__.update(exc.__dict__)
-                    # Set the exception args for proper display
-                    wrapped_exc.args = (str(exc),)
-                    raise wrapped_exc
+                    # Use shared exception reconstruction logic
+                    _reconstruct_exception(error_data)
 
             except Exception as e:
-                # Catchall for errors during exception handling above
-                if isinstance(e, RemoteException):
-                    # If we caught a RemoteException, it was packaged properly
+                # Check if this is a reconstructed remote exception (has remote_traceback attr)
+                if hasattr(e, "remote_traceback"):
                     raise
+                # Otherwise it's an error during exception handling - wrap as HTTPStatusError
                 import httpx
 
                 raise httpx.HTTPStatusError(
@@ -220,29 +147,109 @@ class CustomAsyncClient(httpx.AsyncClient):
 
 class HTTPClient:
     """Client for making HTTP requests to a remote service. Port forwards are shared between client
-    instances. Each port forward instance is cleaned up when the last reference is closed."""
+    instances. Each port forward instance is cleaned up when the last reference is closed.
 
-    def __init__(self, base_url, compute, service_name):
+    Supports two connection modes:
+    - "http" (default): Standard HTTP POST requests for each call
+    - "websocket": Persistent WebSocket connection for lower latency calls
+    """
+
+    def __init__(self, base_url, compute, service_name, connection_mode: str = "http"):
         self.compute = compute
         self.service_name = service_name
+        # base_url is the service root (e.g., http://host:port/ns/svc:8000)
+        # Module/method paths are passed with each call
         self.base_url = base_url.rstrip("/")
+        self.connection_mode = connection_mode
         self.session = CustomSession()
         self._async_client = None
         self._async_client_loop = None  # Track which event loop the client was created on
+
+        # WebSocket state (only used when connection_mode == "websocket")
+        self._ws = None
+        self._ws_lock = threading.Lock()
+        self._async_ws = None
+        self._async_ws_lock = asyncio.Lock()
+        self._ws_request_counter = 0
+
+        # Async WebSocket multiplexing state
+        self._async_ws_pending: dict = {}  # request_id -> asyncio.Future
+        self._async_ws_listener_task = None
+
+        # Sync WebSocket multiplexing state
+        self._ws_pending: dict = {}  # request_id -> (response_dict, threading.Event)
+        self._ws_listener_thread = None
+        self._ws_connected = False
 
     def __del__(self):
         self.close()
 
     def close(self):
-        """Close the async HTTP client to prevent resource leaks."""
+        """Close all connections to prevent resource leaks."""
+        # Mark sync WebSocket as disconnected to stop listener thread
+        self._ws_connected = False
+
+        # Signal pending sync WebSocket requests to fail
+        for request_id, (response_holder, event) in list(self._ws_pending.items()):
+            response_holder["error"] = {"type": "ConnectionError", "message": "Connection closed"}
+            event.set()
+        self._ws_pending.clear()
+
+        # Close sync WebSocket connection
+        if self._ws:
+            try:
+                self._ws.close()
+            except Exception as e:
+                logger.debug(f"Error closing sync WebSocket: {e}")
+            finally:
+                self._ws = None
+
+        # Wait for sync listener thread to finish
+        if self._ws_listener_thread and self._ws_listener_thread.is_alive():
+            self._ws_listener_thread.join(timeout=1.0)
+        self._ws_listener_thread = None
+
+        # Cancel async WebSocket listener task
+        if self._async_ws_listener_task:
+            try:
+                self._async_ws_listener_task.cancel()
+            except Exception as e:
+                logger.debug(f"Error cancelling WebSocket listener task: {e}")
+            finally:
+                self._async_ws_listener_task = None
+
+        # Cancel any pending WebSocket requests
+        for future in self._async_ws_pending.values():
+            if not future.done():
+                future.cancel()
+        self._async_ws_pending.clear()
+
+        if self._async_ws:
+            try:
+                # Try to close async WebSocket
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(self._async_ws.close())
+                    else:
+                        asyncio.run(self._async_ws.close())
+                except RuntimeError:
+                    try:
+                        asyncio.run(self._async_ws.close())
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug(f"Error closing async WebSocket: {e}")
+            finally:
+                self._async_ws = None
+
+        # Close HTTP async client
         if self._async_client:
             try:
                 # Close the async client if it's still open
                 if not self._async_client.is_closed:
                     # Use asyncio.run if we're in a sync context, otherwise schedule the close
                     try:
-                        import asyncio
-
                         loop = asyncio.get_event_loop()
                         if loop.is_running():
                             # If we're in an async context, schedule the close
@@ -1038,6 +1045,239 @@ class HTTPClient:
 
         self._collect_metrics(stop_event, sync_http_get, sync_sleep, metrics_config, base_url)
 
+    # ----------------- WebSocket Helpers (for connection_mode="websocket") ----------------- #
+
+    def _get_ws_callable_url(self) -> str:
+        """Convert HTTP URL to WebSocket URL for callable endpoint."""
+        url = self.base_url
+        if url.startswith("https://"):
+            return url.replace("https://", "wss://") + "/ws/callable"
+        elif url.startswith("http://"):
+            return url.replace("http://", "ws://") + "/ws/callable"
+        else:
+            return "ws://" + url + "/ws/callable"
+
+    def _ensure_ws_connected(self):
+        """Ensure synchronous WebSocket connection is established and listener is running."""
+        if self._ws is not None and self._ws_connected:
+            # Check if listener thread is still running
+            if self._ws_listener_thread and self._ws_listener_thread.is_alive():
+                return
+            # Listener died, need to reconnect
+            logger.debug("WebSocket listener thread died, reconnecting...")
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+            self._ws_connected = False
+
+        try:
+            import websocket
+        except ImportError:
+            raise ImportError(
+                "websocket-client package required for WebSocket connection. "
+                "Install with: pip install websocket-client"
+            )
+
+        ws_url = self._get_ws_callable_url()
+        logger.debug(f"Connecting to WebSocket: {ws_url}")
+        self._ws = websocket.create_connection(ws_url, timeout=30)
+        self._ws_connected = True
+        logger.debug("WebSocket connection established")
+
+        # Start the listener thread for multiplexing
+        self._ws_listener_thread = threading.Thread(target=self._ws_listener, daemon=True)
+        self._ws_listener_thread.start()
+        logger.debug("WebSocket listener thread started")
+
+    def _ws_listener(self):
+        """Background thread that receives WebSocket responses and routes them to pending requests."""
+        try:
+            while self._ws_connected and self._ws:
+                try:
+                    response_str = self._ws.recv()
+                    response = json.loads(response_str)
+                    request_id = response.get("request_id")
+
+                    if request_id and request_id in self._ws_pending:
+                        response_holder, event = self._ws_pending.pop(request_id)
+                        response_holder.update(response)
+                        event.set()
+                    else:
+                        logger.warning(f"Received response for unknown request_id: {request_id}")
+
+                except Exception as e:
+                    if self._ws_connected:
+                        logger.debug(f"WebSocket receive error: {e}")
+                        # Fail all pending requests
+                        for req_id, (response_holder, event) in list(self._ws_pending.items()):
+                            response_holder["error"] = {"type": "ConnectionError", "message": str(e)}
+                            event.set()
+                        self._ws_pending.clear()
+                    break
+
+        except Exception as e:
+            logger.error(f"Error in WebSocket listener thread: {e}")
+
+    async def _ensure_ws_connected_async(self):
+        """Ensure async WebSocket connection is established and listener is running."""
+        if self._async_ws is not None and self._async_ws_listener_task is not None:
+            # Check if listener task is still running
+            if not self._async_ws_listener_task.done():
+                return
+            # Listener died, need to reconnect
+            logger.debug("WebSocket listener task died, reconnecting...")
+            try:
+                await self._async_ws.close()
+            except Exception:
+                pass
+            self._async_ws = None
+
+        ws_url = self._get_ws_callable_url()
+        logger.debug(f"Connecting to async WebSocket: {ws_url}")
+        self._async_ws = await websockets.connect(ws_url, close_timeout=10)
+        logger.debug("Async WebSocket connection established")
+
+        # Start the listener task for multiplexing
+        self._async_ws_listener_task = asyncio.create_task(self._async_ws_listener())
+        logger.debug("WebSocket listener task started")
+
+    async def _async_ws_listener(self):
+        """Background task that receives WebSocket responses and routes them to pending requests."""
+        try:
+            while True:
+                try:
+                    response_str = await self._async_ws.recv()
+                    response = json.loads(response_str)
+                    request_id = response.get("request_id")
+
+                    if request_id and request_id in self._async_ws_pending:
+                        future = self._async_ws_pending.pop(request_id)
+                        if not future.done():
+                            future.set_result(response)
+                    else:
+                        logger.warning(f"Received response for unknown request_id: {request_id}")
+
+                except websockets.exceptions.ConnectionClosed as e:
+                    logger.debug(f"WebSocket connection closed in listener: {e}")
+                    # Fail all pending requests
+                    for req_id, future in list(self._async_ws_pending.items()):
+                        if not future.done():
+                            future.set_exception(ConnectionError(f"WebSocket connection closed: {e}"))
+                    self._async_ws_pending.clear()
+                    break
+
+        except asyncio.CancelledError:
+            logger.debug("WebSocket listener task cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"Error in WebSocket listener: {e}")
+            # Fail all pending requests
+            for req_id, future in list(self._async_ws_pending.items()):
+                if not future.done():
+                    future.set_exception(e)
+            self._async_ws_pending.clear()
+
+    def _call_method_websocket(
+        self,
+        cls_or_fn_name: str,
+        method_name: str,
+        body: dict = None,
+        headers: dict = None,
+        serialization: str = "json",
+    ):
+        """Call a method over WebSocket connection with request multiplexing."""
+        # Fast path: check if already connected without lock
+        if not self._ws_connected or self._ws is None:
+            with self._ws_lock:
+                self._ensure_ws_connected()
+
+        self._ws_request_counter += 1
+        request_id = headers.get("X-Request-ID") if headers else None
+        if not request_id:
+            request_id = f"ws_req_{self._ws_request_counter}"
+
+        # Build request using shared function
+        serialized_body = _serialize_body(body, serialization)
+        request = _build_ws_request(
+            request_id=request_id,
+            cls_or_fn_name=cls_or_fn_name,
+            method_name=method_name,
+            params=serialized_body,
+            serialization=serialization,
+        )
+
+        # Create event and response holder for this request
+        response_event = threading.Event()
+        response_holder = {}
+        self._ws_pending[request_id] = (response_holder, response_event)
+
+        try:
+            # Send request
+            self._ws.send(json.dumps(request))
+
+            # Wait for response (listener thread will set the event)
+            response_event.wait()
+            response = response_holder
+
+        except Exception:
+            # Clean up pending request on error
+            self._ws_pending.pop(request_id, None)
+            raise
+
+        return _process_ws_response(response, serialization)
+
+    async def _call_method_websocket_async(
+        self,
+        cls_or_fn_name: str,
+        method_name: str,
+        body: dict = None,
+        headers: dict = None,
+        serialization: str = "json",
+    ):
+        """Async version - call a method over WebSocket connection with request multiplexing."""
+        # Fast path: check if already connected without lock
+        if self._async_ws is None or self._async_ws_listener_task is None or self._async_ws_listener_task.done():
+            async with self._async_ws_lock:
+                await self._ensure_ws_connected_async()
+
+        self._ws_request_counter += 1
+        request_id = headers.get("X-Request-ID") if headers else None
+        if not request_id:
+            request_id = f"ws_req_{self._ws_request_counter}"
+
+        # Build request using shared function
+        serialized_body = _serialize_body(body, serialization)
+        request = _build_ws_request(
+            request_id=request_id,
+            cls_or_fn_name=cls_or_fn_name,
+            method_name=method_name,
+            params=serialized_body,
+            serialization=serialization,
+        )
+
+        # Create a future for this request and register it
+        loop = asyncio.get_running_loop()
+        response_future = loop.create_future()
+        self._async_ws_pending[request_id] = response_future
+
+        try:
+            # Send request
+            await self._async_ws.send(json.dumps(request))
+
+            # Wait for response (listener task will resolve the future)
+            response = await response_future
+
+        except Exception:
+            # Clean up pending request on error
+            self._async_ws_pending.pop(request_id, None)
+            raise
+
+        return _process_ws_response(response, serialization)
+
+    # ----------------- Core Call Methods ----------------- #
+
     def call_method(
         self,
         endpoint: str,
@@ -1047,20 +1287,27 @@ class HTTPClient:
         body: dict = None,
         headers: dict = None,
         serialization: str = "json",
+        cls_or_fn_name: str = None,
+        method_name: str = None,
     ):
+        # Set up log/metrics streaming (independent of call mode)
         (
             endpoint,
             headers,
             stop_event,
             log_thread,
             metrics_thread,
-            _,
+            request_id,
         ) = self._prepare_request(endpoint, stream_logs, stream_metrics, headers, serialization, logging_config)
+
         try:
-            json_data = _serialize_body(body, serialization)
-            response = self.post(endpoint=endpoint, json=json_data, headers=headers)
-            response.raise_for_status()
-            return _deserialize_response(response, serialization)
+            if self.connection_mode == "websocket":
+                return self._call_method_websocket(cls_or_fn_name, method_name, body, headers, serialization)
+            else:
+                json_data = _serialize_body(body, serialization)
+                response = self.post(endpoint=endpoint, json=json_data, headers=headers)
+                response.raise_for_status()
+                return _deserialize_response(response, serialization)
         finally:
             stop_event.set()
             # Block main thread to allow log streaming to complete if shutdown_grace_period > 0
@@ -1076,21 +1323,30 @@ class HTTPClient:
         body: dict = None,
         headers: dict = None,
         serialization: str = "json",
+        cls_or_fn_name: str = None,
+        method_name: str = None,
     ):
         """Async version of call_method."""
+        # Set up log/metrics streaming (independent of call mode)
         (
             endpoint,
             headers,
             stop_event,
             log_task,
             monitoring_task,
-            _,
+            request_id,
         ) = self._prepare_request_async(endpoint, stream_logs, stream_metrics, headers, serialization, logging_config)
+
         try:
-            json_data = _serialize_body(body, serialization)
-            response = await self.post_async(endpoint=endpoint, json=json_data, headers=headers)
-            response.raise_for_status()
-            return _deserialize_response(response, serialization)
+            if self.connection_mode == "websocket":
+                return await self._call_method_websocket_async(
+                    cls_or_fn_name, method_name, body, headers, serialization
+                )
+            else:
+                json_data = _serialize_body(body, serialization)
+                response = await self.post_async(endpoint=endpoint, json=json_data, headers=headers)
+                response.raise_for_status()
+                return _deserialize_response(response, serialization)
         finally:
             stop_event.set()
             # Cancel tasks and clean up in background - never block the caller
