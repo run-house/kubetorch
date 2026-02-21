@@ -171,6 +171,25 @@ spec:
                   type: boolean
                   description: Create headless service for pod-to-pod discovery
                   default: false
+                readinessPolicy:
+                  type: object
+                  description: Defines when this workload is considered ready
+                  properties:
+                    strategy:
+                      type: string
+                      description: How to evaluate readiness
+                      enum:
+                        - AllPodsReady
+                        - MinPodsReady
+                        - AnyPodReady
+                      default: AllPodsReady
+                    minReadyPods:
+                      type: integer
+                      description: Minimum pods that must be Ready (used with MinPodsReady strategy)
+                      minimum: 1
+                    healthCheckEndpoint:
+                      type: string
+                      description: Endpoint to probe on serviceUrl (default /ready). Override for custom health checks.
             status:
               type: object
               properties:
@@ -184,11 +203,55 @@ spec:
                     type: string
                 podCount:
                   type: integer
-                  description: Number of connected pods
+                  description: Number of pods matching selector
+                readyPodCount:
+                  type: integer
+                  description: Number of pods with Ready condition
+                expectedPodCount:
+                  type: integer
+                  description: Expected number of pods (derived from backing resource)
+                ready:
+                  type: boolean
+                  description: Whether workload meets readiness policy
+                readyLaunchId:
+                  type: string
+                  description: The launchId that readiness was verified against
                 lastDeployedAt:
                   type: string
                   format: date-time
                   description: Timestamp of last module deployment
+                error:
+                  type: object
+                  description: Current error state (null if no error)
+                  properties:
+                    type:
+                      type: string
+                      description: Error classification
+                      enum:
+                        - ImagePullError
+                        - CrashLoopBackOff
+                        - OOMKilled
+                        - ResourceNotAvailable
+                        - StartupError
+                        - FailedMount
+                        - ContainerError
+                        - Unknown
+                    message:
+                      type: string
+                      description: Human-readable error message
+                    reason:
+                      type: string
+                      description: Kubernetes reason code (e.g., ImagePullBackOff)
+                    podName:
+                      type: string
+                      description: Name of the affected pod
+                    containerName:
+                      type: string
+                      description: Name of the affected container
+                    timestamp:
+                      type: string
+                      format: date-time
+                      description: When the error was detected
                 conditions:
                   type: array
                   description: Standard K8s conditions
@@ -213,18 +276,29 @@ spec:
       subresources:
         status: {}
       additionalPrinterColumns:
+        - name: Ready
+          type: boolean
+          jsonPath: .status.ready
+        - name: Ready Pods
+          type: integer
+          jsonPath: .status.readyPodCount
+        - name: Expected
+          type: integer
+          jsonPath: .status.expectedPodCount
         - name: Resource
           type: string
           jsonPath: .spec.resourceKind
         - name: User
           type: string
           jsonPath: .spec.workloadMetadata.username
-        - name: Pods
-          type: integer
-          jsonPath: .status.podCount
+        - name: Error
+          type: string
+          jsonPath: .status.error.type
+          priority: 1
         - name: TTL
           type: string
           jsonPath: .spec.autoTermination.inactivityTtl
+          priority: 1
         - name: Service URL
           type: string
           jsonPath: .status.serviceUrl

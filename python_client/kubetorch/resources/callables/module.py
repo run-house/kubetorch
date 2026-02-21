@@ -831,9 +831,16 @@ class Module:
             self.service_config = service_config
 
             if not dryrun:
-                self.compute._check_service_ready()
-                # Additional health check to ensure HTTP server is ready
-                self._wait_for_http_health(launch_id=launch_id)
+                # Check service readiness via CRD status, including launch_id verification.
+                # The controller handles both K8s resource readiness and HTTP health probes
+                # (probing /ready with launch_id), so modules don't need a separate health call.
+                self.compute._check_service_ready(launch_id=launch_id)
+
+                # Subclasses (e.g., App) may override _wait_for_http_health with custom
+                # health check logic (e.g., checking /health instead of /ready).
+                # Call it if the subclass has overridden it.
+                if type(self)._wait_for_http_health is not Module._wait_for_http_health:
+                    self._wait_for_http_health(launch_id=launch_id)
         finally:
             # Stop log streaming
             if log_thread:
@@ -915,9 +922,16 @@ class Module:
             self.service_config = service_config
 
             if not dryrun:
-                await self.compute._check_service_ready_async()
-                # Additional health check to ensure HTTP server is ready
-                await self._wait_for_http_health_async(launch_id=launch_id)
+                # Check service readiness via CRD status, including launch_id verification.
+                # The controller handles both K8s resource readiness and HTTP health probes
+                # (probing /ready with launch_id), so modules don't need a separate health call.
+                await self.compute._check_service_ready_async(launch_id=launch_id)
+
+                # Subclasses (e.g., App) may override _wait_for_http_health with custom
+                # health check logic (e.g., checking /health instead of /ready).
+                # Call it if the subclass has overridden it.
+                if type(self)._wait_for_http_health is not Module._wait_for_http_health:
+                    self._wait_for_http_health(launch_id=launch_id)
         finally:
             # Stop log streaming
             if log_task:
