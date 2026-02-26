@@ -13,4 +13,10 @@ class PlainClass:
         return self.value
 
 
+def check_numpy_version():
+    import numpy as np
+
+    return np.__version__
+
+
 not_a_callable = "just a string"
