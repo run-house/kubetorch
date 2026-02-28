@@ -268,6 +268,36 @@ class Compute:
         return compute
 
     @classmethod
+    def from_workload(cls, workload_info: dict, name: str, namespace: str):
+        """Create a Compute object from controller workload info.
+
+        This is used when reloading a module by name - we get workload info from
+        the controller and construct a minimal Compute to enable method calls.
+
+        Args:
+            workload_info: Workload info dict from controller's get_workload API.
+            name: The service/workload name.
+            namespace: The namespace where the workload is deployed.
+        """
+        compute = cls(_skip_template_init=True)
+
+        # Set namespace and service name directly (Compute properties check these
+        # when _manifest is None)
+        compute._namespace = namespace
+        compute._service_name = name
+
+        # Store kind for deployment_mode (defaults to Deployment)
+        resource_kind = workload_info.get("kind") or workload_info.get("resource_kind")
+        compute._kind = resource_kind.lower() if resource_kind else "deployment"
+
+        # Extract selector if available (for BYO/selector-based workloads)
+        specifier = workload_info.get("specifier") or {}
+        if isinstance(specifier, dict) and specifier.get("selector"):
+            compute._pod_selector = specifier["selector"]
+
+        return compute
+
+    @classmethod
     def from_manifest(
         cls,
         manifest: Union[Dict, str],
@@ -1166,7 +1196,9 @@ class Compute:
     def kind(self):
         """Get the manifest kind, defaulting to 'Deployment' if not set."""
         if self._manifest is None:
-            return "Deployment"
+            # Check for stored kind (from from_workload) or default to Deployment
+            stored_kind = getattr(self, "_kind", None)
+            return stored_kind.title() if stored_kind else "Deployment"
         return self._manifest.get("kind", "Deployment")
 
     @property

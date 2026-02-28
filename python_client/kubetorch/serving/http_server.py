@@ -23,7 +23,7 @@ try:
 except:
     pass
 
-from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Body, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
@@ -495,6 +495,123 @@ class ControllerWebSocket:
                 await self._task
             except asyncio.CancelledError:
                 pass
+
+
+##########################################
+########### Callable Invocation ##########
+##########################################
+
+# Active WebSocket sessions for callable invocation
+_WS_SESSIONS: Dict[str, WebSocket] = {}
+
+
+class MockRequest:
+    """Mock request object for WebSocket calls that need request-like interface."""
+
+    def __init__(self, request_id: str, serialization: str):
+        self.headers = {
+            "X-Request-ID": request_id,
+            "X-Serialization": serialization,
+        }
+
+
+def _validate_callable(cls_or_fn_name: str) -> Optional[dict]:
+    """Validate that the callable is configured and ready.
+
+    Returns None if valid, or an error dict if not.
+    """
+    configured_callable = os.getenv("KT_CLS_OR_FN_NAME")
+    if not configured_callable:
+        return {
+            "type": "ServiceUnavailable",
+            "message": "Server is starting up or no callable has been deployed yet.",
+            "traceback": "",
+        }
+
+    if cls_or_fn_name != configured_callable:
+        return {
+            "type": "NotFound",
+            "message": f"Callable '{cls_or_fn_name}' not found. Found '{configured_callable}' instead.",
+            "traceback": "",
+        }
+
+    if SUPERVISOR is None:
+        return {
+            "type": "ServiceUnavailable",
+            "message": "Server is loading the callable. Please retry in a moment.",
+            "traceback": "",
+        }
+
+    return None
+
+
+def _decode_bytes_in_params(obj):
+    """Convert {"__bytes__": "base64..."} back to bytes in params."""
+    if isinstance(obj, dict):
+        if "__bytes__" in obj and len(obj) == 1:
+            return base64.b64decode(obj["__bytes__"])
+        return {k: _decode_bytes_in_params(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_decode_bytes_in_params(item) for item in obj]
+    return obj
+
+
+async def _invoke_callable(
+    cls_or_fn_name: str,
+    method_name: Optional[str],
+    params: dict,
+    serialization: str,
+    request_id: str,
+    distributed_subcall: bool = False,
+):
+    """Core callable invocation logic shared by HTTP and WebSocket endpoints.
+
+    Returns the result directly, or raises an exception on error.
+    """
+    # Validate callable is configured
+    error = _validate_callable(cls_or_fn_name)
+    if error:
+        raise HTTPException(status_code=503 if error["type"] == "ServiceUnavailable" else 404, detail=error["message"])
+
+    # Decode bytes in params (for WebSocket path)
+    params = _decode_bytes_in_params(params)
+
+    # Create request-like object for supervisor
+    mock_request = MockRequest(request_id, serialization)
+
+    # Route call through supervisor - run in thread pool since SUPERVISOR.call is sync
+    result = await asyncio.to_thread(
+        SUPERVISOR.call,
+        mock_request,
+        cls_or_fn_name,
+        method_name,
+        params,
+        distributed_subcall,
+    )
+
+    # Handle JSONResponse from supervisor (e.g., errors)
+    if isinstance(result, JSONResponse):
+        content = json.loads(result.body.decode())
+        if "error_type" in content:
+            # Re-raise with the original exception type so caller can handle appropriately
+            error_type = content.get("error_type", "Exception")
+            error_message = content.get("message", "Unknown error")
+            builtin_exceptions = {
+                "ValueError": ValueError,
+                "TypeError": TypeError,
+                "KeyError": KeyError,
+                "IndexError": IndexError,
+                "AttributeError": AttributeError,
+                "RuntimeError": RuntimeError,
+                "NotImplementedError": NotImplementedError,
+                "TimeoutError": TimeoutError,
+                "ConnectionError": ConnectionError,
+            }
+            exc_class = builtin_exceptions.get(error_type, Exception)
+            raise exc_class(error_message)
+        return content
+
+    return result
 
 
 #####################################
@@ -1337,11 +1454,14 @@ async def lifespan(app: FastAPI):
 
     try:
         if os.getenv("KT_CALLABLE_TYPE") == "app":
-            run_image_setup()
+            # Run in thread to avoid blocking event loop (allows WebSocket keepalive, SIGTERM handling)
+            await asyncio.to_thread(run_image_setup)
         elif os.getenv("KT_CLS_OR_FN_NAME"):
             # Only load callable if one is configured (not in selector-only mode)
-            run_image_setup()
-            load_callable()
+            # Run image setup first, then load callable (same as reload path)
+            # Use asyncio.to_thread to avoid blocking event loop
+            await asyncio.to_thread(run_image_setup)
+            await asyncio.to_thread(load_callable)
         else:
             # Selector-only mode: server starts without a callable, waiting for deployment
             logger.info("Starting in selector-only mode (no callable configured)")
@@ -1474,53 +1594,77 @@ class ErrorResponse(BaseModel):
     state: Optional[dict] = None  # Optional serialized exception state
 
 
-# Factor out the exception packaging so we can use it in the handler below and also inside distributed subprocesses
-def package_exception(exc: Exception):
-    import concurrent
+# Factor out error dict creation so it can be used by both HTTP and WebSocket paths
+def build_error_dict(exc: Exception) -> dict:
+    """Build a standardized error dict from an exception.
 
+    Used by both HTTP responses (via package_exception) and WebSocket responses
+    to ensure consistent error format across transports.
+
+    Returns:
+        Dict with keys: error_type, message, traceback, pod_name, state
+    """
     error_type = exc.__class__.__name__
     trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-
-    # Check if the exception has a status_code attribute (e.g. PodTerminatedError)
-    if hasattr(exc, "status_code"):
-        status_code = exc.status_code
-    elif isinstance(exc, (RequestValidationError, TypeError, AssertionError)):
-        status_code = 422
-    elif isinstance(exc, (ValueError, UnicodeError, json.JSONDecodeError)):
-        status_code = 400
-    elif isinstance(exc, (KeyError, FileNotFoundError)):
-        status_code = 404
-    elif isinstance(exc, PermissionError):
-        status_code = 403
-    elif isinstance(exc, (StarletteHTTPException, HTTPException)):
-        status_code = exc.status_code
-    elif isinstance(exc, (MemoryError, OSError)):
-        status_code = 500
-    elif isinstance(exc, NotImplementedError):
-        status_code = 501
-    elif isinstance(exc, asyncio.TimeoutError):
-        status_code = 504
-    elif isinstance(exc, concurrent.futures.TimeoutError):
-        status_code = 504
-    else:
-        status_code = 500
 
     # Try to serialize exception state if it has __getstate__
     state = None
     if hasattr(exc, "__getstate__"):
         try:
             state = exc.__getstate__()
-            json.dumps(state)
+            json.dumps(state)  # Validate it's JSON serializable
         except Exception as e:
             logger.debug(f"Could not serialize exception state for {error_type}: {e}")
             state = None
 
+    return {
+        "error_type": error_type,
+        "message": str(exc),
+        "traceback": trace,
+        "pod_name": os.getenv("POD_NAME", "unknown"),
+        "state": state,
+    }
+
+
+def _get_status_code_for_exception(exc: Exception) -> int:
+    """Get HTTP status code for an exception type."""
+    import concurrent
+
+    if hasattr(exc, "status_code"):
+        return exc.status_code
+    elif isinstance(exc, (RequestValidationError, TypeError, AssertionError)):
+        return 422
+    elif isinstance(exc, (ValueError, UnicodeError, json.JSONDecodeError)):
+        return 400
+    elif isinstance(exc, (KeyError, FileNotFoundError)):
+        return 404
+    elif isinstance(exc, PermissionError):
+        return 403
+    elif isinstance(exc, (StarletteHTTPException, HTTPException)):
+        return exc.status_code
+    elif isinstance(exc, (MemoryError, OSError)):
+        return 500
+    elif isinstance(exc, NotImplementedError):
+        return 501
+    elif isinstance(exc, asyncio.TimeoutError):
+        return 504
+    elif isinstance(exc, concurrent.futures.TimeoutError):
+        return 504
+    else:
+        return 500
+
+
+# Factor out the exception packaging so we can use it in the handler below and also inside distributed subprocesses
+def package_exception(exc: Exception):
+    error_dict = build_error_dict(exc)
+    status_code = _get_status_code_for_exception(exc)
+
     error_response = ErrorResponse(
-        error_type=error_type,
-        message=str(exc),
-        traceback=trace,
-        pod_name=os.getenv("POD_NAME", "unknown"),
-        state=state,
+        error_type=error_dict["error_type"],
+        message=error_dict["message"],
+        traceback=error_dict["traceback"],
+        pod_name=error_dict["pod_name"],
+        state=error_dict["state"],
     )
 
     return JSONResponse(status_code=status_code, content=error_response.model_dump())
@@ -1716,10 +1860,85 @@ async def app_status():
         return {"running": False, "exit_code": exit_code}
 
 
+@app.websocket("/ws/callable")
+async def websocket_callable(websocket: WebSocket):
+    """WebSocket endpoint for callable invocation.
+
+    Provides a persistent connection alternative to HTTP POST for calling methods.
+    Supports parallel request handling via asyncio tasks.
+    """
+    await websocket.accept()
+    session_id = str(id(websocket))
+    _WS_SESSIONS[session_id] = websocket
+    logger.debug(f"WebSocket callable session started: {session_id}")
+
+    async def handle_request(message: dict):
+        """Handle a single request and send response. Runs as separate task for parallelism."""
+        # request_id is used for WebSocket response routing
+        request_id = message.get("request_id", "-")
+        # log_request_id is the parent's request_id for log correlation (used in distributed subcalls)
+        log_request_id = message.get("log_request_id") or request_id
+        token = request_id_ctx_var.set(log_request_id)
+
+        try:
+            result = await _invoke_callable(
+                cls_or_fn_name=message.get("cls_or_fn_name"),
+                method_name=message.get("method_name"),
+                params=message.get("params", {}),
+                serialization=message.get("serialization", "json"),
+                request_id=log_request_id,
+                distributed_subcall=message.get("distributed_subcall", False),
+            )
+            if isinstance(result, Response):
+                raise TypeError(
+                    "Returning a Response object is not supported over WebSocket. "
+                    "Set connection_mode='http' to return raw Response objects."
+                )
+            await websocket.send_json({"request_id": request_id, "result": result, "error": None})
+
+        except Exception as e:
+            logger.error(f"WebSocket callable error: {e}")
+            # Use build_error_dict for consistent error format with HTTP path
+            error_dict = build_error_dict(e)
+            await websocket.send_json(
+                {
+                    "request_id": request_id,
+                    "result": None,
+                    "error": error_dict,
+                }
+            )
+        finally:
+            request_id_ctx_var.reset(token)
+
+    try:
+        while True:
+            try:
+                message = await websocket.receive_json()
+                # Handle each request in a separate task for parallel execution
+                asyncio.create_task(handle_request(message))
+
+            except json.JSONDecodeError as e:
+                error_dict = build_error_dict(e)
+                await websocket.send_json(
+                    {
+                        "request_id": "-",
+                        "result": None,
+                        "error": error_dict,
+                    }
+                )
+
+    except WebSocketDisconnect:
+        logger.debug(f"WebSocket callable session disconnected: {session_id}")
+    except Exception as e:
+        logger.error(f"WebSocket callable session error: {e}")
+    finally:
+        _WS_SESSIONS.pop(session_id, None)
+
+
 # Catch-all routes for callable invocation - must be defined AFTER specific routes
 @app.post("/{cls_or_fn_name}")
 @app.post("/{cls_or_fn_name}/{method_name}")
-def run_callable(
+async def run_callable(
     request: Request,
     cls_or_fn_name: str,
     method_name: Optional[str] = None,
@@ -1729,37 +1948,16 @@ def run_callable(
 ):
     """Execute a callable through the supervisor.
 
-    All calls are routed through the supervisor which executes user code in
-    isolated subprocesses. This provides clean module isolation and simple
-    reload semantics (terminate and recreate subprocess on redeployment).
-
-    This is a sync endpoint - Starlette automatically runs it in a thread pool,
-    which handles context variable propagation.
+    Thin wrapper around _invoke_callable which handles the actual invocation.
     """
-    configured_callable = os.getenv("KT_CLS_OR_FN_NAME")
-    if not configured_callable:
-        raise HTTPException(
-            status_code=503,
-            detail="Server is starting up or no callable has been deployed yet. Please ensure the function is deployed before calling.",
-        )
-    if cls_or_fn_name != configured_callable:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Callable '{cls_or_fn_name}' not found in metadata configuration. Found '{configured_callable}' instead",
-        )
-    if SUPERVISOR is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Server is loading the callable. Please retry in a moment.",
-        )
-
-    # Route call through supervisor to subprocess
-    result = SUPERVISOR.call(
-        request,
-        cls_or_fn_name,
-        method_name,
-        params,
-        distributed_subcall,
+    request_id = request.headers.get("X-Request-ID", "-")
+    result = await _invoke_callable(
+        cls_or_fn_name=cls_or_fn_name,
+        method_name=method_name,
+        params=params,
+        serialization=serialization,
+        request_id=request_id,
+        distributed_subcall=distributed_subcall,
     )
     clear_debugging_sessions()
     return result

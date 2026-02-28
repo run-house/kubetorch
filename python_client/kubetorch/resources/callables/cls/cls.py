@@ -106,6 +106,8 @@ class Cls(Module):
             headers=self.request_headers,
             body=body,
             serialization=serialization,
+            cls_or_fn_name=self.module_name,
+            method_name=method_name,
         )
         return response
 
@@ -140,6 +142,8 @@ class Cls(Module):
             headers=self.request_headers,
             body=body,
             serialization=serialization,
+            cls_or_fn_name=self.module_name,
+            method_name=method_name,
         )
         return response
 

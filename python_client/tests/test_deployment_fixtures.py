@@ -31,6 +31,8 @@ def setup_test_env():
 async def test_fn_sync_reload_by_name_only(remote_fn):
     import kubetorch as kt
 
+    assert remote_fn(2, 2) == 4
+
     # Note: set to `get_if_exists` to `False` in order to stop any fallback and only look for an exact name match
     service_name = remote_fn.service_name
     some_reloaded_fn = kt.fn(summer, name=service_name, get_if_exists=True)
@@ -225,6 +227,7 @@ async def test_serialization_none():
     )
     name = f"{service_name_prefix}-response-fn"
     remote_response_fn = kt.fn(return_response, name=name).to(compute)
+    remote_response_fn.connection_mode = "http"
 
     result = remote_response_fn("Hello, World!", serialization="none")
 
@@ -263,6 +266,104 @@ async def test_cls_sync_basic(remote_cls):
     remote_cpu_count = remote_cls.cpu_count()
     assert remote_cls.print_and_log(1) == "Hello from the cluster! [0. 1. 0. 0. 0. 0. 0. 0. 0. 0.]"
     assert remote_cls.size_minus_cpus() == 10 - remote_cpu_count
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_connection_modes_fn(remote_fn):
+    """Test that both HTTP and WebSocket connection modes work for functions."""
+    # Verify default is websocket
+    assert remote_fn.connection_mode == "websocket"
+
+    # Test with default websocket mode
+    print("Testing function with websocket connection mode (default)...")
+    result_ws = remote_fn(1, 2)
+    assert result_ws == 3
+
+    # Test with explicit HTTP mode
+    print("Testing function with http connection mode...")
+    original_mode = remote_fn.connection_mode
+    try:
+        remote_fn.connection_mode = "http"
+        assert remote_fn.connection_mode == "http"
+
+        result_http = remote_fn(2, 3)
+        assert result_http == 5
+    finally:
+        remote_fn.connection_mode = original_mode
+
+    # Verify we're back to websocket
+    assert remote_fn.connection_mode == "websocket"
+    result_ws_again = remote_fn(3, 4)
+    assert result_ws_again == 7
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_connection_modes_cls(remote_cls):
+    """Test that both HTTP and WebSocket connection modes work for classes."""
+    # Verify default is websocket
+    assert remote_cls.connection_mode == "websocket"
+
+    # Test with default websocket mode
+    print("Testing class with websocket connection mode (default)...")
+    cpu_count_ws = remote_cls.cpu_count()
+    assert isinstance(cpu_count_ws, int)
+
+    # Test with explicit HTTP mode
+    print("Testing class with http connection mode...")
+    original_mode = remote_cls.connection_mode
+    try:
+        remote_cls.connection_mode = "http"
+        assert remote_cls.connection_mode == "http"
+
+        cpu_count_http = remote_cls.cpu_count()
+        assert isinstance(cpu_count_http, int)
+        assert cpu_count_http == cpu_count_ws
+    finally:
+        remote_cls.connection_mode = original_mode
+
+    # Verify we're back to websocket
+    assert remote_cls.connection_mode == "websocket"
+    cpu_count_ws_again = remote_cls.cpu_count()
+    assert cpu_count_ws_again == cpu_count_ws
+
+
+@pytest.mark.level("minimal")
+@pytest.mark.asyncio
+async def test_connection_modes_async(remote_fn, remote_cls):
+    """Test that both connection modes work with async calls."""
+    # Test function with websocket mode async (default)
+    print("Testing function with websocket mode async...")
+    assert remote_fn.connection_mode == "websocket"
+    result = await remote_fn(1, 2, async_=True)
+    assert result == 3
+
+    # Test function with HTTP mode async
+    print("Testing function with http mode async...")
+    original_fn_mode = remote_fn.connection_mode
+    try:
+        remote_fn.connection_mode = "http"
+        result = await remote_fn(2, 3, async_=True)
+        assert result == 5
+    finally:
+        remote_fn.connection_mode = original_fn_mode
+
+    # Test class with websocket mode async (default)
+    print("Testing class with websocket mode async...")
+    assert remote_cls.connection_mode == "websocket"
+    cpu_count = await remote_cls.cpu_count(async_=True)
+    assert isinstance(cpu_count, int)
+
+    # Test class with HTTP mode async
+    print("Testing class with http mode async...")
+    original_cls_mode = remote_cls.connection_mode
+    try:
+        remote_cls.connection_mode = "http"
+        cpu_count = await remote_cls.cpu_count(async_=True)
+        assert isinstance(cpu_count, int)
+    finally:
+        remote_cls.connection_mode = original_cls_mode
 
 
 @pytest.mark.level("minimal")
@@ -419,7 +520,7 @@ async def test_async_fn_call(remote_async_fn):
     import time
 
     num_tasks = 20
-    sleep_time = 1  # Each task sleeps for 2 seconds (in async_simple_summer)
+    sleep_time = 1  # Each task sleeps for 1 second (in async_simple_summer)
 
     start_wall = time.time()
     tasks = [remote_async_fn(1, 2, sleep=sleep_time, return_times=True) for _ in range(num_tasks)]
