@@ -1,4 +1,5 @@
 from dataclasses import asdict, dataclass
+from typing import Optional
 
 from kubetorch.logger import get_logger
 
@@ -12,46 +13,46 @@ class AutoScalingError(Exception):
 @dataclass
 class AutoscalingConfig:
     # The concurrent requests or requests per second threshold that triggers scaling
-    target: int = None
+    target: Optional[int] = None
 
     # The time window used to calculate the average of metrics for scaling decisions
-    window: str = None
+    window: Optional[str] = None
 
     # The metric type to base scaling decisions on:
     # - concurrency: number of simultaneous requests
     # - rps: requests per second
     # - cpu: CPU utilization (requires HPA class)
     # - memory: Memory utilization (requires HPA class)
-    metric: str = None
+    metric: Optional[str] = None
 
     # The percentage of the target value at which to start scaling.
     # E.g., if target=100 and target_utilization=70, scaling occurs at 70 requests
-    target_utilization: int = None
+    target_utilization: Optional[int] = None
 
     # Minimum number of replicas. 0 allows scaling to zero when idle
-    min_scale: int = None
+    min_scale: Optional[int] = None
 
     # Maximum number of replicas the service can scale up to
-    max_scale: int = None
+    max_scale: Optional[int] = None
 
     # Initial number of pods launched by the service
-    initial_scale: int = None
+    initial_scale: Optional[int] = None
 
     # Maximum concurrent requests per pod (containerConcurrency).
     # If not set, pods accept unlimited concurrent requests.
-    concurrency: int = None
+    concurrency: Optional[int] = None
 
     # Time to keep the last pod before scaling to zero (e.g., "30s", "1m5s")
-    scale_to_zero_pod_retention_period: str = None
+    scale_to_zero_pod_retention_period: Optional[str] = None
 
     # Delay before scaling down (e.g., "15m"). Only for KPA autoscaler.
-    scale_down_delay: str = None
+    scale_down_delay: Optional[str] = None
 
     # Autoscaler class: "kpa.autoscaling.knative.dev" or "hpa.autoscaling.knative.dev"
-    autoscaler_class: str = None
+    autoscaler_class: Optional[str] = None
 
     # Progress deadline for deployment (e.g., "10m"). Time to wait for deployment to be ready.
-    progress_deadline: str = None
+    progress_deadline: Optional[str] = None
 
     def __init__(self, **kwargs):
         """Support additional kwargs for autoscaling annotations"""

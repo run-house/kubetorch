@@ -5,7 +5,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Dict
+from typing import Dict, Optional
 
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.module import Module
@@ -25,10 +25,10 @@ class App(Module):
         compute: Compute,
         cli_command: str,
         pointers: tuple,
-        name: str = None,
+        name: Optional[str] = None,
         run_async: bool = False,
-        port: int = None,
-        health_check: str = None,
+        port: Optional[int] = None,
+        health_check: Optional[str] = None,
         _from_manifest: bool = False,
     ):
         """
@@ -107,7 +107,7 @@ class App(Module):
         stream_logs = not self._run_async
         self._launch_service(install_url, use_editable, deployment_timestamp, stream_logs)
 
-    def _get_service_dockerfile(self, rsync_dirs: list = None, rsync: bool = True):
+    def _get_service_dockerfile(self, rsync_dirs: Optional[list] = None, rsync: bool = True):
         image_instructions = super()._get_service_dockerfile(rsync_dirs=rsync_dirs, rsync=rsync)
 
         if self._from_manifest:
@@ -313,9 +313,9 @@ class App(Module):
 
 
 def app(
-    name: str = None,
-    port: int = None,
-    health_check: str = None,
+    name: Optional[str] = None,
+    port: Optional[int] = None,
+    health_check: Optional[str] = None,
     **kwargs: Dict,
 ):
     """

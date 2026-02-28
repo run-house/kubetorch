@@ -91,7 +91,7 @@ class LoggingConfig:
             (Default: 0)
     """
 
-    stream_logs: bool = None
+    stream_logs: Optional[bool] = None
     level: Literal["debug", "info", "warning", "error", "critical"] = field(default_factory=_get_log_level)
     include_system_logs: bool = False
     include_events: bool = True
@@ -551,7 +551,7 @@ class ControllerClient:
         return self.get("/controller/volumes", params=params)
 
     # Services
-    def create_service(self, namespace: str, body: Dict[str, Any], params: Dict = None) -> Dict[str, Any]:
+    def create_service(self, namespace: str, body: Dict[str, Any], params: Optional[Dict] = None) -> Dict[str, Any]:
         """Create a Service"""
         return self.post(f"/controller/services/{namespace}", json=body, params=params)
 
@@ -684,7 +684,7 @@ class ControllerClient:
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get(f"/controller/configmaps/{namespace}", params=params)
 
-    def list_ingresses(self, namespace: str, label_selector: str = None):
+    def list_ingresses(self, namespace: str, label_selector: Optional[str] = None):
         params = {"label_selector": label_selector} if label_selector else {}
         return self.get(f"/controller/ingresses/{namespace}", params=params)
 

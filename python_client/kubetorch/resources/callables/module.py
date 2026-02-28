@@ -6,7 +6,7 @@ import urllib.parse
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, TypeVar, Union
+from typing import Dict, List, Optional, TypeVar, Union
 
 ModuleT = TypeVar("ModuleT", bound="Module")
 
@@ -338,7 +338,7 @@ class Module:
     def from_name(
         cls,
         name: str,
-        namespace: str = None,
+        namespace: Optional[str] = None,
         reload_prefixes: Union[str, List[str]] = [],
     ):
         """Reload an existing callable by its service name."""
@@ -459,7 +459,7 @@ class Module:
 
         return self._http_client
 
-    def endpoint(self, method_name: str = None):
+    def endpoint(self, method_name: Optional[str] = None):
         if not hasattr(self, "init_args"):
             return f"{self.base_endpoint}/{self.callable_name}"
         else:
@@ -486,8 +486,8 @@ class Module:
     def to(
         self: ModuleT,
         compute: "Compute",
-        init_args: Dict = None,
-        stream_logs: Union[bool, None] = None,
+        init_args: Optional[Dict] = None,
+        stream_logs: Optional[Union[bool, None]] = None,
         get_if_exists: bool = False,
         reload_prefixes: Union[str, List[str]] = [],
         dryrun: bool = False,
@@ -574,8 +574,8 @@ class Module:
     async def to_async(
         self: ModuleT,
         compute: "Compute",
-        init_args: Dict = None,
-        stream_logs: Union[bool, None] = None,
+        init_args: Optional[Dict] = None,
+        stream_logs: Optional[Union[bool, None]] = None,
         get_if_exists: bool = False,
         reload_prefixes: Union[str, List[str]] = [],
         dryrun: bool = False,
@@ -931,7 +931,7 @@ class Module:
                     except asyncio.CancelledError:
                         pass
 
-    def _get_service_dockerfile(self, rsync_dirs: list = None, rsync: bool = True):
+    def _get_service_dockerfile(self, rsync_dirs: Optional[list] = None, rsync: bool = True):
         """Generate the service dockerfile and optionally rsync all files to the data store.
 
         Args:
@@ -1421,7 +1421,9 @@ class Module:
                 except (asyncio.TimeoutError, Exception):
                     pass
 
-    def _wait_for_http_health(self, timeout=60, retry_interval=0.2, backoff=1.5, max_interval=2, launch_id: str = None):
+    def _wait_for_http_health(
+        self, timeout=60, retry_interval=0.2, backoff=1.5, max_interval=2, launch_id: Optional[str] = None
+    ):
         """Wait for the HTTP server to be ready by checking the /health and /ready endpoints.
 
         Args:
@@ -1487,7 +1489,7 @@ class Module:
         raise ServiceTimeoutError(f"Service {self.service_name} not ready after {timeout}s")
 
     async def _wait_for_http_health_async(
-        self, timeout=60, retry_interval=0.2, backoff=1.5, max_interval=2, launch_id: str = None
+        self, timeout=60, retry_interval=0.2, backoff=1.5, max_interval=2, launch_id: Optional[str] = None
     ):
         """Async version of _wait_for_http_health. Wait for the HTTP server to be ready by checking the /health and /ready endpoints.
 

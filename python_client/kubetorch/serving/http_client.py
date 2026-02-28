@@ -6,7 +6,7 @@ import time
 import urllib.parse
 from collections import defaultdict, deque
 from datetime import datetime
-from typing import Literal, Union
+from typing import Literal, Optional, Union
 
 import httpx
 import websockets
@@ -579,7 +579,7 @@ class HTTPClient:
         port: int,
         log_config: LoggingConfig,
         host: str = "localhost",
-        start_time_ns: int = None,
+        start_time_ns: Optional[int] = None,
     ):
         """Stream K8s events using Loki's websocket tail endpoint.
 
@@ -725,7 +725,7 @@ class HTTPClient:
         except Exception as e:
             logger.debug(f"Event stream error (may be expected if no events): {e}")
 
-    def _run_log_stream(self, request_id, stop_event, host, port, log_config: LoggingConfig = None):
+    def _run_log_stream(self, request_id, stop_event, host, port, log_config: Optional[LoggingConfig] = None):
         """Helper to run log and event streaming in an event loop"""
         # Set request_id in this thread's context so any logs printed here
         # (e.g., nested service logs) are captured with the correct request_id
@@ -1012,7 +1012,7 @@ class HTTPClient:
         await self._collect_metrics_async(stop_event, async_http_get, async_sleep, metrics_config, base_url)
         logger.debug(f"Stopped async metrics for {request_id}")
 
-    def stream_metrics(self, stop_event, metrics_config: MetricsConfig = None):
+    def stream_metrics(self, stop_event, metrics_config: Optional[MetricsConfig] = None):
         """Synchronous GPU/CPU metrics streaming."""
         logger.debug(f"Streaming metrics for {self.service_name}")
         logger.debug(f"Using metrics config: {metrics_config}")
@@ -1043,9 +1043,9 @@ class HTTPClient:
         endpoint: str,
         stream_logs: bool,
         logging_config: LoggingConfig,
-        stream_metrics: Union[bool, MetricsConfig, None] = None,
-        body: dict = None,
-        headers: dict = None,
+        stream_metrics: Optional[Union[bool, MetricsConfig, None]] = None,
+        body: Optional[dict] = None,
+        headers: Optional[dict] = None,
         serialization: str = "json",
     ):
         (
@@ -1072,9 +1072,9 @@ class HTTPClient:
         endpoint: str,
         stream_logs: bool,
         logging_config: LoggingConfig,
-        stream_metrics: Union[bool, MetricsConfig, None] = None,
-        body: dict = None,
-        headers: dict = None,
+        stream_metrics: Optional[Union[bool, MetricsConfig, None]] = None,
+        body: Optional[dict] = None,
+        headers: Optional[dict] = None,
         serialization: str = "json",
     ):
         """Async version of call_method."""

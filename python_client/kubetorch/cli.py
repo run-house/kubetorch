@@ -11,7 +11,7 @@ import textwrap
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from urllib.parse import urlparse
 
 import yaml
@@ -342,7 +342,7 @@ def kt_config(
         raise typer.Exit(1)
 
 
-def _connect_pdb_websocket(namespace: str, pod: str, port: int, pod_ip: str = None):
+def _connect_pdb_websocket(namespace: str, pod: str, port: int, pod_ip: Optional[str] = None):
     """Connect to a PDB WebSocket PTY server running in a pod."""
     import asyncio
 
@@ -1320,7 +1320,7 @@ def kt_run(
     ctx: typer.Context,
     name: str = typer.Option(None, "--name", help="Name for the run"),
     run_async: bool = typer.Option(False, "--async", help="Whether to run async and not stream logs live"),
-    file: int = typer.Option(None, "--file", help="File where the app is defined in"),
+    file: str = typer.Option(None, "--file", help="File where the app is defined in"),
 ):
     """
     Build and deploy a kubetorch app that runs the provided CLI command. In order for the app
@@ -2001,6 +2001,7 @@ def kt_volumes(
                 pvcs_items = controller_client.list_pvcs_all_namespaces().get("items", [])
                 title = "Kubetorch Volumes (All Namespaces)"
             else:
+                assert target_namespace is not None
                 result = controller_client.list_pvcs(target_namespace)
                 pvcs_items = result.get("items", [])
                 title = f"Kubetorch Volumes (Namespace: {target_namespace})"

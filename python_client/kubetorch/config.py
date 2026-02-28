@@ -1,6 +1,7 @@
 import os
 from functools import cached_property
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
@@ -327,7 +328,7 @@ class KubetorchConfig:
             raise ValueError(f"Unknown config key: {key}")
         return getattr(self, key)
 
-    def write(self, values: dict = None):
+    def write(self, values: Optional[dict] = None):
         """Write out config to local ``~/.kt/config.yaml``, to be used globally.
 
         Args:

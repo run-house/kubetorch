@@ -570,7 +570,7 @@ class GPUTransferManager:
 
         Called when the quorum is ready and all participants are waiting.
         """
-        _get_torch_distributed()
+        dist = _get_torch_distributed()
 
         pending = self._pending_data.get(key)
         if pending is None:
@@ -619,7 +619,7 @@ class GPUTransferManager:
 
     def _broadcast_data(self, data: Union[Any, Dict]) -> None:
         """Broadcast tensor or state dict (sender side)."""
-        _get_torch_distributed()
+        dist = _get_torch_distributed()
         torch = _get_torch()
 
         # Get sorted keys for consistent ordering
@@ -632,7 +632,7 @@ class GPUTransferManager:
 
     def _receive_into(self, dest: Union[Any, Dict]) -> None:
         """Receive broadcast into destination tensor or state dict."""
-        _get_torch_distributed()
+        dist = _get_torch_distributed()
         torch = _get_torch()
 
         # Get sorted keys for consistent ordering (must match sender)

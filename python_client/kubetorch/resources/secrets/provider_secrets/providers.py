@@ -1,4 +1,4 @@
-from typing import Union
+from typing import Optional, Union
 
 from .anthropic_secret import AnthropicSecret
 from .aws_secret import AWSSecret
@@ -61,7 +61,7 @@ _secret_to_env_vars = {
 }
 
 
-def _check_if_provider_secret(provider_str: str = None, provider_env_vars: dict = None):
+def _check_if_provider_secret(provider_str: Optional[str] = None, provider_env_vars: Optional[dict] = None):
     import os
 
     # user passed provider name or path to secrets values

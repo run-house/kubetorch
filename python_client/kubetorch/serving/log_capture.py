@@ -41,11 +41,11 @@ class LogCapture:
 
     def __init__(
         self,
-        log_store_url: str = None,
-        labels: Dict[str, str] = None,
+        log_store_url: Optional[str] = None,
+        labels: Optional[Dict[str, str]] = None,
         batch_size: int = 100,
         flush_interval: float = 1.0,
-        output_queue: mp.Queue = None,
+        output_queue: Optional[mp.Queue] = None,
     ):
         self.log_store_url = log_store_url
         self.labels = labels or {}
