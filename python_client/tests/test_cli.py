@@ -794,7 +794,7 @@ def test_cli_kt_teardown_multiple_flags():
 
 
 @pytest.mark.level("minimal")
-def test_cli_kt_teardown_wrong_usage():
+def test_cli_kt_teardown_wrong_usage(remote_logs_fn):
     # Part A: no name provided
     teardown_result = runner.invoke(app, ["teardown"], color=False, env={"COLUMNS": "200"})
 
@@ -821,9 +821,8 @@ def test_cli_kt_teardown_wrong_usage():
     assert "No services found" in output
 
     # Part D: teardown service but provide wrong namespace
-    remote_fn = remote_fn_for_teardown()
-    service_name = remote_fn.service_name
-    service_namespace = remote_fn.namespace
+    service_name = remote_logs_fn.service_name
+    service_namespace = remote_logs_fn.namespace
     teardown_result = runner.invoke(
         app,
         ["teardown", service_name, "-y", "-n", f"{service_namespace}1"],

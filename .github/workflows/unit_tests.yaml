@@ -186,7 +186,7 @@ jobs:
       - name: Run tests with level unit
         run: |
           cd python_client
-          pytest -v --level unit --detached
+          pytest -v --level unit --detached --eager
         timeout-minutes: 60
         env:
           client_id: "my-client-id"

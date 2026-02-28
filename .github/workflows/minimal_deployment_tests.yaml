@@ -119,7 +119,7 @@ jobs:
       - name: Run tests with all deployment modes
         run: |
           cd python_client
-          pytest -v --durations=100 tests/test_deployment_fixtures.py --level minimal --detached
+          pytest -v --durations=100 tests/test_deployment_fixtures.py --level minimal --detached --eager
         timeout-minutes: 60
         env:
           TEST_COMPUTE_TYPE: ${{ matrix.compute_type }}
