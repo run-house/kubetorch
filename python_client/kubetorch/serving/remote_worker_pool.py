@@ -46,6 +46,22 @@ class RemoteWorkerPool:
 
             return cls._instance
 
+    @classmethod
+    def reset_instance(cls):
+        """Reset the singleton instance, stopping it if running.
+
+        This clears stale HTTP connections that may have become half-open after pod restarts.
+        The next call to get_instance() will create a fresh pool with new connections.
+        """
+        with cls._instance_lock:
+            if cls._instance is not None:
+                logger.info("Resetting RemoteWorkerPool singleton to clear stale connections")
+                try:
+                    cls._instance.stop()
+                except Exception as e:
+                    logger.warning(f"Error stopping RemoteWorkerPool during reset: {e}")
+                cls._instance = None
+
     def __init__(self, quorum_timeout=300):
         self.quorum_timeout = quorum_timeout
         self.request_queue = multiprocessing.Queue()

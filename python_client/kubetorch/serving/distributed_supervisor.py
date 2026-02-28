@@ -65,6 +65,8 @@ class DistributedSupervisor(ExecutionSupervisor):
         self._change_subscribers: list = []
         self._last_dns_check: float = 0
         self._dns_check_interval: int = 5  # seconds
+        self._consecutive_removals: dict = {}  # Track {ip: consecutive_miss_count} for false positive prevention
+        self._removal_threshold: int = 2  # Require N consecutive misses before declaring removed
 
     def setup(self):
         """Set up distributed environment including process pool.
@@ -80,8 +82,8 @@ class DistributedSupervisor(ExecutionSupervisor):
         # Stop DNS monitoring first
         self.stop_dns_monitoring()
 
-        # Note: RemoteWorkerPool is a singleton and persists across supervisor recreations.
-        # We intentionally do NOT stop it here - just clear our reference.
+        # Reset the RemoteWorkerPool singleton to clear stale HTTP connections.
+        RemoteWorkerPool.reset_instance()
         self.remote_worker_pool = None
 
         # Clean up process pool
@@ -234,8 +236,12 @@ class DistributedSupervisor(ExecutionSupervisor):
             self._dns_monitor_thread = None
 
     def _monitor_worker_membership(self):
-        """Monitor DNS for worker membership changes."""
-        check_interval = 3  # Start with 3 second checks
+        """Monitor DNS for worker membership changes.
+
+        Uses consecutive miss tracking to prevent false positives from DNS propagation delays.
+        A worker is only considered removed if it's missing from DNS for multiple consecutive checks.
+        """
+        check_interval = 3
 
         while self._dns_monitor_running:
             try:
@@ -244,20 +250,43 @@ class DistributedSupervisor(ExecutionSupervisor):
                 current_ips = set(self._get_pod_ips_fast())
 
                 with self._workers_lock:
-                    if current_ips != self._current_workers:
-                        added = current_ips - self._current_workers
-                        removed = self._current_workers - current_ips
+                    # Track potentially removed IPs (in _current_workers but not in DNS)
+                    potentially_removed = self._current_workers - current_ips
+                    confirmed_removed = set()
 
+                    # Increment miss count for potentially removed IPs
+                    for ip in potentially_removed:
+                        self._consecutive_removals[ip] = self._consecutive_removals.get(ip, 0) + 1
+                        if self._consecutive_removals[ip] >= self._removal_threshold:
+                            confirmed_removed.add(ip)
+                            logger.debug(
+                                f"Worker {ip} confirmed removed after {self._consecutive_removals[ip]} consecutive misses"
+                            )
+
+                    # Clear miss count for IPs that reappeared (DNS propagation caught up)
+                    reappeared = set(self._consecutive_removals.keys()) & current_ips
+                    for ip in reappeared:
+                        logger.debug(f"Worker {ip} reappeared in DNS after {self._consecutive_removals[ip]} miss(es)")
+                        del self._consecutive_removals[ip]
+
+                    # Detect newly added workers
+                    added = current_ips - self._current_workers
+
+                    # Only raise membership change if there are confirmed removals or additions
+                    if confirmed_removed or added:
                         change = {
                             "timestamp": time.time(),
                             "added": added,
-                            "removed": removed,
+                            "removed": confirmed_removed,
                             "previous": self._current_workers.copy(),
                             "current": current_ips.copy(),
                         }
 
-                        if removed:
-                            logger.error(f"Workers REMOVED from cluster: {removed}")
+                        if confirmed_removed:
+                            logger.error(f"Workers REMOVED from cluster (confirmed): {confirmed_removed}")
+                            # Clean up tracking for confirmed removals
+                            for ip in confirmed_removed:
+                                self._consecutive_removals.pop(ip, None)
                         if added:
                             logger.warning(f"Workers ADDED to cluster: {added}")
 
@@ -265,9 +294,8 @@ class DistributedSupervisor(ExecutionSupervisor):
                         for event in self._change_subscribers:
                             event.set()
 
-                        self._current_workers = current_ips
-
-                time.sleep(check_interval)
+                        # Update current workers: remove confirmed removals, add new workers
+                        self._current_workers = (self._current_workers - confirmed_removed) | added
 
             except Exception as e:
                 logger.error(f"DNS monitor error: {e}")
