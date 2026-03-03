@@ -200,10 +200,18 @@ class ServiceManager:
         """Get standard kubetorch labels."""
         from kubetorch import __version__
 
+        username = globals.config.username
+        if not username:
+            raise ValueError(
+                "Username is required for deploying resources. Set it with:\n"
+                "  kt config set username <your-name>\n"
+                "or set the KT_USERNAME environment variable."
+            )
+
         labels = {
             provisioning_constants.KT_VERSION_LABEL: __version__,
             provisioning_constants.KT_TEMPLATE_LABEL: self.template_label,
-            provisioning_constants.KT_USERNAME_LABEL: globals.config.username,
+            provisioning_constants.KT_USERNAME_LABEL: username,
         }
         if custom_labels:
             labels.update(custom_labels)
