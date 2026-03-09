@@ -42,11 +42,25 @@ Build all runtime images too:
 release/build_images.sh --all
 ```
 
-Build and push all release artifacts:
+Run the local build flow in one command:
 
 ```bash
 release/release_all.sh --version 0.5.0 --push-images
 ```
+
+## What `release_all.sh` does
+
+`release/release_all.sh` is a convenience wrapper around the commands above. It:
+
+- syncs `VERSION`
+- builds the Python package locally
+- packages the Helm chart locally into `dist/charts/`
+- builds all images
+- pushes images only if you pass `--push-images`
+
+If you already ran the individual steps manually, you do not need to run `release/release_all.sh` again unless you want it to rerun them.
+
+It does not publish the Python package to PyPI or push the Helm chart to GHCR.
 
 ## Image publishing
 
