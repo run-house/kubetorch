@@ -91,12 +91,20 @@ build_image() {
   esac
 
   echo "Building ${image_ref}"
-  docker build \
-    --platform "${PLATFORM}" \
-    "${build_args[@]}" \
-    -t "${image_ref}" \
-    -f "${dockerfile}" \
-    "${context}"
+  if [[ ${#build_args[@]} -gt 0 ]]; then
+    docker build \
+      --platform "${PLATFORM}" \
+      "${build_args[@]}" \
+      -t "${image_ref}" \
+      -f "${dockerfile}" \
+      "${context}"
+  else
+    docker build \
+      --platform "${PLATFORM}" \
+      -t "${image_ref}" \
+      -f "${dockerfile}" \
+      "${context}"
+  fi
 
   if [[ "${PUSH}" == "true" ]]; then
     echo "Pushing ${image_ref}"
