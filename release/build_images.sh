@@ -9,7 +9,23 @@ VERSION="$(read_version)"
 PUSH=false
 COMPONENTS=()
 IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-ghcr.io/run-house}"
-PLATFORM="${DOCKER_PLATFORM:-linux/amd64}"
+HOST_ARCH="$(uname -m)"
+
+case "${HOST_ARCH}" in
+  arm64|aarch64)
+    DEFAULT_PLATFORM="linux/arm64"
+    ;;
+  x86_64|amd64)
+    DEFAULT_PLATFORM="linux/amd64"
+    ;;
+  *)
+    echo "Unsupported host architecture: ${HOST_ARCH}" >&2
+    exit 1
+    ;;
+esac
+
+PLATFORM="${DOCKER_PLATFORM:-${DEFAULT_PLATFORM}}"
+PLATFORMS="${DOCKER_PLATFORMS:-linux/amd64,linux/arm64}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -91,7 +107,25 @@ build_image() {
   esac
 
   echo "Building ${image_ref}"
-  if [[ ${#build_args[@]} -gt 0 ]]; then
+  if [[ "${PUSH}" == "true" ]]; then
+    echo "Publishing ${image_ref} for ${PLATFORMS}"
+    if [[ ${#build_args[@]} -gt 0 ]]; then
+      docker buildx build \
+        --platform "${PLATFORMS}" \
+        "${build_args[@]}" \
+        -t "${image_ref}" \
+        -f "${dockerfile}" \
+        --push \
+        "${context}"
+    else
+      docker buildx build \
+        --platform "${PLATFORMS}" \
+        -t "${image_ref}" \
+        -f "${dockerfile}" \
+        --push \
+        "${context}"
+    fi
+  elif [[ ${#build_args[@]} -gt 0 ]]; then
     docker build \
       --platform "${PLATFORM}" \
       "${build_args[@]}" \
@@ -104,11 +138,6 @@ build_image() {
       -t "${image_ref}" \
       -f "${dockerfile}" \
       "${context}"
-  fi
-
-  if [[ "${PUSH}" == "true" ]]; then
-    echo "Pushing ${image_ref}"
-    docker push "${image_ref}"
   fi
 }
 

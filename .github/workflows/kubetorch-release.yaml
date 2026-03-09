@@ -91,6 +91,14 @@ jobs:
           slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
           slack_channel_id: ${{ secrets.CHANNEL_ID }}
 
+      - name: Set up QEMU
+        if: ${{ github.event.inputs.publish_images == 'yes' }}
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: ${{ github.event.inputs.publish_images == 'yes' }}
+        uses: docker/setup-buildx-action@v3
+
       - name: Build and push Kubetorch images
         if: ${{ github.event.inputs.publish_images == 'yes' }}
         env:

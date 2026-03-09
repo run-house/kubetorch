@@ -9,10 +9,15 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Download and install Loki binary for ephemeral log storage
-RUN curl -L https://github.com/grafana/loki/releases/download/v3.5.3/loki-linux-amd64.zip -o /tmp/loki.zip && \
+RUN arch="$(dpkg --print-architecture)" && \
+    case "${arch}" in \
+      amd64|arm64) loki_arch="${arch}" ;; \
+      *) echo "Unsupported architecture: ${arch}" >&2; exit 1 ;; \
+    esac && \
+    curl -L "https://github.com/grafana/loki/releases/download/v3.5.3/loki-linux-${loki_arch}.zip" -o /tmp/loki.zip && \
     unzip /tmp/loki.zip -d /usr/local/bin/ && \
-    chmod +x /usr/local/bin/loki-linux-amd64 && \
-    mv /usr/local/bin/loki-linux-amd64 /usr/local/bin/loki && \
+    chmod +x "/usr/local/bin/loki-linux-${loki_arch}" && \
+    mv "/usr/local/bin/loki-linux-${loki_arch}" /usr/local/bin/loki && \
     rm /tmp/loki.zip
 
 # Install Python dependencies
