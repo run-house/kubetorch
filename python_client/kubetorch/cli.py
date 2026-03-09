@@ -529,7 +529,35 @@ def _resolve_image(image_str):
         factory = getattr(presets, name, None)
         if factory:
             return factory(version) if version else factory()
-    return Image(**json.loads(image_str))
+        return Image(**json.loads(image_str))
+
+    kwargs = json.loads(image_str)
+
+    # Pop method-chain keys before passing rest to Image constructor
+    chain_methods = ["pip_install", "run_bash", "set_env_vars", "copy", "sync_package"]
+    chain_calls = [(k, kwargs.pop(k)) for k in chain_methods if k in kwargs]
+
+    image = Image(**kwargs)
+    for method, val in chain_calls:
+        if method == "pip_install":
+            image = image.pip_install(val if isinstance(val, list) else [val])
+        elif method == "set_env_vars":
+            image = image.set_env_vars(val)
+        elif method == "sync_package":
+            image = image.sync_package(val)
+        elif method == "run_bash":
+            # String = single call, list of strings = multiple calls
+            for cmd in [val] if isinstance(val, str) else val:
+                image = image.run_bash(cmd)
+        elif method == "copy":
+            # String, dict, or list of those
+            items = [val] if isinstance(val, (str, dict)) else val
+            for item in items:
+                if isinstance(item, str):
+                    image = image.copy(item)
+                else:
+                    image = image.copy(**item)
+    return image
 
 
 @app.command("deploy")
@@ -550,7 +578,8 @@ def kt_deploy(
         None,
         "--image",
         "-i",
-        help="Preset image name (pytorch, debian, ubuntu, python:3.12, ray) or JSON string of Image args",
+        help="Preset name (pytorch, debian, python:3.12) or JSON with Image args and methods "
+        '(e.g. \'{"image_id": "my-image", "pip_install": ["numpy"], "copy": {"source": "./data", "dest": "app/data"}}\')',
     ),
     init_args_json: str = typer.Option(
         None,
@@ -607,6 +636,14 @@ def kt_deploy(
         Override image with custom JSON:
 
             kt deploy my_app.py --compute '{"cpus": 4}' --image '{"image_id": "my-registry/my-image:latest"}'
+
+        Image with pip installs and file copies:
+
+            kt deploy my_app.py --compute '{"cpus": 2}' --image '{"image_id": "python:3.11", "pip_install": ["numpy", "pandas"], "copy": {"source": "./data", "dest": "app/data"}}'
+
+        Image with multiple run_bash commands:
+
+            kt deploy my_app.py --compute '{"cpus": 2}' --image '{"image_id": "ubuntu:22.04", "run_bash": ["apt-get update", "apt-get install -y vim"], "set_env_vars": {"MY_VAR": "1"}}'
     """
     from kubetorch.resources.callables.cls.cls import Cls
     from kubetorch.resources.compute.compute import Compute

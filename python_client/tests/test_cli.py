@@ -522,6 +522,66 @@ def test_collect_modules_undecorated_non_callable():
         _collect_modules(target, allow_undecorated=True)
 
 
+######################################
+###### _resolve_image tests ##########
+######################################
+@pytest.mark.level("unit")
+def test_resolve_image_json_with_methods():
+    """JSON with constructor args and method chains produces correct Image."""
+    from kubetorch.cli import _resolve_image
+
+    img = _resolve_image(
+        '{"image_id": "python:3.11", "pip_install": ["numpy"], '
+        '"run_bash": ["echo hello", "echo world"], "set_env_vars": {"K": "V"}, '
+        '"copy": {"source": "./data", "dest": "out"}}'
+    )
+    assert img.image_id == "python:3.11"
+    assert any("numpy" in line for line in img._dockerfile_contents)
+    assert any("echo hello" in line for line in img._dockerfile_contents)
+    assert any("echo world" in line for line in img._dockerfile_contents)
+    assert any("K" in line for line in img._dockerfile_contents)
+    assert len(img.copy_operations) == 1
+
+
+@pytest.mark.level("minimal")
+def test_cli_deploy_with_image_pip_install():
+    """Deploy with --image JSON that includes pip_install, verify the package is usable."""
+    import json
+    import subprocess
+
+    assets_dir = Path(__file__).parent / "assets" / "undecorated_modules"
+    target = f"{assets_dir / 'undecorated_modules.py'}:check_numpy_version"
+
+    result = subprocess.run(
+        [
+            "kt",
+            "deploy",
+            target,
+            "--compute",
+            json.dumps({"cpus": ".1", "launch_timeout": 300}),
+            "--image",
+            json.dumps({"pip_install": ["numpy"]}),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"kt deploy failed: {result.stderr}\n{result.stdout}"
+
+    service_name = None
+    for line in result.stdout.splitlines():
+        if "Deploying" in line:
+            service_name = line.split("Deploying")[1].strip().rstrip(".")
+            break
+    assert service_name, f"Could not find service name in deploy output: {result.stdout}"
+
+    result = subprocess.run(["kt", "call", service_name], capture_output=True, text=True)
+    assert result.returncode == 0, f"kt call failed: {result.stderr}\n{result.stdout}"
+    assert re.search(r"\d+\.\d+", result.stdout), f"Expected numpy version in output: {result.stdout}"
+
+    # Subprocess uses real username, not test hash — must teardown explicitly
+    subprocess.run(["kt", "teardown", service_name, "-y"], capture_output=True, text=True)
+
+
 ####################################
 ######### kt call tests ############
 ####################################
