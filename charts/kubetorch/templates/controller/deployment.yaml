@@ -104,7 +104,7 @@ spec:
         # Controller container (the K8s API proxy)
         # --------------------------------------------------------------------
         - name: controller
-          image: "ghcr.io/run-house/kubetorch-controller:{{ .Values.kubetorchController.tag }}"
+          image: "{{ .Values.kubetorchController.repository }}:{{ .Values.kubetorchController.tag }}"
           imagePullPolicy: {{ .Values.kubetorchController.imagePullPolicy }}
           env:
             - name: VERSION

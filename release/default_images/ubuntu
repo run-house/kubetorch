@@ -1,0 +1,33 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Python 3.11, pip, and other tools
+RUN apt-get update && \
+    apt-get install -y \
+        software-properties-common \
+        rsync \
+        screen \
+        coreutils \
+        curl && \
+    add-apt-repository ppa:deadsnakes/ppa -y && \
+    apt-get update && \
+    apt-get install -y \
+        python3.11 \
+        python3.11-venv \
+        python3.11-distutils \
+        python3-pip && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Ensure "python" and "pip" point to 3.11
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
+    update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
+
+WORKDIR /kt_app
+
+COPY release/default_images/requirements.txt ./requirements.txt
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+EXPOSE 32300

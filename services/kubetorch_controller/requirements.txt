@@ -1,0 +1,9 @@
+fastapi>=0.123.5
+httpx>=0.28.0
+uvicorn[standard]>=0.38.0
+kubernetes>=34.1.0
+prometheus_api_client>=0.5.0
+pydantic>=2.0.0
+sqlalchemy>=2.0.36
+Jinja2>=3.1.6
+websockets>=12.0

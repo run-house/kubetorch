@@ -25,10 +25,7 @@ runs:
 
     - name: Package Helm chart
       shell: bash
-      run: |
-        cd charts/kubetorch
-        helm dependency update .
-        helm package . --destination ../../
+      run: release/package_chart.sh
 
     - name: Extract Helm chart version
       id: get_version
