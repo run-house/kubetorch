@@ -1,3 +1,7 @@
+import os
+
+from kubetorch._version import __version__ as KUBETORCH_VERSION
+
 # K8s Configuration
 KUBECTL_PORT = 6443
 KT_LAUNCH_TIMEOUT = 900  # 15 minutes
@@ -14,11 +18,18 @@ KUBETORCH_NAMESPACE = "kubetorch"
 DEFAULT_NAMESPACE = "default"
 
 # Images
-SERVER_IMAGE_MINIMAL = "ghcr.io/run-house/server:v3"
-SERVER_IMAGE_WITH_OTEL = "ghcr.io/run-house/server-otel:v3"
+DEFAULT_IMAGE_NAMESPACE = os.getenv("KUBETORCH_IMAGE_NAMESPACE", "ghcr.io/run-house")
 
-UBUNTU_IMAGE_MINIMAL = "ghcr.io/run-house/ubuntu:v1"
-UBUNTU_IMAGE_WITH_OTEL = "ghcr.io/run-house/ubuntu:v1"
+
+def _versioned_image(image_name: str) -> str:
+    return f"{DEFAULT_IMAGE_NAMESPACE}/{image_name}:{KUBETORCH_VERSION}"
+
+
+SERVER_IMAGE_MINIMAL = _versioned_image("server")
+SERVER_IMAGE_WITH_OTEL = _versioned_image("server-otel")
+
+UBUNTU_IMAGE_MINIMAL = _versioned_image("ubuntu")
+UBUNTU_IMAGE_WITH_OTEL = _versioned_image("ubuntu-otel")
 
 DEFAULT_PROXY_IMAGE = "ghcr.io/run-house/proxy:v2"
 KUBETORCH_IMAGE_TRAPDOOR = "kubetorch"
@@ -77,3 +88,6 @@ DATA_STORE_METADATA_PORT = 8081
 
 # Runhouse
 KUBETORCH_UI_SERVICE_NAME = "kubetorch-ui-service"
+import os
+
+from kubetorch._version import __version__ as KUBETORCH_VERSION

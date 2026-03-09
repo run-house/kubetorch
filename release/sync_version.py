@@ -49,7 +49,7 @@ def main() -> None:
         count=1,
     )
     replace_in_file(
-        REPO_ROOT / "python_client/kubetorch/__init__.py",
+        REPO_ROOT / "python_client/kubetorch/_version.py",
         r'(?m)^__version__ = "[^"]+"$',
         f'__version__ = "{version}"',
         count=1,
@@ -96,6 +96,18 @@ def main() -> None:
         REPO_ROOT / "charts/kubetorch/README.md",
         r'(?m)^\| kubetorchController\.tag \| string \| `".*?"` \|  \|$',
         f'| kubetorchController.tag | string | `"{version}"` |  |',
+    )
+    replace_in_file(
+        REPO_ROOT / "release/default_images/server-otel",
+        r"(?m)^ARG BASE_IMAGE=.+$",
+        f"ARG BASE_IMAGE=ghcr.io/run-house/server:{version}",
+        count=1,
+    )
+    replace_in_file(
+        REPO_ROOT / "release/default_images/ubuntu-otel",
+        r"(?m)^ARG BASE_IMAGE=.+$",
+        f"ARG BASE_IMAGE=ghcr.io/run-house/ubuntu:{version}",
+        count=1,
     )
 
     print(version)

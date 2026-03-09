@@ -1,3 +1,4 @@
+from ._version import __version__
 from kubetorch.data_store import BroadcastWindow, DataStoreError, get, ls, put, rm  # noqa: F401
 from kubetorch.globals import config, DebugConfig, LoggingConfig, MetricsConfig  # noqa: F401
 from kubetorch.provisioning.utils import KubernetesCredentialsError
@@ -62,5 +63,3 @@ EXCEPTION_REGISTRY = {
 # Make exceptions appear to be from the main package (e.g. kubetorch.ImagePullError)
 for exception in EXCEPTION_REGISTRY.values():
     exception.__module__ = "kubetorch"
-
-__version__ = "0.5.0"
