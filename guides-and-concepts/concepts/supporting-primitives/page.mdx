@@ -1,0 +1,101 @@
+# Supporting Python Primitives
+
+In addition to the [core building blocks](/kubetorch/concepts/primitives) (Compute, Image, and Modules), Kubetorch
+provides supporting primitives that extend functionality for real-world ML workflows.
+
+These primitives are not strictly required to get started, but they unlock important capabilities like
+persistent storage, shared caches, and secure credential management.
+
+## Volume
+
+The `kt.Volume` class enables persistent storage for your workloads, allowing data to persist beyond individual pod
+lifecycles. Kubetorch automatically manages Kubernetes PersistentVolumeClaims (PVCs) while providing a simple Python
+interface for storage configuration. Kubetorch also integrates with Kubernetes policy engines such as
+[Kyverno](https://kyverno.io/).
+
+Volumes can be created and managed through the CLI for quick setup and configuration, or defined programmatically in
+Python for dynamic workflows.
+
+```bash
+$ kt volumes create my-data --size 50Gi  # Standard volume (ReadWriteOnce)
+$ kt volumes list  # List all Kubetorch volumes
+```
+
+```python
+
+   import kubetorch as kt
+
+   kt.fn(my_fn_obj).to(
+       compute=kt.Compute(
+           ...compute_kwargs...
+           volumes=[
+               kt.Volume(name="my-data", size="5Gi"),  # Standard volume (ReadWriteOnce)
+               kt.Volume(name="shared-data", size="10Gi", storage_class="juicefs-sc-shared", access_mode="ReadWriteMany")  # Shared volume (ReadWriteMany, requires JuiceFS or similar)
+               "previously-created-volume",  # Reference existing volume by name
+           ]
+       )
+   )
+
+```
+
+See the [Python API](https://www.run.house/kubetorch/api-reference/python/volumes) or
+[CLI docs](https://www.run.house/kubetorch/api-reference/cli) or for more info.
+
+Once created, you can configure your local Kubetorch config to set global defaults to automatically mount volumes
+to all new services, unless explicitly overriden in the ``Compute`` configuration.
+
+```bash
+kt config set volumes my-data
+```
+
+### Use Cases
+
+* **Persistent Datasets**: Keep large datasets or model caches mounted once and reuse them across multiple training jobs.
+  This avoids repeated downloads and ensures consistency across services.
+* **UV Cache**: Speed up package installation by caching dependencies globally. With a shared cache, package managers like
+  [uv](https://docs.astral.sh/uv/) or pip reuse wheels across services instead of rebuilding them at every launch, cutting
+  cold-start times from minutes to seconds.
+* **Shared Model Checkpoints**: Use a ReadWriteMany volume (e.g. JuiceFS) for storing model checkpoints that need to be read
+  and updated by multiple pods in parallel. This enables distributed training and evaluation jobs to share the same artifacts
+  without extra synchronization steps.
+
+## Secrets
+
+The `kt.Secret` class lets you define and manage secrets for your workloads. It builds on top of Kubernetes Secrets,
+while providing a simple Python and CLI interface to create, load, and reuse them across services.
+
+Secrets can reference cloud credentials, API keys, or any other sensitive data your workloads need. Once created in the
+cluster, they can be referenced by name in multiple workloads — just like using environment variables locally.
+
+There are three main ways to define a secret:
+* **Provider credentials**: Automatically pull credentials for common providers (AWS, GCP, Hugging Face, etc.) from your
+  local environment.
+* **Environment Variables**: Supply key–value pairs directly.
+* **File Paths**: Point to a file containing sensitive values (e.g. service account JSON, kubeconfig).
+
+The secret can be created in one of two ways. Once it is created on your Kubernetes cluster, you may easily reload it by name, and use it in multiple different workloads. The secrets are used just as if you were running any workload locally.
+* Inside `kt.Compute`: The secret is constructed at launch time, when you call `kt_fn_or_cls.to(compute)`.
+* Using CLI: Use the `kt secret create <args>` CLI command to create a secret based on the supplied arguments.
+
+Once created, secrets are stored in Kubernetes and can be reused by name in future workloads.
+
+```bash
+$ kt secret create --provider aws  # create from builtin provider
+$ kt secret create my-env-secret --from-env FOO,BAR  # create from env vars
+$ kt secret create my-file-secret --from-file /path/to/creds.json  # create from a file
+
+$ kt secrets delete my-env-secret
+```
+
+```python
+import kubetorch as kt
+
+# Create inline from environment variables
+custom_secret = kt.Secret(
+    name="my-secret",
+    env_vars={"API_KEY": "supersecretvalue"}
+)
+```
+
+For more details, refer to the [Python API](https://www.run.house/kubetorch/api-reference/python/secret) or
+[CLI docs](https://www.run.house/kubetorch/api-reference/cli).

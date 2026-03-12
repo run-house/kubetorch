@@ -1,0 +1,228 @@
+# Logs and Metrics
+
+Kubetorch provides comprehensive logging and metrics capabilities for your remote workloads. You can view logs
+via the CLI, stream them in real-time during function calls, and monitor resource utilization metrics.
+
+## Viewing Logs with the CLI
+
+The `kt logs` command lets you view logs for any running service:
+
+```bash
+# View logs from all pods
+kt logs my-service
+
+# Follow logs in real-time
+kt logs my-service -f
+
+# View logs from a specific pod (by index)
+kt logs my-service -p 0
+
+# Tail the last N lines
+kt logs my-service -t 100
+
+# Specify namespace
+kt logs my-service -n my-namespace
+```
+
+| Option | Description |
+|--------|-------------|
+| `-f`, `--follow` | Follow logs in real-time (like `tail -f`) |
+| `-t`, `--tail` | Number of lines to show (default: 100) |
+| `-p`, `--pod` | Specific pod name or index (0-based) |
+| `-n`, `--namespace` | Kubernetes namespace |
+
+## Log Streaming
+
+Kubetorch can stream logs back to your client in real-time. This includes:
+- Standard logging output from your code
+- Anything printed to stdout/stderr
+- Kubernetes events during service launch (pod scheduling, image pulling, container starting, etc.)
+
+Log streaming happens in two contexts:
+1. **During `.to()` deployment** - See K8s events and startup logs as your service launches
+2. **During function/method calls** - See your application logs in real-time
+
+### Enabling Log Streaming
+
+Log streaming is controlled via a precedence chain (highest to lowest):
+
+#### 1. Compute-Level Configuration
+
+Set logging behavior for all calls to a service using `LoggingConfig`:
+
+```python
+import kubetorch as kt
+
+compute = kt.Compute(
+    cpus="0.5",
+    logging_config=kt.LoggingConfig(
+        stream_logs=True,
+        level="info",
+    )
+)
+
+remote_fn = kt.fn(my_function).to(compute)
+result = remote_fn(*args)  # Logs will stream
+```
+
+#### 2. Per-Call Override
+
+Override the compute-level setting for individual calls:
+
+```python
+# Disable streaming for this call only
+result = remote_fn(*args, stream_logs=False)
+
+# Enable streaming even if disabled at compute level
+result = remote_fn(*args, stream_logs=True)
+```
+
+#### 3. Environment Variable
+
+If not set at compute or call level, Kubetorch checks the environment:
+
+```bash
+export KT_STREAM_LOGS="True"   # or "False"
+```
+
+#### 4. Global Config
+
+If none of the above are set, falls back to the global config (default: `True`):
+
+```bash
+kt config set stream_logs True
+```
+
+### LoggingConfig Options
+
+The `kt.LoggingConfig` class provides fine-grained control over logging behavior:
+
+```python
+import kubetorch as kt
+
+logging_config = kt.LoggingConfig(
+    stream_logs=True,           # Enable log streaming
+    level="info",               # Log level: "debug", "info", "warning", "error"
+    include_events=True,        # Include K8s events during startup
+    include_name=True,          # Prepend service name to log lines
+    grace_period=2.0,           # Seconds to continue streaming after call completes
+)
+
+compute = kt.Compute(cpus="0.5", logging_config=logging_config)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `stream_logs` | `bool` | `None` | Whether to stream logs. If `None`, falls back to global config |
+| `level` | `str` | `"info"` | Log level filter: `"debug"`, `"info"`, `"warning"`, `"error"` |
+| `include_events` | `bool` | `True` | Include Kubernetes events (pod scheduling, image pulling, etc.) |
+| `include_name` | `bool` | `True` | Prepend pod/service name to each log line |
+| `grace_period` | `float` | `2.0` | Seconds to continue streaming after request completes |
+
+### Log Level Propagation
+
+The log level you set is propagated to the remote compute, controlling which logs are emitted by the server.
+You can set it via `LoggingConfig.level` or the `KT_LOG_LEVEL` environment variable:
+
+```bash
+# Set locally - automatically propagates to remote compute
+export KT_LOG_LEVEL="DEBUG"
+```
+
+The precedence for log level is:
+1. `LoggingConfig.level` (if set)
+2. `KT_LOG_LEVEL` environment variable
+3. Default: `"INFO"`
+
+This means you can run your local script with `KT_LOG_LEVEL=DEBUG python my_script.py` and both your local
+client and remote compute will use debug-level logging.
+
+## Metrics Streaming
+
+Kubetorch can stream live resource metrics from your compute environment during function calls:
+- CPU utilization
+- Memory usage
+- GPU utilization and memory (when applicable)
+
+### Enabling Metrics Streaming
+
+Metrics streaming follows the same precedence as log streaming:
+
+#### 1. Per-Call Argument
+
+```python
+import kubetorch as kt
+
+remote_fn = kt.fn(my_function).to(kt.Compute(cpus="0.5"))
+
+# Enable with defaults (30s interval, resource scope)
+result = remote_fn(*args, stream_metrics=True)
+
+# Disable metrics streaming
+result = remote_fn(*args, stream_metrics=False)
+```
+
+#### 2. Custom Configuration with MetricsConfig
+
+```python
+import kubetorch as kt
+
+# Custom interval
+result = remote_fn(*args, stream_metrics=kt.MetricsConfig(interval=10))
+
+# Pod-level metrics (instead of aggregated resource metrics)
+result = remote_fn(*args, stream_metrics=kt.MetricsConfig(scope="pod"))
+
+# Both options
+result = remote_fn(*args, stream_metrics=kt.MetricsConfig(interval=10, scope="pod"))
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `interval` | `int` | `30` | Seconds between metrics outputs |
+| `scope` | `str` | `"resource"` | Aggregation level: `"resource"` (service-wide) or `"pod"` (per-pod) |
+
+#### 3. Environment Variable
+
+```bash
+export KT_STREAM_METRICS="True"   # or "False"
+```
+
+#### 4. Global Config
+
+```bash
+kt config set stream_metrics True
+```
+
+## Example: Full Observability Setup
+
+```python
+import kubetorch as kt
+
+# Configure comprehensive logging
+logging_config = kt.LoggingConfig(
+    stream_logs=True,
+    level="debug",              # Show all logs including debug
+    include_events=True,        # Show K8s events during startup
+    include_name=True,          # Prefix logs with service name
+)
+
+compute = kt.Compute(
+    cpus="2",
+    gpus="1",
+    logging_config=logging_config,
+)
+
+remote_fn = kt.fn(train_model).to(compute)
+
+# Run with both log and metrics streaming
+result = remote_fn(
+    epochs=10,
+    stream_metrics=kt.MetricsConfig(interval=15, scope="pod"),
+)
+```
+
+This will show:
+- All debug/info/warning/error logs from your training function
+- Kubernetes events as the pod starts up
+- CPU, memory, and GPU metrics every 15 seconds per pod

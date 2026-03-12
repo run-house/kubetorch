@@ -1,0 +1,162 @@
+# Debugging Remote Workflows
+
+Kubetorch includes full support for interactive remote debugging via Python's built-in
+[pdb debugger](https://docs.python.org/3/library/pdb.html). Breakpoints can be placed anywhere inside your Kubetorch
+functions or class methods, including within deeply nested or distributed code running in Kubernetes. When a breakpoint
+is hit, you can inspect variables, step through code, and evaluate expressions with the same fidelity as local debugging.
+
+Remote debugging works by launching a lightweight debug server inside your running pod. You can connect to this server
+using the Kubetorch CLI (`kt debug`).
+
+## Enabling Breakpoints in Remote Code
+
+You can enable debugging in two ways:
+
+### Using breakpoint() in Your Code
+
+Simply place a `breakpoint()` inside your remote function or class method:
+
+```python
+def my_fn(*args, **kwargs):
+    print("before")
+    breakpoint()   # Execution will pause here
+    print("after")
+```
+
+When your remote code hits the breakpoint, Kubetorch automatically activates the debug server and prints
+connection instructions to the logs.
+
+**Note:** For SPMD-style distributed code like PyTorch, be sure to only call `breakpoint()` from one process
+(e.g., the rank 0 process) to avoid blocking all processes in the distributed group.
+
+### Function-Level Debugging
+
+You can enable debugging without modifying your code by passing `debug=True` when calling any Kubetorch
+function or class method:
+
+```python
+import kubetorch as kt
+
+remote_fn = kt.fn(my_fn).to(compute)
+res = remote_fn(*args, **kwargs, debug=True, stream_logs=True)
+```
+
+This pauses execution at the very beginning of your remote function, before any of your code runs.
+It's ideal for inspecting arguments, the execution environment, or debugging initialization logic.
+
+**Important:** Use `stream_logs=True` to see the connection instructions printed to your terminal.
+
+### Debug Configuration
+
+For more control over debugging, use `kt.DebugConfig`:
+
+```python
+import kubetorch as kt
+
+remote_fn = kt.fn(my_fn).to(compute)
+
+# Use web-based PDB UI instead of terminal
+res = remote_fn(*args, debug=kt.DebugConfig(mode="pdb-ui"), stream_logs=True)
+
+# Use a custom port
+res = remote_fn(*args, debug=kt.DebugConfig(mode="pdb", port=5679), stream_logs=True)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `mode` | `"pdb"` or `"pdb-ui"` | `"pdb"` | `"pdb"` for terminal-based debugging, `"pdb-ui"` for web-based UI |
+| `port` | `int` | `5678` | Port for the debug server |
+
+You can also set the default debug mode via environment variable:
+```bash
+export KT_DEBUG_MODE=pdb-ui  # Use web-based debugger by default
+```
+
+## Running Remote Code in Debug Mode
+
+When the remote code hits a breakpoint, the pod will pause execution and print debugging instructions directly into
+the logs. These logs include the exact `kt debug` command you should run to attach to the remote debug server.
+
+For example, your logs may include a message like:
+
+```bash
+kt debug main-data-preproc-6f6bcb7fd9-4nrrv --port 5678 --namespace kubetorch --mode pdb --pod-ip 10.0.1.5
+```
+
+Copy and run that command to connect to the debugger.
+
+## Connecting to the Debugger
+
+### From Your Local Machine
+
+```bash
+kt debug <pod-name> --port <port> --namespace <namespace> --mode pdb
+```
+
+This command:
+- Port-forwards the debug server from inside the pod to your local machine
+- Connects you to the PDB session in your terminal
+- Keeps the session open until you exit the debugger or press Ctrl+C
+
+### From Inside the Cluster
+
+If you're running code from another pod in the cluster, use the `--pod-ip` flag:
+
+```bash
+kt debug <pod-name> --port <port> --namespace <namespace> --mode pdb --pod-ip <ip>
+```
+
+This connects directly to the pod's IP address without port-forwarding.
+
+### Debug Modes
+
+**Terminal PDB (`--mode pdb`)** - Default mode. Connects to an interactive PDB session in your terminal.
+
+**Web-based UI (`--mode pdb-ui`)** - Opens a browser window with a web-based PDB interface featuring:
+- Source code view with syntax highlighting
+- Visual stack inspection
+- Variable explorer
+
+Once connected, you get a full interactive PDB shell with all standard capabilities.
+
+## Debugging Session
+
+Once connected to the debugger, you can use all standard PDB commands:
+
+**Inspect Variables**
+
+```python
+p my_var
+pp long_json_struct
+locals()
+globals()
+```
+
+**Step through code**
+
+```python
+n   # next line
+s   # step into
+c   # continue
+```
+
+**Evaluate code dynamically**
+
+```python
+!print([x for x in range(10)])
+```
+
+**Look at stack frames**
+
+```python
+where
+up
+down
+```
+**Add additional breakpoints**
+
+```python
+b file.py:42
+```
+
+Everything behaves exactly like normal PDB, but inside a running Kubernetes pod.

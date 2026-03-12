@@ -1,0 +1,284 @@
+import Callout from '@components/primitives/Callout'
+import {
+  HelmPullChartCodeBlock,
+  ConnectWithUs,
+  OCIInstallCodeBlock,
+  HelmfileCodeBlock,
+  ServerlessKubetorchCallout,
+} from '@components/KubetorchOnboarding'
+
+# Kubernetes Installation
+
+<ServerlessKubetorchCallout />
+
+You can install Kubetorch on an existing cluster or with a new one.
+If you are looking for a managed, serverless Kubetorch experience, please see our [Serverless](/kubetorch/serverless) guide.
+
+This guide will help you get to a working setup with Kubetorch using its base default settings. You will:
+* Download and `helm install` the Kubetorch chart on your cluster
+* Optionally enable features like autoscaling or Ray with additional installs.
+
+After that, we recommend running our
+[Hello World](https://github.com/run-house/kubetorch-examples/blob/main/hello_world/hello_world.py) to ensure everything is
+working.
+
+<ConnectWithUs />
+
+## Helm Chart Installation
+
+Kubetorch Helm charts are hosted publicly on GitHub Container Registry (GHCR), so you can pull or install them
+directly — no authentication or token required.
+
+```bash
+helm registry login ghcr.io --username run-house --password-stdin
+```
+
+### Install Kubetorch
+
+You can install Kubetorch in several ways:
+
+#### Option 1: Pull the chart locally
+
+Download and extract the chart:
+
+<HelmPullChartCodeBlock />
+
+This creates a local directory named kubetorch. Update `values.yaml` if needed, then install:
+
+```bash
+helm upgrade --install kubetorch ./kubetorch -n kubetorch --create-namespace
+```
+
+#### Option 2: Install from OCI
+
+Skip downloading and install directly from OCI:
+
+<OCIInstallCodeBlock />
+
+#### Option 3: Install with Helmfile
+
+If you prefer [Helmfile](https://github.com/helmfile/helmfile), define the release in `helmfile.yaml`:
+
+<HelmfileCodeBlock />
+
+Then sync your releases:
+
+```bash
+helmfile sync
+```
+
+### Install Knative (Optional)
+
+Autoscaling Kubetorch services use Knative. You may skip this step if you are not planning to use autoscaling.
+
+If Knative isn’t already installed, you can add the Operator by running:
+
+```bash
+helm repo add knative-operator https://knative.github.io/operator
+helm repo update
+
+helm install knative-operator --create-namespace --namespace knative-operator knative-operator/knative-operator
+```
+
+<Callout header="Note" type="info">
+  If your Kubernetes cluster is version < 1.31.0, install Knative Operator < 1.18.0 with the `--version` flag
+</Callout>
+
+Next, we'll create a KnativeServing custom resource that configures and enables Knative Serving in the
+`knative-serving` namespace by applying the YAML in the Helm chart:
+
+```bash
+kubectl create namespace knative-serving
+kubectl apply -f ./kubetorch/knative/serving.yaml
+```
+
+### Install Ray (Optional)
+
+Kubetorch supports Ray out of the box. To enable Ray, install the KubeRay Operator by running the following commands:
+
+```bash
+helm repo add kuberay https://ray-project.github.io/kuberay-helm/
+helm repo update
+
+# Install both CRDs and KubeRay operator v1.4.0.
+helm install kuberay-operator kuberay/kuberay-operator --version 1.4.0
+```
+
+For more information on installation and usage, see the [KubeRay Operator documentation](https://docs.ray.io/en/latest/cluster/kubernetes/getting-started/kuberay-operator-installation.html).
+
+## New Kubernetes Cluster
+If you want to create a new Kubernetes cluster with Kubetorch installed, please use the Terraform script provided
+to you by the Kubetorch team.
+
+This script will:
+- Create a new Kubernetes cluster
+- Install the Kubetorch Helm chart
+- Set up all necessary dependencies (including log streaming)
+
+## Additional Configuration
+
+The following sections are optional and generally not necessary for a minimal working setup.
+
+### Deployment Namespaces
+
+In addition to Kubetorch's release namespace, `deployment_namespaces` is a list of allowed namespaces for deploying
+Kubetorch workloads. This list ensures that required RBAC and watchers are created for these namespaces.
+
+```yaml
+kubetorchConfig:
+  deployment_namespaces:
+    - "qa"
+    - "training"
+```
+
+### Workload Identity / Service Account Annotations
+
+For cloud provider integrations (e.g., accessing cloud storage or secrets), you can add annotations to the Kubetorch service account:
+
+```yaml
+# GKE Workload Identity
+kubetorchConfig:
+  serviceAccountAnnotations:
+    iam.gke.io/gcp-service-account: "my-sa@my-project.iam.gserviceaccount.com"
+
+# AWS IAM Roles for Service Accounts (IRSA)
+kubetorchConfig:
+  serviceAccountAnnotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::123456789:role/my-role"
+```
+
+### DNS Resolver
+
+By default, Kubetorch will use the `kube-dns` resolver, which is the EKS/GKE default. If your cluster is using a
+different DNS resolver (like `coredns`), you can use the `resolver` field in the `kubetorchController.nginx` section of the `values.yaml`
+file to point to your DNS resolver service:
+
+```yaml
+kubetorchController:
+  nginx:
+    resolver: "coredns.kube-system.svc.cluster.local"
+```
+
+Or if running with Helm directly:
+
+```bash
+helm upgrade --install kubetorch oci://ghcr.io/run-house/charts/kubetorch \
+  --version <version> -n kubetorch --create-namespace \
+  --set kubetorchController.nginx.resolver="coredns.kube-system.svc.cluster.local"
+```
+
+### Taints & Tolerations
+
+If your cluster uses taints or requires workloads to run on specific node groups, Kubetorch allows you to configure
+tolerations and node affinity for the controller and data store components. You can set these fields directly in `values.yaml`:
+
+```yaml
+kubetorchController:
+  tolerations:
+    - operator: Exists
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: eks.amazonaws.com/nodegroup
+                operator: Exists
+
+dataStore:
+  tolerations:
+    - operator: Exists
+  affinity: {}
+```
+
+Or pass them during installation using `--set`:
+
+```bash
+helm upgrade --install kubetorch oci://ghcr.io/run-house/charts/kubetorch \
+  --version <version> \
+  -n kubetorch \
+  --create-namespace \
+  --set "kubetorchController.tolerations[0].operator=Exists" \
+  --set "dataStore.tolerations[0].operator=Exists"
+```
+
+For more complex scheduling rules (multiple node groups, weighted affinities, custom taints, etc.), we recommend
+downloading the chart and editing the `values.yaml` directly.
+
+### Data Store Storage
+
+For clusters with large data transfer needs, you may want to adjust the
+[data store](https://www.run.house/kubetorch/guides/data-store) storage and connection limits:
+
+```yaml
+dataStore:
+  storage:
+    size: 200Gi  # Default is 100Gi
+    storageClassName: "fast-ssd"  # Use a specific storage class
+  maxConnections: 1000  # Default is 500, increase for many concurrent workers
+  timeout: 600  # Connection timeout in seconds
+```
+
+### Log Retention
+
+Adjust log retention based on your debugging and compliance needs:
+
+```yaml
+logStreaming:
+  retentionPeriod: 72h  # Default is 24h
+```
+
+### Inactivity TTL
+
+The TTL controller automatically tears down idle workloads to prevent resources from lingering and accumulating costs.
+It runs as a background task in the Kubetorch controller, periodically checking for inactive workloads and cleaning them up.
+
+The TTL values configured here serve as cluster-wide defaults. Users can override these defaults on a per-workload basis
+when deploying their services.
+
+```yaml
+kubetorchController:
+  ttl:
+    enabled: true  # Enabled by default
+    intervalSeconds: 300  # How often to check for idle workloads (default: 5 minutes)
+    prometheusUrl: "http://kubetorch-metrics.kubetorch.svc.cluster.local:9090"
+```
+
+If you're using `kube-prometheus-stack` and want to use your existing Prometheus instance instead of the bundled one,
+you can enable the PodMonitor:
+
+```yaml
+kubetorchController:
+  ttl:
+    enabled: true
+    prometheusUrl: "http://prometheus-operated.monitoring.svc.cluster.local:9090"  # Your Prometheus URL
+    podMonitor:
+      enabled: true
+      prometheusLabel: "kube-prometheus"  # Label to match your Prometheus Operator instance
+      additionalLabels: {}
+```
+
+<Callout header="Note" type="info">
+  The TTL controller requires `metrics.enabled: true` to function. Disabling metrics will also disable automatic workload cleanup.
+</Callout>
+
+### Feature Toggles
+
+You can enable or disable specific Kubetorch features based on your needs:
+
+```yaml
+# Disable GPU support if your cluster has no GPUs
+nvidia-device-plugin:
+  enabled: false
+
+# Disable log streaming (not recommended for debugging)
+logStreaming:
+  enabled: false
+
+# Disable metrics collection (disables TTL controller and autoscaling)
+metrics:
+  enabled: false
+
+# Enable DCGM exporter for GPU metrics on EKS (GKE has this built-in)
+dcgm-exporter:
+  enabled: true
+```

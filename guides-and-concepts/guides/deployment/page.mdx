@@ -1,0 +1,334 @@
+import Callout from '@components/primitives/Callout'
+
+# Deployment Configuration
+
+This guide covers deployment configuration for the Kubetorch Helm chart, including multi-namespace
+deployments, component resource tuning, RBAC configuration, and workload isolation patterns.
+
+For basic installation, see the [Kubernetes Installation](/kubetorch/kubernetes-install) guide.
+
+The Helm chart includes several optional components that can be enabled or configured:
+- **GPU Support**: NVIDIA device plugin for GPU scheduling (enabled by default)
+- **Metrics**: Prometheus for metrics collection and monitoring
+- **Log Streaming**: Loki and OpenTelemetry for centralized logging
+- **Autoscaling**: Knative integration (requires separate Knative installation)
+- **Distributed Computing**: Ray cluster support (requires KubeRay operator)
+
+## Enabling and Disabling Components
+
+Toggle optional components in your `values.yaml`:
+
+```yaml
+# GPU support (requires GPU nodes)
+nvidia-device-plugin:
+  enabled: true                    # Set to false if no GPU nodes
+
+# Metrics collection
+metrics:
+  enabled: true                    # Prometheus metrics
+
+# Log streaming
+logStreaming:
+  enabled: true                    # Loki log aggregation
+
+opentelemetry-collector:
+  enabled: true                    # OTEL for distributed tracing
+
+# GPU metrics (for non-GKE clusters)
+dcgm-exporter:
+  enabled: false                   # Enable for DCGM GPU metrics on EKS/self-managed
+```
+
+## Multi-Namespace Deployment
+
+Kubetorch supports deploying workloads across multiple namespaces. The `deployment_namespaces` configuration
+controls which namespaces receive the necessary RBAC permissions and resources for running Kubetorch workloads.
+
+```yaml
+kubetorchConfig:
+  deployment_namespaces:
+    - "default"
+    - "kubetorch"
+    - "ml-team-a"
+    - "ml-team-b"
+  otelEnabled: true
+```
+
+For each namespace in this list, Kubetorch creates:
+- A `kubetorch-service-account` ServiceAccount with permissions to manage workloads
+- Role bindings for accessing core Kubetorch services in the release namespace
+- Cross-namespace permissions for metrics and logging collection
+
+Install with multiple namespaces using Helm:
+
+```bash
+helm upgrade --install kubetorch ./kubetorch -n kubetorch --create-namespace \
+  --set 'kubetorchConfig.deployment_namespaces={default,kubetorch,ml-team-a,ml-team-b}'
+```
+
+<Callout header="Note" type="info">
+  The release namespace (where Kubetorch is installed) is automatically included in the deployment namespaces,
+  even if not explicitly listed.
+</Callout>
+
+## Component Resource Configuration
+
+### DataStore (Sync Service)
+
+The DataStore handles code and data synchronization between the client and cluster. Tune these settings
+based on your workload size and concurrency requirements:
+
+```yaml
+dataStore:
+  maxConnections: 500        # Increase for clusters with many concurrent pods
+  timeout: 600               # Connection timeout in seconds
+  maxVerbosity: 0            # 0 for production, higher (1-4) for debugging
+  cpu:
+    request: 2
+    limit: 4
+  memory:
+    request: 4Gi
+    limit: 8Gi
+  ephemeralStorage:
+    request: 5Gi
+    limit: 10Gi
+  storage:
+    size: 100Gi              # PVC size for persistent storage
+    storageClassName: ""     # Empty uses default storage class
+```
+
+### NGINX Proxy
+
+Configure body size limits for large payload transfers:
+
+```yaml
+nginxProxy:
+  maxBodySize:
+    rsync: "10G"             # Max size for data sync operations
+    api: "250M"              # Max size for API requests
+  tolerations: []            # Add tolerations for dedicated proxy nodes
+  affinity: {}               # Add affinity rules for node placement
+```
+
+### Metrics (Prometheus)
+
+Configure metrics collection and retention:
+
+```yaml
+metrics:
+  enabled: true
+  scrapeKubelet: true        # Collect node-level metrics
+  prometheus:
+    retention: 24h           # How long to retain metrics
+    scrapeInterval: 3s       # Collection frequency (lower = more granular)
+    resources:
+      cpu: 200m
+      memory: 512Mi
+```
+
+## RBAC and Service Accounts
+
+Kubetorch creates several ServiceAccounts with scoped permissions:
+
+| ServiceAccount | Scope | Purpose |
+|----------------|-------|---------|
+| `kubetorch-service-account` | Per namespace | Manages workloads (pods, deployments, services) |
+| `kubetorch-metrics` | Cluster-wide | Prometheus metrics collection |
+| `kubetorch-opentelemetry-collector` | Release namespace | Log and trace collection |
+
+The `kubetorch-service-account` has permissions for:
+- Knative services (for autoscaling)
+- Pods, deployments, and services management
+- Ray clusters (if using distributed computing)
+- ConfigMaps for runtime configuration
+
+<Callout header="Security" type="warning">
+  Only add namespaces to `deployment_namespaces` that require Kubetorch workload permissions.
+  Each added namespace receives a ServiceAccount capable of creating and managing pods.
+</Callout>
+
+## Workload Isolation
+
+### Namespace-Based Isolation
+
+Use separate namespaces for different teams or environments to provide logical isolation:
+
+```bash
+# Install Kubetorch with team-specific namespaces
+helm upgrade --install kubetorch ./kubetorch -n kubetorch --create-namespace \
+  --set 'kubetorchConfig.deployment_namespaces={kubetorch,team-research,team-production}'
+```
+
+### Resource Quotas
+
+Apply Kubernetes ResourceQuotas to limit resource consumption per namespace:
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: kubetorch-quota
+  namespace: team-research
+spec:
+  hard:
+    requests.cpu: "100"
+    requests.memory: 200Gi
+    requests.nvidia.com/gpu: "8"
+    limits.cpu: "200"
+    limits.memory: 400Gi
+```
+
+### Network Policies
+
+Restrict pod-to-pod communication for enhanced security:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kubetorch-workload-policy
+  namespace: team-research
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: kubetorch
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kubetorch
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0  # Allow external egress
+```
+
+## Scheduling: Tolerations and Affinity
+
+Components that support `tolerations` and `affinity` configuration:
+
+| Component | Tolerations | Affinity | Notes |
+|-----------|-------------|----------|-------|
+| `dataStore` | ✓ | ✓ | Sync service pods |
+| `nginxProxy` | ✓ | ✓ | Proxy pods |
+| `nvidia-device-plugin` | ✓ | ✓ | GPU node daemon |
+| `dcgm-exporter` | ✓ | ✓ | GPU metrics daemon |
+| `opentelemetry-collector` | ✓ | - | Log collection daemon (tolerates all taints by default) |
+
+### Scheduling on Tainted Nodes
+
+If your infrastructure nodes have taints, add tolerations to ensure Kubetorch components can be scheduled:
+
+```yaml
+# Example: Schedule dataStore and proxy on dedicated infra nodes
+dataStore:
+  tolerations:
+    - key: "dedicated"
+      operator: "Equal"
+      value: "kubetorch-infra"
+      effect: "NoSchedule"
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node-role
+                operator: In
+                values: ["infra"]
+
+nginxProxy:
+  tolerations:
+    - key: "dedicated"
+      operator: "Equal"
+      value: "kubetorch-infra"
+      effect: "NoSchedule"
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node-role
+                operator: In
+                values: ["infra"]
+```
+
+### GPU Node Scheduling
+
+The NVIDIA device plugin is pre-configured to run on GPU nodes. Customize if your GPU nodes have different labels:
+
+```yaml
+nvidia-device-plugin:
+  tolerations:
+    - key: "nvidia.com/gpu"
+      operator: "Exists"
+      effect: "NoSchedule"
+    - key: "dedicated"
+      operator: "Equal"
+      value: "gpu"
+      effect: "NoSchedule"
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: nvidia.com/gpu.product  # Or your custom GPU label
+                operator: Exists
+```
+
+## Configuring External Dependencies
+
+### Knative and Kourier
+
+Knative is installed separately but may need resource adjustments for production workloads. After installing
+Knative, you can patch Kourier (the ingress gateway) resources:
+
+```bash
+# Increase Kourier gateway resources
+kubectl patch deployment kourier-gateway -n kourier-system --type='json' -p='[
+  {"op": "replace", "path": "/spec/template/spec/containers/0/resources", "value": {
+    "requests": {"cpu": "200m", "memory": "256Mi"},
+    "limits": {"cpu": "1000m", "memory": "1Gi"}
+  }}
+]'
+
+# Add tolerations to Kourier if running on tainted nodes
+kubectl patch deployment kourier-gateway -n kourier-system --type='json' -p='[
+  {"op": "add", "path": "/spec/template/spec/tolerations", "value": [
+    {"key": "dedicated", "operator": "Equal", "value": "kubetorch-infra", "effect": "NoSchedule"}
+  ]}
+]'
+```
+
+You can also configure Knative autoscaling defaults via ConfigMap:
+
+```bash
+kubectl patch configmap config-autoscaler -n knative-serving --type merge -p '{
+  "data": {
+    "container-concurrency-target-default": "100",
+    "scale-down-delay": "1m"
+  }
+}'
+```
+
+### KubeRay Operator
+
+If using Ray for distributed computing, the KubeRay operator may also need tolerations:
+
+```bash
+# Add tolerations to KubeRay operator
+kubectl patch deployment kuberay-operator -n default --type='json' -p='[
+  {"op": "add", "path": "/spec/template/spec/tolerations", "value": [
+    {"key": "dedicated", "operator": "Equal", "value": "kubetorch-infra", "effect": "NoSchedule"}
+  ]}
+]'
+```
+
+## Workload Scheduling
+
+For workload-level affinity and tolerations (the pods that run your code), configure these in the
+`kt.Compute()` resource. See the [Compute documentation](/kubetorch/concepts/primitives) for details.

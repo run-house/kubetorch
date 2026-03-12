@@ -1,0 +1,212 @@
+# Core Python Primitives
+
+Kubetorch's Python API maps directly to Kubernetes concepts. Understanding this mapping helps you
+reason about what's happening under the hood.
+
+## Primitives and Their K8s Mapping
+
+| Primitive | Kubernetes Equivalent | What It Represents |
+|-----------|----------------------|-------------------|
+| `kt.Compute` | Compute-bearing K8s resource | A pool of pods to dispatch work to |
+| `kt.Image` | Container image + live setup | Dependencies to run on those pods |
+| `kt.Module` (`fn`, `cls`, `app`) | Service + processes | Your code running on pods, with an HTTP endpoint |
+
+## kt.Compute
+
+`kt.Compute` defines a pool of Kubernetes pods with specific resources. When you specify CPUs, GPUs,
+or memory, you're defining the resource requests/limits for pods in that pool. You may also use kt.Compute
+to point to an existing pool of pods using the `selector` argument, or bring your own existing manifest with
+kt.Compute.from_manifest.
+
+```python
+import kubetorch as kt
+
+# This creates a pool of pods, each with 4 CPUs, 1 GPU, and 16GB memory
+compute = kt.Compute(
+    cpus="4",
+    gpus="1",
+    memory="16Gi",
+)
+
+# The compute constructor supports more complex configurations
+compute = kt.Compute(
+    cpus="4",
+    gpus="1",
+    memory="16Gi",
+    disk_size="100Gi",
+    replicas=3,
+    node_selector={"nvidia.com/gpu.product": "NVIDIA-A100-SXM4-80GB"},
+    secrets=[kt.Secret(name="hf-token", env_var="HF_TOKEN")],
+    volumes=[kt.Volume(name="data", mount_path="/data", pvc="shared-data-pvc")],
+    annotations={"prometheus.io/scrape": "true"},
+    labels={"team": "ml-research"},
+)
+
+# This uses an existing pool of pods which match the selector
+compute = kt.Compute(selector={"app": "my-training-jobset"})
+
+# This uses a custom manifest (e.g. Kubeflow PyTorchJob, JobSet, etc.)
+compute = kt.Compute.from_manifest(
+    manifest=my_manifest,
+    selector={"app": "workers"},
+    endpoint=kt.Endpoint(url="my-lb.default.svc:8080"),
+)
+```
+
+### Compute Types
+
+For built-in compute types, the type of K8s workload created depends on your configuration. By default,
+Kubetorch creates a Deployment with a Service. When you configure autoscaling, it creates a Knative Service
+instead. For Ray workloads, it creates a RayCluster. You can also bring your own manifests (Kubeflow PyTorchJob,
+JobSet, etc.) and use them with Kubetorch's deployment and execution APIs.
+
+## kt.Image
+
+`kt.Image` defines what runs inside the container. Unlike traditional Docker workflows where you
+rebuild images for every change, Kubetorch applies image changes **live** to running pods. kt.Image compiles
+to a standard Dockerfile that you can use to build the image directly, and you can also bring your own
+unbuilt Dockerfile with `kt.Image.from_dockerfile`.
+
+```python
+import kubetorch as kt
+
+image = kt.Image(image_id="pytorch/pytorch:2.0.0-cuda11.7-cudnn8-runtime")
+    .pip_install(["transformers", "accelerate"])
+    .set_env_vars({"HF_TOKEN": "..."})
+    .run_bash("apt-get update && apt-get install -y git")
+    .copy("./configs", "/app/configs")
+```
+
+**What happens in K8s:**
+- The base `image_id` becomes the container image in the pod spec
+- Local files referenced by `COPY` commands are synced to the [data store](/kubetorch/concepts/data-store)
+  and pulled into pods, so you don't need to rebuild images to update local files
+- Setup steps (`pip_install`, `run_bash`, etc.) run inside the container at startup
+- Changes are applied differentially—only new/changed steps run on redeployment
+
+### Image Setup Methods
+
+Common setup methods include:
+- `pip_install(packages)` - Install Python packages
+- `set_env_vars(dict)` - Set environment variables
+- `run_bash(commands)` - Run shell commands at startup
+- `copy(local_path, container_path)` - Sync local files into the container
+- `sync_package(package)` - Sync a local Python package
+
+See the [Image guide](/kubetorch/guides/image) for the complete API and advanced usage.
+
+### Live Updates
+
+When you modify the image and redeploy:
+
+```python
+# Initial deployment
+image = kt.Image("pytorch/pytorch:2.0.0").pip_install(["transformers"])
+remote_fn = kt.fn(my_fn).to(kt.Compute(image=image))
+
+# Later, add a package - only this step runs on redeploy
+image = image.pip_install(["datasets"])
+remote_fn = kt.fn(my_fn).to(kt.Compute(image=image))  # Fast update
+```
+
+Kubetorch tracks which setup steps have already run and only executes new ones.
+
+## kt.Module (fn, cls, app)
+
+`kt.fn`, `kt.cls`, and `kt.app` wrap your Python code and deploy it as a Kubernetes Service.
+The service has an HTTP endpoint that Kubetorch uses to dispatch work to processes running on the pods.
+See [Adapting Existing Code](/kubetorch/guides/adapting-code) for examples of wrapping existing programs.
+
+```python
+import kubetorch as kt
+
+def train(data, epochs):
+    # Your training code
+    return model
+
+# Wrap the function
+remote_train = kt.fn(train)
+
+# Deploy to compute - creates K8s Service
+remote_train = remote_train.to(compute)
+
+# Call it - makes HTTP request to the service
+model = remote_train(data, epochs=10)
+```
+
+**What gets created in K8s:**
+- A Service with a cluster-internal endpoint
+- Your code is synced to the pods via the [data store](/kubetorch/concepts/data-store)
+- Your function, class, or app serving within the Kubetorch server on each pod in the pool
+
+### Module Types
+
+| Type | Use Case | Example |
+|------|----------|---------|
+| `kt.fn(function)` | Stateless functions | Data processing, inference |
+| `kt.cls(MyClass)` | Stateful classes | Models with loaded weights, caches |
+| `kt.app(command)` | Arbitrary processes | FastAPI servers, training scripts |
+
+### How Calls Work
+
+When you call `remote_fn(args)`:
+
+1. Arguments are [serialized](/kubetorch/guides/serialization) (JSON or pickle)
+2. HTTP POST request sent to the K8s Service endpoint
+3. Request routed to the pods in the pool
+4. Your function executes on the pod(s)
+5. Result serialized and returned
+6. [Logs streamed](/kubetorch/concepts/monitoring-and-observability) back to your client
+
+By default, for pools with multiple replicas, calls are broadcast to **every pod** in the pool (SPMD pattern),
+with results returned as a list. This is ideal for distributed training and batch processing. For other patterns:
+- **[Autoscaling](/kubetorch/guides/autoscaling)**: Load-balanced routing where each call goes to a single pod,
+  with automatic scale-up/down based on demand
+- **[Distributed](/kubetorch/guides/distributed)**: Framework-specific patterns for PyTorch DDP, Ray, JAX, and more
+
+You can also make [async calls](/kubetorch/guides/async) for non-blocking execution, or use the
+[debugging tools](/kubetorch/guides/debugging) to attach a debugger to remote code.
+
+## Putting It Together
+
+Here's a complete example combining all three primitives:
+
+```python
+import kubetorch as kt
+
+class Model:
+    def __init__(self, model_name):
+        from transformers import AutoModel
+        self.model = AutoModel.from_pretrained(model_name)
+
+    def predict(self, text):
+        return self.model(text)
+
+# Define compute with image
+compute = kt.Compute(
+    cpus="4",
+    gpus="1",
+    image=kt.Image("pytorch/pytorch:2.0.0")
+        .pip_install(["transformers"])
+)
+
+# Deploy and call
+remote_model = kt.cls(Model).to(compute, init_args={"model_name": "bert-base"})
+result = remote_model.predict("Hello world")
+```
+
+When you call `.to()`, Kubetorch:
+1. **Packages** your code and dependencies
+2. **Launches** the compute resources (or patches if already running)
+3. **Syncs** your code and container updates to all pods
+4. **Routes** your call to the service
+5. **Returns** the result with logs streamed back
+
+On subsequent `.to()` calls, only changes are applied—no pod restarts or image rebuilds required.
+See [System Overview](/kubetorch/concepts/overview#system-flow) for the detailed flow, or
+[Dev and Prod Workflows](/kubetorch/guides/dev-prod) for optimizing development vs production deployments.
+
+## Additional Primitives
+
+Beyond Compute, Image, and Modules, Kubetorch provides supporting primitives such as Secrets and Volumes. See
+[Supporting Python Primitives](/kubetorch/concepts/supporting-primitives) for configuration details.

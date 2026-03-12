@@ -1,0 +1,228 @@
+# Serialization
+
+When calling remote functions, Kubetorch serializes function arguments for transport over HTTP.
+You can control the serialization format using the `serialization` parameter.
+
+## Serialization Formats
+
+Kubetorch supports two serialization formats: **JSON** (default) and **Pickle**.
+
+### JSON (Default)
+
+JSON is the default and works well for most common Python types.
+
+```python
+import kubetorch as kt
+
+remote_fn = kt.fn(my_function).to(kt.Compute(cpus="0.5"))
+
+# Default JSON serialization
+result = remote_fn(arg1, arg2)
+
+# Explicitly specify JSON
+result = remote_fn(arg1, arg2, serialization="json")
+```
+
+**Supported types:**
+- Basic types: `str`, `int`, `float`, `bool`, `None`
+- Collections: `list`, `dict`, `tuple` (converted to list)
+- Nested combinations of the above
+
+**Limitations:**
+- Cannot serialize custom Python objects
+- Cannot serialize functions, classes, or complex types
+- No support for circular references
+
+### Pickle
+
+Pickle supports arbitrary Python objects, making it ideal for complex data structures.
+Data is pickled and then base64-encoded for HTTP transport.
+
+```python
+import kubetorch as kt
+
+remote_fn = kt.fn(my_function).to(kt.Compute(cpus="0.5"))
+
+# Use pickle serialization
+result = remote_fn(my_custom_object, serialization="pickle")
+```
+
+**Supported types:**
+- All JSON-supported types
+- Custom Python classes and objects
+- NumPy arrays, Pandas DataFrames
+- Most Python built-in types
+- Functions and lambda expressions (with limitations)
+
+**Limitations:**
+- Larger payload size due to base64 encoding
+- Security considerations (see below)
+- Some objects may not be picklable (e.g., open file handles, database connections)
+
+### Dependency Version Mismatches
+
+**Warning:** Pickle serialization can fail if the client and server have different versions of a library.
+
+For example, if your local environment has `numpy==1.26.0` and the remote has `numpy==2.0.0`,
+pickling a NumPy array may fail during deserialization due to incompatible internal representations.
+
+To avoid this:
+- Keep local and remote dependencies in sync
+- Use JSON serialization when possible
+- Convert complex objects to simpler types before sending
+
+## Setting Serialization Mode
+
+### Per-Call
+
+```python
+result = remote_fn(data, serialization="pickle")
+```
+
+### On the Function
+
+```python
+remote_fn.serialization = "pickle"
+
+# All calls now use pickle
+result = remote_fn(data)
+
+# Override for a specific call
+result = remote_fn(data, serialization="json")
+```
+
+## Restricting Allowed Serialization
+
+For security, you can restrict which serialization methods are allowed on a service.
+
+### At Compute Level
+
+```python
+import kubetorch as kt
+
+compute = kt.Compute(
+    cpus="1",
+    allowed_serialization=["json"],  # Only allow JSON
+)
+
+remote_fn = kt.fn(my_function).to(compute)
+```
+
+### Via Environment Variable
+
+```bash
+# Allow only JSON (more secure)
+export KT_ALLOWED_SERIALIZATION="json"
+
+# Allow only pickle
+export KT_ALLOWED_SERIALIZATION="pickle"
+
+# Allow both
+export KT_ALLOWED_SERIALIZATION="json,pickle"
+```
+
+### Precedence
+
+1. `allowed_serialization` on Compute (highest)
+2. `KT_ALLOWED_SERIALIZATION` environment variable
+3. Default: `["json"]`
+
+### Error Handling
+
+If a client attempts to use a disallowed serialization method, the server returns a 400 error:
+
+```
+HTTPException: Serialization format 'pickle' not allowed. Allowed formats: ['json']
+```
+
+## Security Considerations
+
+**Pickle can execute arbitrary code during deserialization.** Only use pickle when:
+- You trust the source of the serialized data
+- You're working in a controlled environment
+- You need to transfer complex Python objects
+
+For security-sensitive applications, restrict to JSON-only:
+
+```python
+compute = kt.Compute(cpus="1", allowed_serialization=["json"])
+```
+
+## How It Works
+
+When you call a remote function:
+
+1. **Client**: Arguments are serialized using the specified format
+2. **Transport**: Data is sent via HTTP POST
+3. **Server**:
+   - Validates serialization method against `allowed_serialization`
+   - Deserializes arguments
+   - Executes your function
+   - Serializes the result
+4. **Client**: Deserializes and returns the result
+
+## Examples
+
+### Sending NumPy Arrays
+
+```python
+import kubetorch as kt
+import numpy as np
+
+def process_array(arr):
+    return arr.sum()
+
+remote_fn = kt.fn(process_array).to(kt.Compute(cpus="0.5"))
+
+data = np.random.rand(1000, 1000)
+
+# Must use pickle for NumPy arrays
+result = remote_fn(data, serialization="pickle")
+```
+
+### Sending Custom Objects
+
+```python
+import kubetorch as kt
+from dataclasses import dataclass
+
+@dataclass
+class TrainingConfig:
+    epochs: int
+    learning_rate: float
+    batch_size: int
+
+def train(config: TrainingConfig):
+    return {"epochs": config.epochs, "lr": config.learning_rate}
+
+remote_fn = kt.fn(train).to(kt.Compute(cpus="0.5"))
+
+config = TrainingConfig(epochs=10, learning_rate=0.001, batch_size=32)
+
+# Must use pickle for custom objects
+result = remote_fn(config, serialization="pickle")
+```
+
+### Converting to JSON-Compatible Format
+
+If you want to avoid pickle, convert objects to dicts:
+
+```python
+import kubetorch as kt
+from dataclasses import dataclass, asdict
+
+@dataclass
+class TrainingConfig:
+    epochs: int
+    learning_rate: float
+
+def train(config_dict: dict):
+    return {"epochs": config_dict["epochs"]}
+
+remote_fn = kt.fn(train).to(kt.Compute(cpus="0.5"))
+
+config = TrainingConfig(epochs=10, learning_rate=0.001)
+
+# Convert to dict for JSON serialization
+result = remote_fn(asdict(config))  # Uses JSON (default)
+```

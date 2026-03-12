@@ -1,0 +1,96 @@
+# Developer Workflow & Concepts
+
+This guide covers the high level developer workflow and concepts. For more in-depth examples of using Kubetorch, you
+can refer to our [Examples](/examples), and for more specifics on Kubetorch concepts, check out
+[System Overview](/kubetorch/concepts/overview) and Concepts sections.
+
+Running your ML workload with Kubetorch requires three short steps, all in Python:
+1. Define the compute resources you want to use in Kubernetes, including autoscaling or distributed
+2. Deploy your Python function or class to that compute as a Kubernetes service
+3. Call that remote service in local Python, just as you would the original function or class
+4. (Optional) Iterate by making changes to your Python code locally and "redeploying" the service, which
+   hot syncs over code changes. Your remote service is updated and ready to use in seconds
+
+![Iteration Loop with Kubetorch](https://runhouse-tutorials.s3.us-east-1.amazonaws.com/dev-loop-kt.png)
+
+## 1. Standing up compute
+A basic launch with GPUs and a container image might look something like this:
+
+```python
+import kubetorch as kt
+gpus = kt.Compute(
+     gpus=1,
+     cpus=4,
+     memory="12Gi",
+     image=kt.Image(image_id="nvcr.io/nvidia/pytorch:23.10-py3").pip_install(["transformers"]),
+).distribute("pytorch", workers=4)
+```
+
+At a high level, the compute request defines the resources (GPUs, CPUs, memory, etc.) and dependencies needed to run
+your Python code. The resources can be generic, or specified according to your Kubernetes setup and infrastructure.
+Dependencies are usually set via a base Docker image, which you can further customize with pip installs, setup
+commands, or environment variables, without needing to rebuild.
+
+You can also specify more advanced concepts through the Compute class, such as setting distribution type (PyTorch, Ray,
+Spark) or autoscaling options (min/max replicas, concurrency) for distributed workloads. You can also manage idle
+resources and set parameters to automatically tear down services and free resources without disrupting active development.
+
+The startup time for compute ranges from seconds to a few minutes, depending on resource availability and size of images.
+However, the initial wait times are a one-time cost until your service is torn down; images are cached across nodes and
+further iteration will reuse the same compute without reprovisioning.
+
+
+## 2. Dispatching workloads
+Just as PyTorch lets you send workloads to GPUs using `.to()`, Kubetorch lets you deploy any Python class or function
+to your defined compute using `.to()`. This can be the entry point to your training loop, a single model to inference,
+or a class that encapsulates a complex workload – anything written in Python is fair game.
+
+```python
+# function
+train_ddp = kt.fn(train).to(gpus)
+
+# class
+train_ddp_class = kt.cls(train_class).to(gpus)
+```
+
+The service is deployed to your Kubernetes cluster using one of three modes: **Kubernetes Deployment** for reliable
+long-running services, **RayCluster** for distributed computing workloads, or **Knative Service** for serverless
+auto-scaling applications.
+
+Your local Python code and relevant files are synced onto the compute. Once launched, you can continue to update your
+Python code locally and redeploy to your compute with `.to`, which will re-sync over updates in 1-5 seconds, making the
+debugging cycle quick. Compare this to the alternative process of rebuilding Docker images and rerunning a Kubeflow
+pipeline, which can take 30-60 minutes.
+
+Your local Python code and relevant files are synced onto the compute. Once launched, you can continue to update your
+Python code locally and redeploy to your compute with `.to`, which will re-sync over updates in 1-5 seconds, making the
+debugging cycle quick. Compare this to the alternative process of rebuilding Docker images and rerunning a Kubeflow
+pipeline, which can take 30-60 minutes.
+
+## 3. Calling the remote workload
+To trigger execution of the Kubernetes service, simply call the remote function or class as if it were a local Python
+function.
+
+```python
+results = train_ddp(epochs=10)
+
+train_ddp_class.load_data("s3://my-bucket")
+train_ddp_class.train(epochs=10)
+```
+
+When you call the service, a secure HTTP call is made to the deployed service in Kubernetes. Log streaming, error
+handling, and observability are all built into the system.
+
+Because your Python code is the same locally and remotely, and always runs on the same compute in Kubernetes,
+Kubetorch bridges the "research-to-production" gap. You get identical, reproducible execution whether you're running
+this code locally, in CI, in a production job executor, or on someone else’s machine.
+
+## 4. Iterate
+
+You can simply re-sync local changes to the remote compute by re-calling `.to()` or modifying
+`kt.Image()`, and in less than 2 seconds, your work will have updated on remote. Kubetorch achieves
+this magical iteration speed by keeping remote resources in place, avoiding hard
+restarts even for distributed or Ray programs. Normally, resubmitting a job requires
+rebuilding, repushing, repulling images, reloading data and checkpoints, and finally executing
+your change. Even in the best case, this takes around 5 minutes; typically it is 10–30 minutes for a simple change.
+Kubetorch caches everything until a timeout or explicit teardown, enabling much faster development.
