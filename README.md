@@ -34,6 +34,21 @@ if __name__ == "__main__":
 - **50%+ compute cost savings** through intelligent resource allocation, bin-packing, and dynamic scaling
 - **95% fewer production faults** with built-in fault handling with programmatic error recovery and resource adjustment
 
+
+## Docs
+
+To view the API docs:
+
+```bash
+cd python_client/kubetorch/docs
+pip install -r requirements.txt
+make clean html
+# Output: _build/html/index.html
+```
+
+Higher level concepts and architecture is described in the markdown files in `/guides-and-concepts`
+
+
 ## Installation
 
 ### 1. Python Client
@@ -54,21 +69,11 @@ helm pull oci://ghcr.io/run-house/charts/kubetorch --version 0.5.0 --untar
 helm upgrade --install kubetorch ./kubetorch -n kubetorch --create-namespace
 ```
 
-For detailed setup instructions, see our [Installation Guide](https://www.run.house/kubetorch/installation).
-
-
-## Kubetorch Serverless
-
-Contact us ([email](mailto:hello@run.house), [Slack](https://join.slack.com/t/kubetorch/shared_invite/zt-3g76q5i4j-uP60AdydxnAmjGVAQhtALA)) to try out Kubetorch on our fully managed serverless platform.
-
 ## Learn More
 
-- **[Documentation](https://www.run.house/kubetorch/introduction)** - API Reference, concepts, and guides
-- **[Examples](https://www.run.house/examples)** - Real-world usage patterns and tutorials
+- **[Examples](https://github.com/run-house/kubetorch-examples)** - Real-world usage patterns and tutorials
 - **[Join our Slack](https://join.slack.com/t/kubetorch/shared_invite/zt-3g76q5i4j-uP60AdydxnAmjGVAQhtALA)** - Connect with the community and get support
 
 ---
 
 [Apache 2.0 License](LICENSE)
-
-**🏃‍♀️ Built by [Runhouse](https://www.run.house) 🏠**

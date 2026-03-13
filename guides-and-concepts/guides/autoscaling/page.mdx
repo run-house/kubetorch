@@ -1,0 +1,274 @@
+# Load Balancing and Autoscaling
+
+Kubetorch services can automatically scale based on demand. This guide covers configuring load-balanced
+services where requests are distributed round-robin across pods, with automatic scaling up and down.
+
+## When to Use Autoscaling
+
+Use `.autoscale()` when you want:
+- **Parallel request distribution**: Each call is routed to one pod in the pool
+- **Automatic scaling**: Pods added/removed based on load
+- **Scale-to-zero**: No pods running when idle (cost optimization)
+
+This is ideal for inference services, APIs, and any workload where each request is independent.
+
+**Note:** Autoscaling and distributed computing are mutually exclusive. Use `.autoscale()` for
+load-balanced services or `.distribute()` for parallel execution across all pods simultaneously.
+
+## Basic Configuration
+
+```python
+import kubetorch as kt
+
+compute = kt.Compute(
+    cpus="2",
+    gpus="1",
+    memory="8Gi",
+).autoscale(
+    min_scale=1,      # Minimum replicas (0 allows scale-to-zero)
+    max_scale=10,     # Maximum replicas
+    target=10,        # Target concurrent requests per pod
+)
+
+remote_fn = kt.fn(inference).to(compute)
+```
+
+## Autoscaler Options
+
+Kubetorch supports two autoscaler implementations via Knative:
+
+| Autoscaler | Metrics | Use Case |
+|------------|---------|----------|
+| **KPA** (default) | Concurrency, RPS | Request-based scaling (most ML workloads) |
+| **HPA** | CPU, Memory, Custom | Resource-based scaling |
+
+### Knative Pod Autoscaler (KPA)
+
+KPA is the default and recommended for most ML workloads. It scales based on request metrics.
+
+#### Concurrency-Based Scaling
+
+Scale based on concurrent requests per pod:
+
+```python
+compute = kt.Compute(cpus="2", gpus="1").autoscale(
+    metric="concurrency",      # Scale on concurrent requests (default)
+    target=10,                 # Target 10 concurrent requests per pod
+    target_utilization=70,     # Scale up at 70% of target (7 concurrent)
+    min_scale=1,
+    max_scale=20,
+)
+```
+
+**How it works:**
+- If pods average 7+ concurrent requests (70% of target=10), scale up
+- If pods average below target utilization, scale down
+- Lower `target` = more aggressive scaling (more pods)
+
+#### RPS-Based Scaling
+
+Scale based on requests per second:
+
+```python
+compute = kt.Compute(cpus="2", gpus="1").autoscale(
+    metric="rps",              # Scale on requests per second
+    target=100,                # Target 100 RPS per pod
+    target_utilization=80,     # Scale up at 80 RPS
+    min_scale=2,
+    max_scale=50,
+)
+```
+
+#### Concurrency Limiting
+
+Limit how many concurrent requests each pod handles:
+
+```python
+compute = kt.Compute(cpus="2", gpus="1").autoscale(
+    concurrency=5,             # Max 5 concurrent requests per pod
+    target=5,                  # Target same as limit
+    min_scale=1,
+    max_scale=10,
+)
+```
+
+When `concurrency` is set, additional requests queue until a slot is available. This prevents
+overloading pods with heavy workloads (e.g., large model inference).
+
+### Horizontal Pod Autoscaler (HPA)
+
+HPA scales based on resource utilization. Use it when request metrics don't correlate with load.
+
+#### CPU-Based Scaling
+
+```python
+compute = kt.Compute(cpus="4", memory="8Gi").autoscale(
+    autoscaler_class="hpa.autoscaling.knative.dev",
+    metric="cpu",
+    target=80,                 # Scale up at 80% CPU utilization
+    min_scale=2,
+    max_scale=20,
+)
+```
+
+#### Memory-Based Scaling
+
+```python
+compute = kt.Compute(cpus="2", memory="16Gi").autoscale(
+    autoscaler_class="hpa.autoscaling.knative.dev",
+    metric="memory",
+    target=70,                 # Scale up at 70% memory utilization
+    min_scale=1,
+    max_scale=10,
+)
+```
+
+## Scale-to-Zero Configuration
+
+Scale-to-zero reduces costs when services are idle, but adds cold-start latency.
+
+```python
+compute = kt.Compute(cpus="2", gpus="1").autoscale(
+    min_scale=0,                              # Allow scale to zero
+    scale_to_zero_pod_retention_period="5m",  # Keep last pod for 5 minutes
+    scale_down_delay="2m",                    # Wait 2 minutes before scaling down
+)
+```
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `min_scale` | Set to 0 to enable scale-to-zero | - |
+| `scale_to_zero_pod_retention_period` | Time to keep last pod before scaling to zero | `10m` |
+| `scale_down_delay` | Delay before any scale-down action | `1m` |
+
+**For interactive development**, keep `min_scale=1` or set generous retention periods
+to avoid cold starts disrupting your workflow.
+
+## Scaling Timing
+
+Control how quickly the autoscaler responds:
+
+```python
+compute = kt.Compute(cpus="2", gpus="1").autoscale(
+    window="60s",              # Time window for averaging metrics
+    scale_down_delay="5m",     # Wait 5 min before scaling down
+    initial_scale=3,           # Start with 3 replicas
+    min_scale=1,
+    max_scale=20,
+)
+```
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `window` | Time window for metric averaging | `60s` |
+| `scale_down_delay` | Delay before scaling down (KPA only) | `1m` |
+| `initial_scale` | Initial replica count on first deploy | `min_scale` |
+| `progress_deadline` | Max time for deployment to become ready | `10m` |
+
+**Tip:** For ML workloads with slow initialization (model loading), set `progress_deadline`
+higher than your expected startup time.
+
+## Complete Configuration Reference
+
+```python
+compute = kt.Compute(cpus="4", gpus="1", memory="16Gi").autoscale(
+    # Scaling bounds
+    min_scale=1,
+    max_scale=50,
+    initial_scale=2,
+
+    # Metric configuration (KPA)
+    metric="concurrency",          # "concurrency", "rps", "cpu", "memory"
+    target=10,                     # Target value per pod
+    target_utilization=70,         # % of target to trigger scaling
+
+    # Request handling
+    concurrency=20,                # Max concurrent requests per pod
+
+    # Timing
+    window="60s",                  # Metric averaging window
+    scale_down_delay="2m",         # Delay before scale-down
+    scale_to_zero_pod_retention_period="10m",  # Keep last pod this long
+    progress_deadline="15m",       # Max deployment time
+
+    # Autoscaler selection (for HPA)
+    # autoscaler_class="hpa.autoscaling.knative.dev",
+)
+```
+
+## Example: Inference Service
+
+A typical inference service configuration:
+
+```python
+import kubetorch as kt
+
+def predict(inputs):
+    # Model loaded once per pod, reused across requests
+    model = load_model()  # Cached
+    return model(inputs)
+
+compute = kt.Compute(
+    cpus="4",
+    gpus="1",
+    memory="16Gi",
+    image=kt.Image("pytorch/pytorch:2.0.0").pip_install(["transformers"]),
+).autoscale(
+    min_scale=1,           # Keep at least 1 pod warm
+    max_scale=10,          # Scale up to 10 pods under load
+    target=5,              # Target 5 concurrent requests per pod
+    concurrency=10,        # But allow up to 10 (queue the rest)
+    scale_down_delay="5m", # Wait 5 min before scaling down
+)
+
+inference_fn = kt.fn(predict).to(compute)
+
+# Each call is routed to one pod
+result = inference_fn(my_inputs)
+```
+
+## Example: Batch Processing with Scale-to-Zero
+
+For batch jobs that run periodically:
+
+```python
+import kubetorch as kt
+
+compute = kt.Compute(cpus="8", memory="32Gi").autoscale(
+    min_scale=0,                              # Scale to zero when idle
+    max_scale=20,                             # Scale up for large batches
+    metric="rps",
+    target=50,                                # Target 50 requests/sec per pod
+    scale_to_zero_pod_retention_period="2m",  # Quick scale-down
+)
+
+process_fn = kt.fn(process_batch).to(compute)
+
+# Process items - pods scale up automatically
+for batch in batches:
+    results = process_fn(batch)
+
+# After processing, pods scale to zero
+```
+
+## Monitoring Autoscaling
+
+View current replica count and scaling events:
+
+```bash
+# View service status
+kt status my-service
+
+# View pod count
+kubectl get pods -l serving.knative.dev/service=my-service
+
+# View autoscaler decisions
+kubectl describe ksvc my-service
+```
+
+## Requirements
+
+Autoscaling requires **Knative Serving** installed in your cluster. See the
+[installation guide](/kubetorch/kubernetes-install) for setup instructions.
+
+Without Knative, services deploy as standard Kubernetes Deployments with fixed replica counts.

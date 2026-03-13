@@ -1,0 +1,71 @@
+# Adapting Existing Code for Kubetorch
+
+It's extremely simple to adapt your existing programs for execution in Kubetorch. Let's
+take a simple reference example like the below, which uses hydra configs (passing args, if
+you are using argparse).
+
+Let's take this example program:
+
+```python
+import hydra
+from omegaconf import DictConfig
+
+@hydra.main(config_path=".", config_name="config", version_base=None)
+def main(cfg):
+    print('My program!')
+
+if __name__ == "__main__":
+    main()
+```
+
+## Basic Change to Kubetorch
+You can simply take your existing entrypoint and dispatch that as-is to
+remote compute by wrapping it with `kt.cls()` or `kt.fn()` and then calling it identically.
+
+```python
+import hydra
+from omegaconf import DictConfig
+
+def rename_main(cfg):
+    print('My program!') # Your code stays as is
+
+@hydra.main(config_path=".", config_name="config", version_base=None)
+def main(cfg):
+    img = kt.Image(image_id="nvcr.io/nvidia/pytorch:23.10-py3").pip_install(["datasets"])
+    compute = kt.Compute(
+        gpus = 1,
+        cpus = 4,
+        image = img,
+        allowed_serialization = ["json", "pickle"], # Hydra configs are not json serializable
+        inactivity_ttl = "30m"
+    )
+
+    remote_fn = kt.fn(rename_main).to(compute)
+    remote_fn(cfg, serialization = "pickle") # Regular args usable without pickle
+
+if __name__ == "__main__":
+    main()
+```
+
+## Branching for Local or Remote Execution
+
+We see users who still want the flexibility to execute it as they do today; you can simply set an env var
+to branch whether you want to run under your current code path or with Kubetorch.
+
+```python
+@hydra.main(config_path=".", config_name="config", version_base=None)
+def main(cfg):
+    if os.environ.get("USE_KUBETORCH", False):
+        rename_main(cfg)
+    else:
+        ... # As above
+```
+
+## Using a local conda env
+You can easily sync across your local conda env with the image APIs.
+
+```python
+img = kt.Image().copy('environment.yml', './').run_bash('conda env create -f environment.yml')
+```
+
+UV would follow a very similar pattern (we already have installed UV as part of regular setup).

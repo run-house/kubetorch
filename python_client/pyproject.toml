@@ -7,7 +7,7 @@ license = "Apache 2.0"
 readme = "README.md"
 homepage = "https://run.house"
 repository = "https://github.com/run-house/kubetorch"
-documentation = "https://www.run.house/kubetorch/introduction"
+documentation = "https://github.com/run-house/kubetorch/tree/main/guides-and-concepts"
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",

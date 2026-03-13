@@ -2898,13 +2898,23 @@ def start_server_if_needed(socket_path: str = DEFAULT_SOCKET_PATH) -> int:
         stderr_thread.start()
 
         # Wait for server to be ready
-        for _ in range(50):  # 5 seconds timeout
+        for _ in range(100):  # 10 seconds timeout
             time.sleep(0.1)
             if is_server_running(socket_path):
                 logger.info(f"Pod Data Server started (PID: {process.pid})")
                 return process.pid
 
-        raise RuntimeError("Failed to start Pod Data Server")
+        exit_code = process.poll()
+        stderr_tail = ""
+        if exit_code is not None:
+            try:
+                stderr_tail = process.stderr.read().decode("utf-8", errors="replace")[-500:]
+            except Exception:
+                pass
+        msg = f"Failed to start Pod Data Server after 10s (pid={process.pid}, exit_code={exit_code})"
+        if stderr_tail:
+            msg += f"\nstderr: {stderr_tail}"
+        raise RuntimeError(msg)
 
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)

@@ -5,12 +5,11 @@ This document contains only API references.
 
 For further information and examples using Kubetorch, please refer to:
 
-* `Installation Guide <https://www.run.house/kubetorch/installation>`_: basic and advanced installation guides
+* **Installation Guide**: see ``guides-and-concepts/kubernetes-install/page.mdx``
 
-* `Developer Guide <https://www.run.house/kubetorch/introduction>`_: quick start, high level concepts,
-  developer guides, and more
+* **Developer Guide**: quick start, high level concepts, and guides in ``guides-and-concepts/``
 
-* `Examples <https://www.run.house/examples>`_: end-to-end examples using Kubetorch
+* `Examples <https://github.com/run-house/kubetorch-examples>`_: end-to-end examples using Kubetorch
 
 .. toctree::
    :maxdepth: 1

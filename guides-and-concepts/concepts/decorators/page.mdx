@@ -1,0 +1,96 @@
+# Decorator-based Deployment
+
+In addition to the imperative Python deployment method using `.to`, which gives you full
+programmatic control over deploying and using your code remotely as a Kubernetes service, Kubetorch also
+supports a declarative approach using the `@kt.compute` decorator with the `kt deploy` CLI command.
+
+When  `kt deploy` is called, the decorator deploys a service, and the function or class is replaced with a proxy
+to the live service in the Kubernetes cluster. This module can then be directly imported in Python. From a
+user perspective, it looks and feels like any other Python code, but it's actually running remotely in Kubernetes.
+
+Using the decorator unlocks behaviors that can make development easier, cleaner, and more scalable.
+
+## API Usage
+
+In the hello_world example, we used the following imperative approach to deploy and use the remote function:
+
+```python
+def my_fn():
+    ...
+
+compute = kt.Compute(**compute_kwargs)
+remote_fn = kt.fn(my_fn).to(compute)
+remote_fn()
+```
+
+For the equivalent decorator approach, simply add the `@kt.compute` decorator to the function or class you want
+to deploy. Pass in any compute specifications, using the same keyword arguments as the
+`kt.Compute` class (see API reference: `python_client/kubetorch/docs`).
+
+``` python
+# hello_world.py
+@kt.compute(**compute_kwargs)
+def my_fn():
+    ...
+```
+
+To launch the service, rather than calling `.to(compute)` inside your Python code, we use the `kt deploy` CLI
+command, passing in the name of the file. This looks for all decorated modules inside the file and launches
+all of them. Or, to deploy a specific module, you can pass it in as `<filename>:<module_name>`.
+
+```bash
+$ kt deploy hello_world.py
+$ kt deploy hello_world.py:my_fn
+```
+
+## Autoscale and Distributed Decorators
+
+To enable autoscaling or distributed, you can chain the `@kt.autoscale()` or `@kt.distribute()` decorators
+after specifying the `@kt.compute()` decorator. The arguments into these decorators are the same keyword
+arguments as `kt.Compute.autoscale()` and `kt.Compute.distribute()`, respectively.
+
+``` python
+@kt.compute(**compute_kwargs)
+@kt.distribute(**distribte_kwargs)
+def my_fn():
+    ...
+```
+
+``` python
+@kt.compute(**compute_kwargs)
+@kt.autoscale(autoscale_config)
+def my_fn():
+    ...
+```
+
+## Using the deployment
+
+Once deployed, you can directly import the Python module to use, as you would with any other Python module.
+At runtime, the decorated modules are automatically replaced with a client stub that is proxied to the
+Kubernetes service, and returns results as if the function were local. This means you can do things as follows,
+
+
+``` python
+from hello_world import my_fn
+
+result = my_fn()  # remote call to the service
+```
+
+It is a true drop-in replacement for local code, but it scales like a microservice. This means that the same
+service can be loaded and used across different files, projects, or even different teammates, just like regular
+Python code.
+
+## Benefits
+
+Both the imperative and decorator based approaches are supported and interoperable. They ultimately deploy the
+same service, given the same configuration and parameters. The `.to` approach is an easy way to get started
+with and iterate on your code in scripts, whereas the decorator-based style keeps things localized and allows
+for more modular services.
+
+With the decorator, you can define everything in one place, rather than separating the function definition
+from the deployment logic. This is useful in a shared codebase or larger project, where keeping code
+localized helps with readability and maintainability.
+
+Because the decorator performs replacement at import time, it's easy to package and share your remote functions
+across teams or projects. Simply deploy your module, and it quickly turns into a reusable, modular service
+function. Anyone with access can use the service by simply importing it.

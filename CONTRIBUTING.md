@@ -58,6 +58,4 @@ make clean html
 ```
 
 ### Examples
-Example code lives in [run-house/kubetorch-examples](https://github.com/run-house/kubetorch-examples), and is
-rendered on the [Examples Page](https://www.run.house/examples). Please follow the process above to create
-pull requests.
+Example code lives in [run-house/kubetorch-examples](https://github.com/run-house/kubetorch-examples).

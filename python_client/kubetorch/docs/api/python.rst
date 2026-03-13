@@ -5,9 +5,9 @@ The API Reference provides detailed information about the Kubetorch Python API a
 
 If you are just getting started with Kubetorch or looking for use cases and examples, we recommend first checking out:
 
-* `Guides <https://www.run.house/kubetorch/introduction>`_: quick start, high level concepts, developer guides, and more
+* **Guides**: quick start, high level concepts, and developer guides in ``guides-and-concepts/``
 
-* `Examples <https://www.run.house/examples>`_: end-to-end examples using Kubetorch
+* `Examples <https://github.com/run-house/kubetorch-examples>`_: end-to-end examples using Kubetorch
 
 Compute
 -------
@@ -115,11 +115,11 @@ Workload Configs
 -------
 Kubetorch provides several observability and debugging features to help monitor and troubleshoot your workloads. The behavior of these features can be fully customized via their respective configurations, allowing you to adjust their settings accordingly:
 
-* `Metrics streaming <https://www.run.house/kubetorch/concepts/monitoring-and-observability#metrics-streaming>`_ : Collects and streams runtime metrics from your workloads.
+* **Metrics streaming**: Collects and streams runtime metrics from your workloads. See ``guides-and-concepts/concepts/monitoring-and-observability/page.mdx``.
 
-* `Log streaming <_Log streaming: https://www.run.house/kubetorch/concepts/monitoring-and-observability#log-streaming>`_ : Streams application logs in real-time for easy inspection.
+* **Log streaming**: Streams application logs in real-time for easy inspection. See ``guides-and-concepts/concepts/monitoring-and-observability/page.mdx``.
 
-* `Debugging tools <https://www.run.house/kubetorch/guides/debugging>`_ : Enables runtime introspection and debugging of workloads.
+* **Debugging tools**: Enables runtime introspection and debugging of workloads. See ``guides-and-concepts/guides/debugging/page.mdx``.
 
 .. toctree::
    :maxdepth: 1
