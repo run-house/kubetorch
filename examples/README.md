@@ -2,8 +2,6 @@
 In the [Kubetorch Examples Repo](https://github.com/run-house/kubetorch-examples),
 there are self-contained examples that use Kubetorch for various use cases
 (training, inference, data processing, production workflows, etc).
-Many of the examples contain Markdown, which are rendered as examples
-on [our site](https://www.run.house/examples).
 
 Kubetorch supports a broad range of use-cases, including:
 
@@ -14,4 +12,4 @@ Kubetorch supports a broad range of use-cases, including:
 * Ray Workloads: [Ray Hello World](https://github.com/run-house/kubetorch-examples/blob/main/ray/ray_hello_world/ray_hello_world.py), [Ray Serve + Data](https://github.com/run-house/kubetorch-examples/blob/main/ray/ray_ocr/ray_data_serve_ocr.py), [Ray Training](https://github.com/run-house/kubetorch-examples/blob/main/ray/dlrm-movielens/dlrm_training.py)
 
 If you have a specific use case that you don't see here, we probably have it in our archives!
-Feel free to send us an email at [support@run.house](mailto:support@run.house).
+Feel free to reach out on the [Kubetorch Slack](https://join.slack.com/t/kubetorch/shared_invite/zt-3g76q5i4j-uP60AdydxnAmjGVAQhtALA).

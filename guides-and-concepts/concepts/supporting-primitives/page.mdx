@@ -38,8 +38,7 @@ $ kt volumes list  # List all Kubetorch volumes
 
 ```
 
-See the [Python API](https://www.run.house/kubetorch/api-reference/python/volumes) or
-[CLI docs](https://www.run.house/kubetorch/api-reference/cli) or for more info.
+See the API reference (build with `make clean html` in `python_client/kubetorch/docs`) for more info.
 
 Once created, you can configure your local Kubetorch config to set global defaults to automatically mount volumes
 to all new services, unless explicitly overriden in the ``Compute`` configuration.
@@ -96,6 +95,3 @@ custom_secret = kt.Secret(
     env_vars={"API_KEY": "supersecretvalue"}
 )
 ```
-
-For more details, refer to the [Python API](https://www.run.house/kubetorch/api-reference/python/secret) or
-[CLI docs](https://www.run.house/kubetorch/api-reference/cli).
