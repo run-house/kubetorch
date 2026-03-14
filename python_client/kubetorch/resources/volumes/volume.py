@@ -3,7 +3,7 @@ import textwrap
 import uuid
 
 from functools import cached_property
-from typing import Dict
+from typing import Dict, Optional
 
 from kubetorch import globals
 
@@ -24,10 +24,10 @@ class Volume:
         name: str,
         size: str,
         mount_path: str,
-        storage_class: str = None,
-        access_mode: str = None,
-        namespace: str = None,
-        volume_name: str = None,
+        storage_class: Optional[str] = None,
+        access_mode: Optional[str] = None,
+        namespace: Optional[str] = None,
+        volume_name: Optional[str] = None,
     ):
         """
         Kubetorch Volume object, specifying persistent storage properties.
@@ -156,8 +156,8 @@ class Volume:
     def from_name(
         cls,
         name: str,
-        namespace: str = None,
-        mount_path: str = None,
+        namespace: Optional[str] = None,
+        mount_path: Optional[str] = None,
     ) -> "Volume":
         """Get existing volume by name
 

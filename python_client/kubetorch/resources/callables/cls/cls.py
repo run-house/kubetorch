@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Optional, Union
 
 from kubetorch.logger import get_logger
 from kubetorch.resources.callables.module import Module
@@ -14,11 +14,11 @@ class Cls(Module):
     def __init__(
         self,
         name: str,
-        pointers: tuple = None,
-        init_args: dict = None,
-        sync_dir: Union[str, Path, bool] = None,
-        remote_dir: Union[str, Path] = None,
-        remote_import_path: str = None,
+        pointers: Optional[tuple] = None,
+        init_args: Optional[dict] = None,
+        sync_dir: Optional[Union[str, Path, bool]] = None,
+        remote_dir: Optional[Union[str, Path]] = None,
+        remote_import_path: Optional[str] = None,
     ):
         """
         Initialize a Cls object for remote class execution.
@@ -146,12 +146,12 @@ class Cls(Module):
 
 def cls(
     class_obj=None,
-    name: str = None,
+    name: Optional[str] = None,
     get_if_exists=True,
     reload_prefixes=None,
-    sync_dir: Union[str, Path, bool] = None,
-    remote_dir: Union[str, Path] = None,
-    remote_import_path: str = None,
+    sync_dir: Optional[Union[str, Path, bool]] = None,
+    remote_dir: Optional[Union[str, Path]] = None,
+    remote_import_path: Optional[str] = None,
 ) -> Cls:
     """
     Builds an instance of :class:`Cls`.

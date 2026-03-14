@@ -5,6 +5,7 @@ import tempfile
 import textwrap
 import time
 from pathlib import Path
+from typing import Optional
 
 import kubetorch as kt
 
@@ -86,7 +87,7 @@ def validate_teardown_output(
     service_name: str,
     namespace: str = kt.config.namespace,
     force_delete: bool = False,
-    prefix: str = None,
+    prefix: Optional[str] = None,
 ):
     # Strip ANSI codes for comparison
     teardown_output = strip_ansi_codes(teardown_output)
