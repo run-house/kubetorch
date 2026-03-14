@@ -749,6 +749,50 @@ def _serialize_body(body: dict, serialization: str):
     return body or {}
 
 
+def _build_ws_request(
+    request_id: str,
+    cls_or_fn_name: str,
+    method_name: str,
+    params: dict,
+    serialization: str,
+    log_request_id: str = None,
+    distributed_subcall: bool = False,
+) -> dict:
+    """Build a WebSocket request dict for callable invocation.
+
+    This is the unified request format used by both:
+    - HTTPClient WebSocket calls (client-to-server)
+    - RemoteWorkerPool calls (pod-to-pod distributed subcalls)
+
+    Args:
+        request_id: Unique ID for response routing
+        cls_or_fn_name: The callable name
+        method_name: The method to call (or None for functions)
+        params: Serialized parameters (from _serialize_body or already serialized)
+        serialization: "json" or "pickle"
+        log_request_id: Parent's request_id for log correlation (distributed calls only)
+        distributed_subcall: True if this is a pod-to-pod subcall
+
+    Returns:
+        Dict matching server's /ws/callable expected format
+    """
+    request = {
+        "request_id": request_id,
+        "cls_or_fn_name": cls_or_fn_name,
+        "method_name": method_name,
+        "params": params or {"args": [], "kwargs": {}},
+        "serialization": serialization,
+    }
+
+    # Add distributed-specific fields if provided
+    if log_request_id:
+        request["log_request_id"] = log_request_id
+    if distributed_subcall:
+        request["distributed_subcall"] = True
+
+    return request
+
+
 def get_child_pids(pid):
     """Get all child PIDs of a process using pgrep (works on Linux and macOS)."""
     try:
@@ -784,30 +828,210 @@ def kill_process_tree(pid, sig=9):
         pass  # Process already dead or not accessible
 
 
+def _deserialize_result(result_data, serialization: str):
+    """Deserialize a result value based on serialization format.
+
+    This is the unified deserialization logic used by both HTTP and WebSocket paths.
+    Handles:
+    - Pickle single results: {"data": "base64..."}
+    - Pickle SPMD list results: [{"data": "..."}, {"data": "..."}]
+    - Bytes results: {"__bytes__": "base64..."}
+    - JSON: pass through as-is
+
+    Args:
+        result_data: The result data (already extracted from response/message)
+        serialization: "json", "pickle", or "none"
+
+    Returns:
+        The deserialized result
+    """
+    if serialization == "pickle":
+        if isinstance(result_data, list):
+            # If this is a response from an spmd call, it's a list of serialized dicts
+            unpickled_results = []
+            for resp in result_data:
+                if isinstance(resp, dict) and "data" in resp:
+                    encoded_result = resp["data"]
+                    pickled_result = base64.b64decode(encoded_result.encode("utf-8"))
+                    resp = pickle.loads(pickled_result)
+                unpickled_results.append(resp)
+            return unpickled_results
+        if isinstance(result_data, dict) and "data" in result_data:
+            encoded_result = result_data["data"]
+            pickled_result = base64.b64decode(encoded_result.encode("utf-8"))
+            return pickle.loads(pickled_result)
+
+    # Handle bytes results (can occur with both json and pickle serialization)
+    if isinstance(result_data, dict) and "__bytes__" in result_data:
+        return base64.b64decode(result_data["__bytes__"])
+
+    # For "json" and "none", pass through as-is (data is already deserialized)
+    return result_data
+
+
 def _deserialize_response(response, serialization: str):
+    """Deserialize an HTTP response. Extracts JSON and delegates to _deserialize_result.
+
+    For serialization="none", returns raw response or JSON based on content-type.
+    """
     if serialization == "none":
         content_type = response.headers.get("content-type", "").lower()
         if "application/json" in content_type:
             # Regular return value serialized to JSON by FastAPI
             return response.json()
         else:
-            # Return the raw response
+            # Return the raw response for non-JSON content
             return response
-    elif serialization == "pickle":
-        response_data = response.json()
-        if isinstance(response_data, list):
-            # If this is a response from an spmd call, it's a list of serialized dicts
-            unpickled_results = []
-            for resp in response_data:
-                if "data" in resp:
-                    encoded_result = resp["data"]
-                    pickled_result = base64.b64decode(encoded_result.encode("utf-8"))
-                    resp = pickle.loads(pickled_result)
-                unpickled_results.append(resp)
-            return unpickled_results
-        if "data" in response_data:
-            encoded_result = response_data["data"]
-            pickled_result = base64.b64decode(encoded_result.encode("utf-8"))
-            return pickle.loads(pickled_result)
-        return response_data
-    return response.json()
+
+    result_data = response.json()
+    return _deserialize_result(result_data, serialization)
+
+
+# Map of common built-in exception types for reconstructing remote exceptions
+_BUILTIN_EXCEPTIONS = {
+    "ValueError": ValueError,
+    "TypeError": TypeError,
+    "KeyError": KeyError,
+    "IndexError": IndexError,
+    "AttributeError": AttributeError,
+    "RuntimeError": RuntimeError,
+    "NotImplementedError": NotImplementedError,
+    "TimeoutError": TimeoutError,
+    "ConnectionError": ConnectionError,
+}
+
+
+def _reconstruct_exception(error: dict):
+    """Reconstruct and raise an exception from a remote error dict.
+
+    This is the unified exception reconstruction logic used by both HTTP and WebSocket
+    client paths. It handles:
+    - Python builtin exceptions
+    - Custom exceptions registered in EXCEPTION_REGISTRY
+    - State reconstruction via from_dict() for exceptions with __getstate__
+    - RemoteException wrapping for clean traceback display
+
+    Args:
+        error: Dict with keys: error_type, message, traceback, pod_name (optional), state (optional)
+              For backwards compatibility, also accepts 'type' instead of 'error_type'
+
+    Raises:
+        The reconstructed exception with remote_traceback and pod_name attributes
+    """
+    # Support both 'error_type' (new format) and 'type' (legacy format)
+    error_type = error.get("error_type") or error.get("type", "Exception")
+    error_message = error.get("message", "Unknown error")
+    error_traceback = error.get("traceback", "")
+    pod_name = error.get("pod_name", "unknown")
+    error_state = error.get("state")
+
+    # Try to use the actual exception class if it exists
+    exc = None
+    error_class = None
+
+    # Import the exception registry
+    try:
+        from kubetorch import EXCEPTION_REGISTRY
+    except ImportError:
+        EXCEPTION_REGISTRY = {}
+
+    # First check if it's a Python builtin exception
+    import builtins
+
+    if hasattr(builtins, error_type):
+        error_class = getattr(builtins, error_type)
+    # Then check our known builtins map
+    elif error_type in _BUILTIN_EXCEPTIONS:
+        error_class = _BUILTIN_EXCEPTIONS[error_type]
+    # Otherwise try the kubetorch registry
+    elif error_type in EXCEPTION_REGISTRY:
+        error_class = EXCEPTION_REGISTRY[error_type]
+
+    if error_class:
+        try:
+            # First try to reconstruct from state if available
+            if error_state and hasattr(error_class, "from_dict"):
+                exc = error_class.from_dict(error_state)
+            # Otherwise try simple construction with message
+            else:
+                exc = error_class(error_message)
+        except Exception as e:
+            logger.debug(f"Could not reconstruct {error_type}: {e}, will use dynamic type")
+            # Fall back to dynamic creation
+            pass
+
+    # If we couldn't create the actual exception, fall back to dynamic type creation
+    if not exc:
+
+        def create_str_method(remote_traceback):
+            def __str__(self):
+                cleaned_traceback = remote_traceback.encode().decode("unicode_escape")
+                return f"{self.args[0]}\n\n{cleaned_traceback}"
+
+            return __str__
+
+        # Create the exception class with the custom __str__
+        error_class = type(
+            error_type,
+            (Exception,),
+            {"__str__": create_str_method(error_traceback)},
+        )
+        exc = error_class(error_message)
+
+    # Always add remote_traceback and pod_name
+    exc.remote_traceback = error_traceback
+    exc.pod_name = pod_name
+
+    # Wrap the exception to display remote traceback
+    # Create a new class that inherits from the original exception
+    # and overrides __str__ to include the remote traceback
+    class RemoteException(exc.__class__):
+        def __str__(self):
+            # Get the original message
+            original_msg = super().__str__()
+            # Clean up the traceback
+            cleaned_traceback = self.remote_traceback.encode().decode("unicode_escape")
+            return f"{original_msg}\n\n{cleaned_traceback}"
+
+    # Create wrapped instance without calling __init__
+    wrapped_exc = RemoteException.__new__(RemoteException)
+    # Copy all attributes from the original exception
+    wrapped_exc.__dict__.update(exc.__dict__)
+    # Set the exception args for proper display
+    wrapped_exc.args = (str(exc),)
+
+    raise wrapped_exc
+
+
+def _raise_remote_exception(error: dict):
+    """Raise an exception from a remote error dict.
+
+    This is a convenience wrapper around _reconstruct_exception for backwards compatibility.
+
+    Args:
+        error: Dict with 'type'/'error_type', 'message', and 'traceback' keys
+    """
+    _reconstruct_exception(error)
+
+
+def _process_ws_response(response: dict, serialization: str = "json"):
+    """Process a WebSocket response dict, handling errors and deserializing results.
+
+    Used by WebSocket client and RemoteWorkerPool for consistent response handling.
+    Uses the same deserialization logic as HTTP path via _deserialize_result.
+
+    Args:
+        response: Dict with 'result' and optionally 'error' keys
+        serialization: "json" or "pickle"
+
+    Returns:
+        The deserialized result
+
+    Raises:
+        Exception (or subclass): If the response contains an error
+    """
+    if response.get("error"):
+        _raise_remote_exception(response["error"])
+
+    # Use shared deserialization logic (same as HTTP path)
+    return _deserialize_result(response.get("result"), serialization)

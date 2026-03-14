@@ -76,6 +76,7 @@ class Module:
         self._get_if_exists = True
         self._reload_prefixes = None
         self._serialization = "json"  # Default serialization format
+        self._connection_mode = "websocket"  # Connection mode: "http" or "websocket"
         self._async = False
         self._remote_root_path = None
         self._container_project_root = None
@@ -315,6 +316,26 @@ class Module:
         self._async = value
 
     @property
+    def connection_mode(self):
+        """Communication mode for method calls.
+        Options: "http" (default) or "websocket" (persistent connection, lower latency)."""
+        return self._connection_mode
+
+    @connection_mode.setter
+    def connection_mode(self, value: str):
+        """Set the connection mode for this module."""
+        if value not in ("http", "websocket"):
+            raise ValueError(f"connection_mode must be 'http' or 'websocket', got '{value}'")
+        # Reset the HTTP client so it gets recreated with the new mode
+        if self._http_client is not None:
+            try:
+                self._http_client.close()
+            except Exception:
+                pass
+            self._http_client = None
+        self._connection_mode = value
+
+    @property
     def logging_config(self) -> LoggingConfig:
         """Get the logging configuration for this module from its compute."""
         if self.compute:
@@ -343,58 +364,34 @@ class Module:
     ):
         """Reload an existing callable by its service name."""
         import kubetorch as kt
-        from kubetorch.provisioning.service_manager import ServiceManager
 
         controller_client = kt.globals.controller_client()
         namespace = namespace or config.namespace
         if isinstance(reload_prefixes, str):
             reload_prefixes = [reload_prefixes]
-        potential_names = get_names_for_reload_fallbacks(name=name, prefixes=reload_prefixes)
 
-        all_services = ServiceManager.discover_services(namespace=namespace)
+        # Build candidate list: try exact name first, then fallbacks
+        potential_names = [name]
+        fallback_names = get_names_for_reload_fallbacks(name=name, prefixes=reload_prefixes)
+        for fallback in fallback_names:
+            if fallback not in potential_names:
+                potential_names.append(fallback)
 
-        # Create name-to-service lookup for efficient searching
-        # Prefer non-selector services over selector workloads (which don't have env vars)
-        service_dict = {}
-        for svc in all_services:
-            svc_name = svc["name"]
-            if svc_name not in service_dict or service_dict[svc_name].get("template_type") == "selector":
-                # Add if new, or replace selector workload with actual K8s resource
-                service_dict[svc_name] = svc
-
-        # Try to find the first matching service across all service types
         for candidate in potential_names:
-            service_info = service_dict.get(candidate)
-            if service_info is None:
-                continue
-
-            # Skip selector-based workloads - they don't have template for reload
-            if service_info.get("template_type") == "selector":
-                continue
-
-            compute = kt.Compute.from_template(service_info)
-
-            pods_result = controller_client.list_pods(
-                namespace=namespace,
-                label_selector=f"kubetorch.com/service={candidate}",
-            )
-            volumes = []
-
-            # TODO: handle case where service is scaled to 0?
-            pod_items = pods_result.get("items", [])
-            if pod_items:
-                # Use runtime Pod spec
-                pod = pod_items[0]
-                volumes_list = pod.get("spec", {}).get("volumes", [])
-                for v in volumes_list:
-                    if v.get("persistentVolumeClaim"):
-                        existing_volume = kt.Volume.from_name(name=v.get("name"))
-                        volumes.append(existing_volume)
-
-            # Get module info from controller's workload database
+            # Get workload info directly from controller
             workload_info = controller_client.get_workload(namespace, candidate)
             if not workload_info or not workload_info.get("module"):
-                raise ValueError(f"No module info found for workload {candidate}")
+                logger.debug(f"Candidate '{candidate}': no workload info or module found")
+                continue
+
+            # Skip BYO selector-based workloads (no kind means no K8s resource to reload from)
+            resource_kind = workload_info.get("kind") or workload_info.get("resource_kind")
+            if not resource_kind:
+                logger.debug(f"Candidate '{candidate}': skipping workload with no resource kind")
+                continue
+
+            # Create Compute directly from workload info
+            compute = kt.Compute.from_workload(workload_info, candidate, namespace)
 
             module_info = workload_info["module"]
             module_pointers = module_info.get("pointers", {})
@@ -428,7 +425,7 @@ class Module:
         if self._http_client is not None:
             return self._http_client
 
-        if self.compute is None or self.service_config is None:
+        if self.compute is None:
             namespace = self.namespace
             # When rebuilding the http client on reload, need to know whether to look for a prefix
             reload_prefixes = self.reload_prefixes
@@ -443,18 +440,20 @@ class Module:
             )
 
             # Update settable attributes with reloaded module values
-            self.compute = self.compute or reloaded_module.compute
-            self.service_config = reloaded_module.service_config
+            self.compute = reloaded_module.compute
             self._root_path = reloaded_module._root_path
             self._import_path = reloaded_module._import_path
             self.callable_name = reloaded_module.callable_name
             self.name = reloaded_module.name
             self.service_name = reloaded_module.service_name
 
+        # Create HTTPClient with connection_mode
+        # base_url is the service root - module/method paths are passed per-call
         self._http_client = HTTPClient(
-            base_url=self.endpoint(*args, **kwargs),
+            base_url=self.base_endpoint,
             compute=self.compute,
             service_name=self.service_name,
+            connection_mode=self._connection_mode,
         )
 
         return self._http_client
@@ -919,17 +918,10 @@ class Module:
                 # Additional health check to ensure HTTP server is ready
                 await self._wait_for_http_health_async(launch_id=launch_id)
         finally:
-            # Stop log streaming
+            # Stop log streaming (don't block - just signal and let it clean up)
             if log_task:
                 stop_event.set()
-                try:
-                    await asyncio.wait_for(log_task, timeout=2.0)
-                except asyncio.TimeoutError:
-                    log_task.cancel()
-                    try:
-                        await log_task
-                    except asyncio.CancelledError:
-                        pass
+                log_task.cancel()
 
     def _get_service_dockerfile(self, rsync_dirs: list = None, rsync: bool = True):
         """Generate the service dockerfile and optionally rsync all files to the data store.
