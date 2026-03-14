@@ -19,6 +19,7 @@ kubetorchConfig:
   imagePullSecrets: []  # e.g., [{ name: "my-registry-secret" }]
 
 kubetorchController:
+  repository: ghcr.io/run-house/kubetorch-controller
   tag: 0.5.0
   imagePullPolicy: Always
 
@@ -104,6 +105,7 @@ nvidia-device-plugin:
       effect: "NoSchedule"
 
 dataStore:
+  repository: ghcr.io/run-house/kubetorch-data-store
   tag: 0.5.0
   imagePullPolicy: Always
   # serviceAccount: kubetorch-service-account  # Optional: use specific service account for Workload Identity

@@ -69,7 +69,7 @@ spec:
 
       containers:
         - name: data-store
-          image: "ghcr.io/run-house/kubetorch-data-store:{{ $.Values.dataStore.tag }}"
+          image: "{{ $.Values.dataStore.repository }}:{{ $.Values.dataStore.tag }}"
           imagePullPolicy: {{ $.Values.dataStore.imagePullPolicy | default "IfNotPresent" }}
           env:
             - name: POD_NAMESPACE

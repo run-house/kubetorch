@@ -56,6 +56,16 @@ helm upgrade --install kubetorch ./kubetorch -n kubetorch --create-namespace
 
 For detailed setup instructions, see our [Installation Guide](https://www.run.house/kubetorch/installation).
 
+## Source Layout
+
+This repo now includes the customer-facing OSS deployment components that were previously split across internal and OSS repos:
+
+- `python_client/` for the SDK
+- `charts/kubetorch/` for the Helm chart
+- `services/` for the controller and data store sources
+- `release/default_images/` for the workload base images
+- `release/` for release scripts and version sync
+
 
 ## Kubetorch Serverless
 

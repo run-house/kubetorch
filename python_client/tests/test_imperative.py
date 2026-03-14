@@ -63,10 +63,15 @@ def test_custom_template_dryrun():
 @pytest.mark.level("unit")
 def test_default_images():
     import kubetorch as kt
+    from kubetorch import __version__
 
     debian_img = kt.images.Debian()
-    assert "ghcr.io/run-house/server" in debian_img.image_id
+    assert debian_img.image_id == f"ghcr.io/run-house/server:{__version__}"
     assert debian_img.name == "debian"
+
+    ubuntu_img = kt.images.Ubuntu()
+    assert ubuntu_img.image_id == f"ghcr.io/run-house/ubuntu:{__version__}"
+    assert ubuntu_img.name == "ubuntu"
 
     py_img = kt.images.Python311()
     assert py_img.image_id == "python:3.11-slim"

@@ -1,0 +1,13 @@
+ARG BASE_IMAGE=ghcr.io/run-house/ubuntu:0.5.0
+FROM ${BASE_IMAGE}
+
+# Add only tracing deps
+RUN pip install \
+    opentelemetry-distro \
+    opentelemetry-instrumentation \
+    opentelemetry-instrumentation-fastapi \
+    opentelemetry-instrumentation-requests \
+    opentelemetry-instrumentation-logging \
+    opentelemetry-exporter-otlp \
+    opentelemetry-exporter-prometheus \
+    prometheus-client

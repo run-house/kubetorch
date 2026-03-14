@@ -1,0 +1,12 @@
+fastapi
+python-json-logger
+pyyaml
+requests
+uv
+uvicorn[standard]
+jinja2>=3.0
+kubernetes>=20.0.0
+pydantic>=2.5.0
+websockets
+web-pdb
+httpx

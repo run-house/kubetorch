@@ -44,8 +44,8 @@ on:
           - "yes"
           - "no"
         default: "yes"
-      tag_internal_repo:
-        description: 'Create a new tag for kubetorch-internal?'
+      publish_images:
+        description: 'Build and push Kubetorch images?'
         required: false
         type: choice
         options:
@@ -66,6 +66,9 @@ jobs:
 
       - name: Set Python Source Root
         run: echo "PYTHONPATH=$(pwd)/python_client" >> $GITHUB_ENV
+
+      - name: Sync repo version
+        run: python3 release/sync_version.py "${{ github.event.inputs.kt_version }}"
 
       - name: Install Poetry
         if: ${{ github.event.inputs.publish_in_pypi == 'yes' }}
@@ -88,22 +91,28 @@ jobs:
           slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
           slack_channel_id: ${{ secrets.CHANNEL_ID }}
 
+      - name: Set up QEMU
+        if: ${{ github.event.inputs.publish_images == 'yes' }}
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: ${{ github.event.inputs.publish_images == 'yes' }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Kubetorch images
+        if: ${{ github.event.inputs.publish_images == 'yes' }}
+        env:
+          IMAGE_NAMESPACE: ghcr.io/run-house
+        run: |
+          echo "${{ secrets.GH_HELM_TOKEN }}" | docker login ghcr.io -u run-house --password-stdin
+          release/build_images.sh --version "${{ github.event.inputs.kt_version }}" --all --push
+
       - name: build_and_sync_sphinx_docs
         if: ${{ github.event.inputs.build_api_docs == 'yes' }}
         uses: ./.github/workflows/build_sphinx_docs
         with:
           kt_version: ${{ github.event.inputs.kt_version }}
           dest_repo_token: ${{ secrets.KUBETORCH_DOCS_TOKEN }}
-
-      - name: Tag internal repo
-        if: ${{ github.event.inputs.tag_internal_repo == 'yes' }}
-        run: |
-          git clone https://x-access-token:${{ secrets.GH_HELM_TOKEN }}@github.com/run-house/kubetorch-internal.git internal-repo
-          cd internal-repo
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${{ github.event.inputs.kt_version }}" -m "Release v${{ github.event.inputs.kt_version }}"
-          git push origin "v${{ github.event.inputs.kt_version }}"
 
   helm_upgrade_ci:
     runs-on: ubuntu-latest

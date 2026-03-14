@@ -20,6 +20,7 @@ A Helm chart for kubetorch
 | dataStore.cpu.request | int | `1` |  |
 | dataStore.ephemeralStorage.request | string | `"5Gi"` |  |
 | dataStore.imagePullPolicy | string | `"Always"` |  |
+| dataStore.repository | string | `"ghcr.io/run-house/kubetorch-data-store"` |  |
 | dataStore.maxConnections | int | `500` |  |
 | dataStore.maxConnectionsPerModule | int | `0` |  |
 | dataStore.maxVerbosity | int | `0` |  |
@@ -67,6 +68,7 @@ A Helm chart for kubetorch
 | kubetorchController.eventWatcher.enabled | bool | `true` |  |
 | kubetorchController.eventWatcher.flushInterval | float | `1` |  |
 | kubetorchController.imagePullPolicy | string | `"Always"` |  |
+| kubetorchController.repository | string | `"ghcr.io/run-house/kubetorch-controller"` |  |
 | kubetorchController.nginx.healthRoute | string | `"/health"` |  |
 | kubetorchController.nginx.image.pullPolicy | string | `"IfNotPresent"` |  |
 | kubetorchController.nginx.image.repository | string | `"nginx"` |  |

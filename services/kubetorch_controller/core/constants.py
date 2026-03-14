@@ -1,0 +1,5 @@
+KT_SERVICE_LABEL = "kubetorch.com/service"
+KT_TEMPLATE_LABEL = "kubetorch.com/template"
+KT_MODULE_LABEL = "kubetorch.com/module"
+KT_POOL_LABEL = "kubetorch.com/pool"
+DEPLOYMENT_SERVICE_TEMPLATE_FILE = "service_template.yaml"

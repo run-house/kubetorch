@@ -1,0 +1,14 @@
+FROM python:3.11-slim
+
+# Install rsync and screen
+RUN apt-get update && \
+    apt-get install -y rsync screen coreutils && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY release/default_images/requirements.txt ./requirements.txt
+RUN pip install -r requirements.txt
+
+WORKDIR /kt_app
+
+EXPOSE 32300
