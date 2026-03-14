@@ -995,10 +995,9 @@ def kt_list(
 
       $ kt list --pods  # Show pod names
     """
-
-    # Import here to avoid circular imports
     from kubetorch.provisioning.service_manager import ServiceManager
 
+    console.print("[dim]Loading resources...[/dim]")
     try:
         # Use unified service discovery
         unified_services = ServiceManager.discover_services(namespace=namespace, name_filter=tag)
